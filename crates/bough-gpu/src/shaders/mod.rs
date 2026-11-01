@@ -9,3 +9,4 @@
 //! * group 1: `SLOT` the frame slot's byte offset in the region (uniform).
 pub mod compact;
 pub mod copy;
+pub mod raster;
