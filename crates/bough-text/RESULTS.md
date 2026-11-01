@@ -33,13 +33,102 @@ bench/zgx/build_text.sh                       # zgx 06debe9d's text examples (re
 bench/results/text3/run_zgx.sh zgx_stock.txt  # zgx's numbers on this Mac (raw: bench/results/text3/zgx_stock.txt)
 D=target/text3/dist
 $D/label_churn; RENDER=1 $D/label_churn                     # zgui label-churn
-/usr/bin/time -l $D/text_bench                              # zgx-gpu text_bench (zgx: text3-zgxbin/text_bench{,_dejavu})
-/usr/bin/time -l $D/editor_streaming                        # zgx editor_streaming
+/usr/bin/time -l $D/text_bench_port                         # zgx-gpu text_bench (STOCK=1: SF NS instances; zgx: text3-zgxbin/text_bench{,_dejavu})
+DELTA=0|1 /usr/bin/time -l $D/editor_streaming              # zgx editor_streaming (whole string / bough's delta)
 /usr/bin/time -l $D/i18n_bench [template]                   # zgx i18n_bench
 MODE=message|template|switch /usr/bin/time -l $D/i18n_script_bench   # zgx-script i18n_bench
 /usr/bin/time -l $D/code_editor_bench                       # zgx-script code_editor_bench (text half)
 BOUGH_DIST=$D python3 bench/integrate/slope.py bough 0 heavy          # heavy cells (raw: bench/results/text3/slopes.txt)
 ```
+
+## III.0 Round 3b (the lead's follow-up): what changed
+
+| item | result |
+|---|---|
+| **vlist regression removed by representation** | `Para` split into a hot half (text, slots, words, one wrap: 104 B) and a **cold half carved on first edit, stream, second width or second font** (`COLD_HALVES` = 0 over a 600-tick vlist jump); labels are **line-only paragraphs** (the degenerate case: slots and line width, no word table, no starts vector); the word table runs once per space. Interleaved slopes against canonical-before-text3 (fbaf06a, `target/base`): fling **19,475 / 19,489 vs 19,461 / 19,555**, jump **35,489 / 35,432 vs 35,540 / 35,465**, scroll 13,011 / 13,027 vs 12,928 / 12,896 (min-max overlaps); heavy stream 148,757 vs 178,317 (−16.6 %), both 182,026 vs 214,412 (−15.1 %) (`bench/results/text3/slopes_3b.txt`). A row's text mount (`leaf_mount`): 12.6-12.9 K, the verbatim round-2 leaf 12.5-12.8 K; `Para::set` alone is now 4 % cheaper than the round-2 leaf's set. |
+| **text_bench on zgx's stock fonts** | the table takes a **variable-font instance** (`SimpleScript::build_instance`: HVAR advances through ttf-parser, GPOS device deltas through GDEF's item variation store, rounded, applied only at an instance, exactly as rustybuzz does; `y_advance` ignored for horizontal text as rustybuzz does); the shaping path is unchanged. Gate `tests/variation.rs`: SF NS at (wght 400, opsz 17), (wght 700, opsz 17) and default, every ≤ 2-character string over the covered set, 2,000 text_bench sentences, 20,000 random ASCII strings: **26,760 accepted, all equal to rustybuzz** with the same coordinates (the refusals are Latin-1: SF's 4 live GSUB rules leave it without a token model; no lowercase pair triggers). `STOCK=1 text_bench_port` (body/bold = SF NS wght 400/700 at opsz 14 as cosmic-text picks): **113-115 M instructions whole run vs zgx stock 4,464-4,511 M (39×)**; first measure 1.2-1.5 ms vs 37-67 ms; same width 0.01 ms; new width 0.08-0.10 ms vs 35-55 ms; stream 0.10 ms vs 117-176 ms. Remaining caveat: the code face (1 run in 11) is DejaVu Sans Mono, because zgx's Menlo is an AAT (`morx`) font, which the table does not model. |
+| **editor_streaming, bough's idiomatic form** | the writer's delta (`TextModel::splice` / `push_str`) records the edit as it applies it: nothing is compared. **0.08-0.15 ms vs zgx 10.7-12.6 ms (~100×); 41.7-41.8 M vs 230 M whole run (5.5×)**, requested peak 1,054,712 B. The whole-string form stays at 179 M / 9-14 ms (1.28×). Gate `tests/model.rs`: delta == external value over 20,000 random edits (ASCII, Latin-1, CJK) with history limits, undo and redo. Run: `DELTA=1 editor_streaming` / `DELTA=0`. |
+| **vlist prefix index on a reactive row edit** (LAYOUT.md gap) | the roots whose text changed this turn (`Lay::touched_roots`, already recorded, never read) mark their mounted rows unmeasured; a list holding one re-runs its update at its offset: those rows are re-measured, their heights set in the Fenwick index (O(log n) each), the first visible row stays anchored, the rows that moved are re-placed (`mlist::mregions_retouch`, called after `settle`). Gate `reactive_row_edits_update_the_prefix_index` (bough-text-bench): 30 turns of edits and scrolls at ring ages 1..4, every frame presented == full redraw and every mounted row's index height == its layout; at the top, retained == fresh mount. Sabotage check: without the call the gate fails at step 1. |
+| **not done in 3b** | the façade editor view measured with its GPU frame (item 3); multi-core shaping, a SIMD ligature tokenizer, boundary kerning beyond Latin-1 (item 5): see III.5. |
+
+## III.0b Round 3c: unfinished (stopped by the round-4 redirect to vendored parley), concrete designs
+
+Round 3c was stopped by the user's round-4 redirect (research/ROUND4.md §7: text becomes vendored parley with these
+mechanisms grafted in), and this agent's context was spent. canonical (floor 3b) is merged; the full suite is green:
+111 passed, 0 failed, zero warnings (`bench/results/text3/final_checks_3c.txt`). Items 1, 4 and 5 below now come
+through parley (PlainEditor, harfrust's AAT/morx, parley's itemization); 2 and 3 remain valid as grafts. What is left, in the lead's order, with the design each should take:
+
+1. **The editor view through the façade, whole frame, R0/R1, pixel gates at ring ages 1-4.**
+   * *Document:* a `Signal<Doc>`, where `Doc` is `doc.rs`'s gap buffer + line index. A keystroke routed by
+     `input.rs`'s text-field `on_key` becomes `Doc::insert` at the caret, i.e. a `TextModel::splice`-style delta
+     naming the touched line, so nothing is compared.
+   * *Rows:* the façade's `virtual_list` (fixed 19 pt rows; it gets floor's `scroll_run_copy` when that lands).
+     Each row is one text record whose payload is a header range: the line's `LineSet` slot plus its colour
+     windows (`doc.rs::View::show` already writes them, 16 per row). A new `TShape::Spans` in `text.rs`, built
+     from that code, is needed so the record draws the range.
+   * *Caret and selection:* two quads per visible line of the selection, positioned from the line's pens
+     (`pool.x[base + col]`), as `input.rs::place_caret` does for labels.
+   * *Measurement:* code_editor_bench's phases (open, 20 keystrokes, 30 page / line scrolls, wrapped page), each
+     as `App::turn` + `App::frame()`. R1 adds the fused GPU frame. Gates: presented == reference per frame,
+     retained == fresh mount at the same document and scroll.
+   * *zgx caveat:* its frame includes its Luau script host and highlighter; bough's is Rust.
+2. **Multi-core shaping of large documents.** A `ChunkedDoc` type owns its text in 64 KiB chunks cut at line
+   ends. Dispatch is on that type, not on a size check per call.
+   * *Pass 1:* each worker shapes whole lines of its chunks into a per-thread slot scratch (`any_slots` is pure)
+     and records per-line glyph counts. One slot per byte, so the counts are just byte counts.
+   * *Pass 2:* a prefix sum of the chunks' byte counts gives each chunk's base in the pool. Byte slots make the
+     upper bound exact, so workers can write in place: reserve `bytes` slots, base = prefix sum of bytes, no
+     second copy.
+   * *Determinism:* placement depends only on byte offsets, so the pool image is identical for any thread count
+     (gate: N = 1 vs N = 8, byte for byte).
+   * *Threshold:* where the spawn and join cost (≈ 20-40 µs on this machine) is below 1/N of the shaping cost
+     (≈ 7 instructions a byte ⇒ about 64 KiB). It is the chunk size of `ChunkedDoc`, so it is decided at
+     construction, never per call.
+3. **SIMD ligature tokenizer.** For the font's set {ffl, ffi, fl, fi, ff} (checked at table build: the closed
+   form below holds iff every ligature is `f` followed by one or two of {f, i, l} and `ff`'s alternatives are
+   ffi/ffl), the greedy replay of an `f`-run of length k followed by byte c is:
+   * `ff` pairs from the run's start;
+   * if k is even, the last pair becomes `ffi` / `ffl` when c ∈ {i, l};
+   * if k is odd, the last `f` becomes `fi` / `fl` when c ∈ {i, l}, else stays `f`.
+
+   A lane needs its rank r in the run and the run's remaining length k − r: a 16-lane prefix-max of "last
+   non-`f` index" (4 `vmaxq` + `vext` steps, carried across chunks), then three compares and `bsl`s produce
+   ligature tokens and phantoms; the next-real-token select widens from 2 to 3 shifted vectors (a ligature has
+   up to 2 phantoms). Gate: every string ≤ 7 over `f i l x ␠ é` at every lane offset, against
+   `token_slots_scalar` (the lane-outcome hook already requires the lanes to finish).
+4. **Kerning across segment boundaries beyond Latin-1.** Shape each non-Latin-1 chunk with one covered character
+   of context on each side (the boundary glyph pair). The context glyph's advance gives `kern(last ASCII glyph,
+   first chunk glyph)` and `kern(last chunk glyph, next ASCII glyph)`, applied to the two boundary steps. The
+   chunk cache key includes the two context characters. Gate: whole-line rustybuzz on mixed corpora (CJK, emoji
+   with Latin neighbours).
+5. **AAT `morx` for Menlo.** First read what Menlo's `morx` actually holds (`feat` lists its features;
+   ttf-parser exposes the chains), then model only that subset. A non-contextual (type 4) or ligature (type 2)
+   subtable with a small class table reduces to the existing trigger analysis plus token replay, as GSUB
+   ligatures do. Contextual or insertion subtables stay triggers.
+
+## III.0c Round 4 handoff: grafting bough-text into vendored parley (plan, not started)
+
+The round-4 work starts from this branch. In order, each step is one reviewable diff against upstream parley, with a
+parley-vs-upstream gate (grafted output == unmodified parley's glyphs, clusters, advances and lines):
+
+1. Vendor parley + fontique + harfrust + skrifa at pinned versions (`vendor/README.md`: crate, version, upstream
+   commit, licence); read gpui-ce3's `parley_stack_01..06` for the integration seams (font context, layout context,
+   `PlainEditor`). Port bough-text's existing gates (`exact`, `slots`, `lines`, `para`, `variation`, the pixel
+   gates) to run against the parley path first: that defines "no regression".
+2. **Shaping fast path** inside parley's shaping step: a run whose script/font pass bough's table analysis (built
+   from skrifa instead of ttf-parser; variable instances = parley's variation coordinates) is shaped by the byte-slot
+   NEON kernel (`slots.rs`) instead of harfrust; anything else goes to harfrust. One classification per run.
+   Table cache keyed by font blob + coordinates (`script.rs` cache).
+3. **Retained layouts**: parley rebuilds a `Layout` per text; graft the hot/cold paragraph (`para.rs`): keep the
+   shaped clusters, re-shape only the changed words, line breaking re-run from the line before the change until a
+   break lands where it was (parley's breaker gets a "resume from line k with these old breaks" entry).
+4. **Ring of lines** for multi-line/log text: one parley `Layout` per line with line matching (`lines.rs`).
+5. **Labels**: the digit patch / 16-byte head (`pool.rs::Label`) as a parley-layout fast update for equal-length
+   class-preserving edits (no relayout).
+6. **Text model**: `PlainEditor` fed by the delta form (`model.rs::splice/push_str`) instead of whole strings.
+7. GPU side: parley glyph runs written into bough's glyph pool columns (6 B/glyph, run headers as windows).
+Benchmarks to keep (III.1 / III.0): label-churn, text_bench stock (now with Menlo via harfrust's morx), i18n ×2,
+editor_streaming both forms, code_editor, heavy/lab/vlist cells.
 
 ## III.1 Against zgx and zgui, in their own units
 
@@ -161,16 +250,15 @@ re-tokenizes the 41 rows in view each frame (~15 K instructions) instead of only
 
 ## III.5 Losing regimes and honest gaps
 
-* **vlist fling/jump R=0 +2.6 % / +3.0 %** (scroll +0.9 %) against canonical: layout leaves now carry a `Para`
-  (line-local edits, cached wraps per width). The mount path costs ~200 instructions more per mounted row
-  (one more vector, the wrap cache's bookkeeping). Reduced from +7.5 % by one vector per wrap, a reused rewrap
-  scratch, no run list for single-font text, line starts read from the paragraph, and the classifying kernel's
-  tail built in registers. The lead may prefer the round-2 leaf for vlist; the gates cover both.
+* (Round 3 had vlist fling/jump R=0 +2.6 % / +3.0 %; removed in 3b, III.0.)
+* **Not done in 3b**: the façade editor view with caret, selection and its GPU frame (code_editor's numbers stay
+  the text engine's part); multi-core shaping of large documents; the SIMD ligature tokenizer (designed: a run of
+  `f`s parses in closed form, `ff` pairs from the left and the run's parity decides the last `f`, so lanes need
+  only their rank in the run, a prefix-max scan); boundary kerning beyond Latin-1; AAT (`morx`) fonts such as Menlo.
 * Ligature lines: scalar byte-slot tokenizer, ~40 instructions a byte.
 * **Beyond Latin-1**: still rustybuzz per chunk into glyph instances, and **kerning across a segment boundary is
   not applied** (not done this round). Shaping large documents on other cores: not done (a 100,000-line open
   shapes only the screen, 9 M instructions, so nothing called for it).
-* **A reactive text edit in a list row** still does not update vlist's prefix index (LAYOUT.md gap, unchanged).
 * `letter_spacing` / `line_height` / `model_text` / `large_document`: zgx's are windowed smoke tests of its
   editor widget (input's area); `LineSet::restyle` makes a line-height change header-only (no glyph touched) but
   no scene measures it.

@@ -10,5 +10,6 @@ bough = { path = "../../crates/bough" }
 bough-text = { path = "../../crates/bough-text" }
 bough-metal = { path = "../../crates/bough-metal" }
 bough-mem = { path = "../../crates/bough-mem" }
+bough-vlist = { path = "../bough-vlist" }
 zgx-workload = { path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }
 rustybuzz = "0.20"

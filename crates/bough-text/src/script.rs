@@ -358,23 +358,39 @@ fn active_lookups(t: &LayoutTable, scripts: &[&[u8; 4]]) -> BTreeSet<u16> {
     out
 }
 
-fn value_is_plain_xadv(v: &ValueRecord) -> Option<i32> {
-    if v.x_placement != 0
-        || v.y_placement != 0
-        || v.y_advance != 0
-        || v.x_placement_device.is_some()
-        || v.y_placement_device.is_some()
-        || v.x_advance_device.is_some()
-        || v.y_advance_device.is_some()
-    {
-        None
-    } else {
-        Some(v.x_advance as i32)
+/// A GPOS device table's delta, exactly as rustybuzz applies it for unhinted shaping (no ppem): devices count
+/// only at a variation instance (`coords` non-empty); a variation device is the GDEF item-variation delta,
+/// rounded; a hinting device contributes 0 without a ppem. Round 3b: this is what turns a variable font's
+/// instance (SF NS at wght 700) into plain pair values, applied once at table build time.
+fn device_delta(face: &Face, d: Option<ttf_parser::gpos::Device>) -> Option<i32> {
+    let coords = face.variation_coordinates();
+    if coords.is_empty() {
+        return Some(0);
+    }
+    match d {
+        None | Some(ttf_parser::gpos::Device::Hinting(_)) => Some(0),
+        Some(ttf_parser::gpos::Device::Variation(v)) => Some(
+            face.tables()
+                .gdef
+                .and_then(|g| g.glyph_variation_delta(v.outer_index, v.inner_index, coords))
+                .map_or(0, |f| f.round() as i32),
+        ),
     }
 }
 
-fn value_is_zero(v: &ValueRecord) -> bool {
-    value_is_plain_xadv(v) == Some(0)
+/// The first glyph's advance adjustment of a horizontal value record, or `None` when the record moves a glyph
+/// some other way (a placement, after its device delta). `y_advance` does not apply to horizontal text.
+fn value_is_plain_xadv(face: &Face, v: &ValueRecord) -> Option<i32> {
+    let xp = v.x_placement as i32 + device_delta(face, v.x_placement_device)?;
+    let yp = v.y_placement as i32 + device_delta(face, v.y_placement_device)?;
+    if xp != 0 || yp != 0 {
+        return None;
+    }
+    Some(v.x_advance as i32 + device_delta(face, v.x_advance_device)?)
+}
+
+fn value_is_zero(face: &Face, v: &ValueRecord) -> bool {
+    value_is_plain_xadv(face, v) == Some(0)
 }
 
 enum PairEval {
@@ -386,7 +402,7 @@ enum PairEval {
     Unsupported,
 }
 
-fn eval_pair_subtable(st: &PairAdjustment, a: GlyphId, b: GlyphId) -> PairEval {
+fn eval_pair_subtable(face: &Face, st: &PairAdjustment, a: GlyphId, b: GlyphId) -> PairEval {
     let (v1, v2) = match st {
         PairAdjustment::Format1 { coverage, sets } => {
             let Some(ci) = coverage.get(a) else { return PairEval::None };
@@ -406,10 +422,10 @@ fn eval_pair_subtable(st: &PairAdjustment, a: GlyphId, b: GlyphId) -> PairEval {
             }
         }
     };
-    if !value_is_zero(&v2) {
+    if !value_is_zero(face, &v2) {
         return PairEval::Unsupported;
     }
-    match value_is_plain_xadv(&v1) {
+    match value_is_plain_xadv(face, &v1) {
         Some(x) => PairEval::Adj(x),
         None => PairEval::Unsupported,
     }
@@ -748,7 +764,7 @@ impl<'a> Builder<'a> {
                 let Some(PositioningSubtable::Pair(p)) = l.subtables.get::<PositioningSubtable>(si) else {
                     continue;
                 };
-                match eval_pair_subtable(&p, ga, gb) {
+                match eval_pair_subtable(self.face, &p, ga, gb) {
                     PairEval::None => continue,
                     PairEval::Adj(x) => {
                         sum += x;
@@ -810,13 +826,22 @@ impl SimpleScript {
     /// (round 3: the table is a pure function of the font, ~100 M instructions to derive and ~140 KB to keep; zgx
     /// keeps its font database in a cache file the same way). A file that does not decode is rebuilt.
     pub fn build_cached(data: &[u8], face_index: u32) -> Option<Self> {
-        let path = cache_dir().map(|d| d.join(format!("simple-script-{:016x}.bin", font_key(data, face_index))));
+        Self::build_instance_cached(data, face_index, &[])
+    }
+
+    /// [`build_instance`](Self::build_instance) through the table cache (the key covers the coordinates).
+    pub fn build_instance_cached(data: &[u8], face_index: u32, coords: &[([u8; 4], f32)]) -> Option<Self> {
+        let mut key = font_key(data, face_index);
+        for (t, v) in coords {
+            key = (key ^ u32::from_be_bytes(*t) as u64 ^ (v.to_bits() as u64) << 32).wrapping_mul(0x100_0000_01B3).rotate_left(23);
+        }
+        let path = cache_dir().map(|d| d.join(format!("simple-script-{key:016x}.bin")));
         if let Some(p) = &path {
             if let Some(s) = std::fs::read(p).ok().and_then(|b| Self::decode(&b)) {
                 return Some(s);
             }
         }
-        let s = Self::build(data, face_index)?;
+        let s = Self::build_instance(data, face_index, coords)?;
         if let Some(p) = &path {
             if let Some(dir) = p.parent() {
                 let _ = std::fs::create_dir_all(dir);
@@ -953,7 +978,21 @@ impl SimpleScript {
     /// exactly (legacy `kern` only, feature variations, unparsable lookups, advances too wide
     /// for the 16-bit SIMD scan).
     pub fn build(data: &[u8], face_index: u32) -> Option<Self> {
-        let face = Face::parse(data, face_index).ok()?;
+        Self::build_face(Face::parse(data, face_index).ok()?)
+    }
+
+    /// The table of one **instance** of a variable font (round 3b): `coords` are axis values in user units
+    /// (`wght` 700, `opsz` 17...). Advances come through HVAR (ttf-parser), GPOS device deltas through GDEF's
+    /// item variation store, both applied here once; the shaping path is unchanged. `None` if an axis is unknown.
+    pub fn build_instance(data: &[u8], face_index: u32, coords: &[([u8; 4], f32)]) -> Option<Self> {
+        let mut face = Face::parse(data, face_index).ok()?;
+        for (tag, v) in coords {
+            face.set_variation(Tag::from_bytes(tag), *v)?;
+        }
+        Self::build_face(face)
+    }
+
+    fn build_face(face: Face) -> Option<Self> {
         let upem = face.units_per_em();
         let mut rep = BuildReport::default();
 
