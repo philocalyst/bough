@@ -6,8 +6,9 @@ phys_footprint, sampled from outside with proc_pid_rusage(RUSAGE_INFO_V4) at t=1
 import ctypes, os, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-BIN = {"bough": f"{ROOT}/target/dist/vlist_workload",
-       "zgx": "/Users/mileswirht/projects/_ref/zgx/target/dist/examples/vlist_workload", "bough-deep": f"{ROOT}/target/dist-deep/vlist_workload"}
+BOUGH = os.environ.get("BOUGH_DIST", f"{ROOT}/target/fusion/dist")
+ZGXBIN = os.environ.get("ZGX_DIST", "/Users/mileswirht/projects/_ref/zgx/target/dist/examples")
+BIN = {"bough": f"{BOUGH}/vlist_workload", "zgx": f"{ZGXBIN}/vlist_workload"}
 FONT = "/Users/mileswirht/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf"
 
 class V4(ctypes.Structure):

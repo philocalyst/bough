@@ -175,14 +175,6 @@ where
     }
 }
 
-/// Paint hash of a record state (content addressing, `Rt::paint_write`).
-#[inline(always)]
-pub(crate) fn phash(h: Handle, v: u64) -> u64 {
-    let x = ((h.idx as u64) << 32 | h.generation as u64) ^ v.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    let x = (x ^ (x >> 31)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    x ^ (x >> 29)
-}
-
 // =============================================================================== properties
 
 pub struct ApplyBg;
@@ -206,7 +198,8 @@ impl Apply for ApplyBg {
         } else {
             p.color = v.0;
         }
-        rt.paint_write(h, phash(h, old as u64), phash(h, v.0 as u64));
+        // the colour word is the record's whole paint state: logged as is (content addressing)
+        rt.paint_write(h, old as u64, v.0 as u64);
     }
 }
 
@@ -543,20 +536,20 @@ pub struct GlyphAlpha<'a, T, V> {
     f: fn(usize, usize, &T) -> u8,
 }
 
-/// Write the glyph alphas; returns the paint hash of the new state.
+/// Write the glyph alphas; returns a hash of the new alpha vector (the record's paint state).
 fn set_glyph_alpha<T>(rt: &mut Rt, node: u32, f: fn(usize, usize, &T) -> u8, v: &T) -> u64 {
     let n = &rt.nodes[node as usize];
     let (first, rgb, ti) = (rt.runs[n.run as usize].first, n.color & 0x00ff_ffff, n.text);
     let count = rt.texts[ti as usize].text.len();
     let mut j = 0u32;
-    let mut hsh = 0u64;
+    let mut hsh = 0xcbf2_9ce4_8422_2325u64; // FNV-1a over the alphas
     for i in 0..count {
         if rt.texts[ti as usize].text.as_bytes()[i] == b' ' {
             continue;
         }
         let a = f(i, count, v) as u32;
         rt.inst[(first + j) as usize].color = rgb | a << 24;
-        hsh = hsh.rotate_left(5) ^ a as u64 ^ (j as u64) << 40;
+        hsh = (hsh ^ a as u64).wrapping_mul(0x0000_0100_0000_01b3);
         j += 1;
     }
     hsh
@@ -572,7 +565,7 @@ unsafe fn patch_galpha<T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner
     let n = &mut rt.nodes[w.node as usize];
     let (h, old) = (n.handle, std::mem::replace(&mut n.series_key, new));
     if old != new {
-        rt.paint_write(h, phash(h, old), phash(h, new));
+        rt.paint_write(h, old, new);
     }
 }
 

@@ -21,7 +21,7 @@ path = "src/bin/vlist_workload.rs"
 name = "vlist_headless"
 path = "src/bin/vlist_headless.rs"
 [[bin]]
-name = "micro_bench"
+name = "micro_bench_vlist"
 path = "src/bin/micro_bench.rs"
 [[bin]]
 name = "vlist_shot"

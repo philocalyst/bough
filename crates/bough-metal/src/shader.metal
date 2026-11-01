@@ -900,6 +900,25 @@ kernel void cs_tile32b(uint2 tgid2 [[threadgroup_position_in_grid]],
 // space translations, and the façade's 48-byte quad instances. Window size is a runtime value.
 // Record payload: bit 31 = text (runs [p & 0xFFFFF, + ((p >> 20) & 0x7FF) + 1)), bit 30 = instance run
 // (instances [p & 0x3FFFF, + ((p >> 18) & 0xFFF) + 1)), else one instance index.
+//
+// The damage IS the dispatch: the frame slot holds the damaged tile rows themselves (one 32-byte record per
+// damaged row: its index, x-span, the count of damaged tiles in the rows before it, and its 128 tile bits),
+// written by the CPU in O(damaged rows). The bin pass runs one threadgroup per record; the tile pass's
+// threadgroup i finds its tile by a binary search over the prefix counts and a select of the k-th set bit.
+struct FSlot {
+    uint bin_tg[3];    // +0  indirect args of the bin pass: (nrows, 1, 1)
+    uint tile_tg[3];   // +12 indirect args of the tile pass: (ntiles, 1, 1)
+    uint target;       // +24
+    uint nrows;        // +28
+    // FRow rows[] at +32
+};
+struct FRow {
+    uint ty;
+    uint span;         // x0 | x1 << 8: tiles [x0, x1) hold every damaged tile of the row
+    uint prefix;       // damaged tiles in the rows before this one
+    uint pad;
+    uint4 bits;        // bit x = tile (x, ty) damaged
+};
 struct FHdr {
     float2 viewport;
     uint tiles_x, tiles_y;
@@ -953,13 +972,13 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                    device uint4* bins [[buffer(2)]],
                    device uint* counts [[buffer(3)]]) {
     device const FHdr& h = *(device const FHdr*)pool;
-    device const uint* rows = (device const uint*)(pool + slot.y + 16);
+    device const FRow* frows = (device const FRow*)(pool + slot.x + 32);
     device const uint* dpage = (device const uint*)(pool + h.dir_id_off);
     device const short4* dink = (device const short4*)(pool + h.dir_ink_off);
     device const uchar* pages = pool + h.pages_off;
     device const FInst* inst = (device const FInst*)(pool + h.inst_off);
-    uint e = rows[tgid2.x];
-    uint ty = e & 0xffu, tx0 = (e >> 8) & 0xffu, tx1 = (e >> 16) & 0xffu;
+    FRow fr = frows[tgid2.x];
+    uint ty = fr.ty, tx0 = fr.span & 0xffu, tx1 = (fr.span >> 8) & 0xffu;
     short4 th = short4(short(tx1 * 32u), short(ty * 32u + 32u), short(-int(tx0 * 32u)), short(-int(ty * 32u)));
     threadgroup uint sgc[8];
     threadgroup uint dl[256];
@@ -1158,11 +1177,27 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
                     texture2d<float, access::write> t2 [[texture(3)]],
                     texture2d<float, access::write> t3 [[texture(4)]]) {
     device const FHdr& h = *(device const FHdr*)pool;
-    device const FrameSlot& fs = *(device const FrameSlot*)(pool + slot.x);
-    device const uint* tiles = (device const uint*)(pool + slot.x + 32);
+    device const FSlot& fs = *(device const FSlot*)(pool + slot.x);
+    device const FRow* frows = (device const FRow*)(pool + slot.x + 32);
     device const FInst* inst = (device const FInst*)(pool + h.inst_off);
-    uint t = fs.full ? ((tgid2.x / h.tiles_x) << 16 | (tgid2.x % h.tiles_x)) : tiles[tgid2.x];
-    uint2 tile = uint2(t & 0xffffu, t >> 16);
+    // this threadgroup's tile: the last row whose prefix <= i, then the k-th set bit of that row
+    uint i = tgid2.x;
+    uint lo = 0, hi = fs.nrows;
+    while (hi - lo > 1) {
+        uint mid = (lo + hi) >> 1;
+        if (frows[mid].prefix <= i) lo = mid; else hi = mid;
+    }
+    FRow fr = frows[lo];
+    uint k = i - fr.prefix;
+    uint w = 0;
+    for (; w < 3u; w++) {
+        uint c = popcount(fr.bits[w]);
+        if (k < c) break;
+        k -= c;
+    }
+    uint v = fr.bits[w];
+    for (uint j = 0; j < k; j++) v &= v - 1u;
+    uint2 tile = uint2(w * 32u + ctz(v), fr.ty);
     uint2 o = tile * 32u;
     short4 th = short4(short(o.x + 32u), short(o.y + 32u), short(-int(o.x)), short(-int(o.y)));
     float2 c00 = float2(o + 2u * lt) + 0.5;

@@ -6,10 +6,12 @@
 //!
 //! # Surfaces (the ring)
 //! A surface is chosen per frame, never skipped:
-//! 1. **Content addressing** (only when the epoch's damage is paint-only, since every other damaged tile
-//!    was salted with a fresh value): if the surface on screen already shows the current state, nothing
-//!    happens at all; if a free surface holds it, it is published with no GPU work (a caret blink after
-//!    its first two frames, a hover toggle).
+//! 1. **Content addressing**: a surface holds the current state iff no epoch since it was drawn had
+//!    non-paint damage (geometry, text, structure: one flag per epoch) and the paint writes since then
+//!    (logged per epoch as record + old/new state hash, `Rt::paint_log`) compose to the identity for every
+//!    record. If the surface on screen already shows the current state nothing happens at all; if a free
+//!    surface holds it, it is published with no GPU work (a caret blink after its first two frames, a hover
+//!    toggle). O(1) per paint write and nothing per tile: a scene without paint-only frames pays nothing.
 //! 2. Otherwise the free surface (neither on screen nor held by the compositor) that was drawn most
 //!    recently is repaired (the smallest repair).
 //! 3. If the compositor holds every drawn surface, a fresh one is drawn (an IOSurface owns no memory until
@@ -121,9 +123,8 @@ pub struct App<V: View> {
     pub rt: Rt,
     #[cfg(target_os = "macos")]
     pub gpu: Option<bough_metal::fused::Fused>,
-    /// Per surface: the epoch whose state it holds (`None`: nothing valid), and its tile hashes.
+    /// Per surface: the epoch whose state it holds (`None`: nothing valid).
     held: Vec<Option<u32>>,
-    zh: Vec<Vec<u64>>,
     shown: Option<usize>,
     next_rr: usize,
     /// Content-addressed, contention-sized ring (windowed) instead of round-robin (offscreen).
@@ -137,17 +138,11 @@ pub struct App<V: View> {
     rows: Vec<u128>,
     pa: Box<Plane>,
     pb: Box<Plane>,
+    /// Per epoch (`epoch % RING`): did it have non-paint damage?
+    core_epochs: [bool; RING],
     /// `frames` value when each ring slot was last drawn into.
     last_use: Vec<u64>,
     trim_mark: u64,
-}
-
-#[inline]
-fn salt(e: u32) -> u64 {
-    let mut z = (e as u64).wrapping_add(0x9E37_79B9_7F4A_7C15).wrapping_mul(0xD1B5_4A32_D192_ED03);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
 }
 
 impl<V: View> App<V> {
@@ -197,14 +192,13 @@ impl<V: View> App<V> {
         // SAFETY: `ptr` is the owner just mounted (boxed: it never moves).
         unsafe { rt.mregions_init(ptr as *const u8) };
         drop(scope); // the root scope lives as long as the app: nothing of it is ever released
-        let (tx, ty) = (rt.tiles_x, rt.tiles_y);
+        let ty = rt.tiles_y;
         App {
             owner,
             rt,
             #[cfg(target_os = "macos")]
             gpu: metal,
             held: vec![None; ring],
-            zh: vec![vec![0; tx * ty]; ring],
             shown: None,
             next_rr: 0,
             windowed: false,
@@ -216,6 +210,7 @@ impl<V: View> App<V> {
             rows: vec![0; ty],
             pa: Box::new(Plane::EMPTY),
             pb: Box::new(Plane::EMPTY),
+            core_epochs: [false; RING],
             last_use: vec![0; ring],
             trim_mark: 0,
         }
@@ -277,29 +272,37 @@ impl<V: View> App<V> {
         any != 0
     }
 
-    /// Does surface `s` hold every pixel of the current state? (Tile hashes over the tiles damaged since its
-    /// epoch; the whole hash vector when that is older than the ring.)
-    fn holds_current(&mut self, s: usize, epoch: u32) -> bool {
+    /// Does surface `s` hold every pixel of the current state (epoch `epoch`, which has only paint damage)?
+    /// No epoch since it was drawn may have had non-paint damage, none may have overflowed its paint log,
+    /// and the logged paint writes since then must compose to the identity for every record.
+    fn holds_current(&self, s: usize, epoch: u32) -> bool {
         let Some(last) = self.held[s] else { return false };
         let age = epoch - last;
-        if age as usize > RING {
-            return self.zh[s] == self.rt.zob;
+        if age as usize > RING || age == 0 {
+            return age == 0;
         }
-        if !self.repair_rows(age) {
-            return true;
+        if (1..age).any(|b| self.core_epochs[(epoch - b) as usize % RING]) {
+            return false;
         }
-        let tx = self.rt.tiles_x;
-        for (y, &row) in self.rows.iter().enumerate() {
-            let mut b = row;
-            while b != 0 {
-                let x = b.trailing_zeros() as usize;
-                b &= b - 1;
-                if self.zh[s][y * tx + x] != self.rt.zob[y * tx + x] {
-                    return false;
+        // (record, state when s was drawn, state now), in write order
+        let mut net: [(u64, u64, u64); 4 * PAINT_LOG] = [(0, 0, 0); 4 * PAINT_LOG];
+        let mut n = 0;
+        for e in last + 1..=epoch {
+            let l = &self.rt.paint_log[e as usize % RING];
+            if l.overflow {
+                return false;
+            }
+            for &(k, old, new) in &l.e[..l.n as usize] {
+                match net[..n].iter_mut().find(|x| x.0 == k) {
+                    Some(x) => x.2 = new,
+                    None => {
+                        net[n] = (k, old, new);
+                        n += 1;
+                    }
                 }
             }
         }
-        true
+        net[..n].iter().all(|x| x.1 == x.2)
     }
 
     #[cfg(target_os = "macos")]
@@ -384,22 +387,7 @@ impl<V: View> App<V> {
         }
         self.prof.reset();
         let epoch = self.rt.bough.epoch();
-        if core {
-            // every tile damaged by a non-paint write gets a never-seen hash: no surface can hold it
-            let s = salt(epoch);
-            let tx = self.rt.tiles_x;
-            let p = self.rt.bough.plane(0);
-            let (lo, hi) = p.occ_range();
-            for y in lo..hi.min(self.rt.tiles_y) {
-                let mut b = p.rows[y];
-                while b != 0 {
-                    let x = b.trailing_zeros() as usize;
-                    b &= b - 1;
-                    self.rt.zob[y * tx + x] ^= s;
-                }
-            }
-        }
-        self.prof.mark(PH_DAMAGE);
+        self.core_epochs[epoch as usize % RING] = core;
         let pick = self.pick(epoch, !core);
         self.surf_stats.frames += 1;
         match pick {
@@ -423,6 +411,7 @@ impl<V: View> App<V> {
         self.prof.mark(PH_PRESENT);
         self.rt.bough.next_epoch();
         self.rt.paint.advance();
+        self.rt.paint_log[self.rt.paint.epoch as usize % RING].clear();
         self.frames += 1;
         true
     }
@@ -465,20 +454,6 @@ impl<V: View> App<V> {
             let (nt, _) = unsafe { bough_metal::fused::write_slot(self.rt.region_base(), &self.rt.layout, (self.frames % 2) as usize, i as u32, &self.rows, full) };
             self.repaired_tiles = nt;
             self.prof.mark(PH_CULL);
-        }
-        // the surface's tile hashes: the repaired rows' spans (tiles in a span but outside the repair hold
-        // equal hashes already), or everything after a full repaint
-        let tx = self.rt.tiles_x;
-        if full {
-            self.zh[i].copy_from_slice(&self.rt.zob);
-        } else {
-            for (y, &row) in self.rows.iter().enumerate() {
-                if row == 0 {
-                    continue;
-                }
-                let (lo, hi) = (row.trailing_zeros() as usize, (128 - row.leading_zeros() as usize).min(tx));
-                self.zh[i][y * tx + lo..y * tx + hi].copy_from_slice(&self.rt.zob[y * tx + lo..y * tx + hi]);
-            }
         }
         self.held[i] = Some(epoch);
         self.shown = Some(i);

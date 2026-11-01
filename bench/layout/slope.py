@@ -3,14 +3,15 @@
 and TICKS=B, (instructions retired B - A) / (B - A) via `/usr/bin/time -l` ("instructions retired",
 process wide), median of REPS. zgx has no headless vlist driver upstream: its side is `vlist_headless`
 (the windowed vlist_workload's loop, built in a copy of the zgx tree, same sources/profile as the measured
-06debe9d binaries). Usage: slope.py <bough|bough-deep|zgx> <RENDER 0|1> [modes...]"""
+06debe9d binaries; bench/zgx/build.sh builds it). Usage: slope.py <bough|zgx> <RENDER 0|1> [modes...]"""
 import os, re, statistics, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SCRATCH = os.environ.get("ZGX_COPY", "/private/tmp/claude-501/-Users-mileswirht-Downloads-designs-reactivity/16fd4c0d-6057-492e-b9c5-0daf75a4051a/scratchpad/zgx-copy")
-BIN = {"bough": f"{ROOT}/target/dist/vlist_headless",
-       "bough-deep": f"{SCRATCH}/../target-deep/dist/vlist_headless", "bough-deepkids": f"{SCRATCH}/../target-deepkids/dist/vlist_headless",
-       "zgx": f"{SCRATCH}/target/dist/examples/vlist_headless"}
+# bough's dist binaries (built with CARGO_TARGET_DIR=target/fusion) and zgx's headless drivers (bench/zgx/build.sh)
+BOUGH = os.environ.get("BOUGH_DIST", f"{ROOT}/target/fusion/dist")
+ZGXH = os.environ.get("ZGX_HEADLESS", f"{ROOT}/target/zgx-headless")
+ZGXBIN = os.environ.get("ZGX_DIST", "/Users/mileswirht/projects/_ref/zgx/target/dist/examples")
+BIN = {"bough": f"{BOUGH}/vlist_headless", "zgx": f"{ZGXH}/vlist_headless"}
 FONT = "/Users/mileswirht/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf"
 
 def instr(fw, mode, render, ticks):

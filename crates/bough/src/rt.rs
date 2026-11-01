@@ -15,9 +15,11 @@
 //!
 //! Damage has two rings, both bough-core `DamageRing`s advanced in lockstep: the Bough's own (every
 //! geometry, structure and text mark) and the **paint** ring (paint-only writes: colours, glyph alphas).
-//! The split exists for content addressing: paint writes are exactly reversible and update the per-tile
-//! content hash `zob` by XOR (old state out, new state in); every other damaged tile is salted at frame
-//! time. A surface whose tile hashes equal `zob` holds the current pixels (`App::pick`).
+//! The split exists for content addressing: a paint write's pixels are a function of the record and its
+//! new state alone, so each epoch keeps a short log of its paint writes as (record, old state hash, new
+//! state hash). A surface drawn at epoch `e` holds the current pixels iff no epoch since `e` had non-paint
+//! damage and every record's composed change since `e` is the identity (`App::pick`): O(1) per paint
+//! write, no per-tile state.
 use crate::text::TextSys;
 use bough_core::bough::Columns;
 use bough_core::damage::DamageRing;
@@ -71,10 +73,10 @@ impl Caps {
     pub const DEFAULT: Caps = Caps { instances: 8192, pages: 512, glyphs: 1 << 16, runs: 8192, spaces: 2048, clips: 512, strikes: 16 };
 
     pub fn region_bytes(&self, w: u32, h: u32) -> usize {
-        let (sb, rb) = Layout::slot_bytes(w, h);
+        let sb = Layout::slot_bytes(w, h);
         let a = |n: usize| n.next_multiple_of(256) + 256;
         HDR_BYTES
-            + 3 * (a(sb) + a(rb))
+            + 3 * a(sb)
             + a(self.instances * size_of::<Instance>())
             + a(self.pages * size_of::<Page>())
             + 2 * a(self.pages * 8)
@@ -221,6 +223,23 @@ pub struct Counters {
     pub rows_unmounted: u64,
 }
 
+/// One epoch's paint writes: `(record key, old state hash, new state hash)`; past `PAINT_LOG` entries the
+/// epoch is not content-addressable (`overflow`): continuous animation pays one compare per write.
+pub const PAINT_LOG: usize = 16;
+#[derive(Clone, Copy, Default)]
+pub struct PaintLog {
+    pub n: u8,
+    pub overflow: bool,
+    pub e: [(u64, u64, u64); PAINT_LOG],
+}
+impl PaintLog {
+    #[inline]
+    pub fn clear(&mut self) {
+        self.n = 0;
+        self.overflow = false;
+    }
+}
+
 /// `bough_core::Plane` as bough-text's tile-mark sink: labels OR their damage rows straight into the
 /// current epoch's plane (the row band stays exact).
 pub struct CoreMarks<'a>(pub &'a mut bough_core::Plane);
@@ -262,10 +281,10 @@ pub struct Rt {
     clip_dedupe: Vec<(NRect, u16)>,
     space_free: Vec<u16>,
     next_space: u16,
-    /// Paint-only damage (exactly hashed into `zob`), advanced with the Bough's ring.
+    /// Paint-only damage, advanced with the Bough's ring.
     pub paint: DamageRing,
-    /// Per-tile content hash of the current state (tiles_x * tiles_y), see the module docs.
-    pub zob: Vec<u64>,
+    /// Per epoch (`epoch % RING`): its paint writes, see the module docs.
+    pub paint_log: [PaintLog; bough_core::damage::RING],
     pub tiles_x: usize,
     pub tiles_y: usize,
     pub ctr: Counters,
@@ -279,14 +298,12 @@ pub struct Rt {
 impl Rt {
     /// The runtime over `region` (the presenter's shared buffer, or heap memory of the same size).
     pub fn new(win_w: i32, win_h: i32, scale: f32, font: &[u8], mut region: Region, caps: Caps) -> Rt {
-        let (sb, rb) = Layout::slot_bytes(win_w as u32, win_h as u32);
+        let sb = Layout::slot_bytes(win_w as u32, win_h as u32);
         let hdr = region.reserve(HDR_BYTES, 64);
         assert_eq!(hdr, 0, "the header is at offset 0");
         let mut slot = [0u32; 3];
-        let mut rows = [0u32; 3];
-        for k in 0..3 {
-            slot[k] = region.reserve(sb, 256) as u32;
-            rows[k] = region.reserve(rb, 256) as u32;
+        for s in &mut slot {
+            *s = region.reserve(sb, 256) as u32;
         }
         let mut inst: Col<Instance> = region.carve("instances", caps.instances);
         // SAFETY: carved memory is zeroed (fresh buffer / alloc_zeroed) and all-zero is a valid Instance.
@@ -314,7 +331,6 @@ impl Rt {
             toks_off: text.cache.tok_offset().unwrap() as u32,
             tok_stride: size_of::<TokStrike>() as u32,
             slot,
-            rows,
         };
         let (tx, ty) = (layout.tiles_x() as usize, layout.tiles_y() as usize);
         Rt {
@@ -343,7 +359,7 @@ impl Rt {
             space_free: Vec::new(),
             next_space: 1,
             paint: DamageRing::new(win_w, win_h),
-            zob: vec![0; tx * ty],
+            paint_log: Default::default(),
             tiles_x: tx,
             tiles_y: ty,
             ctr: Counters::default(),
@@ -589,8 +605,9 @@ impl Rt {
         self.bough.set_ink_handle(h, ink);
     }
 
-    /// A paint-only write to `h`'s record (colour, glyph alphas): its visible ink goes to the paint ring and
-    /// the content hash of its tiles changes from `old` to `new` (exactly reversible).
+    /// A paint-only write to `h`'s record (colour, glyph alphas) from state hash `old` to `new`: its visible
+    /// ink goes to the paint ring and the write to the epoch's paint log.
+    #[inline]
     pub fn paint_write(&mut self, h: Handle, old: u64, new: u64) {
         let Some(ink) = self.bough.visible_ink_handle(h) else { return };
         let ink = ink.intersect(self.bough.window()).canon();
@@ -598,14 +615,12 @@ impl Rt {
             return;
         }
         self.paint.add_inside(ink);
-        let d = old ^ new;
-        let [x0, y0, x1, y1] = ink.to_xyxy();
-        let (tx0, ty0, tx1, ty1) = ((x0 >> 5) as usize, (y0 >> 5) as usize, ((x1 - 1) >> 5) as usize, ((y1 - 1) >> 5) as usize);
-        for ty in ty0..=ty1.min(self.tiles_y - 1) {
-            let row = &mut self.zob[ty * self.tiles_x..(ty + 1) * self.tiles_x];
-            for z in &mut row[tx0..=tx1.min(self.tiles_x - 1)] {
-                *z ^= d;
-            }
+        let l = &mut self.paint_log[self.paint.epoch as usize % bough_core::damage::RING];
+        if (l.n as usize) < PAINT_LOG {
+            l.e[l.n as usize] = ((h.idx as u64) << 32 | h.generation as u64, old, new);
+            l.n += 1;
+        } else {
+            l.overflow = true;
         }
     }
 

@@ -5,8 +5,10 @@
 //!   no render pass (so the driver never allocates a tiler parameter buffer). The kernels read bough-core's
 //!   pages, directory and clip table, bough-text's glyph slots / run headers / token tables and the façade's
 //!   quad instances *where the CPU wrote them*: the region is this presenter's `storageModeShared` buffer.
-//! * **Damage in:** the caller's OR-ed 32 px tile rows (`encode_rows`) become the frame slot's tile list and
-//!   row spans in one bit scan (O(damaged tiles)); `full` repaints everything without a list.
+//! * **Damage in:** the damage IS the dispatch. The caller's OR-ed 32 px tile rows are copied into the
+//!   frame slot as one 32-byte record per damaged row (row, x-span, prefix count of damaged tiles, the row's
+//!   128 bits): O(damaged rows), no tile list. The bin pass runs per record; each tile threadgroup finds its
+//!   tile by a binary search over the prefix counts and a select of the k-th set bit.
 //! * **Surfaces:** up to 4 IOSurface-backed BGRA8 textures, all bound to every dispatch (the slot names the
 //!   target). An IOSurface costs nothing until first written; *which* surface to draw is the caller's policy
 //!   (`App::pick` in the façade: content-addressed, zero skips).
@@ -70,9 +72,8 @@ pub struct Layout {
     pub runs_off: u32,
     pub toks_off: u32,
     pub tok_stride: u32,
-    /// Three frame slots (two in flight, one for the reference render): tile list at `slot`, row list at `rows`.
+    /// Three frame slots (two in flight, one for the reference render): header + damaged-row records.
     pub slot: [u32; 3],
-    pub rows: [u32; 3],
 }
 
 impl Layout {
@@ -82,10 +83,9 @@ impl Layout {
     pub fn tiles_y(&self) -> u32 {
         self.h.div_ceil(32)
     }
-    /// Bytes of one frame slot (tile list) and one row list for a `w` x `h` window.
-    pub fn slot_bytes(w: u32, h: u32) -> (usize, usize) {
-        let (tx, ty) = (w.div_ceil(32) as usize, h.div_ceil(32) as usize);
-        ((32 + 4 * tx * ty).next_multiple_of(256), (16 + 4 * ty).next_multiple_of(256))
+    /// Bytes of one frame slot for a `w`-by-`h` window: a 32-byte header and one 32-byte record per tile row.
+    pub fn slot_bytes(_w: u32, h: u32) -> usize {
+        (32 + 32 * h.div_ceil(32) as usize).next_multiple_of(256)
     }
 }
 
@@ -474,7 +474,7 @@ impl Fused {
     fn encode(&self, cmd: &ProtocolObject<dyn MTLCommandBuffer>, k: usize, targets: [&Tex; 4], nrows: u32, ntiles: u32, indirect: bool) {
         let l = &self.lay;
         let enc = cmd.computeCommandEncoder().expect("compute encoder");
-        let offs = [l.slot[k], l.rows[k]];
+        let offs = [l.slot[k], 0];
         unsafe {
             enc.setBuffer_offset_atIndex(Some(&self.pool), 0, 0);
             enc.setBytes_length_atIndex(NonNull::new(offs.as_ptr() as *mut _).unwrap(), 8, 1);
@@ -483,7 +483,7 @@ impl Fused {
             enc.setComputePipelineState(&self.pso_bin);
             let tg = MTLSize { width: 256, height: 1, depth: 1 };
             if indirect {
-                enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, l.rows[k] as usize, tg);
+                enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, l.slot[k] as usize, tg);
             } else {
                 enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: nrows as usize, height: 1, depth: 1 }, tg);
             }
@@ -494,7 +494,7 @@ impl Fused {
             enc.setTextures_withRange(NonNull::new(texs.as_ptr() as *mut _).unwrap(), objc2_foundation::NSRange::new(0, 5));
             let tg2 = MTLSize { width: 16, height: 16, depth: 1 };
             if indirect {
-                enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, l.slot[k] as usize, tg2);
+                enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, l.slot[k] as usize + 12, tg2);
             } else {
                 enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: ntiles as usize, height: 1, depth: 1 }, tg2);
             }
@@ -649,55 +649,42 @@ impl Fused {
     }
 }
 
-/// Turn OR-ed tile rows (`rows[ty]`, bit tx = tile) into frame slot `k`'s tile list and row spans: one bit
-/// scan, O(damaged tiles). `full`: every tile, no list. Returns (tiles, rows). This is the whole CPU side of a
-/// frame's raster input (headless runs call it too, so RENDER=0 measures it).
+/// Copy the OR-ed tile rows (`rows[ty]`, bit tx = tile) into frame slot `k` as damaged-row records (see the
+/// module docs): O(damaged rows). `full`: every tile of the window. Returns (tiles, rows). This is the whole
+/// CPU side of a frame's raster input (headless runs call it too, so RENDER=0 measures it).
 ///
 /// # Safety
-/// `region` must be a region laid out by `l` (slot and row areas reserved with `Layout::slot_bytes` for its
-/// window), not read by the GPU while this writes.
+/// `region` must be a region laid out by `l` (slots reserved with `Layout::slot_bytes` for its window), not
+/// read by the GPU while this writes.
 pub unsafe fn write_slot(region: *mut u8, l: &Layout, k: usize, target: u32, rows: &[u128], full: bool) -> (u32, u32) {
     let (tx, ty) = (l.tiles_x(), l.tiles_y());
+    let all = if tx >= 128 { u128::MAX } else { (1u128 << tx) - 1 };
     // SAFETY: see the function contract.
     unsafe {
         let s = region.add(l.slot[k] as usize) as *mut u32;
-        let r = region.add(l.rows[k] as usize) as *mut u32;
-        let tiles = s.add(8);
-        let rl = r.add(4);
+        let rec = s.add(8);
         let (mut nt, mut nr) = (0u32, 0u32);
-        if full {
-            nt = tx * ty;
-            for y in 0..ty {
-                *rl.add(nr as usize) = y | tx << 16;
-                nr += 1;
+        for y in 0..ty as usize {
+            let row = if full { all } else { rows.get(y).copied().unwrap_or(0) & all };
+            if row == 0 {
+                continue;
             }
-        } else {
-            for (y, &row) in rows.iter().enumerate().take(ty as usize) {
-                if row == 0 {
-                    continue;
-                }
-                let x0 = row.trailing_zeros();
-                let x1 = 128 - row.leading_zeros();
-                *rl.add(nr as usize) = y as u32 | x0 << 8 | x1 << 16;
-                nr += 1;
-                let mut b = row;
-                while b != 0 {
-                    let x = b.trailing_zeros();
-                    b &= b - 1;
-                    *tiles.add(nt as usize) = (y as u32) << 16 | x;
-                    nt += 1;
-                }
-            }
+            let r = rec.add(nr as usize * 8);
+            *r = y as u32;
+            *r.add(1) = row.trailing_zeros() | (128 - row.leading_zeros()) << 8;
+            *r.add(2) = nt;
+            (r.add(4) as *mut [u32; 4]).write_unaligned(std::mem::transmute::<u128, [u32; 4]>(row));
+            nt += row.count_ones();
+            nr += 1;
         }
-        *s = nt;
+        *s = nr;
         *s.add(1) = 1;
         *s.add(2) = 1;
-        *s.add(3) = target;
-        *s.add(4) = nt;
-        *s.add(5) = full as u32;
-        *r = nr;
-        *r.add(1) = 1;
-        *r.add(2) = 1;
+        *s.add(3) = nt;
+        *s.add(4) = 1;
+        *s.add(5) = 1;
+        *s.add(6) = target;
+        *s.add(7) = nr;
         (nt, nr)
     }
 }
