@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/bough-core", "crates/bough-text", "crates/bough-metal"]
+members = ["crates/bough-core", "crates/bough-text", "crates/bough-metal", "crates/bough-damage-lab"]
 
 [workspace.package]
 edition = "2024"
