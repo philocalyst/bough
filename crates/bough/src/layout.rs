@@ -389,6 +389,8 @@ pub struct LeafCtx {
     /// `max_units` of the wrap in `starts` (`i32::MIN`: none) and its widest line, in font units.
     pub wrapped_at: i32,
     pub widest: i32,
+    /// Lines of the last wrap.
+    pub nlines: usize,
     /// Longest word, font units (`-1`: not computed).
     pub min_word: i32,
     pub wrap: bool,
@@ -411,10 +413,11 @@ impl Clone for LeafCtx {
             fast: self.fast,
             line_w: self.line_w,
             run: self.run.clone(),
-            text: self.text.clone(),
+            text: self.bytes().to_vec(),
             starts: self.starts.clone(),
             wrapped_at: self.wrapped_at,
             widest: self.widest,
+            nlines: self.nlines,
             min_word: self.min_word,
             wrap: self.wrap,
             ascii: self.ascii,
@@ -428,6 +431,12 @@ impl Clone for LeafCtx {
 }
 
 impl LeafCtx {
+    /// The leaf's text (the paragraph's bytes on the fast path, the leaf's own copy on the slow one).
+    #[inline]
+    pub fn bytes(&self) -> &[u8] {
+        if self.fast { &self.para.text } else { &self.text }
+    }
+
     pub fn new(size_px: f32, lh_px: f32, wrap: bool) -> LeafCtx {
         LeafCtx { wrapped_at: i32::MIN, min_word: -1, wrap, size_px, lh_px, ..Default::default() }
     }
@@ -445,10 +454,10 @@ impl LeafCtx {
     /// into a glyph run.
     pub fn set_text(&mut self, ts: &mut crate::text::TextSys, pool: &mut GlyphPool, text: &str) {
         self.text.clear();
-        self.text.extend_from_slice(text.as_bytes());
         self.ascii = text.is_ascii();
         self.upem = ts.shaper.script.upem as f32;
         self.wrapped_at = i32::MIN;
+        self.nlines = 0;
         self.min_word = -1;
         self.run.gid.clear();
         self.run.x.clear();
@@ -464,6 +473,8 @@ impl LeafCtx {
             self.para = TextPara::default();
             self.fast = false;
             self.block = None;
+            // the slow path keeps its own copy of the bytes (the fast path's are the paragraph's)
+            self.text.extend_from_slice(text.as_bytes());
             ts.shape_run(text, self.size_px, &mut self.run);
             return;
         }
@@ -487,33 +498,34 @@ impl LeafCtx {
 
     /// Wrap at `max_units`; returns the line count (`starts` holds the first byte / glyph of each line).
     pub fn wrap_at(&mut self, max_units: i32) -> usize {
-        if self.wrapped_at == max_units && !self.starts.is_empty() {
-            return self.starts.len();
+        if self.wrapped_at == max_units && self.nlines > 0 {
+            return self.nlines;
         }
         self.wrapped_at = max_units;
         WRAP_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let empty = if self.fast { self.text.is_empty() } else { self.run.is_empty() };
+        let empty = if self.fast { self.para.text.is_empty() } else { self.run.is_empty() };
         if empty {
             self.starts.clear();
             self.starts.push(0);
             self.widest = 0;
+            self.nlines = 1;
             return 1;
         }
         if !self.wraps() {
             self.starts.clear();
             self.starts.push(0);
             self.widest = if self.fast { self.line_w } else { self.line_width() };
+            self.nlines = 1;
             return 1;
         }
         if self.fast {
             // the paragraph's wrap: cached per width, re-wrapped from the last edit until it converges
-            self.para.wrap(max_units);
-            let (p, starts) = (&self.para, &mut self.starts);
-            let w = p.wrap_cached(max_units).expect("just wrapped");
-            starts.clear();
-            starts.extend(w.starts.iter().map(|&s| if s == 0 { 0 } else { p.words[s as usize].ws }));
+            // (the line starts stay in the paragraph's wrap: `line_start` reads them, no copy)
+            let w = self.para.wrap(max_units);
             self.widest = w.widest;
-            return self.starts.len();
+            self.nlines = w.len();
+            self.starts.clear();
+            return self.nlines;
         }
         let n = self.run.len();
         let lines = wrap_greedy(&self.run, &self.text, max_units, &mut self.starts);
@@ -531,7 +543,20 @@ impl LeafCtx {
             widest = widest.max(right - self.run.x[a]);
         }
         self.widest = widest;
+        self.nlines = lines;
         lines
+    }
+
+    /// First byte of line `i` of the last wrap.
+    #[inline]
+    pub fn line_start(&self, i: usize) -> u32 {
+        if !self.starts.is_empty() {
+            return self.starts[i];
+        }
+        match self.para.wrap_cached(self.wrapped_at) {
+            Some(w) => self.para.line_start(w, i),
+            None => 0,
+        }
     }
 
     /// Width of the whole text on one line, trailing spaces excluded (font units).
@@ -999,9 +1024,9 @@ impl Rt {
         let ctx = self.lay.eng.ctx_mut(lid).expect("text leaf has a context");
         let k = ctx.k().max(1e-6);
         let lines = if ctx.wraps() { ctx.wrap_at(((w + 1e-3) / k).floor() as i32) } else { ctx.wrap_at(i32::MAX) };
-        let n = ctx.text.len() as u32;
+        let n = ctx.bytes().len() as u32;
         let block = ctx.block;
-        let spans: Vec<(u32, u32)> = (0..lines).map(|i| (ctx.starts[i], if i + 1 < lines { ctx.starts[i + 1] } else { n })).collect();
+        let spans: Vec<(u32, u32)> = (0..lines).map(|i| (ctx.line_start(i), if i + 1 < lines { ctx.line_start(i + 1) } else { n })).collect();
         let slow_text = if block.is_none() { Some(String::from_utf8_lossy(&ctx.text).into_owned()) } else { None };
         self.lay.prof.reset();
         let old_ink = self.texts[ti as usize].ink;

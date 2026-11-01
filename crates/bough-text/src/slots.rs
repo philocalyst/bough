@@ -204,21 +204,20 @@ unsafe fn neon_any(dense: &[u16], tt: &TokenTable, s: &[u8], x_base: i32, xp: *m
         let mut trig = vdupq_n_u16(0);
         let mut bad = vdupq_n_u8(0);
         let mut exotic = false;
-        // The last chunk reads from a zero-padded copy (the bytes after the text read as 0 = the pad token).
-        let mut tail: [u8; 64];
         let mut i = 0usize;
         while i < n {
             let rem = n - i;
-            let p = if rem >= 19 {
-                s.as_ptr().add(i)
+            // b0..b3: the chunk and the chunk shifted by 1, 2, 3 bytes. Inside the text: four overlapping loads.
+            // At its end: the bytes after the text read as zero (the pad token), built in registers from
+            // `load_partial` (no buffer, no read past the end).
+            let (b0, b1, b2, b3) = if rem >= 19 {
+                let p = s.as_ptr().add(i);
+                (vld1q_u8(p), vld1q_u8(p.add(1)), vld1q_u8(p.add(2)), vld1q_u8(p.add(3)))
             } else {
-                // (at most twice per text: the bytes after `rem` must read as zero)
-                tail = [0u8; 64];
-                core::ptr::copy_nonoverlapping(s.as_ptr().add(i), tail.as_mut_ptr(), rem);
-                tail.as_ptr()
+                let p = s.as_ptr().add(i);
+                let (lo, hi) = if rem > 16 { (vld1q_u8(p), crate::shape::load_partial(p.add(16), rem - 16)) } else { (crate::shape::load_partial(p, rem), vdupq_n_u8(0)) };
+                (lo, vextq_u8::<1>(lo, hi), vextq_u8::<2>(lo, hi), vextq_u8::<3>(lo, hi))
             };
-            let b0 = vld1q_u8(p);
-            let b1 = vld1q_u8(p.add(1));
             let valid = vcltq_u8(iota, vdupq_n_u8(if rem >= 16 { 16 } else { rem as u8 }));
             let (t0, idx0, idx1, tbl) = if vmaxvq_u8(vorrq_u8(b0, b1)) < 0x80 {
                 // ASCII lanes: glyph = byte, step = dense[a << 7 | b].
@@ -227,8 +226,6 @@ unsafe fn neon_any(dense: &[u16], tt: &TokenTable, s: &[u8], x_base: i32, xp: *m
                 (b0, i0, i1, dense)
             } else {
                 // Token lanes: decode each lane's token from its byte and the next one.
-                let b2 = vld1q_u8(p.add(2));
-                let b3 = vld1q_u8(p.add(3));
                 #[inline(always)]
                 unsafe fn tok(b: uint8x16_t, nx: uint8x16_t, bad: &mut uint8x16_t, valid: uint8x16_t) -> uint8x16_t {
                     unsafe {

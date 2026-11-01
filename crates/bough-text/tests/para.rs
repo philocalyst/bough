@@ -130,7 +130,7 @@ fn mid_paragraph_edits_rewrap_a_few_lines() {
     let mut p = Para::default();
     p.set(&mut pool, &fonts, &words.join(" "), &[]).unwrap();
     let mu = 100_000;
-    let lines = p.wrap(mu).starts.len();
+    let lines = p.wrap(mu).len();
     let before = p.stats;
     for k in 0..200 {
         let i = 100 + (k * 37) % 130;

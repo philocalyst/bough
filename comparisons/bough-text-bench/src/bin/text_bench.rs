@@ -60,7 +60,7 @@ fn units(width: Option<f32>, upem: f32) -> i32 {
 
 fn size(p: &mut Para, width: Option<f32>, upem: f32) -> (f32, f32) {
     let w = p.wrap(units(width, upem));
-    (w.widest as f32 * SIZE / upem, w.starts.len() as f32 * LINE)
+    (w.widest as f32 * SIZE / upem, w.len() as f32 * LINE)
 }
 
 fn main() {

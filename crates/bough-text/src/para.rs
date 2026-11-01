@@ -39,11 +39,22 @@ pub struct Word {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Wrap {
     pub max_units: i32,
-    /// Word index of each line's first word (line 0 starts at word 0).
-    pub starts: Vec<u32>,
-    /// Width of each line (font units, trailing spaces excluded).
-    pub widths: Vec<i32>,
+    /// Per line: the word index of its first word (line 0 starts at word 0) and its width (font units,
+    /// trailing spaces excluded). One vector, one allocation per cached width.
+    pub lines: Vec<(u32, i32)>,
     pub widest: i32,
+}
+
+impl Wrap {
+    pub fn len(&self) -> usize {
+        self.lines.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+    pub fn starts(&self) -> impl Iterator<Item = u32> + '_ {
+        self.lines.iter().map(|l| l.0)
+    }
 }
 
 /// A font run: bytes from `start` to the next run's start are shaped with `font`.
@@ -79,6 +90,8 @@ pub struct Para {
     /// (`u32::MAX`: clean).
     pending: Option<Pending>,
     pub stats: ParaStats,
+    /// Rewrap scratch (the old line table), reused: no allocation per edit.
+    old_l: Vec<(u32, i32)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -108,13 +121,14 @@ impl Clone for Para {
             wraps: self.wraps.clone(),
             pending: self.pending,
             stats: self.stats,
+            old_l: Vec::new(),
         }
     }
 }
 
 impl Default for Para {
     fn default() -> Self {
-        Para { text: Vec::new(), runs: Vec::new(), base: u32::MAX, cap: 0, width: 0, exotic: false, words: Vec::new(), wraps: Default::default(), pending: None, stats: ParaStats::default() }
+        Para { text: Vec::new(), runs: Vec::new(), base: u32::MAX, cap: 0, width: 0, exotic: false, words: Vec::new(), wraps: Default::default(), pending: None, stats: ParaStats::default(), old_l: Vec::new() }
     }
 }
 
@@ -144,9 +158,14 @@ impl Para {
         self.cap = cap;
     }
 
-    /// The font run of byte `i` (index into `runs`).
+    /// The font run of byte `i` (index into `runs`; no runs = one run in font 0, no allocation).
     fn run_of(&self, i: u32) -> usize {
         self.runs.partition_point(|r| r.start <= i).saturating_sub(1)
+    }
+
+    #[inline]
+    fn font(&self, k: usize) -> usize {
+        self.runs.get(k).map_or(0, |r| r.font as usize)
     }
 
     fn run_end(&self, k: usize) -> u32 {
@@ -160,7 +179,7 @@ impl Para {
         while i < e {
             let k = self.run_of(i);
             let end = self.run_end(k).min(e);
-            let sh = fonts[self.runs[k].font as usize];
+            let sh = fonts[self.font(k)];
             let s = &self.text[i as usize..end as usize];
             // SAFETY: the block holds `cap >= len + 16` slots (`ensure`), so a 16-lane store past `end` stays in
             // it; `s` is UTF-8 cut at ASCII bytes (spaces, run starts at word boundaries).
@@ -237,8 +256,10 @@ impl Para {
         self.text.clear();
         self.text.extend_from_slice(text.as_bytes());
         self.runs.clear();
-        self.runs.extend_from_slice(runs);
-        if self.runs.is_empty() || self.runs[0].start != 0 {
+        if !(runs.len() == 1 && runs[0] == (Run { start: 0, font: 0 })) {
+            self.runs.extend_from_slice(runs);
+        }
+        if !self.runs.is_empty() && self.runs[0].start != 0 {
             self.runs.insert(0, Run { start: 0, font: 0 });
         }
         self.ensure(pool, self.text.len() + 16);
@@ -249,7 +270,7 @@ impl Para {
         self.words_of(pool, 0, n, &mut words);
         self.words = words;
         for w in &mut self.wraps {
-            w.starts.clear();
+            w.lines.clear();
             w.max_units = i32::MIN;
         }
         self.pending = None;
@@ -266,7 +287,7 @@ impl Para {
         let b = self.base as usize;
         let k = self.run_of(a - 1);
         let same = (a as usize) < self.text.len() && self.run_of(a) == k;
-        let tt = fonts[self.runs[k].font as usize].script.tokens.as_ref().expect("token model");
+        let tt = fonts[self.font(k)].script.tokens.as_ref().expect("token model");
         let t = pool.ent[b + a as usize - 1] as usize;
         let u = if same { t_first as usize } else { 0 };
         pool.x[b + a as usize - 1].wrapping_add(tt.step[t << 8 | u] as i32)
@@ -295,10 +316,17 @@ impl Para {
     /// Append `more` in font `font` (a stream). Shapes only the new bytes plus the word they continue.
     pub fn append(&mut self, pool: &mut GlyphPool, fonts: Fonts, more: &str, font: u8) -> Result<(), Refusal> {
         let old_n = self.text.len() as u32;
-        if self.runs.is_empty() {
-            self.runs.push(Run { start: 0, font });
-        } else if self.runs.last().unwrap().font != font {
-            self.runs.push(Run { start: old_n, font });
+        let last = self.runs.last().map_or(0, |r| r.font);
+        if last != font {
+            if self.runs.is_empty() {
+                self.runs.push(Run { start: 0, font: 0 });
+            }
+            if old_n == 0 {
+                self.runs.clear();
+                self.runs.push(Run { start: 0, font });
+            } else {
+                self.runs.push(Run { start: old_n, font });
+            }
         }
         self.text.extend_from_slice(more.as_bytes());
         self.ensure(pool, self.text.len() + 16);
@@ -421,22 +449,21 @@ impl Para {
         if let Some(p) = self.pending.take() {
             // bring both cached wraps up to date (each converges on its own)
             for k in 0..2 {
-                if self.wraps[k].max_units != i32::MIN && !self.wraps[k].starts.is_empty() {
+                if self.wraps[k].max_units != i32::MIN && !self.wraps[k].lines.is_empty() {
                     let mut w = std::mem::take(&mut self.wraps[k]);
                     self.rewrap(&mut w, p);
                     self.wraps[k] = w;
                 }
             }
         }
-        let k = match self.wraps.iter().position(|w| w.max_units == max_units && !w.starts.is_empty()) {
+        let k = match self.wraps.iter().position(|w| w.max_units == max_units && !w.lines.is_empty()) {
             Some(k) => k,
             None => {
                 // evict the older entry (slot 1 moves to 0)
                 self.wraps.swap(0, 1);
                 let mut w = std::mem::take(&mut self.wraps[1]);
                 w.max_units = max_units;
-                w.starts.clear();
-                w.widths.clear();
+                w.lines.clear();
                 self.greedy(&mut w, 0, 0);
                 self.wraps[1] = w;
                 1
@@ -450,61 +477,60 @@ impl Para {
         if self.pending.is_some() {
             return None;
         }
-        self.wraps.iter().find(|w| w.max_units == max_units && !w.starts.is_empty())
+        self.wraps.iter().find(|w| w.max_units == max_units && !w.lines.is_empty())
     }
 
     /// Full greedy wrap from line `line` (whose first word is `w0`), truncating what follows.
     fn greedy(&mut self, w: &mut Wrap, line: usize, w0: u32) -> usize {
-        w.starts.truncate(line);
-        w.widths.truncate(line);
+        w.lines.truncate(line);
         let words = &self.words;
         if words.is_empty() {
-            w.starts.push(0);
-            w.widths.push(0);
+            w.lines.push((0, 0));
             w.widest = 0;
             return 1;
         }
-        w.starts.push(w0);
         // line 0 is measured from the paragraph's first pen (leading spaces included), later lines from their
         // first word
         let mut x0 = if line == 0 { 0 } else { words[w0 as usize].x0 };
         let mut last = words[w0 as usize].x1;
+        let mut start = w0;
+        let mut widest = w.lines.iter().map(|l| l.1).max().unwrap_or(i32::MIN);
         for (i, wd) in words.iter().enumerate().skip(w0 as usize + 1) {
             if wd.x1 - x0 > w.max_units {
-                w.widths.push(last - x0);
-                w.starts.push(i as u32);
+                w.lines.push((start, last - x0));
+                widest = widest.max(last - x0);
+                start = i as u32;
                 x0 = wd.x0;
             }
             last = wd.x1;
         }
-        w.widths.push(last - x0);
+        w.lines.push((start, last - x0));
+        w.widest = widest.max(last - x0);
         self.stats.words_wrapped += (words.len() - w0 as usize) as u64;
-        w.widest = w.widths.iter().copied().max().unwrap_or(0);
-        w.starts.len()
+        w.lines.len()
     }
 
     /// Re-wrap `w` after the change `p`: from the line before the one holding word `p.from`, until a line start
     /// past the change equals an old start shifted by `p.dw`.
     fn rewrap(&mut self, w: &mut Wrap, p: Pending) {
-        let words = &self.words;
-        if words.is_empty() || w.starts.is_empty() {
-            let mu = w.max_units;
-            w.starts.clear();
-            w.max_units = mu;
+        if self.words.is_empty() || w.lines.is_empty() {
+            w.lines.clear();
             self.greedy(w, 0, 0);
             return;
         }
         // line holding the first changed word (old numbering == new numbering before `from`)
-        let l = w.starts.partition_point(|&s| s <= p.from).saturating_sub(1);
+        let l = w.lines.partition_point(|&(s, _)| s <= p.from).saturating_sub(1);
         let line = l.saturating_sub(1);
-        let w0 = w.starts[line];
-        let old_starts = std::mem::take(&mut w.starts);
-        let old_widths = std::mem::take(&mut w.widths);
-        w.starts.extend_from_slice(&old_starts[..line]);
-        w.widths.extend_from_slice(&old_widths[..line]);
-        w.starts.push(w0);
+        let w0 = w.lines[line].0;
+        // the old table moves to the scratch vector; the wrap keeps its own buffer (truncated in place)
+        let mut old = std::mem::take(&mut self.old_l);
+        old.clear();
+        old.extend_from_slice(&w.lines);
+        w.lines.truncate(line);
+        let words = &self.words;
         let mut x0 = if line == 0 { 0 } else { words[w0 as usize].x0 };
         let mut last = words[w0 as usize].x1;
+        let mut start = w0;
         let mut i = w0 as usize + 1;
         // old line index to try for convergence
         let mut k = line + 1;
@@ -512,39 +538,38 @@ impl Para {
         while i < words.len() {
             let wd = words[i];
             if wd.x1 - x0 > w.max_units {
-                w.widths.push(last - x0);
+                w.lines.push((start, last - x0));
                 // converged? a new line start past the change that equals an old start (shifted)
                 if i as u32 >= p.to_new {
-                    let old = i as i64 - p.dw as i64;
-                    while k < old_starts.len() && (old_starts[k] as i64) < old {
+                    let o = i as i64 - p.dw as i64;
+                    while k < old.len() && (old[k].0 as i64) < o {
                         k += 1;
                     }
-                    if k < old_starts.len() && old_starts[k] as i64 == old {
-                        for j in k..old_starts.len() {
-                            w.starts.push((old_starts[j] as i64 + p.dw as i64) as u32);
-                        }
-                        w.widths.extend_from_slice(&old_widths[k..]);
-                        w.widest = w.widths.iter().copied().max().unwrap_or(0);
+                    if k < old.len() && old[k].0 as i64 == o {
+                        w.lines.extend(old[k..].iter().map(|&(s, wd)| ((s as i64 + p.dw as i64) as u32, wd)));
+                        w.widest = w.lines.iter().map(|l| l.1).max().unwrap_or(0);
                         self.stats.words_wrapped += scanned;
                         self.stats.converged += 1;
+                        self.old_l = old;
                         return;
                     }
                 }
-                w.starts.push(i as u32);
+                start = i as u32;
                 x0 = wd.x0;
             }
             last = wd.x1;
             i += 1;
             scanned += 1;
         }
-        w.widths.push(last - x0);
-        w.widest = w.widths.iter().copied().max().unwrap_or(0);
+        w.lines.push((start, last - x0));
+        w.widest = w.lines.iter().map(|l| l.1).max().unwrap_or(0);
         self.stats.words_wrapped += scanned;
+        self.old_l = old;
     }
 
     /// Byte offset where line `i` of `wrap` starts.
     pub fn line_start(&self, wrap: &Wrap, i: usize) -> u32 {
-        if self.words.is_empty() { 0 } else if i == 0 { 0 } else { self.words[wrap.starts[i] as usize].ws }
+        if self.words.is_empty() || i == 0 { 0 } else { self.words[wrap.lines[i].0 as usize].ws }
     }
 }
 

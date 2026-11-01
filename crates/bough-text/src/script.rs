@@ -77,6 +77,8 @@ impl CpSet {
 #[derive(Default, Debug, Clone)]
 pub struct BuildReport {
     pub covered: usize,
+    /// Pairs whose table value differs from the probe (only counted under `PAIR_CHECK`; must be 0).
+    pub pair_table_mismatches: usize,
     pub single_triggers: Vec<u8>,
     pub pair_triggers: usize,
     pub pair_triggers_example: Vec<(u8, u8)>,
@@ -760,6 +762,12 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// Release-mode gate of the pair table (text round 3, owner's review of `pairfast`): when set, `build` also
+/// probes every covered pair one lookup walk at a time and counts differences into
+/// `BuildReport::pair_table_mismatches` (debug builds assert them instead). Tests set it for every font they load.
+#[doc(hidden)]
+pub static PAIR_CHECK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Latin-script letters inside the covered range (Unicode `Script=Latin`).
 pub fn is_latin_letter(cp: u8) -> bool {
     matches!(cp, b'A'..=b'Z' | b'a'..=b'z' | 0xAA | 0xBA | 0xC0..=0xD6 | 0xD8..=0xF6 | 0xF8..=0xFF)
@@ -1041,6 +1049,9 @@ impl SimpleScript {
                 let kl = tl.get(ia, ic);
                 let kd = td.get(ia, ic);
                 debug_assert_eq!((kl, kd), (b.pair_value(&latn_l, a, c), b.pair_value(&dflt_l, a, c)), "pair table != probe for {a} {c}");
+                if PAIR_CHECK.load(std::sync::atomic::Ordering::Relaxed) && (kl, kd) != (b.pair_value(&latn_l, a, c), b.pair_value(&dflt_l, a, c)) {
+                    b.rep.pair_table_mismatches += 1;
+                }
                 let common = !is_latin_letter(a) && !is_latin_letter(c);
                 let v = if common {
                     match (kl, kd) {

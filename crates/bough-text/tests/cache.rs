@@ -1,5 +1,6 @@
 //! Round 3: the table cache returns exactly the table `build` derives (every field the shaper reads), for each
-//! font the benchmarks load; a corrupt file is rebuilt.
+//! font the benchmarks load; a corrupt file is rebuilt. And `build`'s GPOS pair table (`script/pairfast.rs`)
+//! equals the one-pair probe for every covered pair of every one of those fonts (release builds included).
 use bough_text::SimpleScript;
 
 #[test]
@@ -13,8 +14,13 @@ fn cached_table_equals_the_built_one() {
             fonts.push(b);
         }
     }
+    if let Ok(b) = std::fs::read("/System/Library/Fonts/SFNS.ttf") {
+        fonts.push(b);
+    }
+    bough_text::script::PAIR_CHECK.store(true, std::sync::atomic::Ordering::Relaxed);
     for font in &fonts {
         let built = SimpleScript::build(font, 0).unwrap();
+        assert_eq!(built.report.pair_table_mismatches, 0, "pairfast table != the one-pair probe");
         for round in 0..3 {
             if round == 2 {
                 // corrupt every cached file: it must be rebuilt, not trusted
