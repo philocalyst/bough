@@ -67,6 +67,7 @@ pub struct HalGpu {
     pub armed_upto: u64,
     pub released: u64,
     pub startup: Startup,
+    pub resid: Retained<ProtocolObject<dyn MTLResidencySet>>,
 }
 
 fn make_iosurface(w: usize, h: usize) -> CFRetained<IOSurfaceRef> {
@@ -120,15 +121,14 @@ impl HalGpu {
             },
             count: None,
         };
-        let mut e0 = vec![wgt::BindGroupLayoutEntry {
+        let e0 = vec![wgt::BindGroupLayoutEntry {
             binding: 0,
             visibility: wgt::ShaderStages::COMPUTE,
             ty: wgt::BindingType::Buffer { ty: wgt::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
             count: None,
         }];
-        e0.extend((0..4).map(|i| storage(1 + i, true)));
-        e0.extend((0..4).map(|i| storage(5 + i, false)));
-        e0.push(storage(9, false));
+        // textures are not bound: the kernels read them from the bind table in the region (build.rs `bindless`)
+        let _ = storage;
         let e1 = [wgt::BindGroupLayoutEntry {
             binding: 0,
             visibility: wgt::ShaderStages::COMPUTE,
@@ -183,6 +183,29 @@ impl HalGpu {
             (device.create_fence().unwrap(), device.create_command_encoder(&hal::CommandEncoderDescriptor { label: None, queue: &queue }).unwrap())
         };
         let ev = raw_device.newSharedEvent().expect("shared event");
+        // the bind table (resource ids, region offset 128) and the residency set that makes them reachable
+        let rid = |t: &ProtocolObject<dyn MTLTexture>| -> u64 {
+            // SAFETY: MTLResourceID is a 64-bit handle.
+            unsafe { std::mem::transmute::<MTLResourceID, u64>(t.gpuResourceID()) }
+        };
+        let n = surfs.len();
+        let mut table = [0u64; 11];
+        for i in 0..4 {
+            table[i] = rid(&surfs[i % n].raw);
+            table[7 + i] = table[i];
+        }
+        table[4] = table[0];
+        // SAFETY: the header reserves 256 bytes; the table is 88 bytes at 128 (INTERFACE.md `FBind`).
+        unsafe { (region_ptr.add(128) as *mut [u64; 11]).write(table) };
+        let d = MTLResidencySetDescriptor::new();
+        let set = raw_device.newResidencySetWithDescriptor_error(&d).expect("residency set");
+        set.addAllocation(ProtocolObject::from_ref(&*region_raw));
+        for s in &surfs {
+            set.addAllocation(ProtocolObject::from_ref(&*s.raw));
+        }
+        set.commit();
+        set.requestResidency();
+        queue.as_raw().addResidencySet(&set);
         st.total_us = us(t_all);
         HalGpu {
             device,
@@ -209,6 +232,7 @@ impl HalGpu {
             armed_upto: 0,
             released: 0,
             startup: st,
+            resid: set,
         }
     }
 
@@ -246,20 +270,10 @@ impl HalGpu {
     }
 
     fn bind0(device: &hal::metal::Device, bgl0: &hal::metal::BindGroupLayout, region: &hal::metal::Buffer, surfs: &[Surface]) -> hal::metal::BindGroup {
-        let n = surfs.len();
+        let _ = surfs;
         let bb = [hal::BufferBinding::new_unchecked(region, 0, None)];
-        let mut tb = Vec::new();
-        for i in 0..4 {
-            tb.push(hal::TextureBinding { view: &surfs[i % n].write_view, usage: wgt::TextureUses::STORAGE_WRITE_ONLY });
-        }
-        for i in 0..4 {
-            tb.push(hal::TextureBinding { view: &surfs[i % n].read_view, usage: wgt::TextureUses::RESOURCE });
-        }
-        tb.push(hal::TextureBinding { view: &surfs[0].read_view, usage: wgt::TextureUses::RESOURCE });
-        let mut entries = vec![hal::BindGroupEntry { binding: 0, resource_index: 0, count: 1 }];
-        for i in 0..9 {
-            entries.push(hal::BindGroupEntry { binding: 1 + i, resource_index: i, count: 1 });
-        }
+        let tb: Vec<hal::TextureBinding<'_, hal::metal::TextureView>> = Vec::new();
+        let entries = vec![hal::BindGroupEntry { binding: 0, resource_index: 0, count: 1 }];
         // SAFETY: the bind group references live objects matching `bgl0`.
         unsafe {
             device

@@ -24,6 +24,59 @@ fn binding_map() -> msl::BindingMap {
     m
 }
 
+/// The bind table every kernel reads at region offset 128 (`FBind` of INTERFACE.md, byte for byte): Metal 3
+/// resource ids of the 4 surfaces (write), the atlas, the bins and counts addresses, the 4 surfaces (read).
+const BIND_TABLE: &str = "struct BoughBind {
+    metal::texture2d<float, metal::access::write> t[4];
+    metal::texture2d<float, metal::access::sample> atlas;
+    device metal::uint4* bins;
+    device metal::atomic_uint* counts;
+    metal::texture2d<float, metal::access::sample> r[4];
+};
+";
+
+/// Mechanical bindless transform of naga's MSL (WGSL cannot name a texture held in a buffer): every texture
+/// parameter of an entry point (`T0..T3`, `R0..R3`, `ATLAS`) is dropped from the signature and read from the bind
+/// table in the region instead. So an encoder binds only the region and the slot: a pre-armed frame names no
+/// surface (no per-frame `setTexture`, and IOSurfaceIsInUse reports only the compositor), as on the direct path.
+fn bindless(msl: &str) -> String {
+    let mut out = String::new();
+    let mut fetch = String::new();
+    let mut in_sig = false;
+    for line in msl.lines() {
+        if line.starts_with("kernel void ") {
+            in_sig = true;
+            fetch.clear();
+        }
+        if in_sig && line.starts_with(", metal::texture2d<") && line.contains("[[texture(") {
+            let ty = &line[2..line.find('>').unwrap() + 1];
+            let name = line[line.find('>').unwrap() + 1..].split_whitespace().next().unwrap();
+            let field = match name.trim_end_matches('_') {
+                n @ ("T0" | "T1" | "T2" | "T3") => format!("t[{}]", &n[1..]),
+                n @ ("R0" | "R1" | "R2" | "R3") => format!("r[{}]", &n[1..]),
+                "ATLAS" => "atlas".to_string(),
+                n => panic!("texture parameter {n} has no bind-table slot"),
+            };
+            fetch.push_str(&format!("    {ty} {name} = __fb.{field};\n"));
+            continue;
+        }
+        if in_sig && line == ") {" {
+            in_sig = false;
+            out.push_str(line);
+            out.push('\n');
+            out.push_str("    const device BoughBind& __fb = *reinterpret_cast<const device BoughBind*>(reinterpret_cast<const device char*>(&POOL) + 128);\n");
+            out.push_str(&fetch);
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+        if line.starts_with("#include <simd/simd.h>") {
+            out.push_str(BIND_TABLE);
+        }
+    }
+    out
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=src/shaders");
     let out = std::env::var("OUT_DIR").unwrap();
@@ -48,9 +101,8 @@ fn main() {
             ..Default::default()
         };
         let (text, _) = msl::write_string(&module, &info, &options, &msl::PipelineOptions::default()).unwrap_or_else(|e| panic!("{}: {e:?}", src.name));
-        // each module is its own MSL translation unit: wrap it in a namespace so helpers never collide
-        msl_all.push_str(&format!("// ---- module {} (wgsl-rs -> naga)\n", src.name));
-        msl_all.push_str(&text);
+        msl_all.push_str(&format!("// ---- module {} (wgsl-rs -> naga -> bindless transform)\n", src.name));
+        msl_all.push_str(&bindless(&text));
         let _ = i;
     }
     let metal = format!("{out}/bough_gpu.metal");
