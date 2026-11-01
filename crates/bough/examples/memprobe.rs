@@ -63,6 +63,21 @@ fn main() {
         }
         return;
     }
+    if stage == 7 {
+        // blit-only context
+        let buf = device.newBufferWithLength_options(w * 4 * 16, MTLResourceOptions::StorageModeShared).unwrap();
+        let cmd = queue.commandBuffer().unwrap();
+        let enc = cmd.blitCommandEncoder().unwrap();
+        unsafe {
+            enc.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
+                &buf, 0, w * 4, w * 4 * 16, MTLSize { width: w, height: 16, depth: 1 }, &tex, 0, 0, MTLOrigin { x: 0, y: 0, z: 0 });
+        }
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+        println!("blit pass {:.1}", mb());
+        return;
+    }
     let pd = MTLRenderPassDescriptor::renderPassDescriptor();
     let c0 = unsafe { pd.colorAttachments().objectAtIndexedSubscript(0) };
     c0.setTexture(Some(&tex));

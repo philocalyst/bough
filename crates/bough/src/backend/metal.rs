@@ -54,6 +54,8 @@ pub struct Metal {
     pub h: usize,
     /// Publish surfaces to `layer` from the completion handler (off for headless runs).
     pub publish: bool,
+    /// `BOUGH_PUBLISH=async`: publish from the completion handler instead of after waiting (A/B switch).
+    pub async_publish: bool,
     pub last_idx: usize,
     scratch: Option<Surface>,
     pub gpu_frames: u64,
@@ -195,6 +197,7 @@ impl Metal {
             w,
             h,
             publish: false,
+            async_publish: std::env::var("BOUGH_PUBLISH").is_ok_and(|v| v == "async"),
             last_idx: 0,
             scratch: None,
             gpu_frames: 0,
@@ -317,15 +320,28 @@ impl Metal {
             enc.drawPrimitives_vertexStart_vertexCount_instanceCount_baseInstance(MTLPrimitiveType::TriangleStrip, 0, 4, list_len, 0);
             enc.endEncoding();
         }
-        if let (true, Some(i)) = (self.publish, publish_idx) {
-            let layer = self.layer.clone();
-            let io = self.ring[i].io.clone();
-            let blk = RcBlock::new(move |_c: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
-                Metal::publish_surface(&layer, &io);
-            });
-            unsafe { cmd.addCompletedHandler(RcBlock::as_ptr(&blk)) };
+        match (self.publish, publish_idx) {
+            (true, Some(i)) if self.async_publish => {
+                // publish from the completion handler on Metal's thread (its own CA transaction)
+                let layer = self.layer.clone();
+                let io = self.ring[i].io.clone();
+                let blk = RcBlock::new(move |_c: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+                    Metal::publish_surface(&layer, &io);
+                });
+                unsafe { cmd.addCompletedHandler(RcBlock::as_ptr(&blk)) };
+                cmd.commit();
+            }
+            (true, Some(i)) => {
+                // publish on this (the main) thread once the GPU is done with the frame: the layer update
+                // joins the run loop turn's one implicit CA transaction (no thread hop, no block, no
+                // transaction of its own); the next turn's `sync` finds the buffer already complete
+                cmd.commit();
+                cmd.waitUntilCompleted();
+                CATransaction::setDisableActions(true);
+                unsafe { self.layer.setContents(Some(&*(&*self.ring[i].io as *const IOSurfaceRef as *const AnyObject))) };
+            }
+            _ => cmd.commit(),
         }
-        cmd.commit();
         self.last = Some(cmd);
         self.gpu_frames += 1;
     }

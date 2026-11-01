@@ -70,7 +70,7 @@ pub fn run_window<V: View>(
         let mut app = App::new(view, make_cfg(scale), true);
         {
             let g = app.gpu.as_mut().unwrap();
-            g.publish = true;
+            g.publish = std::env::var_os("BOUGH_NOPUBLISH").is_none();
             host.attach(&g.layer);
         }
         app.frame();
@@ -103,6 +103,15 @@ pub fn run_window<V: View>(
                 if std::env::var_os("BOUGH_STATS").is_some() {
                     eprintln!("surfaces: {:?}", app.borrow().surf_stats);
                 }
+                if std::env::var_os("BOUGH_CHECK").is_some() {
+                    // the surface the real window last drew into vs a from-scratch full redraw of the retained state
+                    let mut a = app.borrow_mut();
+                    let px = a.presented_pixels();
+                    let r = a.reference_pixels();
+                    let n = px.iter().zip(&r).filter(|(x, y)| x != y).count();
+                    eprintln!("window: presented vs full redraw: {n} differing bytes after {} frames; surfaces {:?}", a.frames, a.surf_stats);
+                }
+
                 if let Some(p) = std::env::var_os("BOUGH_DUMP") {
                     // the last presented surface (what the window shows), raw BGRA
                     let px = app.borrow_mut().presented_pixels();
@@ -144,7 +153,7 @@ pub fn run_window_linked<V: View>(
             let mut app = App::new(view, make_cfg(scale), true);
             {
                 let g = app.gpu.as_mut().unwrap();
-                g.publish = true;
+                g.publish = std::env::var_os("BOUGH_NOPUBLISH").is_none();
                 host.attach(&g.layer);
             }
             app.frame();
@@ -160,6 +169,15 @@ pub fn run_window_linked<V: View>(
                     if std::env::var_os("BOUGH_STATS").is_some() {
                         eprintln!("surfaces: {:?}", stats_app.borrow().surf_stats);
                     }
+                    if std::env::var_os("BOUGH_CHECK").is_some() {
+                        // the surface the real window last drew into vs a from-scratch full redraw of the retained state
+                        let mut a = stats_app.borrow_mut();
+                        let px = a.presented_pixels();
+                        let r = a.reference_pixels();
+                        let n = px.iter().zip(&r).filter(|(x, y)| x != y).count();
+                        eprintln!("window: presented vs full redraw: {n} differing bytes after {} frames; surfaces {:?}", a.frames, a.surf_stats);
+                    }
+
                     host.close();
                     std::process::exit(0);
                 });

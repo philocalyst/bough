@@ -76,6 +76,8 @@ pub struct App<V: View> {
     pub surf_stats: SurfStats,
     /// `frames` value when each ring slot was last drawn into.
     last_use: Vec<u64>,
+    /// Running average (us) of how long the compositor held every surface (see `pick_surface`).
+    wait_us: f32,
     trim_mark: u64,
 }
 
@@ -86,6 +88,8 @@ pub struct SurfStats {
     pub uses: [u64; 8],
     /// Frames that found every surface held by the compositor and waited for one.
     pub waits: u64,
+    /// Polls of the compositor's hold on the ring (one per 200 us of waiting, plus the first check of each frame).
+    pub polls: u64,
     /// ... and gave up waiting (drew into the least recently drawn surface anyway).
     pub forced: u64,
     /// Surfaces found purged (volatile memory reclaimed) when made resident again.
@@ -142,6 +146,7 @@ impl<V: View> App<V> {
             repaired_px: 0,
             surf_stats: SurfStats::default(),
             last_use: vec![0; ring],
+            wait_us: 1500.0,
             trim_mark: 0,
         }
     }
@@ -246,23 +251,49 @@ impl<V: View> App<V> {
 
     /// Choose the ring surface for the next frame. Windowed (surfaces are published to the layer): the
     /// lowest-indexed surface the compositor does not hold, among the first two; a third (fourth) slot
-    /// is only written if the compositor has held the others for 8 (16) ms. Slots contention never
+    /// is only written if the compositor has held the others for 10 (20) ms. Slots contention never
     /// requires are never written, so they cost nothing (an IOSurface is unbacked until first written):
-    /// the 4-slot ring costs what the 2 (rarely 3) in use cost. If nothing frees up in 16 ms, take the
+    /// the 4-slot ring costs what the 2 (rarely 3) in use cost. If nothing frees up in 24 ms, take the
     /// surface drawn longest ago. Offscreen: round-robin over the whole ring (nothing holds a surface).
     fn pick_surface(&mut self) -> usize {
         let n = self.ages.len();
         #[cfg(target_os = "macos")]
         if let Some(g) = self.gpu.as_ref().filter(|g| g.publish) {
-            for spin in 0..80 {
-                let allowed = (2 + spin / 40).min(n);
-                if let Some(c) = (0..allowed).find(|&c| !g.is_in_use(c)) {
-                    if spin > 0 {
-                        self.surf_stats.waits += 1;
-                    }
+            use std::time::{Duration, Instant};
+            // Poll the slots in order of how long ago they were drawn (the oldest is the one the compositor
+            // releases next, so in steady state one `is_in_use` call per poll), lowest index first among ties.
+            let first_free = |s: &Self, allowed: usize| -> Option<usize> {
+                let mut order = [0usize; 8];
+                let m = allowed.min(8);
+                for (k, o) in order.iter_mut().enumerate().take(m) {
+                    *o = k;
+                }
+                order[..m].sort_by_key(|&c| s.last_use[c]);
+                // a never-drawn slot has last_use 0 like slot 0 of a fresh ring: lowest index wins the tie
+                order[..m].iter().copied().find(|&c| !g.is_in_use(c))
+            };
+            self.surf_stats.polls += 1;
+            if let Some(c) = first_free(self, 2.min(n)) {
+                return c;
+            }
+            self.surf_stats.waits += 1;
+            // Held by the compositor: it lets go at its next refresh, about `wait_us` from now (a running
+            // average of past waits). Sleep most of that in one go, then poll finely, so a 120 Hz window
+            // does not spin on IOSurfaceIsInUse. A 3rd (4th) slot is only written after 10 (20) ms; at 24 ms the surface drawn longest ago is taken.
+            let t0 = Instant::now();
+            std::thread::sleep(Duration::from_micros((self.wait_us * 0.7) as u64));
+            loop {
+                let waited = t0.elapsed().as_micros() as u64;
+                let allowed = (2 + (waited / 10_000) as usize).min(n);
+                self.surf_stats.polls += 1;
+                if let Some(c) = first_free(self, allowed) {
+                    self.wait_us = 0.8 * self.wait_us + 0.2 * (waited as f32).min(8000.0);
                     return c;
                 }
-                std::thread::sleep(std::time::Duration::from_micros(200));
+                if waited > 24_000 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_micros(150));
             }
             self.surf_stats.forced += 1;
             return (0..n).min_by_key(|&c| self.ages[c].map_or(0, |e| e + 1)).unwrap();
