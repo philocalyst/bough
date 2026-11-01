@@ -406,9 +406,22 @@ impl<V: View> App<V> {
         }
     }
 
-    /// Damage -> surface -> tile list -> GPU repair -> present. Returns false (and does nothing at all) if
-    /// the epoch has no damage: idle is zero work.
+    /// Damage -> surface -> tile list -> GPU repair -> present, for an input-driven turn: the frame reaches
+    /// the screen in the same refresh (the publisher thread commits it once the GPU is done). Returns false
+    /// (and does nothing at all) if the epoch has no damage: idle is zero work.
     pub fn frame(&mut self) -> bool {
+        self.frame_as::<false>()
+    }
+
+    /// `frame` for a turn a clock drives (a timer, the display link: animations, streams): no input waits
+    /// on it, so it is published at the next turn on the calling thread for free instead of by the
+    /// publisher thread (latency vs throughput: +1 refresh, no thread wake, no completion wait).
+    pub fn frame_paced(&mut self) -> bool {
+        self.frame_as::<true>()
+    }
+
+    /// The publication policy is chosen by the turn's source at compile time (`PACED`), never per frame.
+    pub fn frame_as<const PACED: bool>(&mut self) -> bool {
         let core = !self.rt.bough.plane(0).is_clear();
         let paint = !self.rt.paint.plane(0).is_clear();
         if !core && !paint {
@@ -429,13 +442,13 @@ impl<V: View> App<V> {
                 self.surf_stats.held += 1;
                 #[cfg(target_os = "macos")]
                 if let Some(g) = self.gpu.as_mut() {
-                    g.show_held(i);
+                    g.show_held::<PACED>(i);
                 }
                 self.held[i] = Some(epoch);
                 self.shown = Some(i);
                 self.last_surface = i;
             }
-            Pick::Draw(i) => self.draw(i, epoch),
+            Pick::Draw(i) => self.draw::<PACED>(i, epoch),
         }
         self.prof.mark(PH_PRESENT);
         self.rt.bough.next_epoch();
@@ -445,7 +458,7 @@ impl<V: View> App<V> {
         true
     }
 
-    fn draw(&mut self, i: usize, epoch: u32) {
+    fn draw<const PACED: bool>(&mut self, i: usize, epoch: u32) {
         let mut purged = false;
         #[cfg(target_os = "macos")]
         if let Some(g) = self.gpu.as_mut() {
@@ -474,7 +487,7 @@ impl<V: View> App<V> {
             if g.sync_atlas(a.width, a.height, &a.pixels, a.dirty_bytes != 0) {
                 a.dirty_bytes = 0;
             }
-            self.repaired_tiles = g.draw(i, &self.rows, full, n_dir);
+            self.repaired_tiles = g.draw::<PACED>(i, &self.rows, full, n_dir);
             drawn = true;
         }
         if !drawn {
