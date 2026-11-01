@@ -1,5 +1,7 @@
 # bough-text: results
 
+Three parts: **Part III** (round 3, first below), iteration 2, iteration 1.
+
 Two iterations. **Iteration 2** (this section) restructures the whole text update path, value change -> shaped ->
 GPU-visible instances -> damage, following `research/04-reformulation-method.md`. **Iteration 1** (the Sonnet
 prototype: the table shaper, its exactness gate, the 48-byte instance writer) is kept unchanged below as the
@@ -15,6 +17,167 @@ agents kept the load average at 45-65 throughout, so ns are indicative only.
     cargo run --release --example gpu_shape       # Attempt 3 (Metal compute, readback, cost)
     cargo run --release --example explore         # position classes, ligature kerning facts
     cargo run --release --example bench           # iteration 1's tables (cosmic-text, rustybuzz)
+
+# Part III: round 3 (branch `text3`)
+
+Round 3 closes the text gaps of STATUS.md §5.3 and ports zgx's and zgui's text workloads. Same machine (M3 Pro,
+macOS 15.7), `nightly-2026-10-17`, load average 60-115 from other agents throughout: **instructions are the
+reliable column**, times are indicative. Every number below is from `bench/results/text3/` or the commands given.
+
+```
+export RUSTC_WRAPPER= PATH=~/.local/share/cargo/bin:$PATH CARGO_TARGET_DIR=/Users/mileswirht/projects/bough/target/text3
+export ZGX_FONT_FILE=/Users/mileswirht/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf
+cargo test --release -p bough-text -p bough-text-bench -p bough-heavy      # the gates below
+cargo build --profile dist -p bough-text-bench -p bough-heavy -p bough-scenes -p bough-vlist
+bench/zgx/build_text.sh                       # zgx 06debe9d's text examples (release) + bough's drivers -> target/text3-zgxbin
+bench/results/text3/run_zgx.sh zgx_stock.txt  # zgx's numbers on this Mac (raw: bench/results/text3/zgx_stock.txt)
+D=target/text3/dist
+$D/label_churn; RENDER=1 $D/label_churn                     # zgui label-churn
+/usr/bin/time -l $D/text_bench                              # zgx-gpu text_bench (zgx: text3-zgxbin/text_bench{,_dejavu})
+/usr/bin/time -l $D/editor_streaming                        # zgx editor_streaming
+/usr/bin/time -l $D/i18n_bench [template]                   # zgx i18n_bench
+MODE=message|template|switch /usr/bin/time -l $D/i18n_script_bench   # zgx-script i18n_bench
+/usr/bin/time -l $D/code_editor_bench                       # zgx-script code_editor_bench (text half)
+BOUGH_DIST=$D python3 bench/integrate/slope.py bough 0 heavy          # heavy cells (raw: bench/results/text3/slopes.txt)
+```
+
+## III.1 Against zgx and zgui, in their own units
+
+The ports live in `comparisons/bough-text-bench` (one binary per workload, same generators, same phases, same
+output lines as the originals). zgx was rebuilt from 06debe9d on this Mac (`bench/zgx/build_text.sh`, release as
+`scripts/perf/suite.py` builds); "whole run" is `/usr/bin/time -l` instructions retired, min-max of 2-3 runs.
+
+| workload (units) | zgx / zgui | **bough** | ratio |
+|---|---:|---:|---:|
+| zgui **label-churn**, 30 labels relabelled (µs/frame, median of round medians) | 1,348.3 (zgui baseline) | **3.2** (53.6 K instr/frame); 219.6 with the GPU frame | **420×** |
+| zgx **text_bench**, whole run (M instr) | 4,464-4,511 (SF NS/Menlo); 4,336-4,390 (DejaVu driver) | **106-108** | **41×** |
+| &nbsp;&nbsp;1000 paragraphs, first measure (ms) | 52.5-55.7 (DejaVu) / 37.4-67.0 (stock) | **1.50** (16.2-17.9 M instr) | 35× |
+| &nbsp;&nbsp;same paragraphs, same width (ms) | 41.5-65.9 / 31.7-53.4 | **0.00** (64 K instr) | – |
+| &nbsp;&nbsp;same paragraphs, new width (ms) | 44.0-81.4 / 35.4-54.7 | **0.11** (1.95 M instr) | ~400× |
+| &nbsp;&nbsp;stream 3000 chars, 6 per step (ms) | 133.6-158.9 / 116.6-175.7 | **0.18** (3.04 M instr) | ~800× |
+| zgx **editor_streaming**, whole run (M instr) | 229.8-232.2 | **178.5-180.2** | 1.28× |
+| &nbsp;&nbsp;elapsed (ms) / requested peak (bytes) | 10.7-12.6 / 1,096,496 | 9.3-13.8 / **1,062,708** | ≈ / 1.03× |
+| zgx **i18n_bench** (Rust), i18n: µs/frame, µs a locale switch | 176-242, 603-807 | **7.7-10.7, 129-281** | ~20×, ~4× |
+| &nbsp;&nbsp;whole run (M instr), i18n / template | 1,227-1,233 / 1,201-1,203 | **134 / see final_checks.txt** | 9× |
+| zgx-script **i18n_bench**, whole run (M instr): message / template / switch | 606-618 / 609-610 / 566-569 | **116 / 114 / 151** | 5.3× / 5.3× / 3.8× |
+| zgx-script **code_editor_bench** (bough: the text engine's part, see III.4): open to first screen | 25.2-31.3 ms, 189-192 M | **0.78-1.28 ms, 9.1-9.5 M** | 20× |
+| &nbsp;&nbsp;keystroke to frame | 3.09-3.87 ms, 5.3-5.4 M | **0.005 ms, 0.083 M** | 64× (instr) |
+| &nbsp;&nbsp;scroll a page / a line | 5.7 M / 2.4 M | **0.13 M / 0.10 M** | 44× / 24× |
+| &nbsp;&nbsp;scroll a page, wrapped | 6.3-6.5 M | **0.18 M** | 35× |
+| &nbsp;&nbsp;bytes a line | 51-96 | **38-51** | |
+
+zgx scenes covered here (for the `api` agent's suite ports): `text` (text_bench), `editor_streaming`, both
+`i18n_bench`es, `code_editor_bench` (text half), heavy's log pane and rows (in the heavy cells below). Not ported:
+`letter_spacing`, `line_height`, `model_text`, `large_document` are windowed smoke tests of zgx's editor widget
+with no numeric output (III.6).
+
+**Fonts.** zgx's text_bench resolves its three styles to SF NS (a variable font, bold by its `wght` axis) and
+Menlo on macOS (`bench/zgx/font_probe.rs`). The table shaper takes no variations, so bough's port uses DejaVu
+Sans / Bold / Sans Mono, and `bench/zgx/text_bench_dejavu.rs` (zgx's file with the three DejaVu faces registered
+as the families) gives zgx's like-for-like number; both are in the table. code_editor: DejaVu Sans Mono (zgx's
+stock run: Menlo).
+
+### Heavy and lab (STATUS §1 cells; slope method, `bench/results/text3/slopes.txt`; `input` = canonical fbaf06a)
+
+| cell | before (fusion / input) | **text3** | change |
+|---|---:|---:|---:|
+| heavy stream R=0 | 179,144 / 181,434 | **147,884** | **−18 %** (zgx 2,982,643: now 20×) |
+| heavy both R=0 | 213,055 / 212,884 | **181,473** | **−15 %** |
+| heavy stream R=1 | 378,170 | **348,926** | −8 % |
+| heavy both R=1 | 414,249 | **384,277** | −7 % |
+| lab stream R=0 | 26,834 / 26,484 | **18,388-23,214** (noisy) | −13..−31 % |
+| lab both R=0 | 34,459 / 35,425 | **26,938-26,983** | **−22 %** |
+| heavy scroll, animate, lab scroll, R=1 cells | – | within noise | |
+| vlist scroll / fling / jump R=0 | 12,973-13,121 / 19,541-19,616 / 35,524-35,719 | 13,141-13,208 / 20,017-20,153 / 36,615-36,716 | **+0.9 % / +2.6 % / +3.0 %** (III.5) |
+
+## III.2 What was built (one mechanism per job)
+
+| gap (STATUS §5.3) | mechanism | where |
+|---|---|---|
+| ligatures / Latin-1 in multi-line text fell back to rustybuzz glyph instances | **byte slots**: every byte owns a slot; a glyph sits on its cluster's first byte, the other bytes are phantoms (`TOK_PH`, zero step, empty entry). A slot index is a byte index for all covered text, so windows, word tables, streams and rings work for the token table unchanged | `slots.rs` |
+| no SIMD UTF-8 classification on the shaping entry | the **classifying kernel**: 16 bytes per step, one `umaxv` decides ASCII lanes (dense table) or token lanes (lane-local Latin-1 decode, next real token = `bsl` of the token vectors shifted by 1 and 2, gather from the token table); a trigger (ligature) sends the text to the scalar byte-slot tokenizer, an uncovered byte refuses | `slots::any_slots` |
+| the log pane re-shaped its block every tick | the **ring of lines**: one block per line; a new value is matched line by line (common prefix, a *shift* of k lines scrolled off, common suffix; NEON compares 16 bytes per step) before anything is shaped; kept lines keep their blocks and their headers slide; `push_line` is the same ring driven by structure | `lines.rs`, façade `TShape::Set` |
+| an edit in a multi-line block re-shaped the block | the same ring: an edited line is the only one shaped | `lines.rs` |
+| an edit in a wrapped paragraph re-shaped and re-wrapped it all | **line-local paragraphs**: only the changed words are shaped; the suffix keeps its tokens and shifts by two constants (bytes, pen); the word table is spliced; each cached wrap re-wraps from the line before the change **until a line start equals an old one shifted by the edit** (the convergence point); layout leaves (`LeafCtx`) edit their `Para` | `para.rs`, `layout.rs` |
+| table construction at startup (~100 M instr / font) | owner's review of the input agent's `pairfast` (kept, gated in release) plus a **table cache** keyed by the font's bytes (`build_cached`: 146.6 M → 35.7 M at a warm start of a bough app; a cold first run builds, 22 M with `pairfast`) | `script.rs` |
+| heavy's labels compared and copied their `String` every update | a label holds its own text: its patch *is* the comparison, so `text_set` neither compares nor copies the node's `String` (heavy stream −23.5 K/frame on its own); `TextNode::bytes` reads a label's text | façade `text.rs` |
+| an external value into an editor model | `model::TextModel`: the new `String` is taken over, the change is found by one pass from each end (64 bytes per step), the undo entry holds only the edit | `model.rs` |
+| a big document | gap buffer (line starts in buffer coordinates: typing at the gap moves no byte and no line start), rings of lines for the text and the numbers, highlighting as **colour windows** (a span = one 32-byte run header over the line's slots: no per-glyph colour, no re-shaping), soft wrap by `Para` | `bough-text-bench/src/doc.rs` |
+
+## III.3 Correctness gates (all green in release; debug runs sampled)
+
+| gate | domain | result |
+|---|---|---|
+| `tests/slots.rs`: byte slots == token path (== rustybuzz, round 2's gate) and == rustybuzz directly | all 6,895,291 strings ≤ 3 chars over the 190 covered codepoints; **every ordered pair at every lane 0..17 of a chunk** with 4 tails (2,599,200); every string ≤ 6 over `f i l ␠ T y é` at 7 chunk offsets (960,792); 200,000 random strings ≤ 200 (incl. CJK, U+00AD, tabs, controls: refusals must agree); 148,698 workload strings, 146,696 also against rustybuzz directly | all equal; phantoms hold the pen after their glyph; **the NEON lanes must finish every ligature-free covered text** (a mutation of the next-token select is caught; without this check it hid behind the scalar path) |
+| `tests/lines.rs`: streamed log == the text shaped in one go | heavy's log (zgx generator) 3,000 ticks with Latin-1 and ligature twins, `set_text` and `push_line` | every tick equal; 1 line shaped and 4 kept per tick (asserted); ≥100 ticks with a ligature line |
+| `tests/lines.rs`: random line edits | 20,000 edits (insert, delete, replace, shift, append, empty lines) | retained == fresh; every tile of a changed line (old and new instances, shader arithmetic) is marked |
+| `tests/para.rs`: line-local re-wrap == full re-wrap | 15,000 random edits (words, characters, spaces, ligatures, Latin-1, truncation) at two widths; 3,000 whole-sentence replacements at 4 widths (cache eviction); a 3,000-byte rich stream over 3 font runs at text_bench's widths | slots, width, words and wraps equal to `set` + full greedy wrap at every step; mid-paragraph edits re-wrap 52 of 330 words and shape 5.5 bytes per edit |
+| `tests/cache.rs` | DejaVu Sans / Bold / Mono, SF NS: cached table == built table; a corrupt file is rebuilt; **`pairfast` table == the one-pair probe for every covered pair (release)** | equal, 0 mismatches |
+| heavy `log_pane_ring_of_lines_is_pixel_exact_at_every_ring_age` | **every tick** of 90, rings 1..4, ≥5 ticks with an `ff` line in view | presented == full redraw; retained == fresh mount |
+| bough-text-bench `correctness.rs` | label churn 40 steps, i18n 120 rows 30 frames with two locale switches (`reçus`: token lanes), rings 1..4 | presented == full redraw every frame; retained == fresh mount |
+| façade layout tests (round 2's) on the `Para` leaves | 60 random edits: incremental == cold layout and == fresh mount; word-table pipeline == glyph-run pipeline | equal |
+| every existing gate (`cargo test --workspace --release`), zero warnings | | green (`bench/results/text3/final_checks.txt`) |
+
+## III.4 Attempts, kept and rejected
+
+**Byte slots (kept).** Rule bent: "a slot is a glyph". The phantom costs 6 bytes per continuation byte and an
+empty GPU lane (the kernel skips `uv.z == 0`), and buys: every window mechanism for the token table, and a
+lane-local Latin-1 decode (a lane's token depends on its byte and the next one only). Measured: the slot kernel
+alone is 7.0 instructions a byte on text_bench's mixed paragraphs (2,889 per 412-byte paragraph).
+
+**Ligatures inside the lanes (rejected).** The font's replay is greedy left to right (`fff` is `ff`+`f`, `fffi`
+is `ff`+`fi`): a sequential dependency through runs of `f`. Lanes would need a parity scan; ligature lines are ~3 %
+of heavy's log and of English words, so they go to the scalar byte-slot tokenizer (40 instructions a byte, the
+round-2 losing regime, now confined to those lines and still windowable). The trigger bit of the gather is what
+finds them, so the common case pays nothing.
+
+**The ring's slide (kept as header rewrites; space translation rejected).** A slide could be one space
+translation, but baselines are `round(oy + i·lh)`, not linear in `i` for a fractional line height, and a rotated
+header order would change paint order against a fresh mount where glyph boxes overlap. Rewriting the visible
+headers costs ~10 instructions a line; kept.
+
+**Line matching before shaping (kept).** Proving a line unchanged costs ~0.1 instruction a byte (16 bytes per
+compare), shaping it ~8: matching the old lines (prefix, shift, suffix) first is always cheaper. Heavy's log tick:
+one line shaped, four kept, ten O(1) marks.
+
+**Convergent re-wrap (kept).** Greedy wrapping can ripple (a moved break moves the next one); on random words the
+re-sync takes ~4 lines on average (52 of 330 words), and appends (streams) re-wrap one or two lines per step
+whatever the length (text_bench's stream: 3.04 M instructions for 500 steps at two widths).
+
+**Table cache (kept).** zgx keeps its font database in a cache file; the table is a pure function of the font
+bytes (key: an 8-bytes-per-step multiply-xor of the file). Warm start 146.6 M → 35.7 M instructions.
+
+**Caching shaped strings (rejected again).** Round 2 measured hashing to cost more than shaping; nothing here
+re-shapes what it already has: the retained forms (rings, paragraphs, labels) are the cache.
+
+**editor_streaming (floor reached, recorded).** The comparison of 256 KiB per update is unavoidable (equal bytes
+must be read to be known equal); bough's 64-bytes-per-step pass plus the benchmark's own `clone()` are most of
+the 178 M. 1.28× fewer instructions than zgx, equal time.
+
+**code_editor_bench scope.** bough's numbers are the text engine's part of each frame (document, line index,
+shaping, highlighting, wrapping, run headers, tile marks), not zgx's whole frame (Luau host, editor widget, GPU
+render). bough's GPU frame for such damage is the ~200 K-instruction Metal floor (STATUS §1). The highlighter
+re-tokenizes the 41 rows in view each frame (~15 K instructions) instead of only new rows.
+
+## III.5 Losing regimes and honest gaps
+
+* **vlist fling/jump R=0 +2.6 % / +3.0 %** (scroll +0.9 %) against canonical: layout leaves now carry a `Para`
+  (line-local edits, cached wraps per width). The mount path costs ~200 instructions more per mounted row
+  (one more vector, the wrap cache's bookkeeping). Reduced from +7.5 % by one vector per wrap, a reused rewrap
+  scratch, no run list for single-font text, line starts read from the paragraph, and the classifying kernel's
+  tail built in registers. The lead may prefer the round-2 leaf for vlist; the gates cover both.
+* Ligature lines: scalar byte-slot tokenizer, ~40 instructions a byte.
+* **Beyond Latin-1**: still rustybuzz per chunk into glyph instances, and **kerning across a segment boundary is
+  not applied** (not done this round). Shaping large documents on other cores: not done (a 100,000-line open
+  shapes only the screen, 9 M instructions, so nothing called for it).
+* **A reactive text edit in a list row** still does not update vlist's prefix index (LAYOUT.md gap, unchanged).
+* `letter_spacing` / `line_height` / `model_text` / `large_document`: zgx's are windowed smoke tests of its
+  editor widget (input's area); `LineSet::restyle` makes a line-height change header-only (no glyph touched) but
+  no scene measures it.
+* text_bench runs with DejaVu, not SF NS (variable fonts are outside the table model).
+* A cold first run (empty table cache) builds the table: 22 M instructions per font with `pairfast`.
+
+---
 
 ## Iteration 2 headline
 
