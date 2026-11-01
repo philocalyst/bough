@@ -80,6 +80,7 @@ impl<V: View> App<V> {
     /// memory and `frame` stops after the draw list (the RENDER=0 shape).
     pub fn new(view: V, cfg: Config, gpu: bool) -> App<V> {
         let (win_w, win_h) = ((cfg.width_pt * cfg.scale).round() as i32, (cfg.height_pt * cfg.scale).round() as i32);
+        let cfg = Config { ring: if cfg.ring == 0 { 4 } else { cfg.ring }, ..cfg };
         #[cfg(target_os = "macos")]
         let mut metal = gpu.then(|| crate::backend::metal::Metal::new(win_w as usize, win_h as usize, cfg.scale as f64, cfg.ring));
         #[cfg(not(target_os = "macos"))]
@@ -136,6 +137,22 @@ impl<V: View> App<V> {
         self.prof.mark(PH_UPDATE);
         self.rt.flush_text();
         self.prof.mark(PH_TEXT);
+    }
+
+    /// The handler half of a turn alone: mutate the view's signals (no settling). Pair with `flush`.
+    pub fn write(&mut self, f: impl FnOnce(&mut V)) {
+        f(&mut self.owner);
+    }
+
+    /// The rest of a turn after `write`: settle the queued signals' wires and shape changed text.
+    pub fn flush(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let Some(g) = self.gpu.as_mut() {
+            g.sync();
+        }
+        let owner = &*self.owner as *const V as *const u8;
+        self.rt.settle(owner);
+        self.rt.flush_text();
     }
 
     /// Damage -> cull -> draw list -> present. Returns false (and does nothing at all) if the

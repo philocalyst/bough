@@ -1,0 +1,37 @@
+[package]
+name = "bough-scenes"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "zgx's lab, animate, blink and micro_bench scenes on the bough facade: windowed and headless adapters"
+
+[dependencies]
+bough = { path = "../../crates/bough" }
+bough-metal = { path = "../../crates/bough-metal" }
+zgx-workload = { path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }
+libc = "0.2"
+
+[[bin]]
+name = "lab_workload"
+path = "src/bin/lab_workload.rs"
+[[bin]]
+name = "lab_headless"
+path = "src/bin/lab_headless.rs"
+[[bin]]
+name = "animate_workload"
+path = "src/bin/animate_workload.rs"
+[[bin]]
+name = "animate_headless"
+path = "src/bin/animate_headless.rs"
+[[bin]]
+name = "blink_workload"
+path = "src/bin/blink_workload.rs"
+[[bin]]
+name = "micro_bench"
+path = "src/bin/micro_bench.rs"
+[[bin]]
+name = "scene_shot"
+path = "src/bin/scene_shot.rs"
+[[bin]]
+name = "scene_diff"
+path = "src/bin/scene_diff.rs"

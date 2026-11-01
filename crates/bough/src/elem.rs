@@ -369,22 +369,23 @@ where
 
 // =============================================================================== text
 
-pub struct Text<S> {
+pub struct Text<S, G = ()> {
     s: S,
     x: f32,
     y: f32,
     size: f32,
     lh: f32,
     color: Color,
+    g: G,
 }
 
 /// Text from a constant, `&Signal<String>`-like or `sig.map(f)` operand. Single line, or explicit
 /// multi-line (`\n`); positioned at (x, y) with `size`/`line_height` in points.
 pub fn text<S>(s: S) -> Text<S> {
-    Text { s, x: 0.0, y: 0.0, size: 12.0, lh: 16.0, color: Color::rgba(255, 255, 255, 255) }
+    Text { s, x: 0.0, y: 0.0, size: 12.0, lh: 16.0, color: Color::rgba(255, 255, 255, 255), g: () }
 }
 
-impl<S> Text<S> {
+impl<S, G> Text<S, G> {
     pub fn at(mut self, x: f32, y: f32) -> Self {
         self.x = x;
         self.y = y;
@@ -402,9 +403,64 @@ impl<S> Text<S> {
         self.color = c;
         self
     }
+    /// Per-glyph alpha from a signal: one wire writes the colour word of every glyph instance of the
+    /// run (`f(char index, char count, &value) -> alpha`; spaces own no instance). No reshaping, no
+    /// geometry change: it is the `bars` mechanism for colour. For constant ASCII text.
+    pub fn glyph_alpha<'a, T>(self, sig: &'a Signal<T>, f: fn(usize, usize, &T) -> u8) -> Text<S, GlyphAlpha<'a, T>> {
+        Text { s: self.s, x: self.x, y: self.y, size: self.size, lh: self.lh, color: self.color, g: GlyphAlpha { sig, f } }
+    }
 }
 
-impl<V: 'static, S: IntoProp<String>> Element<V> for Text<S> {
+/// A run-level operand of a text node (see `Text::glyph_alpha`); `()` is none.
+pub trait GlyphOp<V>: Sized {
+    fn install(self, m: &mut Mounter<'_, V>, node: u32);
+}
+impl<V> GlyphOp<V> for () {
+    #[inline]
+    fn install(self, _: &mut Mounter<'_, V>, _: u32) {}
+}
+pub struct GlyphAlpha<'a, T> {
+    sig: &'a Signal<T>,
+    f: fn(usize, usize, &T) -> u8,
+}
+
+fn set_glyph_alpha<T>(rt: &mut Rt, node: u32, f: fn(usize, usize, &T) -> u8, v: &T) {
+    let n = &rt.nodes[node as usize];
+    let first = rt.runs[n.run as usize].first;
+    let rgb = n.color & 0x00ff_ffff;
+    let bytes = n.text.as_bytes();
+    let count = bytes.len();
+    let mut j = 0u32;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b' ' {
+            continue;
+        }
+        let a = f(i, count, v) as u32;
+        unsafe { (*rt.inst_ptr(first + j)).color = rgb | a << 24 };
+        j += 1;
+    }
+}
+
+unsafe fn patch_galpha<T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    let s = unsafe { &*(sig as *const Signal<T>) };
+    let f: fn(usize, usize, &T) -> u8 = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const _) };
+    set_glyph_alpha(rt, w.node, f, &**s);
+    let h = rt.nodes[w.node as usize].handle;
+    rt.bough.touch_handle(h);
+}
+
+impl<'a, V: 'static, T: 'static> GlyphOp<V> for GlyphAlpha<'a, T> {
+    fn install(self, m: &mut Mounter<'_, V>, node: u32) {
+        set_glyph_alpha(m.rt, node, self.f, &**self.sig);
+        if let Some(off) = m.offset_of(self.sig) {
+            let mut recipe = [0u8; 16];
+            unsafe { std::ptr::write_unaligned(recipe.as_mut_ptr() as *mut fn(usize, usize, &T) -> u8, self.f) };
+            m.wire(self.sig.head(), off, patch_galpha::<T>, node, recipe);
+        }
+    }
+}
+
+impl<V: 'static, S: IntoProp<String>, G: GlyphOp<V>> Element<V> for Text<S, G> {
     fn mount(self, m: &mut Mounter<'_, V>) {
         let node = m.rt.alloc_node();
         let wires_before = m.scope.wires.len();
@@ -430,6 +486,7 @@ impl<V: 'static, S: IntoProp<String>> Element<V> for Text<S> {
             n.line_h = lh_px;
         }
         let ink = m.rt.shape_node(node);
+        self.g.install(m, node);
         let dynamic = m.scope.wires.len() > wires_before;
         let mut handle_idx = 0;
         if dynamic {

@@ -73,6 +73,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-scenes"
+version = "0.0.0"
+dependencies = [
+ "bough",
+ "bough-metal",
+ "libc",
+ "zgx-workload",
+]
+
+[[package]]
 name = "bough-text"
 version = "0.0.0"
 dependencies = [

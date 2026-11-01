@@ -77,3 +77,56 @@ pub fn run_window<V: View>(
         std::mem::forget(app);
     })
 }
+
+/// Like `run_window`, but driven by the display link instead of a timer: `frame_cb(app, seconds)` is
+/// called on every display refresh (seconds since the first), the host presents when it left damage
+/// (animation scenes: "redrawn every display refresh at the frame's time"). The link is never paused.
+pub fn run_window_linked<V: View>(
+    title: &str,
+    make_cfg: fn(f32) -> Config,
+    view: V,
+    frame_cb: impl FnMut(&mut App<V>, f64) + 'static,
+    seconds: f64,
+    report: impl FnOnce() + 'static,
+) -> ! {
+    let probe = make_cfg(2.0);
+    let (w, h) = (probe.width_pt as f64, probe.height_pt as f64);
+    drop(probe);
+    let mut init = Some((view, report));
+    let mut state: Option<(Rc<RefCell<App<V>>>, std::time::Instant)> = None;
+    let mut cb = frame_cb;
+    bough_metal::app::run_sized(title, w, h, move |host, _link| {
+        if let Some((view, report)) = init.take() {
+            let scale = host.scale() as f32;
+            let mut app = App::new(view, make_cfg(scale), true);
+            {
+                let g = app.gpu.as_mut().unwrap();
+                g.publish = true;
+                host.attach(&g.layer);
+            }
+            app.frame();
+            let app = Rc::new(RefCell::new(app));
+            if seconds > 0.0 {
+                let host = host.clone();
+                let report = Rc::new(RefCell::new(Some(report)));
+                let blk = RcBlock::new(move |_t: NonNull<NSTimer>| {
+                    if let Some(r) = report.borrow_mut().take() {
+                        r();
+                    }
+                    host.close();
+                    std::process::exit(0);
+                });
+                let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(seconds, false, &blk) };
+                unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&t, objc2_foundation::NSRunLoopCommonModes) };
+                std::mem::forget(t);
+            }
+            state = Some((app, std::time::Instant::now()));
+            return;
+        }
+        if let Some((app, t0)) = &state {
+            let mut a = app.borrow_mut();
+            cb(&mut a, t0.elapsed().as_secs_f64());
+            a.frame();
+        }
+    })
+}
