@@ -375,6 +375,8 @@ pub struct Rt {
     pub mregions: Vec<crate::mlist::MRegion>,
     /// Pointer, hover, focus, routes (input.rs).
     pub input: crate::input::Input,
+    /// Running transitions and the frame clock (transition.rs).
+    pub transitions: crate::transition::Transitions,
     /// Icons, rotated images and gradient ramps (deco.rs), uploaded before a frame that wrote them.
     pub images: crate::deco::Images,
     /// The mounted owner (boxed by `App`, never moves): what a layout placement hook needs to mount the rows
@@ -471,6 +473,7 @@ impl Rt {
             lay: crate::layout::Lay::new(scale),
             mregions: Vec::new(),
             input: Default::default(),
+            transitions: Default::default(),
             images: Default::default(),
             owner: std::ptr::null(),
             _region: region,

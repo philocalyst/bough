@@ -15,10 +15,12 @@ pub mod rt;
 pub mod signal;
 pub mod template;
 pub mod text;
+pub mod transition;
 
 pub use bough_text::numeric::NumFmt;
 
 pub mod prelude {
+    pub use crate::transition::{Curve, Ease, Lerp};
     pub use crate::deco::{deco_box, svg_image, Deco, Grad, Shadow, Xf};
     pub use crate::app::{App, Config, View};
     pub use crate::color::{rgb, Color};

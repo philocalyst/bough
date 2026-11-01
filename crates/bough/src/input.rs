@@ -1257,7 +1257,7 @@ impl<V: View> App<V> {
 
     /// Is a glide (or any input animation) running?
     pub fn animating(&self) -> bool {
-        self.rt.input.scrollers.iter().any(|s| s.glide.is_some()) || self.rt.input.tips.iter().any(|t| t.fading)
+        self.rt.input.scrollers.iter().any(|s| s.glide.is_some()) || self.rt.input.tips.iter().any(|t| t.fading) || self.rt.transitions.running()
     }
 
     /// Advance input animations by `dt` seconds (glides write their scroll signals). Returns whether any
@@ -1265,12 +1265,16 @@ impl<V: View> App<V> {
     pub fn tick(&mut self, dt: f32) -> bool {
         let blinked = self.blink(dt);
         if !self.animating() {
+            // the frame clock runs regardless (a transition retargeted later starts from this time)
+            self.rt.transitions.now += dt as f64;
             if blinked {
                 self.settle_input();
             }
             return blinked;
         }
         self.sync_pub();
+        // transitions: every running one applies its value through its property's applier
+        self.rt.step_transitions(dt);
         let o = self.owner_mut();
         for s in &mut self.rt.input.scrollers {
             let Some(g) = s.glide.as_mut() else { continue };
