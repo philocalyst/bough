@@ -219,6 +219,95 @@ impl Warm {
     }
 }
 
+// ------------------------------------------------------------------ the frame stream's encoder
+
+/// What encoding a frame needs, shared by the main thread and the publisher thread (which keeps the stream
+/// armed, so no encode or commit runs on the input thread): the stream queue and event, the region, both
+/// pipelines, the slot offsets, and the arming state behind one lock (two threads never arm overlapping
+/// frames).
+struct Kern {
+    queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    ev: Retained<ProtocolObject<dyn MTLSharedEvent>>,
+    pool: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pso_bin: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pso_tile: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    slots: [std::sync::atomic::AtomicU32; 3],
+    batch: std::sync::atomic::AtomicUsize,
+    /// Mirror of `arm.armed_upto` for a lock-free "already armed?" test.
+    armed: AtomicU64,
+    arm: std::sync::Mutex<ArmState>,
+}
+struct ArmState {
+    armed_upto: u64,
+    /// The last two pre-armed command buffers (diagnostics if a frame never finishes).
+    batches: std::collections::VecDeque<Retained<ProtocolObject<dyn MTLCommandBuffer>>>,
+}
+// SAFETY: Metal queues, events, buffers, pipelines and command buffers are thread-safe objects; the arming
+// state is behind a mutex.
+unsafe impl Send for Kern {}
+unsafe impl Sync for Kern {}
+
+impl Kern {
+    /// One frame: the bin pass then the tile pass over slot `k`, in one compute encoder that binds only the
+    /// region and the slot offset (everything else is in the bind table). `indirect`: the dispatch sizes come
+    /// from the slot (pre-armed frames); otherwise `nrows` / `ntiles`.
+    fn encode(&self, cmd: &ProtocolObject<dyn MTLCommandBuffer>, k: usize, nrows: u32, ntiles: u32, indirect: bool) {
+        let slot = self.slots[k].load(Relaxed);
+        let enc = cmd.computeCommandEncoder().expect("compute encoder");
+        let offs = [slot, 0];
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(&self.pool), 0, 0);
+            enc.setBytes_length_atIndex(NonNull::new(offs.as_ptr() as *mut _).unwrap(), 8, 1);
+            enc.setComputePipelineState(&self.pso_bin);
+            let tg = MTLSize { width: 256, height: 1, depth: 1 };
+            if indirect {
+                enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, slot as usize, tg);
+            } else {
+                enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: nrows as usize, height: 1, depth: 1 }, tg);
+            }
+            enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+            enc.setComputePipelineState(&self.pso_tile);
+            let tg2 = MTLSize { width: 16, height: 16, depth: 1 };
+            if indirect {
+                enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, slot as usize + 12, tg2);
+            } else {
+                enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: ntiles as usize, height: 1, depth: 1 }, tg2);
+            }
+        }
+        enc.endEncoding();
+    }
+
+    /// Encode and commit the next `batch` frames: each waits for its release (`ev >= 2f-1`), runs the bin and
+    /// tile passes over slot `f % 2` with sizes read from the slot, and signals `ev = 2f`.
+    fn arm_locked(&self, st: &mut ArmState) {
+        let batch = self.batch.load(Relaxed) as u64;
+        let cmd = self.queue.commandBufferWithUnretainedReferences().expect("command buffer");
+        for f in st.armed_upto + 1..=st.armed_upto + batch {
+            cmd.encodeWaitForEvent_value(ProtocolObject::from_ref(&*self.ev), 2 * f - 1);
+            self.encode(&cmd, (f % 2) as usize, 0, 0, true);
+            cmd.encodeSignalEvent_value(ProtocolObject::from_ref(&*self.ev), 2 * f);
+        }
+        cmd.commit();
+        if st.batches.len() == 2 {
+            st.batches.pop_front();
+        }
+        st.batches.push_back(cmd);
+        st.armed_upto += batch;
+        self.armed.store(st.armed_upto, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Make sure frames up to `upto` are armed (a lock-free read when they are).
+    fn ensure(&self, upto: u64) {
+        if self.armed.load(std::sync::atomic::Ordering::Acquire) >= upto {
+            return;
+        }
+        let mut st = self.arm.lock().unwrap();
+        while st.armed_upto < upto {
+            self.arm_locked(&mut st);
+        }
+    }
+}
+
 // ------------------------------------------------------------------ the publisher thread
 
 const NONE_SURF: usize = usize::MAX;
@@ -237,6 +326,8 @@ struct PubJob {
     /// Address of the bin-overflow word (shared storage): a frame that overflowed is not published; the
     /// main thread's next `sync` redraws it and posts it again.
     overflow: usize,
+    /// After the commit, keep the stream armed up to this frame (encode and commit off the input thread).
+    ahead: u64,
 }
 
 struct PubShared {
@@ -258,7 +349,7 @@ struct PubState {
 
 /// Owns what the thread touches: the event it waits on and the layer it commits to.
 struct PubObjs {
-    ev: Retained<ProtocolObject<dyn MTLSharedEvent>>,
+    kern: Arc<Kern>,
     layer: Retained<CALayer>,
 }
 // SAFETY: MTLSharedEvent is thread-safe; a CALayer may be modified from any thread inside an explicit
@@ -275,7 +366,7 @@ struct Publisher {
 }
 
 impl Publisher {
-    fn spawn(ev: Retained<ProtocolObject<dyn MTLSharedEvent>>, layer: Retained<CALayer>) -> Publisher {
+    fn spawn(kern: Arc<Kern>, layer: Retained<CALayer>) -> Publisher {
         use std::sync::atomic::AtomicUsize;
         let sh = Arc::new(PubShared {
             m: std::sync::Mutex::new(PubState { job: None, quit: false }),
@@ -287,7 +378,7 @@ impl Publisher {
             commits: AtomicU64::new(0),
             held_back: AtomicU64::new(0),
         });
-        let (s2, objs) = (sh.clone(), PubObjs { ev, layer });
+        let (s2, objs) = (sh.clone(), PubObjs { kern, layer });
         let thread = std::thread::Builder::new()
             .name("bough-publish".into())
             .spawn(move || {
@@ -315,7 +406,8 @@ impl Publisher {
                     g = sh.cv.wait(g).unwrap();
                 }
             };
-            let drawn = job.wait == 0 || o.ev.signaledValue() >= job.wait || o.ev.waitUntilSignaledValue_timeoutMS(job.wait, 5000);
+            let ev = &o.kern.ev;
+            let drawn = job.wait == 0 || ev.signaledValue() >= job.wait || ev.waitUntilSignaledValue_timeoutMS(job.wait, 5000);
             // SAFETY: the overflow word lies in the live counts buffer (the main thread replaces it only after
             // `publisher_idle`); shared storage, written by the GPU before it signalled the event.
             let overflowed = unsafe { std::ptr::read_volatile(job.overflow as *const u32) } != 0;
@@ -334,6 +426,8 @@ impl Publisher {
                 sh.held_back.fetch_add(1, Relaxed);
             }
             sh.in_flight.store(NONE_SURF, Relaxed);
+            // the next batch is encoded and committed here, between frames: never on the input thread
+            o.kern.ensure(job.ahead);
         }
     }
 
@@ -378,8 +472,6 @@ pub struct Fused {
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     /// Reference renders, bin-overflow redraws and keep-warm blits: never queued behind the waiting stream.
     aux: Retained<ProtocolObject<dyn MTLCommandQueue>>,
-    pso_bin: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    pso_tile: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pool: Retained<ProtocolObject<dyn MTLBuffer>>,
     pool_ptr: *mut u8,
     pool_len: usize,
@@ -406,11 +498,9 @@ pub struct Fused {
     pub bin_growths: u32,
     // the frame stream (pre-armed command buffers released by `ev`)
     ev: Retained<ProtocolObject<dyn MTLSharedEvent>>,
-    /// The last two pre-armed command buffers (diagnostics if a frame never finishes).
-    batches: std::collections::VecDeque<Retained<ProtocolObject<dyn MTLCommandBuffer>>>,
-    armed_upto: u64,
+    /// Encoder objects and arming state, shared with the publisher thread.
+    kern: Arc<Kern>,
     released: u64,
-    batch: usize,
     /// The publisher thread (windowed: spawned at the first publication).
     publisher: Option<Publisher>,
     /// A layer frame to commit with the next publication (set by `resize`).
@@ -452,6 +542,17 @@ impl Fused {
         let counts = device.newBufferWithLength_options((ty + 1) * 4, MTLResourceOptions::StorageModeShared).expect("bin counts");
         let surfs = (0..surfaces.clamp(1, MAX_SURFACES)).map(|_| Self::new_surface(&device, w, h)).collect();
         let device_ev = device.newSharedEvent().expect("shared event");
+        let kern = Arc::new(Kern {
+            queue: queue.clone(),
+            ev: device_ev.clone(),
+            pool: pool.clone(),
+            pso_bin: pso_bin.clone(),
+            pso_tile: pso_tile.clone(),
+            slots: Default::default(),
+            batch: std::sync::atomic::AtomicUsize::new(16),
+            armed: AtomicU64::new(0),
+            arm: std::sync::Mutex::new(ArmState { armed_upto: 0, batches: std::collections::VecDeque::with_capacity(3) }),
+        });
         let layer = CALayer::new();
         layer.setContentsScale(scale);
         layer.setOpaque(true);
@@ -463,8 +564,6 @@ impl Fused {
             device,
             queue,
             aux,
-            pso_bin,
-            pso_tile,
             pool,
             pool_ptr,
             pool_len: region_len,
@@ -487,11 +586,9 @@ impl Fused {
             stats: Stats::default(),
             last_frame: None,
             bin_growths: 0,
+            kern: kern.clone(),
             ev: device_ev,
-            batches: std::collections::VecDeque::with_capacity(3),
-            armed_upto: 0,
             released: 0,
-            batch: 16,
             publisher: None,
             pending_frame: None,
         };
@@ -578,10 +675,11 @@ impl Fused {
         };
         // SAFETY: the region starts with HDR_BYTES reserved for the header; no GPU work reads it now.
         unsafe { (self.pool_ptr as *mut FHdr).write(h) };
-        self.write_binds();
-        if self.armed_upto == self.released {
-            self.arm_batch();
+        for (k, &o) in l.slot.iter().enumerate() {
+            self.kern.slots[k].store(o, Relaxed);
         }
+        self.write_binds();
+        self.kern.ensure(self.released + 1);
     }
 
     /// Write the bind table (resource ids of the surfaces and the atlas, GPU addresses of bins and counts).
@@ -604,7 +702,7 @@ impl Fused {
     pub fn sync(&mut self) {
         let want = 2 * self.released;
         if self.ev.signaledValue() < want && !self.ev.waitUntilSignaledValue_timeoutMS(want, 5000) {
-            let err = self.batches.iter().map(|c| format!("{:?} {:?}", c.status(), c.error())).collect::<Vec<_>>();
+            let err = self.kern.arm.lock().unwrap().batches.iter().map(|c| format!("{:?} {:?}", c.status(), c.error())).collect::<Vec<_>>();
             panic!("GPU frame {} did not finish within 5 s (stream batches: {err:?})", self.released);
         }
         self.check_bins();
@@ -782,15 +880,18 @@ impl Fused {
         if self.ev.signaledValue() < want {
             self.ev.waitUntilSignaledValue_timeoutMS(want, 5000);
         }
-        for f in self.released + 1..=self.armed_upto {
+        // the arming lock is held throughout: the publisher cannot arm frames in between
+        let kern = self.kern.clone();
+        let mut st = kern.arm.lock().unwrap();
+        for f in self.released + 1..=st.armed_upto {
             // SAFETY: slot f % 2 lies in the region; frame f - 1 (the other slot) is done or waited below.
             unsafe { write_slot(self.pool_ptr, &self.lay, (f % 2) as usize, 0, &[], false) };
             self.ev.setSignaledValue(2 * f - 1);
             self.ev.waitUntilSignaledValue_timeoutMS(2 * f, 5000);
         }
-        self.released = self.armed_upto;
+        self.released = st.armed_upto;
         self.stats.drains += 1;
-        self.arm_batch();
+        kern.arm_locked(&mut st);
     }
 
     /// Make every surface `want(i)` selects purgeable-volatile (unless the compositor holds it); count.
@@ -821,33 +922,8 @@ impl Fused {
         unsafe { write_slot(self.pool_ptr, &self.lay, k, target, rows, full) }
     }
 
-    /// One frame: the bin pass then the tile pass over slot `k`, in one compute encoder that binds only the
-    /// region and the slot offset (everything else is in the bind table). `indirect`: the dispatch sizes come
-    /// from the slot (pre-armed frames); otherwise `nrows` / `ntiles`.
     fn encode(&self, cmd: &ProtocolObject<dyn MTLCommandBuffer>, k: usize, nrows: u32, ntiles: u32, indirect: bool) {
-        let l = &self.lay;
-        let enc = cmd.computeCommandEncoder().expect("compute encoder");
-        let offs = [l.slot[k], 0];
-        unsafe {
-            enc.setBuffer_offset_atIndex(Some(&self.pool), 0, 0);
-            enc.setBytes_length_atIndex(NonNull::new(offs.as_ptr() as *mut _).unwrap(), 8, 1);
-            enc.setComputePipelineState(&self.pso_bin);
-            let tg = MTLSize { width: 256, height: 1, depth: 1 };
-            if indirect {
-                enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, l.slot[k] as usize, tg);
-            } else {
-                enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: nrows as usize, height: 1, depth: 1 }, tg);
-            }
-            enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
-            enc.setComputePipelineState(&self.pso_tile);
-            let tg2 = MTLSize { width: 16, height: 16, depth: 1 };
-            if indirect {
-                enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, l.slot[k] as usize + 12, tg2);
-            } else {
-                enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: ntiles as usize, height: 1, depth: 1 }, tg2);
-            }
-        }
-        enc.endEncoding();
+        self.kern.encode(cmd, k, nrows, ntiles, indirect);
     }
 
     /// Repair surface `target` from the damaged tile rows (`full`: everything) with `n_dir` directory
@@ -877,8 +953,9 @@ impl Fused {
     fn post(&mut self, i: usize, wait: u64) {
         let frame = self.pending_frame.take();
         let overflow = self.counts.contents().as_ptr() as usize + 4 * self.lay.tiles_y() as usize;
-        let job = PubJob { surf: i, io: SendIo(self.surfs[i].io.clone()), wait, frame, overflow };
-        self.publisher.get_or_insert_with(|| Publisher::spawn(self.ev.clone(), self.layer.clone())).post(job);
+        let ahead = self.released + self.kern.batch.load(Relaxed) as u64 / 2;
+        let job = PubJob { surf: i, io: SendIo(self.surfs[i].io.clone()), wait, frame, overflow, ahead };
+        self.publisher.get_or_insert_with(|| Publisher::spawn(self.kern.clone(), self.layer.clone())).post(job);
     }
 
     fn after_gpu_frame(&mut self, nt: u32) {
@@ -927,24 +1004,7 @@ impl Fused {
 
     /// Frames per pre-armed command buffer (default 16); takes effect at the next batch.
     pub fn set_batch(&mut self, k: usize) {
-        self.batch = k.max(2);
-    }
-
-    /// Encode and commit the next `batch` frames: each waits for its release (`ev >= 2f-1`), runs the bin and
-    /// tile passes over slot `f % 2` with sizes read from the slot, and signals `ev = 2f`.
-    fn arm_batch(&mut self) {
-        let cmd = self.queue.commandBufferWithUnretainedReferences().expect("command buffer");
-        for f in self.armed_upto + 1..=self.armed_upto + self.batch as u64 {
-            cmd.encodeWaitForEvent_value(ProtocolObject::from_ref(&*self.ev), 2 * f - 1);
-            self.encode(&cmd, (f % 2) as usize, 0, 0, true);
-            cmd.encodeSignalEvent_value(ProtocolObject::from_ref(&*self.ev), 2 * f);
-        }
-        cmd.commit();
-        if self.batches.len() == 2 {
-            self.batches.pop_front();
-        }
-        self.batches.push_back(cmd);
-        self.armed_upto += self.batch as u64;
+        self.kern.batch.store(k.max(2), Relaxed);
     }
 
     fn release(&mut self, k: usize, nt: u32) {
@@ -957,16 +1017,15 @@ impl Fused {
         // a redraw after a bin overflow re-encodes this frame from its slot
         self.last_frame = Some((k, target, nr, nt));
         debug_assert_eq!((f % 2) as usize, k);
-        if self.armed_upto < f {
-            self.arm_batch();
-        }
+        // normally armed long ago (one atomic read); only a stream that outran its arming arms here
+        self.kern.ensure(f);
         self.released = f;
         self.ev.setSignaledValue(2 * f - 1);
         self.after_gpu_frame(nt);
-        // the next batch is encoded and committed after the release (off the frame's critical path), well
-        // before the GPU needs it
-        if self.armed_upto < f + self.batch as u64 / 2 {
-            self.arm_batch();
+        if self.publisher.is_none() {
+            // headless: the next batch is encoded and committed here, after the release (off the frame's
+            // critical path); windowed, the publisher thread does it between frames
+            self.kern.ensure(f + self.kern.batch.load(Relaxed) as u64 / 2);
         }
     }
 
