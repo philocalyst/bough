@@ -1,0 +1,7 @@
+bough heavy RENDER=0 stream        153634 instr/frame  [151433 .. 169759]
+bough heavy RENDER=0 both          188256 instr/frame  [185981 .. 188526]
+bough heavy RENDER=1 stream        279442 instr/frame  [265411 .. 288646]
+bough heavy RENDER=1 both          294088 instr/frame  [292759 .. 298049]
+bough lab RENDER=1 stream        136601 instr/frame  [123181 .. 159456]
+bough lab RENDER=1 both          137688 instr/frame  [123933 .. 142458]
+bough animate RENDER=1 -             135817 instr/frame  [124643 .. 141286]

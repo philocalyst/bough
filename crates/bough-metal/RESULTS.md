@@ -1178,3 +1178,78 @@ heaps whose membership changes only between batches.
   regressed; R1 and windowed heavy improved. Per-column precision (−30 % tiles) rejected on CPU cost.
 * Animate windowed +11 % instructions/s against the old one-frame-late throughput mode.
 * Glyph-dense binning, 16-px quadrants, residency-follows-use: not built. Lab parity: no DejaVu zgx reference.
+
+## 14.9 Round 3b (after merging canonical ca6412f: input, text3, floor)
+
+Raw: `bench/results/floor/{slopes_3b,gpu_slopes_bough_3b,windowed_3b}.txt`. The canonical figures quoted are the
+lead's merged slopes.
+
+**GPU time: headline (headless slope, Kcycles per frame, median of 3)**
+
+| scene | zgx | bough (round 3) | **bough (3b)** |
+|---|---:|---:|---:|
+| heavy stream / scroll / both | 446 / 268 / 627 | 359 / 303 / 502 | **313 / 260 / 451** |
+| lab stream / scroll / both | 63 / 123 / 134 | 110 / 128 / 223 | **141 / 147 / 206** |
+| animate | 97 | 72 | **75** |
+| vlist scroll / fling / jump | 203 / 208 / 203 | 316 / 329 / 309 | **522 / 522 / 495** |
+
+* **Not won.** bough wins heavy (every mode, 3b) and animate; it loses lab and vlist. The kernels did not change
+  between the two bough columns, yet vlist moved 1.6×. The Kcycles figure multiplies the process's GPU seconds by
+  the whole GPU's mean clock, and other agents' GPU work moves that clock (338–1,143 MHz seen). So only gaps of 2× or
+  more are real at this load; lab stream (2.2×) and vlist (2.4×) are.
+* **Tried this round:** tile-pass staging 256 wide instead of 128 (`kernel_bench`, saturated clock): lab stream
+  repair 0.106 → 0.104 ms, scroll 0.171 → 0.173 ms. No effect, so staging width is not the bottleneck; reverted.
+  The measured split stands (14.6): bin scan + staging 47–64 %, shading the rest, worst in text rows.
+* **Not built:** the GPU-driven raster path (compute cull → indirect draw of instances clipped to damaged tiles in
+  one render pass), which is what the TBDR evidence (damage lab, 12.5's vclip: one-colour 0.018 ms vs compute's
+  0.011–0.054) points to for glyph-dense rows; row-pre-binned glyph runs; 2D binning. These are the open item.
+
+**Regressions fixed**
+
+| | canonical (merged) | **3b** |
+|---|---:|---:|
+| heavy stream R0 | 160 K | **153.6 K** |
+| heavy both R0 | 194 K | **188.3 K** |
+| heavy stream / both R1 | 263 K / 300 K | 279 K / 294 K (R1 ranges 265–289 K: noise) |
+| animate R1 (headless) | 135 K | 135.8 K |
+
+* **Edge damage now costs about what the old union damage cost.** The strip union comes from the bars' samples, not
+  from reading instances back: a shift by one keeps every old sample except the first. So the union is two selects
+  per bar on values the write loop already has, plus one rect per sparkline. Control on the same code: old ∪ new
+  147.7 K vs edge rect 152.0 K (+2.9 %). The gain is −7 % tiles against that control (1,133 → 1,058) and −12.5 %
+  against round 2's 1,209.
+* **Publication by the turn's source, at compile time.** `App::frame()` is for input turns: the publisher thread
+  publishes in the same refresh. `App::frame_paced()` is for clock-driven turns: the host's timer and display-link
+  callbacks use it, and the frame is committed at the next turn on the calling thread, one refresh later, with no
+  thread wake and no completion wait. `frame_as::<const PACED: bool>` selects the policy and `Fused::draw::<PACED>`
+  follows it. Commits on the calling thread wait for anything the publisher still holds, so commits stay in frame
+  order. Gate: `present.rs::paced_and_input_frames_publish_exactly_in_order`, mixed frames, exact.
+  Windowed (10 s, macsample, 3b vs round 3 interleaved in one session):
+
+| cell | round 3 (publisher) | **3b (paced)** |
+|---|---:|---:|
+| animate | 29.8 M instr/s, 2.90 % CPU | **26.9 M, 2.19 %** |
+| heavy stream | 30.7 M, 1.95 % | **27.3 M, 1.48 %** |
+| lab stream | 22.7 M, 1.78 % | **20.1 M, 1.29 %** |
+| vlist scroll | 21.4 M, 1.71 % | **19.4 M, 1.23 %** |
+
+  The drag probe keeps its win: 117–125 K per move on the 3b build.
+
+**Residency (item 7): measured, nothing to recover at this scale.** Heavy's footprint is the same whether the region
+is in the queue's residency set (148.5 MB) or only bound to the encoders (148.8 MB); lab: 95.9 vs 96.0 MB. The
+region's untouched capacity does not show in `phys_footprint` either way. So residency that follows use would buy
+nothing here, and the residency set stays, since the bindless surfaces and atlas need it. The structural constraint
+for a larger region stands (14.7: a pre-armed batch never sees later residency additions).
+
+**Lab visual parity (item 6), with DejaVu.** zgx's `render_parity` was built from a scratch clone at 06debe9d with
+`font_family("DejaVu Sans")` added to its lab root (the clone was deleted afterwards). The 1920×1440 frames were
+compared with `scene_shot`, Mode::Both:
+
+| frame | differ at all | > 16/255 | > 64/255 | max |
+|---|---:|---:|---:|---:|
+| t = 120 | 4.04 % | **2.92 %** | **1.05 %** | 219 |
+| t = 0 | 1.67 % | 1.22 % | 0.43 % | 219 |
+
+The difference sits in the text bands (the streamed paragraph at t = 120, the list rows' labels) and in the title/button
+band, where `render_parity`'s lab differs in layout (button alignment, one fewer label; noted in round 2). It is the same
+order as heavy's 2.68 % > 16.
