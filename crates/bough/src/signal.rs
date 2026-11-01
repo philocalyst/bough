@@ -30,8 +30,10 @@ impl<T> Signal<T> {
     pub const fn new(value: T) -> Self {
         Signal { head: Cell::new(0), value }
     }
+    /// The wire head. Crate-private: a head names a wire list monomorphised for this signal's `T`, so
+    /// copying one head into another signal's would make the runtime run wires of the wrong type.
     #[inline(always)]
-    pub fn head(&self) -> &Cell<u32> {
+    pub(crate) fn head(&self) -> &Cell<u32> {
         &self.head
     }
     pub fn into_inner(self) -> T {
@@ -98,9 +100,13 @@ impl<T, V> Copy for Wired<'_, T, V> {}
 impl<'a, T, V> Wired<'a, T, V> {
     /// `sig!`'s expansion. `off` is `offset_of!(V, path)`; `_path` is the field accessor `|o: &V| &o.path`
     /// (never called: its signature proves the field at `off` is a `Signal<T>`).
+    ///
+    /// # Safety
+    /// `off` must be `offset_of!(V, path)` for the same struct field path as `_path` (the macro computes
+    /// both from one token sequence; nothing else may call this).
     #[doc(hidden)]
     #[inline(always)]
-    pub fn proven(sig: &'a Signal<T>, off: usize, _path: fn(&V) -> &Signal<T>) -> Self {
+    pub unsafe fn proven(sig: &'a Signal<T>, off: usize, _path: fn(&V) -> &Signal<T>) -> Self {
         assert!(off + size_of::<Signal<T>>() <= size_of::<V>() && off <= u32::MAX as usize);
         Wired { sig, off: off as u32, _v: PhantomData }
     }
@@ -135,12 +141,57 @@ pub struct Num<'a, T, V, F> {
 
 /// A wired signal operand: `sig!(self.field.path)` inside a `View` impl, or `sig!(v: Type => field.path)`
 /// where the owner is a value `v: &Type` (a list's row function).
+/// A struct field path (nested paths too):
+///
+/// ```
+/// use bough::prelude::*;
+/// struct Inner { n: Signal<u32> }
+/// struct V { i: Inner }
+/// impl View for V {
+///     fn view(&self) -> impl Element<Self> + '_ { text(sig!(self.i.n).map(|n| n.to_string())) }
+/// }
+/// ```
+///
+/// Only struct field paths are accepted. Through a `Box` (or any `Deref`) the field access would compile but
+/// `offset_of!` does not follow pointers:
+///
+/// ```compile_fail
+/// use bough::prelude::*;
+/// struct Inner { n: Signal<u32> }
+/// struct V { b: Box<Inner> }
+/// impl View for V {
+///     fn view(&self) -> impl Element<Self> + '_ { text(sig!(self.b.n).map(|n| n.to_string())) }
+/// }
+/// ```
+///
+/// A union field cannot be named without the caller's own `unsafe`:
+///
+/// ```compile_fail
+/// use bough::prelude::*;
+/// struct Inner { n: Signal<u32> }
+/// union U { a: std::mem::ManuallyDrop<Inner>, b: u64 }
+/// struct V { u: U }
+/// impl View for V {
+///     fn view(&self) -> impl Element<Self> + '_ { text(sig!(self.u.a.n).map(|n| n.to_string())) }
+/// }
+/// ```
+///
+/// The field access and the accessor closure are outside the `unsafe` block on purpose: a union field (whose
+/// bytes another field may overwrite) or a packed field cannot be named without the caller's own `unsafe`,
+/// and an enum variant's field cannot be named as `owner.field` at all, so `sig!` accepts exactly the struct
+/// field paths whose location and type are fixed for the owner's life.
 #[macro_export]
 macro_rules! sig {
-    ($o:ident : $t:ty => $($f:ident).+) => {
-        $crate::signal::Wired::<_, $t>::proven(&$o.$($f).+, ::core::mem::offset_of!($t, $($f).+), |o: &$t| &o.$($f).+)
-    };
-    ($s:tt . $($f:ident).+) => {
-        $crate::signal::Wired::<_, Self>::proven(&$s.$($f).+, ::core::mem::offset_of!(Self, $($f).+), |o: &Self| &o.$($f).+)
-    };
+    ($o:ident : $t:ty => $($f:ident).+) => {{
+        let r = &$o.$($f).+;
+        let p: fn(&$t) -> &_ = |o: &$t| &o.$($f).+;
+        // SAFETY: the offset and the accessor name the same struct field path of `$t`.
+        unsafe { $crate::signal::Wired::<_, $t>::proven(r, ::core::mem::offset_of!($t, $($f).+), p) }
+    }};
+    ($s:tt . $($f:ident).+) => {{
+        let r = &$s.$($f).+;
+        let p: fn(&Self) -> &_ = |o: &Self| &o.$($f).+;
+        // SAFETY: the offset and the accessor name the same struct field path of `Self`.
+        unsafe { $crate::signal::Wired::<_, Self>::proven(r, ::core::mem::offset_of!(Self, $($f).+), p) }
+    }};
 }

@@ -43,7 +43,9 @@ impl<V> Mounter<'_, V> {
         // The runtime inference the proof replaced survives as a debug check: the operand is the owner's
         // own field (not a field of another value of the same type).
         debug_assert_eq!(w.sig as *const Signal<T> as usize, self.owner as usize + w.off as usize, "sig! operand is not a field of the mounted owner");
-        let i = self.rt.add_wire(w.sig.head(), w.off, patch, node, recipe);
+        // SAFETY: `w.off` is `offset_of!`-proven for owner type `V` (`Wired<_, V>` comes only from `sig!`),
+        // and every caller passes a patch monomorphised for the signal's `T` with the recipe it reads.
+        let i = unsafe { self.rt.add_wire(w.sig.head(), w.off, patch, node, recipe) };
         self.scope.wires.push(i);
     }
 }
@@ -737,7 +739,7 @@ impl<'a, V: 'static> Element<V> for VirtualList<'a, V> {
         let clip = m.rt.clip_rect([vx, vy, vx + w * s, vy + h * s]);
         let vp = m.rt.bough.clip_rect(clip);
         let reg = m.rt.regions.len();
-        m.rt.regions.push(Region2 {
+        m.rt.regions.push(VRegion {
             row_h: self.row_h * s,
             vp_x: vx,
             vp_y: vy,

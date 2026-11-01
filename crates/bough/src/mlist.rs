@@ -134,8 +134,10 @@ pub struct MRegion {
     pub rows: VecDeque<MRow>,
     pub scroll_px: i32,
     pub init_scroll_pt: f32,
-    pub mount_row: MRowMountFn,
-    pub row_fn: usize,
+    /// Monomorphised for the owner type at mount, with the type-erased row function it transmutes back:
+    /// crate-private, `mount_mrow` trusts the pair.
+    pub(crate) mount_row: MRowMountFn,
+    pub(crate) row_fn: usize,
     pub stats: MStats,
 }
 
@@ -426,7 +428,9 @@ impl<'a, V: 'static> Element<V> for MeasuredList<'a, V> {
         });
         let sc = self.scroll;
         debug_assert_eq!(sc.sig as *const Signal<f32> as usize, m.owner as usize + sc.off as usize);
-        let wi = m.rt.add_wire(sc.sig.head(), sc.off, patch_mscroll, reg as u32, [0; 16]);
+        // SAFETY: `sc` is a `Wired<f32, V>` (an `offset_of!`-proven `Signal<f32>` field of `V`); `patch_mscroll`
+        // reads a `Signal<f32>`.
+        let wi = unsafe { m.rt.add_wire(sc.sig.head(), sc.off, patch_mscroll, reg as u32, [0; 16]) };
         m.scope.wires.push(wi);
     }
 }

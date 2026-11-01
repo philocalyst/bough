@@ -197,7 +197,7 @@ pub struct RowInfo {
 
 pub type RowMountFn = unsafe fn(&mut Rt, *const u8, usize, usize, &mut Vec<RecordInit>) -> RowInfo;
 
-pub struct Region2 {
+pub struct VRegion {
     pub row_h: f32,
     pub vp_x: f32,
     pub vp_y: f32,
@@ -210,9 +210,9 @@ pub struct Region2 {
     pub rows: VecDeque<RowInfo>,
     pub scroll_px: f32,
     pub visible: fn(f32) -> Range<usize>,
-    pub mount_row: RowMountFn,
+    pub(crate) mount_row: RowMountFn,
     /// The user's `fn(&V, usize, &mut Mounter<V>)`, type-erased (transmuted back by `mount_row`).
-    pub row_fn: usize,
+    pub(crate) row_fn: usize,
 }
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -271,13 +271,15 @@ pub struct Rt {
     run_free: Vec<u32>,
     pub nodes: Vec<Node>,
     node_free: Vec<u32>,
-    pub wires: Vec<Wire>,
+    /// The wire arena and the owner offsets of wired signals: crate-private, because `settle` trusts them
+    /// (every offset is an `offset_of!`-proven `Signal<_>` field, every recipe the closure its patch reads).
+    pub(crate) wires: Vec<Wire>,
     wire_free: Vec<u32>,
-    /// Offsets (from the owner's address) of the owner's wired signals.
-    pub wired: Vec<u32>,
+    pub(crate) wired: Vec<u32>,
     pub texts: Vec<crate::text::TextNode>,
     text_free: Vec<u32>,
-    pub regions: Vec<Region2>,
+    /// Virtual-list regions: crate-private (each holds a type-erased row function its `mount_row` trusts).
+    pub(crate) regions: Vec<VRegion>,
     clip_dedupe: Vec<(NRect, u16)>,
     space_free: Vec<u16>,
     next_space: u16,
@@ -522,7 +524,11 @@ impl Rt {
     }
 
     /// Install a wire on the signal whose head is `head` (the signal lives at `owner + off`).
-    pub fn add_wire(&mut self, head: &std::cell::Cell<u32>, off: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
+    ///
+    /// # Safety
+    /// `off` must be the `offset_of!`-proven offset of a `Signal<T>` field of the owner type, `head` that
+    /// signal's head, and `patch` monomorphised for that `T` (and `recipe` holding what it reads).
+    pub(crate) unsafe fn add_wire(&mut self, head: &std::cell::Cell<u32>, off: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
         let h = head.get();
         let first = h & !crate::signal::QUEUED;
         if first == 0 {
