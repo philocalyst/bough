@@ -55,6 +55,24 @@ pub fn edge_band(kind: u8, radius: f32, bw: f32) -> i16 {
     }
 }
 
+/// A static record's band under a scroll copy (`Bough::scroll_run_copy`): a single quad of a box kind has
+/// `edge_band`; text, instance runs and every other kind (images, gradients, shadows) are not translation
+/// invariant anywhere (-1: their whole visible ink).
+#[inline]
+fn scroll_band(inst: &Col<Instance>, kind: u8, payload: u32) -> i16 {
+    if kind != REC_QUAD || payload & (bough_metal::fused::PAY_RUN | bough_metal::fused::PAY_IRUN) != 0 {
+        return -1;
+    }
+    if payload as usize >= inst.len() {
+        return -1;
+    }
+    let q = &inst[payload as usize];
+    match q.kind {
+        KIND_SOLID | KIND_RRECT | KIND_BORDER => edge_band(q.kind, q.radius, q.bw),
+        _ => -1,
+    }
+}
+
 pub const KIND_SOLID: u8 = 0;
 pub const KIND_RRECT: u8 = 1;
 pub const KIND_BORDER: u8 = 2;
@@ -456,6 +474,17 @@ impl Rt {
         &mut self.inst[i as usize]
     }
 
+    /// Scroll by copy (bough-metal RESULTS §15): move records `[start, start + len)` by an integral `(0, dy)`
+    /// inside viewport `vp` with `Bough::scroll_run_copy` (damage: the exposed strip, the static content's
+    /// bands, this epoch's earlier marks also at their moved place) and the paint ring's earlier marks too.
+    /// Positions are integral device px by construction: spaces are `[i32; 2]` and every scroll offset is
+    /// rounded to device px before the delta is taken, so the copied pixels are the moved content exactly.
+    pub fn scroll_copy(&mut self, start: usize, len: usize, dy: i32, vp: NRect) {
+        self.paint.shift_within(vp, 0, dy);
+        let inst = &self.inst;
+        self.bough.scroll_run_copy(start, len, 0, dy, vp, |kind, payload| scroll_band(inst, kind, payload));
+    }
+
     // ------------------------------------------------------------------ spaces and clips
     /// Set space `s`'s translation (device px; rounded: spaces are integral, text pens snap to pixels).
     #[inline]
@@ -840,7 +869,8 @@ impl Rt {
     }
 
     /// Scroll a region: unmount rows that left the range, move the survivors through their spaces (not
-    /// rewritten) and bough-core's page offsets (`scroll_run`: damage = viewport ∩ old ∪ viewport ∩ new),
+    /// rewritten) and bough-core's page offsets (`scroll_copy`: damage = the exposed strip and the static bands;
+    /// the presenter copies the rest from the previous frame),
     /// mount rows that entered.
     ///
     /// # Safety
@@ -880,7 +910,7 @@ impl Rt {
             let s = self.regions[reg].rows[i].space as usize;
             self.glyphs.spaces[s][1] -= dy;
         }
-        self.bough.scroll_run(base, nrec, 0, -dy, vp);
+        self.scroll_copy(base, nrec, -dy, vp);
         let surv_start = old_range.start.max(new_range.start);
         let surv_end = old_range.end.min(new_range.end);
         self.regions[reg].range = new_range.clone();

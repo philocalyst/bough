@@ -5,8 +5,9 @@
 //!   `prefix(k)`, `row_at(y)` and a point update are O(log n)); unseen rows count as an estimate
 //!   (zgx's measured_virtual_list: a three-line row);
 //! * only rows entering / leaving the range are mounted / unmounted; a scroll writes one space entry per
-//!   mounted row and moves the survivors' records as one contiguous run (`scroll_run`: bough-core page
-//!   offsets, damage = viewport ∩ old ∪ viewport ∩ new; instances and glyphs are never rewritten);
+//!   mounted row and moves the survivors' records as one contiguous run (`scroll_copy`: bough-core page
+//!   offsets, damage = the exposed strip and the static bands, the presenter copies the rest from the
+//!   previous frame; instances and glyphs are never rewritten);
 //! * **anchoring**: the first visible row and the offset inside it are fixed while measurement runs, so
 //!   a row measured above the viewport (taller or shorter than its estimate) moves the scroll offset by
 //!   the difference instead of moving the content; the same loop is what makes a **jump** converge: the
@@ -306,20 +307,20 @@ impl Rt {
                         Some((_, cnt, d)) if *d == dy => *cnt += nrec,
                         _ => {
                             if let Some((a, c, d)) = run.take() {
-                                self.bough.scroll_run(a, c, 0, d, vpr);
+                                self.scroll_copy(a, c, d, vpr);
                             }
                             run = Some((pos, nrec, dy));
                         }
                     }
                 } else if let Some((a, c, d)) = run.take() {
-                    self.bough.scroll_run(a, c, 0, d, vpr);
+                    self.scroll_copy(a, c, d, vpr);
                 }
             }
             p += h as i64;
             pos += nrec;
         }
         if let Some((a, c, d)) = run.take() {
-            self.bough.scroll_run(a, c, 0, d, vpr);
+            self.scroll_copy(a, c, d, vpr);
         }
         self.mregions[reg].scroll_px = s;
         self.lay_writeback_ready();

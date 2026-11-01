@@ -1,6 +1,6 @@
 # bough-metal GPU input contract
 
-**Fused layout (what the façade runs, `src/fused.rs`, kernels `fs_bin` + `fs_tile`).** Sections 1-8 below are the
+**Fused layout (what the façade runs, `src/fused.rs`, kernels `fs_copy` + `fs_bin` + `fs_tile`).** Sections 1-8 below are the
 round-2 prototype contract (1920x1440 compiled in, a mirror of bough-core pages); the fused presenter reads the real
 structures, at a runtime window size, in ONE `storageModeShared` buffer whose contents ARE the façade's `Region`
 (`bough_mem`): every column below is carved once at a fixed offset and written in place by its owner. Nothing is
@@ -9,8 +9,8 @@ mirrored.
 | column | owner (Rust type) | GPU read |
 |---|---|---|
 | header `FHdr` @0 (256 B reserved) | presenter | `viewport f32x2, tiles_x, tiles_y, inst_off, spaces_off, clips_off, dir_id_off, dir_ink_off, n_dir, pages_off, gx_off, gent_off, runs_off, toks_off, tok_stride, bin_cap, debug` (u32), then the capacity masks `m_inst, m_page, m_glyph, m_run, m_space, m_clip, m_strike` (capacity − 1; every capacity a power of two) |
-| bind table `FBind` @128 | presenter (`write_binds`) | `t[4]` target surfaces and `atlas` (Metal 3 resource ids), `bins`, `counts` (GPU addresses): encoders bind only the region (buffer 0) and the slot offset (buffer 1) |
-| 3 frame slots | presenter (`write_slot`) | `FSlot {bin_tg[3], tile_tg[3], target, nrows}` + `FRow {ty, span = x0 \| x1 << 8, prefix, pad, bits: u32x4}` per damaged tile row |
+| bind table `FBind` @128 | presenter (`write_binds`) | `t[4]` target surfaces and `atlas` (Metal 3 resource ids), `bins`, `counts` (GPU addresses), then (**round 3c, appended**) `r[4]`: the same 4 surfaces as `access::read` handles (the scroll copy's source). 88 B, ends at 216 of the 256 reserved. Encoders bind only the region (buffer 0) and the slot offset (buffer 1). **Append-only:** new entries go after `r[4]` |
+| 3 frame slots | presenter (`write_slot`) | `FSlot` (**64 B since round 3c**): `bin_tg[3]` @0, `tile_tg[3]` @12, `target` @24, `nrows` @28, `copy_tg[3]` @32 (scroll copy: tiles of the destination's tile span, or 0), `src` @44 (source surface), `dst0, dst1` @48 (destination rect `[x0, y0, x1, y1)` as u16 pairs), `d` @56 (the move `(dx, dy)` as an i16 pair: destination p reads source p − d), `cspan` @60 (copy tile span `x0 \| y0 << 8 \| width << 16`); then `FRow {ty, span = x0 \| x1 << 8, prefix, pad, bits: u32x4}` per damaged tile row **at +64** (was +32) |
 | quad instances | façade `Col<Instance>` (48 B, section 4 layout; `ext` unused) | payload instance index / instance run |
 | pages | bough-core `PagePool` arena = `Col<Page>` (**1472 B**) | `ink` @128 (**page-relative**: absolute = ink + `offl`), `gink` @640, `payload` @768, `clip` (u16) @1280, `offl` (i16x4 = dx, dy, -dx, -dy) @1436 |
 | directory | bough-core `Col<u32>` page ids, `Col<NRect>` absolute page unions | L1 cull |
@@ -25,6 +25,11 @@ mirrored.
   `[p & 0x3FFFF, + ((p >> 18) & 0xFFF) + 1)` (bars, glyph-instance text); otherwise one instance index.
 * **Cull:** directory union (absolute) → `gink` against `subsat(th, offl)` → record `ink` against the same page-relative
   threshold; a hit's absolute ink = `ink + offl`. Clip-free: unclipped inks are a superset, the clamp is exact.
+* **Scroll by copy (round 3c, RESULTS §15):** each frame's encoder runs `fs_copy` (indirect args @32, 32 x 8
+  threads) before `fs_bin`. A threadgroup per tile of the copy's destination span writes the target's pixels in
+  `[dst0, dst1)` from surface `src` at `p − d`, skipping tiles set in the frame's `FRow` bits (the tile pass writes
+  those whole), so copy and repair write disjoint tiles and no barrier is needed. 0 threadgroups without a scroll.
+  The source is always the surface showing the previous frame, never the target.
 * **The damage is the dispatch:** the CPU copies the OR-ed tile rows into `FRow` records (O(damaged rows)); the bin
   pass runs one threadgroup per record (indirect args `bin_tg`), the tile pass one per damaged tile (`tile_tg`), each
   finding its tile by a binary search over `prefix` and a select of the k-th set bit of `bits`.
@@ -39,6 +44,12 @@ mirrored.
   atlas growth) drains the pending frames and re-arms, because a submitted batch does not see later additions.
 * **Write rule:** the CPU writes the region only after `Fused::sync()` (one frame in flight; in the pre-armed stream,
   before the frame's event release).
+
+**bough-gpu (round 4, wgpu-hal):** the same region, header, bind table and slots. Kernels are wgsl-rs
+(`crates/bough-gpu/src/shaders`) with one layout: group 0 = `POOL` (region, binding 0), `BINS` (1), `COUNTS` (2), and
+textures `T0..T3` (3..6), `R0..R3` (7..10), `ATLAS` (11), which build.rs's transform reads from `FBind` instead of
+binding them; group 1 = `SLOT` (uniform: x = the slot's byte offset). Metal indices: buffers 0, 1, 2, slot 3, naga's
+sizes buffer 4 (crates/bough-gpu/RESULTS.md).
 
 ---
 

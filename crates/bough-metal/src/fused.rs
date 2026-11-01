@@ -111,9 +111,29 @@ impl Layout {
     pub fn tiles_y(&self) -> u32 {
         self.h.div_ceil(32)
     }
-    /// Bytes of one frame slot for a `w`-by-`h` window: a 32-byte header and one 32-byte record per tile row.
+    /// Bytes of one frame slot for a `w`-by-`h` window: a 64-byte header (`FSlot`) and one 32-byte record per
+    /// tile row (`FRow`, at +64).
     pub fn slot_bytes(_w: u32, h: u32) -> usize {
-        (32 + 32 * h.div_ceil(32) as usize).next_multiple_of(256)
+        (SLOT_HDR + 32 * h.div_ceil(32) as usize).next_multiple_of(256)
+    }
+}
+
+/// Bytes of a frame slot's header (`FSlot`): the three dispatches' indirect args, target, rows, the copy.
+pub const SLOT_HDR: usize = 64;
+
+/// Scroll by copy (RESULTS §15): this frame first copies `rect` (target px, `[x0, y0, x1, y1)`, empty = no
+/// copy) from surface `src` at `p - (dx, dy)` into the target, skipping the tiles the repair writes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SlotCopy {
+    pub src: u32,
+    pub rect: [i32; 4],
+    pub dx: i32,
+    pub dy: i32,
+}
+impl SlotCopy {
+    pub const NONE: SlotCopy = SlotCopy { src: 0, rect: [0; 4], dx: 0, dy: 0 };
+    pub fn is_none(&self) -> bool {
+        self.rect[0] >= self.rect[2] || self.rect[1] >= self.rect[3]
     }
 }
 
@@ -233,6 +253,7 @@ struct Kern {
     pool: Retained<ProtocolObject<dyn MTLBuffer>>,
     pso_bin: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pso_tile: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pso_copy: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     slots: [std::sync::atomic::AtomicU32; 3],
     batch: std::sync::atomic::AtomicUsize,
     /// Mirror of `arm.armed_upto` for a lock-free "already armed?" test.
@@ -260,6 +281,11 @@ impl Kern {
         unsafe {
             enc.setBuffer_offset_atIndex(Some(&self.pool), 0, 0);
             enc.setBytes_length_atIndex(NonNull::new(offs.as_ptr() as *mut _).unwrap(), 8, 1);
+            // the scroll copy (0 threadgroups without one): disjoint from the tiles the repair writes, so no
+            // barrier orders it against the tile pass
+            enc.setComputePipelineState(&self.pso_copy);
+            let tgc = MTLSize { width: 32, height: 8, depth: 1 };
+            enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, slot as usize + 32, tgc);
             enc.setComputePipelineState(&self.pso_bin);
             let tg = MTLSize { width: 256, height: 1, depth: 1 };
             if indirect {
@@ -523,6 +549,8 @@ struct FBind {
     atlas: u64,
     bins: u64,
     counts: u64,
+    /// The same 4 surfaces as read handles (the scroll copy's source); appended (round 3c), table = 216 B.
+    r: [u64; 4],
 }
 const _: () = assert!(size_of::<FHdr>() <= FBIND_OFF && FBIND_OFF + size_of::<FBind>() <= HDR_BYTES);
 
@@ -540,6 +568,7 @@ impl Fused {
         };
         let pso_bin = pso(ns_string!("fs_bin"));
         let pso_tile = pso(ns_string!("fs_tile"));
+        let pso_copy = pso(ns_string!("fs_copy"));
         let pool = device.newBufferWithLength_options(region_len, MTLResourceOptions::StorageModeShared).expect("region buffer");
         let pool_ptr = pool.contents().as_ptr() as *mut u8;
         let atlas = Self::new_atlas(&device, 1024, 512);
@@ -554,6 +583,7 @@ impl Fused {
             pool: pool.clone(),
             pso_bin: pso_bin.clone(),
             pso_tile: pso_tile.clone(),
+            pso_copy,
             slots: Default::default(),
             batch: std::sync::atomic::AtomicUsize::new(16),
             armed: AtomicU64::new(0),
@@ -694,12 +724,8 @@ impl Fused {
     /// Only while the GPU is idle (`sync`), like every other header write.
     fn write_binds(&mut self) {
         let n = self.surfs.len();
-        let b = FBind {
-            t: [rid(&self.surfs[0].tex), rid(&self.surfs[1 % n].tex), rid(&self.surfs[2 % n].tex), rid(&self.surfs[3 % n].tex)],
-            atlas: rid(&self.atlas),
-            bins: self.bins.gpuAddress(),
-            counts: self.counts.gpuAddress(),
-        };
+        let t = [rid(&self.surfs[0].tex), rid(&self.surfs[1 % n].tex), rid(&self.surfs[2 % n].tex), rid(&self.surfs[3 % n].tex)];
+        let b = FBind { t, atlas: rid(&self.atlas), bins: self.bins.gpuAddress(), counts: self.counts.gpuAddress(), r: t };
         // SAFETY: the bind table lies inside the reserved header (const-asserted); the GPU is idle.
         unsafe { (self.pool_ptr.add(FBIND_OFF) as *mut FBind).write(b) };
     }
@@ -898,7 +924,7 @@ impl Fused {
         let mut st = kern.arm.lock().unwrap();
         for f in self.released + 1..=st.armed_upto {
             // SAFETY: slot f % 2 lies in the region; frame f - 1 (the other slot) is done or waited below.
-            unsafe { write_slot(self.pool_ptr, &self.lay, (f % 2) as usize, 0, &[], false) };
+            unsafe { write_slot(self.pool_ptr, &self.lay, (f % 2) as usize, 0, &[], false, &SlotCopy::NONE) };
             self.ev.setSignaledValue(2 * f - 1);
             self.ev.waitUntilSignaledValue_timeoutMS(2 * f, 5000);
         }
@@ -930,9 +956,9 @@ impl Fused {
         n
     }
 
-    fn write_slot(&self, k: usize, target: u32, rows: &[u128], full: bool) -> (u32, u32) {
+    fn write_slot(&self, k: usize, target: u32, rows: &[u128], full: bool, copy: &SlotCopy) -> (u32, u32) {
         // SAFETY: the region is this presenter's buffer, laid out by `lay`; the GPU is idle (sync()).
-        unsafe { write_slot(self.pool_ptr, &self.lay, k, target, rows, full) }
+        unsafe { write_slot(self.pool_ptr, &self.lay, k, target, rows, full, copy) }
     }
 
     fn encode(&self, cmd: &ProtocolObject<dyn MTLCommandBuffer>, k: usize, nrows: u32, ntiles: u32, indirect: bool) {
@@ -943,7 +969,8 @@ impl Fused {
     /// entries, commit, and (windowed) publish it once the GPU is done. Returns the tile count.
     /// `PACED`: a clock-driven turn: published at the next `sync` on the calling thread (one refresh later,
     /// no thread wake, no completion wait); otherwise the publisher thread commits it in this refresh.
-    pub fn draw<const PACED: bool>(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32) -> u32 {
+    /// `copy`: a scroll copy from another surface first (RESULTS §15; `SlotCopy::NONE` for none).
+    pub fn draw<const PACED: bool>(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32, copy: &SlotCopy) -> u32 {
         self.sync();
         // a bindless frame reaches its target only through the residency set
         if !self.surfs[target].touched.get() {
@@ -953,7 +980,8 @@ impl Fused {
         // SAFETY: header field `n_dir` (u32) of the region's header; the GPU is idle (sync()).
         unsafe { (*(self.pool_ptr as *mut FHdr)).n_dir = n_dir };
         // the slot names the target; the pre-encoded frame names none
-        let (nt, _) = self.write_slot(k, target as u32, rows, full);
+        debug_assert!(copy.is_none() || (copy.src as usize != target && self.surfs[copy.src as usize].touched.get()));
+        let (nt, _) = self.write_slot(k, target as u32, rows, full, copy);
         self.release(k, nt);
         if self.publish {
             if PACED {
@@ -1099,7 +1127,7 @@ impl Fused {
         }
         // SAFETY: the bind table lies inside the reserved header; the GPU is idle (synced above).
         unsafe { (*(self.pool_ptr.add(FBIND_OFF) as *mut FBind)).t[0] = rid(&s) };
-        let (nt, nr) = self.write_slot(2, 0, &[], true);
+        let (nt, nr) = self.write_slot(2, 0, &[], true, &SlotCopy::NONE);
         let cmd = self.aux.commandBuffer().expect("command buffer");
         self.encode(&cmd, 2, nr, nt, false);
         cmd.commit();
@@ -1116,7 +1144,9 @@ impl Fused {
     /// buffer of `reps` back-to-back copies on the aux queue: (GPUEndTime - GPUStartTime) / reps, in ms.
     /// The GPU is saturated, so its clock is high and steady (kernel A/B, not a frame cost). `debug` goes to
     /// the header's debug word for the run (kernel variants), then back to 0.
-    pub fn bench_frames(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32, reps: usize, debug: u32) -> f64 {
+    /// `copy`: a scroll copy first (RESULTS §15; `SlotCopy::NONE` for none).
+    #[allow(clippy::too_many_arguments)]
+    pub fn bench_frames(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32, reps: usize, debug: u32, copy: &SlotCopy) -> f64 {
         self.sync();
         self.prepare_target(target);
         // SAFETY: header fields `n_dir`, `debug`; the GPU is idle (synced above).
@@ -1124,7 +1154,10 @@ impl Fused {
             (*(self.pool_ptr as *mut FHdr)).n_dir = n_dir;
             (*(self.pool_ptr as *mut FHdr)).debug = debug;
         }
-        let (nt, nr) = self.write_slot(2, target as u32, rows, full);
+        if !copy.is_none() {
+            self.prepare_target(copy.src as usize);
+        }
+        let (nt, nr) = self.write_slot(2, target as u32, rows, full, copy);
         let cmd = self.aux.commandBuffer().expect("command buffer");
         for _ in 0..reps {
             self.encode(&cmd, 2, nr, nt, false);
@@ -1156,13 +1189,31 @@ impl Fused {
 /// # Safety
 /// `region` must be a region laid out by `l` (slots reserved with `Layout::slot_bytes` for its window), not
 /// read by the GPU while this writes.
-pub unsafe fn write_slot(region: *mut u8, l: &Layout, k: usize, target: u32, rows: &[u128], full: bool) -> (u32, u32) {
+pub unsafe fn write_slot(region: *mut u8, l: &Layout, k: usize, target: u32, rows: &[u128], full: bool, copy: &SlotCopy) -> (u32, u32) {
     let (tx, ty) = (l.tiles_x(), l.tiles_y());
     let all = if tx >= 128 { u128::MAX } else { (1u128 << tx) - 1 };
     // SAFETY: see the function contract.
     unsafe {
         let s = region.add(l.slot[k] as usize) as *mut u32;
-        let rec = s.add(8);
+        // the scroll copy: one threadgroup per tile of the destination's tile span (row-major), its origin and
+        // width in `cspan`; the destination rect and the move as u16 / i16 pairs
+        let c = if full { &SlotCopy::NONE } else { copy };
+        if c.is_none() {
+            *s.add(8) = 0;
+        } else {
+            let [x0, y0, x1, y1] = c.rect;
+            let (cx0, cy0) = ((x0 >> 5) as u32, (y0 >> 5) as u32);
+            let (cw, ch) = (((x1 + 31) >> 5) as u32 - cx0, ((y1 + 31) >> 5) as u32 - cy0);
+            *s.add(8) = cw * ch;
+            *s.add(11) = c.src;
+            *s.add(12) = x0 as u32 | (y0 as u32) << 16;
+            *s.add(13) = x1 as u32 | (y1 as u32) << 16;
+            *s.add(14) = c.dx as i16 as u16 as u32 | (c.dy as i16 as u16 as u32) << 16;
+            *s.add(15) = cx0 | cy0 << 8 | cw << 16;
+        }
+        *s.add(9) = 1;
+        *s.add(10) = 1;
+        let rec = s.add(SLOT_HDR / 4);
         let (mut nt, mut nr) = (0u32, 0u32);
         for y in 0..ty as usize {
             let row = if full { all } else { rows.get(y).copied().unwrap_or(0) & all };

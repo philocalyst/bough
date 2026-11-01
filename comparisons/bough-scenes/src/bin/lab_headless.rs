@@ -30,12 +30,14 @@ fn main() {
     let t0 = bough_metal::perf::snap();
     let start = std::time::Instant::now();
     let mut frames = 0u64;
+    let mut tiles = 0u64;
     for tick in 0..ticks {
         if tick > 0 {
             work.tick();
             app.turn(|l| lab_publish(l, &work, mode));
         }
         frames += app.frame() as u64;
+        tiles += app.repaired_tiles as u64;
         #[cfg(target_os = "macos")]
         if stages && render && tick < 6 {
             app.gpu.as_mut().unwrap().sync();
@@ -51,6 +53,7 @@ fn main() {
         app.gpu.as_mut().unwrap().sync();
     }
     let t1 = bough_metal::perf::snap();
+    println!("repaired tiles/frame {:.1}", tiles as f64 / frames.max(1) as f64);
     println!(
         "{mode:?} render={render}: {:.4} ms/tick, frames {frames}/{ticks}, ri_instructions total {}, instr/tick {:.0}, footprint {:.1} MB, fallbacks {}, text shaped {}, rows mounted {}",
         start.elapsed().as_secs_f64() * 1e3 / ticks as f64,

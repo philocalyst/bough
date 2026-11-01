@@ -160,11 +160,11 @@ fn main() {
         match m.as_str() {
             // today's RENDER=1 path: a command buffer per frame, the next frame's sync waits
             "cmd" => run(m, frames, |i| {
-                g.draw::<false>(i % 2, &rows, false, 0);
+                g.draw::<false>(i % 2, &rows, false, 0, &bough_metal::fused::SlotCopy::NONE);
             }),
             // the windowed path: commit, then wait in the same turn (publish after completion)
             "cmd-wait" => run(m, frames, |i| {
-                g.draw::<false>(i % 2, &rows, false, 0);
+                g.draw::<false>(i % 2, &rows, false, 0, &bough_metal::fused::SlotCopy::NONE);
                 g.sync();
             }),
             s if s.starts_with("stream") => {
@@ -172,7 +172,7 @@ fn main() {
                 let k: usize = s.trim_start_matches("stream").trim_end_matches("-wait").parse().unwrap();
                 g.set_batch(k);
                 run(m, frames, |i| {
-                    g.draw::<false>(i % 2, &rows, false, 0);
+                    g.draw::<false>(i % 2, &rows, false, 0, &bough_metal::fused::SlotCopy::NONE);
                     if wait {
                         g.sync();
                     }

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/bough-mem", "crates/bough-core", "crates/bough-text", "crates/bough-metal", "crates/bough-damage-lab", "crates/bough", "comparisons/bough-heavy", "comparisons/bough-scenes", "comparisons/bough-vlist", "comparisons/bough-zgui", "comparisons/bough-text-bench"]
+members = ["crates/bough-mem", "crates/bough-core", "crates/bough-text", "crates/bough-metal", "crates/bough-damage-lab", "crates/bough", "comparisons/bough-heavy", "comparisons/bough-scenes", "comparisons/bough-vlist", "comparisons/bough-zgui", "comparisons/bough-text-bench", "crates/bough-gpu"]
+exclude = ["vendor"]
 
 [workspace.package]
 edition = "2024"
@@ -16,3 +17,17 @@ inherits = "release"
 debug = 0
 lto = "fat"
 codegen-units = 1
+
+# Vendored GPU and windowing stack (vendor/README.md: versions, provenance, local changes). Every crate in the graph
+# that names one of these resolves to the vendored copy. (wgpu, wgpu-core, winit are vendored too; their patch lines
+# join when a crate first uses them, so cargo does not warn about unused patches.)
+[patch.crates-io]
+wgpu-hal = { path = "vendor/wgpu-hal" }
+wgpu-types = { path = "vendor/wgpu-types" }
+naga = { path = "vendor/naga" }
+
+# wgsl-rs, vendored with subgroup operations added (vendor/README.md).
+[patch."https://github.com/schell/wgsl-rs"]
+wgsl-rs = { path = "vendor/wgsl-rs/crates/wgsl-rs" }
+wgsl-rs-macros = { path = "vendor/wgsl-rs/crates/wgsl-rs-macros" }
+wgsl-rs-ir = { path = "vendor/wgsl-rs/crates/wgsl-rs-ir" }

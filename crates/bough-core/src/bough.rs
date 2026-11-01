@@ -12,7 +12,7 @@
 //! points at the live page holding its record; mutation happens only through `&mut self`; no
 //! `&Page`/`&mut Page` obtained from these pointers outlives the method that created it.
 
-use crate::damage::{DamageRing, Plane, RING, tile_span};
+use crate::damage::{DamageRing, Plane, RING, ScrollRec, tile_span};
 use crate::emit::compact8;
 use crate::nrect::{NRect, Thresh, lt_mask, lt8, translate_union, union_all};
 use crate::page::{CAP, GROUP, NGROUPS, PAD_DEPTH, Page, PagePool, Record, find_first_le, find_last_lt, page_find_first_le, page_find_last_lt};
@@ -1064,6 +1064,121 @@ impl Bough {
         let (uo, un) = self.translate_impl(start, len, dx, dy);
         self.ring.add(uo.intersect(clip));
         self.ring.add(un.intersect(clip));
+    }
+
+    /// Scroll by copy (bough-metal RESULTS §15): `translate_run` of a scroll container's content by an
+    /// integral `(dx, dy)` whose damage is only what a copy of the previous frame's pixels cannot supply:
+    /// * the **exposed strip(s)** `clip \ (clip + d)`;
+    /// * the marks this epoch already made inside `clip` (before the move), also at their moved place
+    ///   (`Plane::shift_within`; a paint ring kept by the caller needs the same call);
+    /// * the **static content's bands**: a record outside the run whose visible ink meets `clip` does not
+    ///   move, but the copy moves its pixels. For a box (`band(kind, payload) >= 0`) its pixels depend on its
+    ///   edges only within `band` of them, so only the edges perpendicular to `d` see a difference: exactly
+    ///   [`Bough::damage_edges`] of its visible ink and that ink moved by `d`. Anything else (`band < 0`: text,
+    ///   images, gradients) marks its visible ink and its moved copy.
+    ///
+    /// The epoch keeps a [`ScrollRec`] (`scroll_rec`). A second scroll in the same epoch that is not the same
+    /// clip and delta cannot share the one copy: both clips are marked whole and the record is dropped (a
+    /// bounds condition, never a policy). `band` is the caller's per-record edge band (monomorphised).
+    pub fn scroll_run_copy(&mut self, start: usize, len: usize, dx: i32, dy: i32, clip: NRect, mut band: impl FnMut(u8, u32) -> i16) {
+        if len == 0 || (dx == 0 && dy == 0) {
+            return;
+        }
+        let c = clip.intersect(self.ring.window).canon();
+        let rec = ScrollRec { clip: c, dx, dy };
+        match self.ring.scroll(0) {
+            Some(r) if r == rec => {
+                // another run of the same move (a split run): the first call's marks cover it
+                self.translate_impl(start, len, dx, dy);
+                return;
+            }
+            Some(r) => {
+                self.translate_impl(start, len, dx, dy);
+                self.ring.add(r.clip);
+                self.ring.add(c);
+                // poisoned: every later scroll of this epoch is marked whole too (`scroll_rec` reports none)
+                self.ring.set_scroll(Some(ScrollRec { clip: NRect::EMPTY, dx: 0, dy: 0 }));
+                return;
+            }
+            None => {}
+        }
+        if c.is_empty() {
+            self.translate_impl(start, len, dx, dy);
+            return;
+        }
+        self.ring.shift_within(c, dx, dy);
+        // the static content: every record outside the run whose visible ink meets the clip, before the move
+        let moved: u8 = if dx != 0 { 1 | 4 } else { 0 } | if dy != 0 { 2 | 8 } else { 0 };
+        let th = Thresh::of_rect(c);
+        let mut pos0 = 0usize;
+        for d in 0..self.d_ptr.len() {
+            let l = self.d_len[d] as usize;
+            let (p0, p1) = (pos0, pos0 + l);
+            pos0 = p1;
+            if (p0 >= start && p1 <= start + len) || !th.matches(self.d_ink[d]) {
+                continue;
+            }
+            // SAFETY: directory pointers are live pages of the pool, which nothing below writes (the marks go
+            // to the damage ring, a separate allocation).
+            let p: &Page = unsafe { &*self.d_ptr[d] };
+            for s in 0..l {
+                let pos = p0 + s;
+                if pos >= start && pos < start + len {
+                    continue;
+                }
+                let ink = p.abs(p.ink[s]);
+                if !th.matches(ink) {
+                    continue;
+                }
+                let v = self.clipped(ink, p.clip[s]).intersect(c).canon();
+                if v.is_empty() {
+                    continue;
+                }
+                let b = band(p.kind[s], p.payload[s]);
+                let [x0, y0, x1, y1] = v.to_xyxy();
+                if b < 0 {
+                    self.ring.add(v);
+                    self.ring.add(v.translate(dx, dy).intersect(c));
+                    continue;
+                }
+                let b = b as i32;
+                // damage_edges(v + d, v, moved, band) clipped to c: the hull of each perpendicular edge's band
+                // and its moved copy, across both inks' extent
+                let (ux0, uy0, ux1, uy1) = (x0.min(x0 + dx), y0.min(y0 + dy), x1.max(x1 + dx), y1.max(y1 + dy));
+                if moved & 2 != 0 {
+                    for e in [y0, y1] {
+                        let (a, z) = (e.min(e + dy) - b, e.max(e + dy) + b);
+                        self.ring.add(NRect::new(ux0, a, ux1, z).intersect(c));
+                    }
+                }
+                if moved & 1 != 0 {
+                    for e in [x0, x1] {
+                        let (a, z) = (e.min(e + dx) - b, e.max(e + dx) + b);
+                        self.ring.add(NRect::new(a, uy0, z, uy1).intersect(c));
+                    }
+                }
+            }
+        }
+        self.translate_impl(start, len, dx, dy);
+        // the exposed strips: clip \ (clip + d)
+        let [cx0, cy0, cx1, cy1] = c.to_xyxy();
+        if dy > 0 {
+            self.ring.add(NRect::new(cx0, cy0, cx1, (cy0 + dy).min(cy1)));
+        } else if dy < 0 {
+            self.ring.add(NRect::new(cx0, (cy1 + dy).max(cy0), cx1, cy1));
+        }
+        if dx > 0 {
+            self.ring.add(NRect::new(cx0, cy0, (cx0 + dx).min(cx1), cy1));
+        } else if dx < 0 {
+            self.ring.add(NRect::new((cx1 + dx).max(cx0), cy0, cx1, cy1));
+        }
+        self.ring.set_scroll(Some(rec));
+    }
+
+    /// The scroll-by-copy record of the epoch `back` epochs ago (0 = current), if it had one.
+    #[inline]
+    pub fn scroll_rec(&self, back: u32) -> Option<ScrollRec> {
+        self.ring.scroll(back).filter(|r| !r.clip.is_empty())
     }
 
     pub fn set_ink(&mut self, pos: usize, ink: NRect) {
