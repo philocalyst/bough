@@ -1,0 +1,19 @@
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+        0.03 real         0.02 user         0.00 sys
+            16826368  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                1283  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                  20  involuntary context switches
+           375537021  instructions retired
+            94351794  cycles elapsed
+            14583040  peak memory footprint

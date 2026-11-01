@@ -1,0 +1,2 @@
+2000 rows; instructions (M) and time per phase:
+  bough build      0.0 M    0.00 ms | mount+layout     57.3 M    5.20 ms | teardown      6.4 M    0.44 ms | 6001 records

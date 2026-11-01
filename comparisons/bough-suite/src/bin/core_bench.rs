@@ -11,8 +11,9 @@
 //! * hit test among 1000 cards: `Bough::hit(x, y)` on the wires scene (1000 records; the lanes scene's
 //!   single record covers the whole grid);
 //! * rotation: not supported (no transforms);
-//! * million-row virtual range: `HeightIndex::new(1_000_000, 24)`, `row_at` of both viewport edges,
-//!   overscan 3.
+//! * million-row virtual range: zgx's `VirtualList` is fixed-height, so its equivalent is the fixed list's
+//!   closed form (`virtual_list`'s `visible(scroll)`, as `bough-scenes::micro_rows`); the variable-height
+//!   index (`HeightIndex`, a Fenwick tree) is measured beside it.
 use bough::mlist::HeightIndex;
 use bough::prelude::*;
 use bough_suite::*;
@@ -106,9 +107,22 @@ fn main() {
     });
     println!("1000 cards rotating + flush: not supported (no transforms)");
     println!("hit test among 1000 rotated cards: not supported (no transforms)");
+    let mut maximum = 0;
+    // the fixed list's range: first visible row, last, overscan 3 (f64 as zgx's VirtualList)
+    let (count, row_h, view, over) = (1_000_000usize, 24.0f64, 480.0f64, 3usize);
+    measure("million-row virtual range", iterations, |i| {
+        let pos = black_box((i as f32 * 11.0) % 24_000_000.0) as f64;
+        let first = (pos / row_h) as usize;
+        let end = ((pos + view) / row_h).ceil() as usize;
+        let range = first.saturating_sub(over)..(end + over).min(count);
+        maximum = maximum.max(range.len());
+        assert!(range.len() <= 27);
+        black_box(range);
+    });
+    println!("  maximum_mounted_rows={maximum}; expected <=27; range computation retains no row data");
     let list = HeightIndex::new(1_000_000, 24);
     let mut maximum = 0;
-    measure("million-row virtual range", iterations, |i| {
+    measure("million-row virtual range (variable-height index)", iterations, |i| {
         let pos = ((i as i64 * 11) % 24_000_000).min(list.total() - 480);
         let first = list.row_at(black_box(pos));
         let end = list.row_at(pos + 479) + 1;

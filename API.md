@@ -100,3 +100,59 @@ operand.
 | text wire with a 6-char number (format + shape + instances) | < 500 instructions |
 | idle | 0 instructions, no wakeups |
 | mount of a 1,000-record static template | one copy + operand writes |
+
+## As built in round 3 (branch `api`; measurements in `crates/bough/API-RESULTS.md`)
+
+What the contract above promised and the façade now has, and where the implementation changed it.
+
+**`List<T>`** (`list.rs`, `listview.rs`). A field of an owner. Items live in a slab of 64-item chunks that
+never move, so an item is an *owner* at a stable address; `order` is a vector of slot ids; `Slot<T>` is
+(index, generation). Ops: `push insert remove pop take(slot) clear truncate retain move_to move_before swap
+reverse sort_by sort_by_key edit(pos) edit_slot(slot) set`; reads: `len get slot get_slot position iter
+slots` (no `Deref<[T]>`: the store is chunked, not contiguous). Each op appends to a per-turn delta log
+(`Insert Remove Move Permute Edit`) only while the list is displayed; a slot freed this turn is reused only
+after the turn settles, so a log entry never names two items.
+`list(sig!(self.items))` (rows are `T: View`, mounted by `T::view`) or `list_with(sig!(..), fn(&T, &mut
+Mounter<T>))` shows it as a **stack of rows**: the container is a sized leaf of its parent's layout (the
+region applies its padding and gap), every row's top box is a layout group of its own in a space of its
+own, and row `k` sits at a prefix sum of the heights before it. Contract change: a list region is always
+a vertical stack (no `horizontal`, no flex distribution among rows) — that is what lets an edit lay out
+one row and a splice move the rest by space writes. `sig!(self.items)` proves any headed cell, not only
+`Signal` (`signal::Headed`).
+
+**`Entities<T>` / `Entity<T>`** (`entity.rs`). The slab is a field (`Entities::with_capacity` carves whole
+chunks up front); `Entity<T>` is a `Copy` generational handle; `get`/`inspect` read, `edit` mutates (logged
+once per turn), `remove` kills the handle. `entity_view(sig!(self.docs), handle)` mounts `T::view` with
+the entity as owner (several views of one entity follow its edits). Contract change: mutation is a direct
+`edit` inside the owning turn, not a queued `send`; an entity view inside a re-describing owner is not
+supported.
+
+**`Reader<T>`** (`reader.rs`). A field (no `Deref`). `produce(sig!(self.query), sig!(self.results), f)`
+declares the producer in the view (`f: fn(&S) -> Request<T>`, a `Send` closure); it runs whenever the
+source's value changes (frozen input compared by `==`), at mount too (fetch high). The executor is
+`Exec::Manual` (deterministic: `App::run_jobs`) or `Exec::Threads`. Completions are admitted at the start of
+the next turn (`App::turn`/`poll`) by ticket; a superseded one is dropped. Pending holds: the reader keeps
+its last value, the source that began the cohort is `HELD` (a bit in its wire head: the settle scan skips
+its non-`latest` wires), `latest(sig!(..).map(f))` opts a sink out. When every member of the cohort is
+staged, all commit in one turn (one epoch). Operands: `sig!(self.r).map(|v: Option<&T>| ..)` (before first
+readiness `None`), `sig!(self.r).pending().map(|p: bool| ..)`; `Reader::latest()`, `is_pending()`. Not
+built: `boundary().loading(..)`, faults/`try_map_async`, `project` regions.
+
+**`FIXED`** (`describe.rs`). Default `false`, as the contract says: every `App::turn` re-describes the
+owner and walks the new description in lockstep with the retained records (tape of node ids in preorder;
+`Option`/`Vec`/`each` are dynamic parts, realigned positionally and spliced as preorder runs). Every scene
+that mounts once declares `const FIXED: bool = true`. Restrictions: a layout box cannot gain or lose its
+paint between descriptions, a laid-out text cannot change its font size.
+
+**`changed`** (`changed.rs`). `fn changed(&mut self, d: Changed<'_, Self>)` on `View`: `d.list(sig!(..))`
+(the turn's ops), `d.entities(sig!(..))` (edited slab indices), `d.reader(sig!(..))` (committed this turn);
+writes settle in the same turn (at most 8 waves). Root owner only; no `#[derive(Delta)]`.
+
+**New operands and elements.** `sig!(self.sel).select(key, on, off)`: all selects of one signal share one
+keyed wire (a change patches the old key's and the new key's destinations only). `lanes(n, sig!(self.t),
+|t, i| Lane { .. })`: `n` quads as one record and one instance run, evaluated in one pass.
+
+**Soundness additions.** A wire records the address of the head it was linked into; `settle` and
+`add_wire` cut a chain whose wire does not match (a `Signal` moved between owners or apps, a list item
+taken out and put back), so an index from another arena is never run. A list item leaves the slab with
+its heads cleared; its row's own wires are freed at once.

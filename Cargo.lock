@@ -94,6 +94,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-suite"
+version = "0.0.0"
+dependencies = [
+ "bough",
+ "bough-core",
+ "bough-metal",
+ "bough-text",
+ "rustybuzz",
+ "ttf-parser",
+ "zgx-workload",
+]
+
+[[package]]
 name = "bough-text"
 version = "0.0.0"
 dependencies = [

@@ -317,6 +317,9 @@ impl Rt {
     /// whose every member is staged commits (values in, heads and held sources queued).
     pub(crate) fn admit(&mut self) {
         self.asy.committed.clear();
+        if self.asy.producers.is_empty() {
+            return; // no producer: nothing can complete (no lock taken)
+        }
         let done: Vec<_> = std::mem::take(&mut *self.asy.done.lock().unwrap());
         if done.is_empty() {
             return;

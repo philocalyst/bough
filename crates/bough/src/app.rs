@@ -265,7 +265,9 @@ impl<V: View> App<V> {
     /// wires), lay out what changed.
     pub fn turn(&mut self, f: impl FnOnce(&mut V)) {
         self.sync();
-        self.rt.reclaim(RECLAIM_BUDGET);
+        if self.reclaiming() {
+            self.rt.reclaim(RECLAIM_BUDGET);
+        }
         self.prof.reset();
         self.rt.pubs.clear();
         self.rt.admit();
@@ -462,7 +464,9 @@ impl<V: View> App<V> {
         let paint = !self.rt.paint.plane(0).is_clear();
         if !core && !paint {
             // an idle frame returns released subtrees' resources (`Rt::reclaim`), a budget at a time
-            self.rt.reclaim(RECLAIM_BUDGET);
+            if self.reclaiming() {
+                self.rt.reclaim(RECLAIM_BUDGET);
+            }
             return false;
         }
         self.prof.reset();

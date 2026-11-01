@@ -1,0 +1,1 @@
+labels[labels, opacity only]: 50.4 us per frame, 1154.5 k instructions per frame
