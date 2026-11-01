@@ -39,11 +39,13 @@ pub struct Config {
     /// Surfaces: 0 = default (4: round-robin offscreen; windowed, at most 4, drawn only as contention needs).
     pub ring: usize,
     pub caps: Caps,
+    /// Further faces: (logical face `text::FACE_BOLD` / `FACE_MONO` / `FACE_OBLIQUE`, font file).
+    pub faces: Vec<(u8, Vec<u8>)>,
 }
 
 impl Config {
     pub fn new(width_pt: f32, height_pt: f32, scale: f32, font: Vec<u8>) -> Config {
-        Config { width_pt, height_pt, scale, font, ring: 0, caps: Caps::DEFAULT }
+        Config { width_pt, height_pt, scale, font, ring: 0, caps: Caps::DEFAULT, faces: Vec::new() }
     }
     /// Surfaces of the ring.
     pub fn surfaces(&self) -> usize {
@@ -181,15 +183,23 @@ pub struct Startup {
 /// threads: the Metal device, queues and pipelines on one, and the glyphs of the document's static text
 /// (`strikes`: pixel size and text, in the order the mount meets them) on `raster_threads` more. The next
 /// [`App::new`] mounts while they run and takes their results.
-pub fn prepare(cfg: &Config, strikes: &[(f32, &str)], raster_threads: usize) {
+pub fn prepare(cfg: &Config, strikes: &[(f32, &str, u8)], svgs: &[(&'static str, f32, f32)], raster_threads: usize) {
     #[cfg(target_os = "macos")]
     {
         let (w, h) = ((cfg.width_pt * cfg.scale).round() as usize, (cfg.height_pt * cfg.scale).round() as usize);
         bough_metal::fused::prepare_in_background(Some((w, h, cfg.surfaces(), BIN_CAP)));
     }
+    crate::text::prepare_faces(&cfg.faces);
     if !strikes.is_empty() && raster_threads > 0 {
-        let px: Vec<(f32, &str)> = strikes.iter().map(|&(s, t)| (s * cfg.scale, t)).collect();
-        bough_text::atlas::prerender_in_background(&cfg.font, &px, raster_threads);
+        // faces by logical id: the configured font, or the regular one when the face is absent
+        let font_of = |l: u8| cfg.faces.iter().find(|f| f.0 == l).map_or(&cfg.font[..], |f| &f.1[..]);
+        let fonts: Vec<&[u8]> = (0..4u8).map(font_of).collect();
+        let px: Vec<(f32, &str, usize)> = strikes.iter().map(|&(s, t, f)| (s * cfg.scale, t, f as usize & 3)).collect();
+        bough_text::atlas::prerender_in_background(&fonts, &px, raster_threads);
+    }
+    if !svgs.is_empty() && raster_threads > 0 {
+        let items = svgs.iter().map(|&(s, w, h)| (s, (w * cfg.scale).round().max(1.0) as u32, (h * cfg.scale).round().max(1.0) as u32)).collect();
+        crate::deco::prerender_svgs(items, raster_threads);
     }
 }
 
@@ -230,6 +240,9 @@ impl<V: View> App<V> {
         #[cfg(target_os = "macos")]
         let wrap = overlapped.then(|| (region.base(), region.len(), region.keeper()));
         let mut rt = Rt::new(win_w, win_h, cfg.scale, &cfg.font, region, cfg.caps);
+        for (logical, font) in &cfg.faces {
+            rt.text.add_face(*logical, font);
+        }
         #[cfg(target_os = "macos")]
         let mut metal = metal;
         #[cfg(target_os = "macos")]
@@ -562,6 +575,9 @@ impl<V: View> App<V> {
             if g.sync_atlas(a.width, a.height, &a.pixels, a.dirty_bytes != 0) {
                 a.dirty_bytes = 0;
             }
+            if let Some(rows) = self.rt.images.take_dirty() {
+                g.sync_images(self.rt.images.pixels(), rows);
+            }
             self.repaired_tiles = g.draw(i, &self.rows, full, n_dir);
             if g.streaming() {
                 self.pending = Some(i);
@@ -642,6 +658,9 @@ impl<V: View> App<V> {
         let a = &mut self.rt.text.cache.atlas;
         if g.sync_atlas(a.width, a.height, &a.pixels, a.dirty_bytes != 0) {
             a.dirty_bytes = 0;
+        }
+        if let Some(rows) = self.rt.images.take_dirty() {
+            g.sync_images(self.rt.images.pixels(), rows);
         }
         g.reference_pixels(n_dir)
     }

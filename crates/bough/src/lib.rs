@@ -4,6 +4,7 @@
 pub mod app;
 pub mod backend;
 pub mod color;
+pub mod deco;
 pub mod elem;
 pub mod input;
 pub mod lay_deep;
@@ -18,6 +19,7 @@ pub mod text;
 pub use bough_text::numeric::NumFmt;
 
 pub mod prelude {
+    pub use crate::deco::{deco_box, svg_image, Deco, Grad, Shadow};
     pub use crate::app::{App, Config, View};
     pub use crate::color::{rgb, Color};
     pub use crate::elem::{at, bars, clip, each, quad, text, virtual_list, Element, IntoProp, Mounter, Quad, TextSrc};

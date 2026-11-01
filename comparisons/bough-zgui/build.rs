@@ -15,6 +15,184 @@ fn color(s: &str) -> Option<u32> {
     Some(r | g << 8 | b << 16 | a << 24)
 }
 
+/// A CSS colour as zgui's computed values print it: #rrggbbaa, rgb(), rgba(), oklch(L C H), transparent.
+/// RGBA8 with r in the low byte.
+fn css_color(s: &str) -> Option<u32> {
+    let s = s.trim();
+    if s.starts_with('#') {
+        return color(s);
+    }
+    if s == "transparent" {
+        return Some(0);
+    }
+    let (f, args) = s.split_once('(')?;
+    let v: Vec<f32> = args.trim_end_matches(')').split(|c| c == ',' || c == ' ' || c == '/').filter(|t| !t.is_empty()).map(|t| t.trim_end_matches('%').parse().unwrap_or(0.0)).collect();
+    let pack = |r: f32, g: f32, b: f32, a: f32| {
+        let q = |x: f32| (x.clamp(0.0, 255.0)).round() as u32;
+        Some(q(r) | q(g) << 8 | q(b) << 16 | q(a * 255.0) << 24)
+    };
+    match f {
+        "rgb" | "rgba" => pack(v[0], v[1], v[2], *v.get(3).unwrap_or(&1.0)),
+        "oklch" => {
+            let (l, c, h) = (v[0], v[1], v[2].to_radians());
+            let (a, b) = (c * h.cos(), c * h.sin());
+            let l_ = (l + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
+            let m_ = (l - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);
+            let s_ = (l - 0.089_484_18 * a - 1.291_485_5 * b).powi(3);
+            let lin = [
+                4.076_741_7 * l_ - 3.307_711_6 * m_ + 0.230_969_94 * s_,
+                -1.268_438 * l_ + 2.609_757_4 * m_ - 0.341_319_38 * s_,
+                -0.004_196_086_3 * l_ - 0.703_418_6 * m_ + 1.707_614_7 * s_,
+            ];
+            let enc = |x: f32| {
+                let x = x.clamp(0.0, 1.0);
+                255.0 * if x <= 0.003_130_8 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 }
+            };
+            pack(enc(lin[0]), enc(lin[1]), enc(lin[2]), *v.get(3).unwrap_or(&1.0))
+        }
+        _ => None,
+    }
+}
+
+/// Split at commas outside parentheses.
+fn split_top(s: &str) -> Vec<String> {
+    let (mut out, mut cur, mut depth) = (Vec::new(), String::new(), 0);
+    for ch in s.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(cur.trim().to_string());
+                cur.clear();
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(ch);
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
+}
+
+/// A colour token at the head of `s` (rgb(...)/oklch(...)/#hex/word) and the rest.
+fn head_color(s: &str) -> (Option<u32>, String) {
+    let s = s.trim();
+    if let Some(i) = s.find(')') {
+        if s[..i].contains('(') && !s.starts_with(|c: char| c.is_ascii_digit() || c == '-') {
+            return (css_color(&s[..=i]), s[i + 1..].trim().to_string());
+        }
+    }
+    let (t, rest) = s.split_once(' ').unwrap_or((s, ""));
+    (css_color(t), rest.to_string())
+}
+
+/// `linear-gradient(..)` / `radial-gradient(circle at X% Y%, ..)` as a `Grad` literal.
+fn gradient(s: &str) -> Option<String> {
+    let (f, body) = s.split_once('(')?;
+    let parts = split_top(body.strip_suffix(')')?);
+    let radial = f == "radial-gradient";
+    let mut it = parts.into_iter().peekable();
+    let (mut angle, mut at) = (180.0f32, [0.5f32, 0.5]);
+    if let Some(first) = it.peek().cloned() {
+        if !radial && first.ends_with("deg") {
+            angle = first.trim_end_matches("deg").parse().unwrap_or(180.0);
+            it.next();
+        } else if radial && (first.starts_with("circle") || first.contains(" at ")) {
+            if let Some((_, pos)) = first.split_once(" at ") {
+                let v: Vec<f32> = pos.split_whitespace().map(|t| t.trim_end_matches('%').parse::<f32>().unwrap_or(50.0) / 100.0).collect();
+                at = [v[0], *v.get(1).unwrap_or(&v[0])];
+            }
+            it.next();
+        }
+    }
+    let mut stops: Vec<(Option<f32>, u32)> = Vec::new();
+    for p in it {
+        let (c, rest) = head_color(&p);
+        let pos = rest.split_whitespace().next().and_then(|t| t.strip_suffix('%')).and_then(|t| t.parse::<f32>().ok()).map(|v| v / 100.0);
+        stops.push((pos, c?));
+    }
+    let n = stops.len();
+    if n < 2 {
+        return None;
+    }
+    if stops[0].0.is_none() {
+        stops[0].0 = Some(0.0);
+    }
+    if stops[n - 1].0.is_none() {
+        stops[n - 1].0 = Some(1.0);
+    }
+    let mut i = 1;
+    while i < n {
+        if stops[i].0.is_none() {
+            let j = (i..n).find(|&j| stops[j].0.is_some()).unwrap();
+            let (a, b) = (stops[i - 1].0.unwrap(), stops[j].0.unwrap());
+            for k in i..j {
+                stops[k].0 = Some(a + (b - a) * (k - i + 1) as f32 / (j - i + 1) as f32);
+            }
+            i = j;
+        }
+        i += 1;
+    }
+    let mut last = 0.0f32;
+    let st: Vec<String> = stops
+        .iter()
+        .map(|(p, c)| {
+            last = p.unwrap().max(last);
+            format!("({last:?}, {c:#x})")
+        })
+        .collect();
+    Some(format!("Some(Grad {{ radial: {radial}, angle_deg: {angle:?}, at: [{:?}, {:?}], stops: &[{}] }})", at[0], at[1], st.join(", ")))
+}
+
+/// `box-shadow` as `Shadow` literals (visible, outer shadows).
+fn shadows(s: &str) -> Vec<String> {
+    if s.is_empty() || s == "none" {
+        return Vec::new();
+    }
+    split_top(s)
+        .iter()
+        .filter_map(|p| {
+            if p.contains("inset") {
+                return None;
+            }
+            let (c, rest) = head_color(p);
+            let c = c?;
+            if c >> 24 == 0 {
+                return None;
+            }
+            let v: Vec<f32> = rest.split_whitespace().map(px).collect();
+            let g = |i: usize| *v.get(i).unwrap_or(&0.0);
+            Some(format!("Shadow {{ dx: {:?}, dy: {:?}, blur: {:?}, spread: {:?}, color: {c:#x} }}", g(0), g(1), g(2), g(3)))
+        })
+        .collect()
+}
+
+/// The SVG documents of a dump (`{file}.svg.tsv`: preorder, svg, color), `currentColor` resolved.
+fn svgs(file: &str) -> HashMap<usize, String> {
+    let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let path = format!("{dir}/../../bench/results/input/zgui/dump/{}", file.replace(".tsv", ".svg.tsv"));
+    let Ok(data) = std::fs::read_to_string(&path) else { return HashMap::new() };
+    let mut lines = data.lines();
+    let head: Vec<&str> = lines.next().unwrap().split('\t').collect();
+    let col = |h: &str| head.iter().position(|c| *c == h).unwrap();
+    let (cp, cs, cc, cw, ch) = (col("preorder"), col("svg"), col("color"), col("w"), col("h"));
+    lines
+        .filter_map(|l| {
+            let r: Vec<&str> = l.split('\t').collect();
+            let c = color(r[cc]).unwrap_or(0xff00_0000);
+            let rgba = format!("rgba({},{},{},{:.4})", c & 255, (c >> 8) & 255, (c >> 16) & 255, (c >> 24) as f32 / 255.0);
+            let mut svg = r[cs].replacen("<svg ", &format!("<svg color=\"{rgba}\" "), 1);
+            // no viewBox and no size: the element's box is the viewport, in px (CSS sizing of inline SVG)
+            if !svg.contains("viewBox") && !svg.contains(" width=") {
+                svg = svg.replacen("<svg ", &format!("<svg width=\"{}\" height=\"{}\" ", px(r[cw]), px(r[ch])), 1);
+            }
+            Some((r[cp].parse().ok()?, svg))
+        })
+        .collect()
+}
+
 fn px(s: &str) -> f32 {
     s.trim_end_matches("px").parse().unwrap_or(0.0)
 }
@@ -194,6 +372,9 @@ fn generate_layout(file: &str, name: &str, tagger: Tagger, fixed_root: bool) -> 
     };
     let mut decls: Vec<String> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
+    let mut decos: Vec<String> = vec!["Deco::NONE".into()];
+    let mut deco_index: HashMap<String, usize> = HashMap::new();
+    let svg = svgs(file);
     let mut out = String::new();
     writeln!(out, "pub static {name}: &[LNode] = &[").unwrap();
     let mut st = (0u16, false);
@@ -210,6 +391,7 @@ fn generate_layout(file: &str, name: &str, tagger: Tagger, fixed_root: bool) -> 
         let (mut bg, mut bw, mut bc, mut radius, mut hover) = (0u32, 0.0f32, 0u32, 0.0f32, 0u32);
         let (mut text, mut font, mut lh, mut fg, mut face) = (String::new(), 0.0f32, 0.0f32, 0u32, 0u8);
         let mut style = 0usize;
+        let mut deco = 0usize;
         if kind == "text" {
             flags |= 8; // L_TEXT
             text = g(r, "text");
@@ -308,18 +490,29 @@ fn generate_layout(file: &str, name: &str, tagger: Tagger, fixed_root: bool) -> 
                 flags |= 128;
             }
             bg = scale_alpha(color(&g(r, "bg_color")).unwrap_or(0), opacity);
-            if g(r, "bg_image") != "none" && !g(r, "bg_image").is_empty() && bg >> 24 == 0 {
-                bg = scale_alpha(0xffff_8b7d, opacity);
+            // decorations: a gradient fill, box shadows, a vector icon
+            let grad = gradient(&g(r, "bg_image"));
+            let sh = shadows(&g(r, "box_shadow"));
+            let icon = svg.get(&pre).cloned().unwrap_or_default();
+            if grad.is_some() && bg >> 24 == 0 {
+                bg = 0;
             }
-            if g(r, "tag") == "vector" {
+            if g(r, "tag") == "vector" && icon.is_empty() {
                 bg = scale_alpha(color(&g(r, "color")).unwrap_or(0xff00_0000), 0.25 * opacity);
+            }
+            if grad.is_some() || !sh.is_empty() || !icon.is_empty() {
+                let lit = format!("Deco {{ grad: {}, shadows: &[{}], svg: {icon:?} }}", grad.unwrap_or_else(|| "None".into()), sh.join(", "));
+                deco = *deco_index.entry(lit.clone()).or_insert_with(|| {
+                    decos.push(lit);
+                    decos.len() - 1
+                });
             }
             let ws = [px(&g(r, "border_w_t")), px(&g(r, "border_w_r")), px(&g(r, "border_w_b")), px(&g(r, "border_w_l"))];
             if ws[0] > 0.0 && ws.iter().all(|&w| w == ws[0]) {
                 bw = ws[0];
                 bc = scale_alpha(color(&g(r, "border_c_t")).unwrap_or(0), opacity);
             }
-            radius = px(&g(r, "radius_tl")).min(64.0);
+            radius = px(&g(r, "radius_tl")).min(9999.0); // the kernel clamps to the box (CSS)
             let ov = |c: &str| matches!(g(r, c).as_str(), "hidden" | "auto" | "scroll" | "clip");
             if !root && (ov("overflow_x") || ov("overflow_y")) {
                 flags |= 2; // L_CLIP
@@ -338,7 +531,7 @@ fn generate_layout(file: &str, name: &str, tagger: Tagger, fixed_root: bool) -> 
         }
         writeln!(
             out,
-            "    LNode {{ depth: {depth}, style: {style}, size: [{:?}, {:?}], bg: {bg:#x}, border_w: {bw:?}, border: {bc:#x}, radius: {radius:?}, hover: {hover:#x}, text: {text:?}, font: {font:?}, line_h: {lh:?}, color: {fg:#x}, face: {face}, flags: {flags}, tag: {tag} }}, // {pre}",
+            "    LNode {{ depth: {depth}, style: {style}, size: [{:?}, {:?}], bg: {bg:#x}, border_w: {bw:?}, border: {bc:#x}, radius: {radius:?}, hover: {hover:#x}, text: {text:?}, font: {font:?}, line_h: {lh:?}, color: {fg:#x}, face: {face}, flags: {flags}, tag: {tag}, deco: {deco} }}, // {pre}",
             px(&g(r, "w")),
             px(&g(r, "h"))
         )
@@ -347,6 +540,11 @@ fn generate_layout(file: &str, name: &str, tagger: Tagger, fixed_root: bool) -> 
     }
     writeln!(out, "];").unwrap();
     writeln!(out, "pub const {name}_NODES: usize = {n};").unwrap();
+    writeln!(out, "pub static {name}_DECOS: &[Deco] = &[").unwrap();
+    for d in &decos {
+        writeln!(out, "    {d},").unwrap();
+    }
+    writeln!(out, "];").unwrap();
     writeln!(out, "pub static {name}_DECLS: &[Decls] = &[").unwrap();
     for d in &decls {
         writeln!(out, "    &[{d}],").unwrap();

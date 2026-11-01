@@ -1,88 +1,6 @@
-//! Rasterising strikes on several cores (round 3b, input agent: the cold first frame).
-//!
-//! A document known at mount time names its font sizes; the label path rasterises the 95 printable ASCII
-//! tokens of every strike it meets, one glyph at a time on the mounting thread (1,150 glyphs, 3.6 ms for the
-//! zgui gallery). Rasterisation is independent per glyph, so the glyphs of every requested strike are split
-//! over scoped threads, each with its own scaler; the bitmaps are then placed in the atlas and entered in
-//! one pass on the calling thread (allocation order: strike, then glyph id, so the atlas layout does not
-//! depend on the thread count). Later lookups find the entries ready.
+//! Rasterising a document's strikes on other cores from process entry (round 3b, input agent: the cold
+//! first frame overlapped across cores).
 use super::*;
-
-/// One rasterised glyph: (strike, glyph id, placement left, top, width, height, alpha bitmap).
-type Raster = (StrikeId, u16, i32, i32, u32, u32, Vec<u8>);
-
-impl GlyphCache {
-    /// Rasterise glyphs `gids` at every strike of `strikes` that does not hold them yet, on up to `threads`
-    /// threads, and enter them (as `entry` would one by one).
-    pub fn prepare_parallel(&mut self, strikes: &[StrikeId], gids: &[u16], threads: usize) {
-        let mut jobs: Vec<(StrikeId, u16, f32)> = Vec::new();
-        for &s in strikes {
-            let size = self.strikes[s].size;
-            for &g in gids {
-                let ready = self.strikes[s].entries.get(g as usize).is_some_and(|e| e.state != 0);
-                if !ready && !jobs.iter().any(|j| j.0 == s && j.1 == g) {
-                    jobs.push((s, g, size));
-                }
-            }
-        }
-        if jobs.is_empty() {
-            return;
-        }
-        let t0 = std::time::Instant::now();
-        let threads = threads.clamp(1, 16).min(jobs.len());
-        let font: &[u8] = &self.font;
-        let chunk = jobs.len().div_ceil(threads);
-        let mut out: Vec<Raster> = Vec::with_capacity(jobs.len());
-        std::thread::scope(|sc| {
-            let handles: Vec<_> = jobs
-                .chunks(chunk)
-                .map(|part| {
-                    sc.spawn(move || {
-                        let mut ctx = ScaleContext::new();
-                        let fr = FontRef::from_index(font, 0).expect("font");
-                        let mut res = Vec::with_capacity(part.len());
-                        let mut size = f32::NAN;
-                        let mut scaler = None;
-                        for &(s, g, sz) in part {
-                            if sz != size || scaler.is_none() {
-                                size = sz;
-                                scaler = Some(ctx.builder(fr).size(sz).hint(false).build());
-                            }
-                            let sc = scaler.as_mut().unwrap();
-                            let img = Render::new(&[Source::Outline]).format(Format::Alpha).render(sc, g);
-                            match img {
-                                Some(img) if img.placement.width > 0 && img.placement.height > 0 && img.content == Content::Mask => {
-                                    res.push((s, g, img.placement.left, img.placement.top, img.placement.width, img.placement.height, img.data));
-                                }
-                                _ => res.push((s, g, 0, 0, 0, 0, Vec::new())),
-                            }
-                        }
-                        res
-                    })
-                })
-                .collect();
-            for h in handles {
-                out.extend(h.join().expect("raster thread"));
-            }
-        });
-        out.sort_by_key(|r| (r.0, r.1));
-        for (s, g, left, top, w, h, data) in out {
-            let mut e = Entry { state: 1, ..Default::default() };
-            if w > 0 {
-                let (x, y) = self.atlas.alloc(w, h);
-                self.atlas.blit(x, y, w, h, &data);
-                e = Entry { geo: [left as f32, -(top as f32), w as f32, h as f32], uv: [x as u16, y as u16, w as u16, h as u16], state: 1, _pad: 0 };
-            }
-            let st = &mut self.strikes[s];
-            if st.entries.len() <= g as usize {
-                st.entries.resize(g as usize + 1, Entry::default());
-            }
-            st.entries[g as usize] = e;
-            self.rasterized += 1;
-        }
-        self.raster_ns += t0.elapsed().as_nanos() as u64;
-    }
-}
 
 // ---- Rasterising from process entry -------------------------------------------------------------------
 //
@@ -100,8 +18,10 @@ use std::sync::{Arc, Condvar, Mutex};
 type Glyph = (u16, i32, i32, u32, u32, Vec<u8>);
 
 struct Pre {
-    font: Vec<u8>,
+    fonts: Vec<Vec<u8>>,
+    /// Per strike: pixel size and font index.
     sizes: Vec<f32>,
+    font: Vec<usize>,
     /// Per size: the glyphs to rasterise (sorted).
     gids: Vec<Vec<u16>>,
     /// Per size: 0 free, 1 claimed, 2 done.
@@ -172,17 +92,19 @@ impl Pre {
 /// meets them; a size given twice merges its texts). Strikes the next [`GlyphCache`] of the same font
 /// creates at these sizes take their glyphs from here; glyphs not named (shaped ligatures, text the
 /// document makes later) are rasterised when met, as before.
-pub fn prerender_in_background(font: &[u8], strikes: &[(f32, &str)], threads: usize) {
-    let face = ttf_parser::Face::parse(font, 0).expect("font");
+pub fn prerender_in_background(fonts: &[&[u8]], strikes: &[(f32, &str, usize)], threads: usize) {
+    let faces: Vec<ttf_parser::Face> = fonts.iter().map(|f| ttf_parser::Face::parse(f, 0).expect("font")).collect();
     let mut sz: Vec<f32> = Vec::new();
+    let mut fi: Vec<usize> = Vec::new();
     let mut gids: Vec<Vec<u16>> = Vec::new();
-    for &(s, text) in strikes {
-        let i = sz.iter().position(|&x| x == s).unwrap_or_else(|| {
+    for &(s, text, f) in strikes {
+        let i = (0..sz.len()).find(|&i| sz[i] == s && fi[i] == f).unwrap_or_else(|| {
             sz.push(s);
+            fi.push(f);
             gids.push(Vec::new());
             sz.len() - 1
         });
-        gids[i].extend(text.chars().filter(|c| !c.is_control()).filter_map(|c| face.glyph_index(c)).map(|g| g.0));
+        gids[i].extend(text.chars().filter(|c| !c.is_control()).filter_map(|c| faces[f].glyph_index(c)).map(|g| g.0));
     }
     for g in &mut gids {
         g.sort_unstable();
@@ -190,8 +112,9 @@ pub fn prerender_in_background(font: &[u8], strikes: &[(f32, &str)], threads: us
     }
     let n = sz.len();
     let pre = Arc::new(Pre {
-        font: font.to_vec(),
+        fonts: fonts.iter().map(|f| f.to_vec()).collect(),
         sizes: sz,
+        font: fi,
         gids,
         state: (0..n).map(|_| AtomicU8::new(0)).collect(),
         done: Mutex::new(vec![None; n]),
@@ -209,7 +132,7 @@ pub fn prerender_in_background(font: &[u8], strikes: &[(f32, &str)], threads: us
                 let (mut strikes, mut glyphs) = (0u64, 0u64);
                 for i in 0..p.sizes.len() {
                     if p.claim(i) {
-                        let g = render_strike(&mut ctx, &p.font, p.sizes[i], &p.gids[i]);
+                        let g = render_strike(&mut ctx, &p.fonts[p.font[i]], p.sizes[i], &p.gids[i]);
                         glyphs += g.len() as u64;
                         strikes += 1;
                         p.finish(i, g);
@@ -238,15 +161,17 @@ impl GlyphCache {
     pub fn absorb_prerendered(&mut self, strike: StrikeId) -> bool {
         let Some(pre) = PRE.lock().unwrap().clone() else { return false };
         let size = self.strikes[strike].size;
-        let Some(i) = pre.sizes.iter().position(|&s| s == size) else { return false };
-        let head = self.font.len().min(4096);
-        if pre.font.len() != self.font.len() || pre.font[..head] != self.font[..head] || pre.state[i].load(Ordering::Acquire) == 3 {
+        let font = self.face_font(self.strikes[strike].face);
+        let head = font.len().min(4096);
+        let same = |f: &Vec<u8>| f.len() == font.len() && f[..head] == font[..head];
+        let Some(i) = (0..pre.sizes.len()).find(|&i| pre.sizes[i] == size && same(&pre.fonts[pre.font[i]])) else { return false };
+        if pre.state[i].load(Ordering::Acquire) == 3 {
             return false;
         }
         let t0 = std::time::Instant::now();
         let glyphs = if pre.claim(i) {
             MAIN.lock().unwrap()[0] += 1;
-            render_strike(&mut self.ctx, &pre.font, size, &pre.gids[i])
+            render_strike(&mut self.ctx, &pre.fonts[pre.font[i]], size, &pre.gids[i])
         } else {
             let w = std::time::Instant::now();
             let ready = pre.state[i].load(Ordering::Acquire) == 2;

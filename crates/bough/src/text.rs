@@ -21,8 +21,91 @@ use bough_text::pool::{pen_px, Label};
 use bough_text::window::Shaped;
 use bough_text::{GlyphRun, Shaper, SimpleScript};
 
+/// A face's shaping state while another face is current ([`TextSys::select`]).
+struct FaceState {
+    shaper: Box<Shaper>,
+    face: rustybuzz::Face<'static>,
+    ascent: f32,
+    descent: f32,
+    upem: f32,
+    chunks: Vec<(String, Vec<u16>, Vec<i32>, i32)>,
+}
+
+impl FaceState {
+    fn new(font: &[u8]) -> FaceState {
+        let script = SimpleScript::build(font, 0).expect("font has no simple-script table");
+        let leaked: &'static [u8] = Box::leak(font.to_vec().into_boxed_slice());
+        let tf = ttf_parser::Face::parse(leaked, 0).expect("font");
+        FaceState {
+            shaper: Box::new(Shaper::new(script)),
+            face: rustybuzz::Face::from_slice(leaked, 0).expect("rustybuzz face"),
+            ascent: tf.ascender() as f32,
+            descent: -(tf.descender() as f32),
+            upem: tf.units_per_em() as f32,
+            chunks: Vec::new(),
+        }
+    }
+}
+
+/// A face not current: built (`Ready`) or only its font so far (`Pending`: built at first use, or taken
+/// from [`prepare_faces`]'s thread).
+enum Parked {
+    Ready(FaceState),
+    Pending(Vec<u8>),
+}
+
+type FaceJob = (Vec<u8>, std::thread::JoinHandle<(FaceState, u64)>);
+static PRE_FACES: std::sync::Mutex<Vec<FaceJob>> = std::sync::Mutex::new(Vec::new());
+
+/// Start building the shaping state of `faces` (their simple-script tables) on a thread each, from process
+/// entry; a face's first use takes it.
+pub fn prepare_faces(faces: &[(u8, Vec<u8>)]) {
+    let mut jobs = PRE_FACES.lock().unwrap();
+    for (_, font) in faces {
+        let f = font.clone();
+        let h = std::thread::Builder::new()
+            .name("bough-face".into())
+            .spawn(move || {
+                let i0 = bough_metal::fused::thread_instructions();
+                let st = FaceState::new(&f);
+                (st, bough_metal::fused::thread_instructions() - i0)
+            })
+            .expect("face thread");
+        jobs.push((font.clone(), h));
+    }
+}
+
+/// Instructions the face threads retired (for the faces taken so far).
+pub static FACE_PREP_INSTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn take_face(font: &[u8]) -> FaceState {
+    let job = {
+        let mut jobs = PRE_FACES.lock().unwrap();
+        jobs.iter().position(|j| j.0.len() == font.len() && j.0[..font.len().min(4096)] == font[..font.len().min(4096)]).map(|i| jobs.swap_remove(i))
+    };
+    match job {
+        Some((_, h)) => {
+            let (st, n) = h.join().expect("face thread");
+            FACE_PREP_INSTR.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+            st
+        }
+        None => FaceState::new(font),
+    }
+}
+
+// SAFETY: a FaceState is plain tables plus a rustybuzz face over leaked ('static) bytes; it moves from the
+// thread that built it to the one that uses it, never shared.
+unsafe impl Send for FaceState {}
+
+/// Logical faces a document names (`LNode::face`): regular, bold, mono, oblique.
+pub const FACE_REGULAR: u8 = 0;
+pub const FACE_BOLD: u8 = 1;
+pub const FACE_MONO: u8 = 2;
+pub const FACE_OBLIQUE: u8 = 3;
+
 pub struct TextSys {
-    pub shaper: Shaper,
+    /// The current face's shaper (face 0 between operations; [`TextSys::select`]).
+    pub shaper: Box<Shaper>,
     pub cache: GlyphCache,
     pub scratch: Vec<TInstance>,
     face: rustybuzz::Face<'static>,
@@ -30,7 +113,7 @@ pub struct TextSys {
     pub ascent: f32,
     pub descent: f32,
     pub upem: f32,
-    strikes: Vec<(u32, StrikeId)>,
+    strikes: Vec<(u64, StrikeId)>,
     /// Lines that needed rustybuzz for a non-ASCII chunk (segmented) or for the whole line.
     pub segmented: u64,
     pub fallbacks: u64,
@@ -40,6 +123,11 @@ pub struct TextSys {
     chunks: Vec<(String, Vec<u16>, Vec<i32>, i32)>,
     /// Scratch for multi-line shaping (newlines as spaces).
     pub bytes: Vec<u8>,
+    /// The current face, the others' parked state (`alt[f]`: `None` for the current one) and the logical
+    /// face -> face id map (absent faces fall back to 0).
+    cur: u8,
+    alt: Vec<Option<Parked>>,
+    logical: [u8; 4],
 }
 
 impl TextSys {
@@ -50,7 +138,7 @@ impl TextSys {
         let tf = ttf_parser::Face::parse(leaked, 0).expect("font");
         let (ascent, descent, upem) = (tf.ascender() as f32, -(tf.descender() as f32), tf.units_per_em() as f32);
         TextSys {
-            shaper: Shaper::new(script),
+            shaper: Box::new(Shaper::new(script)),
             cache: GlyphCache::with_tok_column(font, toks),
             scratch: Vec::with_capacity(1024),
             face: rustybuzz::Face::from_slice(leaked, 0).expect("rustybuzz face"),
@@ -64,16 +152,64 @@ impl TextSys {
             seg: GlyphRun::default(),
             chunks: Vec::new(),
             bytes: Vec::new(),
+            cur: 0,
+            alt: vec![None],
+            logical: [0; 4],
         }
     }
 
-    /// Strike id for a pixel size (cached by the size's bits).
+    /// Add `font` as logical face `logical` (FACE_BOLD, FACE_MONO, ...): its own shaper, metrics and strikes.
+    pub fn add_face(&mut self, logical: u8, font: &[u8]) {
+        let id = self.cache.add_face(font);
+        debug_assert_eq!(id as usize, self.alt.len());
+        self.alt.push(Some(Parked::Pending(font.to_vec())));
+        self.logical[logical as usize & 3] = id;
+    }
+
+    /// The face id of logical face `logical` (0 when the document's font set lacks it).
+    pub fn face_id(&self, logical: u8) -> u8 {
+        self.logical[logical as usize & 3]
+    }
+
+    /// Make face `f` current: its shaper, rustybuzz face and metrics move into the fields every shaping
+    /// path reads (boxes and a few words: no table is copied). Operations on another face's text select it
+    /// and select 0 again when done.
+    pub fn select(&mut self, f: u8) {
+        if f == self.cur {
+            return;
+        }
+        let mut st = match self.alt[f as usize].take().expect("face") {
+            Parked::Ready(s) => s,
+            Parked::Pending(font) => take_face(&font),
+        };
+        std::mem::swap(&mut self.shaper, &mut st.shaper);
+        std::mem::swap(&mut self.face, &mut st.face);
+        std::mem::swap(&mut self.ascent, &mut st.ascent);
+        std::mem::swap(&mut self.descent, &mut st.descent);
+        std::mem::swap(&mut self.upem, &mut st.upem);
+        std::mem::swap(&mut self.chunks, &mut st.chunks);
+        self.alt[self.cur as usize] = Some(Parked::Ready(st));
+        self.cur = f;
+    }
+
+    /// Select the face of `strike`.
+    fn select_strike(&mut self, strike: StrikeId) {
+        let f = self.cache.strike_face(strike);
+        self.select(f);
+    }
+
+    /// Strike id for a pixel size of face 0 (cached by the size's bits).
     pub fn strike(&mut self, size_px: f32) -> StrikeId {
-        let key = size_px.to_bits();
+        self.strike_in(0, size_px)
+    }
+
+    /// Strike id for a pixel size of face id `face`.
+    pub fn strike_in(&mut self, face: u8, size_px: f32) -> StrikeId {
+        let key = size_px.to_bits() as u64 | (face as u64) << 32;
         if let Some(&(_, s)) = self.strikes.iter().find(|(k, _)| *k == key) {
             return s;
         }
-        let s = self.cache.strike(size_px);
+        let s = self.cache.strike_in(face, size_px);
         // Glyphs rasterised from process entry (`bough::app::prepare`), if this size was named there.
         self.cache.absorb_prerendered(s);
         self.strikes.push((key, s));
@@ -86,10 +222,21 @@ impl TextSys {
         (lh_px - content) * 0.5 + self.ascent / self.upem * size_px
     }
 
+    /// [`baseline`](Self::baseline) in the face of `strike`.
+    pub fn baseline_of(&mut self, strike: StrikeId, size_px: f32, lh_px: f32) -> f32 {
+        self.select_strike(strike);
+        let b = self.baseline(size_px, lh_px);
+        self.select(0);
+        b
+    }
+
     /// The strike's conservative line bounds (O(1) line damage and record ink).
     pub fn bounds(&mut self, strike: StrikeId) -> LineBounds {
+        self.select_strike(strike);
         let tt = self.shaper.script.tokens.as_ref().expect("token model");
-        self.cache.line_bounds(strike, tt, self.shaper.script.upem)
+        let b = self.cache.line_bounds(strike, tt, self.shaper.script.upem);
+        self.select(0);
+        b
     }
 
     /// Non-Latin-1 chunk `s` shaped by rustybuzz once; index into `chunks`.
@@ -159,6 +306,13 @@ impl TextSys {
 
     /// Append the 48-byte glyph instances of one line (pen origin `ox`, baseline `oy`, px) to `scratch`.
     pub fn line(&mut self, strike: StrikeId, size_px: f32, line: &str, ox: f32, oy: f32, color: u32) -> usize {
+        self.select_strike(strike);
+        let n = self.line_cur(strike, size_px, line, ox, oy, color);
+        self.select(0);
+        n
+    }
+
+    fn line_cur(&mut self, strike: StrikeId, size_px: f32, line: &str, ox: f32, oy: f32, color: u32) -> usize {
         if let Some(n) = self.cache.shape_instances_ascii(&self.shaper, strike, line, ox, oy, color, &mut self.scratch) {
             return n;
         }

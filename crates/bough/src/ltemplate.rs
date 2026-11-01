@@ -15,6 +15,7 @@
 //!   clip is registered with the view so a scroll moves it.
 //! * **Hooks** mount the nodes the application owns (wired, interactive) with typed builders.
 use crate::color::Color;
+pub use crate::deco::{Deco, Grad, Shadow};
 use crate::elem::{quad_instance, Element, Mounter};
 use crate::layout::{attach, LeafCtx};
 use crate::rt::*;
@@ -235,6 +236,8 @@ pub struct LNode {
     pub face: u8,
     pub flags: u16,
     pub tag: u16,
+    /// Decorations: index into the template's [`Deco`] table (0: none).
+    pub deco: u16,
 }
 
 /// What a layout-template hook did with a node.
@@ -252,12 +255,13 @@ pub struct LCtx<'t> {
     style_ids: &'t mut [u32],
     decls: &'t [Decls],
     text_style: u32,
+    decos: &'t [Deco],
 }
 
 impl LCtx<'_> {
     /// Mount the node as the template would; returns (layout node, record index in the mount batch).
     pub fn mount_default<V: 'static>(&mut self, m: &mut Mounter<'_, V>) -> (u32, usize) {
-        mount_element(m, self.node, self.style_ids, self.decls, self.text_style)
+        mount_element(m, self.node, self.style_ids, self.decls, self.text_style, self.decos)
     }
     /// The interned style id of a declaration list (resolved on first use).
     pub fn style_id<V>(&mut self, m: &mut Mounter<'_, V>, index: usize) -> u32 {
@@ -312,10 +316,19 @@ pub struct LTemplate<V: 'static> {
     /// the window's (the group then follows the window on resize).
     avail: [f32; 2],
     hook: LHook<V>,
+    decos: &'static [Deco],
 }
 
 pub fn ltemplate<V>(nodes: &'static [LNode], decls: &'static [Decls], avail: [f32; 2], hook: LHook<V>) -> LTemplate<V> {
-    LTemplate { nodes, decls, avail, hook }
+    LTemplate { nodes, decls, avail, hook, decos: &[] }
+}
+
+impl<V> LTemplate<V> {
+    /// The decorations the nodes' `deco` fields index (gradients, box shadows, vector icons; deco.rs).
+    pub fn decos(mut self, t: &'static [Deco]) -> Self {
+        self.decos = t;
+        self
+    }
 }
 
 fn style_of<V>(m: &mut Mounter<'_, V>, ids: &mut [u32], decls: &[Decls], i: usize) -> u32 {
@@ -326,17 +339,19 @@ fn style_of<V>(m: &mut Mounter<'_, V>, ids: &mut [u32], decls: &[Decls], i: usiz
     ids[i]
 }
 
-fn mount_element<V: 'static>(m: &mut Mounter<'_, V>, n: &LNode, ids: &mut [u32], decls: &[Decls], text_style: u32) -> (u32, usize) {
+fn mount_element<V: 'static>(m: &mut Mounter<'_, V>, n: &LNode, ids: &mut [u32], decls: &[Decls], text_style: u32, decos: &[Deco]) -> (u32, usize) {
     let s = m.rt.scale;
     let hd = m.rt.bough.new_handle();
-    let rec = m.recs.len();
+    let mut rec = m.recs.len();
+    let deco = if n.deco != 0 && n.flags & L_TEXT == 0 { decos.get(n.deco as usize).copied().unwrap_or(Deco::NONE) } else { Deco::NONE };
     if n.flags & L_TEXT != 0 {
         // a measured leaf (para / label): shaped once into the pool, wrapped by the layout
         let node = m.rt.alloc_node();
         let size_px = n.font * s;
         let lh_px = n.line_h * s;
-        let strike = m.rt.text.strike(size_px);
-        let mut ctx = LeafCtx::new(size_px, lh_px, n.flags & L_NOWRAP == 0);
+        let face = m.rt.text.face_id(n.face);
+        let strike = m.rt.text.strike_in(face, size_px);
+        let mut ctx = LeafCtx::new(size_px, lh_px, n.flags & L_NOWRAP == 0).in_face(face);
         {
             let Rt { text, glyphs, .. } = &mut *m.rt;
             ctx.set_text(text, glyphs, n.text);
@@ -379,12 +394,27 @@ fn mount_element<V: 'static>(m: &mut Mounter<'_, V>, n: &LNode, ids: &mut [u32],
     let sid = style_of(m, ids, decls, n.style as usize);
     let lid = m.rt.lay.eng.add_style(hd, sid, None);
     attach(m, lid);
+    let hidden = n.flags & L_HIDDEN != 0;
+    if !hidden {
+        // box shadows beneath the box (the first in CSS order on top), placed with it
+        for sh in deco.shadows.iter().rev() {
+            let (ins, margin) = crate::deco::shadow_instance(sh, s, m.space, n.radius * s);
+            let node = crate::deco::mount_deco(m, ins, 0.0, 0.0, 0.0, 0.0, margin);
+            m.rt.add_place_hook(lid, PlaceHook::Deco { node, dx: sh.dx * s, dy: sh.dy * s, grow: sh.spread * s, sized: true });
+        }
+        rec = m.recs.len();
+    }
     let bordered = n.border_w > 0.0 && n.border >> 24 != 0;
-    let painted = n.flags & L_HIDDEN == 0 && (n.bg >> 24 != 0 || bordered || n.hover != 0);
+    let painted = !hidden && (n.bg >> 24 != 0 || bordered || n.hover != 0 || deco.grad.is_some());
     if painted {
         let node = m.rt.alloc_node();
         let border = bordered.then_some((n.border_w, Color(n.border)));
-        let (ins, _kind, margin) = quad_instance(Color(n.bg), n.radius * s, border, s, m.space);
+        let (mut ins, _kind, mut margin) = quad_instance(Color(n.bg), n.radius * s, border, s, m.space);
+        if let Some(g) = &deco.grad {
+            let ramp = m.rt.images.ramp(g.stops);
+            crate::deco::gradient_instance(&mut ins, g, ramp);
+            margin = 1.0;
+        }
         let run = m.rt.alloc_run(1);
         m.rt.runs[run as usize].len = 1;
         let inst = m.rt.runs[run as usize].first;
@@ -407,6 +437,16 @@ fn mount_element<V: 'static>(m: &mut Mounter<'_, V>, n: &LNode, ids: &mut [u32],
         m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_QUAD, payload: inst, handle: hd.idx, clip: m.clip });
     } else {
         m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: hd.idx, clip: m.clip });
+    }
+    if !hidden && !deco.svg.is_empty() {
+        // a vector icon over the box, rasterised at the box's size, following its top-left
+        let (w, h) = ((n.size[0] * s).round().max(1.0), (n.size[1] * s).round().max(1.0));
+        let uv = m.rt.images.svg(deco.svg, w as u32, h as u32);
+        let ins = bough_metal::instance::Instance { color: u32::MAX, uv, kind: crate::deco::KIND_IMAGE, ..Default::default() };
+        m.depth += 1;
+        let node = crate::deco::mount_deco(m, ins, 0.0, 0.0, w, h, 1.0);
+        m.depth -= 1;
+        m.rt.add_place_hook(lid, PlaceHook::Deco { node, dx: 0.0, dy: 0.0, grow: 0.0, sized: false });
     }
     (lid, rec)
 }
@@ -453,7 +493,7 @@ impl<V: 'static> Element<V> for LTemplate<V> {
             m.clip = parents.last().map_or(clip0, |p| p.2);
             let (lid, rec) = if n.flags & L_HOOK != 0 {
                 let before = m.recs.len();
-                let mut ctx = LCtx { node: n, style_ids: &mut ids, decls: self.decls, text_style };
+                let mut ctx = LCtx { node: n, style_ids: &mut ids, decls: self.decls, text_style, decos: self.decos };
                 match (self.hook)(owner, m, &mut ctx) {
                     LHooked::Subtree => {
                         skip_below = Some(n.depth);
@@ -465,12 +505,12 @@ impl<V: 'static> Element<V> for LTemplate<V> {
                             let h = m.recs[before].handle;
                             (h, before)
                         } else {
-                            mount_element(m, n, &mut ids, self.decls, text_style)
+                            mount_element(m, n, &mut ids, self.decls, text_style, self.decos)
                         }
                     }
                 }
             } else {
-                mount_element(m, n, &mut ids, self.decls, text_style)
+                mount_element(m, n, &mut ids, self.decls, text_style, self.decos)
             };
             if n.flags & L_FOCUS != 0 {
                 let r = &mut m.recs[rec];
@@ -510,6 +550,9 @@ pub(crate) enum PlaceHook {
     Anchor { view: u32 },
     /// A list region whose port is the box (`port_list` under a laid-out panel).
     Port { reg: u32 },
+    /// A decoration (deco.rs) at the box offset by (dx, dy): grown by `grow` on every side and sized with
+    /// the box (a shadow), or keeping its own size (an icon).
+    Deco { node: u32, dx: f32, dy: f32, grow: f32, sized: bool },
 }
 
 impl Rt {
@@ -591,6 +634,11 @@ impl Rt {
             PlaceHook::Anchor { view } => {
                 let o = self.space(space);
                 crate::template::move_view(self, view, o[0] + ax, o[1] + ay);
+            }
+            PlaceHook::Deco { node, dx, dy, grow, sized } => {
+                let _ = space;
+                let (dw, dh) = if sized { (w + 2.0 * grow, h + 2.0 * grow) } else { (self.nodes[node as usize].w, self.nodes[node as usize].h) };
+                self.place_deco(node, ax + dx - grow, ay + dy - grow, dw, dh);
             }
             PlaceHook::Port { reg } => {
                 let o = self.space(space);

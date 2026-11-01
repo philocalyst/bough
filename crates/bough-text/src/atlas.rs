@@ -130,6 +130,9 @@ impl Atlas {
 /// All strikes of one font plus the shared atlas.
 pub struct GlyphCache {
     font: Vec<u8>,
+    /// Further faces (bold, mono, ...): face `k >= 1` is `faces[k - 1]` (round 3b, input agent: a strike
+    /// belongs to one face and rasterises from its font).
+    faces: Vec<Vec<u8>>,
     ctx: ScaleContext,
     pub atlas: Atlas,
     strikes: Vec<Strike>,
@@ -176,6 +179,7 @@ pub struct LineBounds {
 
 struct Strike {
     size: f32,
+    face: u8,
     bounds: Option<LineBounds>,
     entries: Vec<Entry>,
     /// Entries of the 128 ASCII bytes (indexed by byte, not gid), filled lazily, for the
@@ -189,6 +193,7 @@ impl GlyphCache {
     pub fn new(font: &[u8]) -> Self {
         GlyphCache {
             font: font.to_vec(),
+            faces: Vec::new(),
             ctx: ScaleContext::new(),
             atlas: Atlas::new(1024, 512),
             strikes: vec![],
@@ -209,9 +214,30 @@ impl GlyphCache {
         self.toks.region_offset()
     }
 
-    /// The strike (glyph set) for a pixel size; created on first use.
+    /// Add a face (its font file); returns its id for [`strike_in`](Self::strike_in).
+    pub fn add_face(&mut self, font: &[u8]) -> u8 {
+        self.faces.push(font.to_vec());
+        self.faces.len() as u8
+    }
+
+    /// The font file of face `f`.
+    pub fn face_font(&self, f: u8) -> &[u8] {
+        if f == 0 { &self.font } else { &self.faces[f as usize - 1] }
+    }
+
+    /// The face a strike belongs to.
+    pub fn strike_face(&self, s: StrikeId) -> u8 {
+        self.strikes[s].face
+    }
+
+    /// The strike (glyph set) for a pixel size of face 0; created on first use.
     pub fn strike(&mut self, size: f32) -> StrikeId {
-        if let Some(i) = self.strikes.iter().position(|s| s.size == size) {
+        self.strike_in(0, size)
+    }
+
+    /// The strike for a pixel size of face `face`; created on first use.
+    pub fn strike_in(&mut self, face: u8, size: f32) -> StrikeId {
+        if let Some(i) = self.strikes.iter().position(|s| s.size == size && s.face == face) {
             return i;
         }
         let mut tok = TokStrike { entry: [Entry::default(); 256], ibox: [EMPTY_IBOX; 256], ready: [0; 256] };
@@ -219,7 +245,7 @@ impl GlyphCache {
         tok.ready[crate::script::TOK_PAD as usize] = 1;
         tok.ready[crate::script::TOK_PH as usize] = 1;
         self.toks.push(tok);
-        self.strikes.push(Strike { size, bounds: None, entries: vec![], ascii: Box::new([Entry::default(); 128]) });
+        self.strikes.push(Strike { size, face, bounds: None, entries: vec![], ascii: Box::new([Entry::default(); 128]) });
         self.strikes.len() - 1
     }
 
@@ -227,8 +253,9 @@ impl GlyphCache {
     #[inline(never)]
     fn rasterize(&mut self, strike: StrikeId, gid: u16) -> Entry {
         let t0 = std::time::Instant::now();
-        let size = self.strikes[strike].size;
-        let font = FontRef::from_index(&self.font, 0).expect("font");
+        let (size, f) = (self.strikes[strike].size, self.strikes[strike].face);
+        let bytes: &[u8] = if f == 0 { &self.font } else { &self.faces[f as usize - 1] };
+        let font = FontRef::from_index(bytes, 0).expect("font");
         let mut scaler = self.ctx.builder(font).size(size).hint(false).build();
         let img = Render::new(&[Source::Outline]).format(Format::Alpha).render(&mut scaler, gid);
         let mut e = Entry { state: 1, ..Default::default() };
@@ -265,7 +292,7 @@ impl GlyphCache {
         if let Some(b) = self.strikes[strike].bounds {
             return b;
         }
-        let face = ttf_parser::Face::parse(&self.font, 0).expect("font");
+        let face = ttf_parser::Face::parse(self.face_font(self.strikes[strike].face), 0).expect("font");
         let s = self.strikes[strike].size / upem as f32;
         let mut b = LineBounds { left: 0, over: 0, top: 0, bottom: 0 };
         for t in 0..256usize {

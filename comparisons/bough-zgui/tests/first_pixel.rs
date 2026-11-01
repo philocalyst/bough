@@ -9,7 +9,7 @@ use bough_zgui::*;
 #[test]
 fn overlapped_cold_start_presents_the_serial_pixels() {
     let cfg = config(WIDTH, HEIGHT);
-    bough::app::prepare(&cfg, &GalleryL::strikes(), 3);
+    bough::app::prepare(&cfg, &GalleryL::strikes(), &GalleryL::svgs(), 3);
     let mut a = App::new(GalleryL::fresh(), cfg, true);
     let st = a.startup;
     assert!(st.gpu_prep_ns > 0, "the presenter came from the preparation thread: {st:?}");

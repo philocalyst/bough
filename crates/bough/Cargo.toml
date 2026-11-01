@@ -13,6 +13,8 @@ bough-metal = { path = "../bough-metal" }
 rustybuzz = "0.20"
 ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
 libc = "0.2"
+# vector icons: SVG parsed by usvg and rasterised by resvg into the image atlas (zgui parses with usvg 0.46)
+resvg = { version = "0.46", default-features = false }
 # cephal: the user's retained, incremental CSS layout engine (separate repo, used unmodified, by path)
 cephal = { path = "/Users/mileswirht/Downloads/ilo-prod-work/cephal", default-features = false, features = ["flex", "block", "grid"] }
 

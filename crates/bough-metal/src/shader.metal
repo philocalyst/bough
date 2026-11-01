@@ -1206,13 +1206,15 @@ static bool f_stage_rec(device const FInst& in, float2 off, float4 cl, uint2 o, 
     half4 c1 = half4(unpack(in.color)), c2 = half4(unpack(in.color2));
     r.pm = half4(c1.rgb * c1.a, c1.a);
     r.pm2 = half4(c2.rgb * c2.a, c2.a);
-    r.radius = in.radius;
+    // CSS clamps a corner radius to the box (a pill's 9999 px is half its height); an image's word is its angle
+    float rad = in.kind == 4 ? in.radius : min(in.radius, min(r.half_.x, r.half_.y));
+    r.radius = rad;
     r.bw = in.bw;
     r.uv = in.uv.xy;
     r.kind = in.kind;
     r.pad = in.uv.z;
     r.gc = float2(as_type<float>(in.color), as_type<float>(in.color2));
-    float k = in.kind == 1 ? max(in.radius, 0.5) + 1.0 : max(in.radius, 0.5 + in.bw) + 1.0;
+    float k = in.kind == 1 ? max(rad, 0.5) + 1.0 : max(rad, 0.5 + in.bw) + 1.0;
     float4 cb = float4(r.centre - (r.half_ - k), r.centre + (r.half_ - k));
     cb = float4(max(cb.xy, qa), min(cb.zw, qb));
     r.core = in.kind == 0 ? float4(qa, qb) : (in.kind >= 3 ? float4(0.0) : cb);

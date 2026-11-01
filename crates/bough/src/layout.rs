@@ -396,6 +396,8 @@ pub struct LeafCtx {
     pub upem: f32,
     pub size_px: f32,
     pub lh_px: f32,
+    /// Face id (`TextSys::face_id`) the text is shaped and drawn in.
+    pub face: u8,
     /// Fast path: the text shaped into a glyph-pool block (the GPU draws its lines as windows onto it; the
     /// word table is read from its pens: shaped once for measuring and drawing).
     pub block: Option<Shaped>,
@@ -406,6 +408,12 @@ impl LeafCtx {
         LeafCtx { wrapped_at: i32::MIN, min_word: -1, wrap, size_px, lh_px, ..Default::default() }
     }
 
+    /// In face id `f` (set before `set_text`).
+    pub fn in_face(mut self, f: u8) -> LeafCtx {
+        self.face = f;
+        self
+    }
+
     /// Release the pool block (the leaf is going away).
     pub fn release(&mut self, pool: &mut GlyphPool) {
         if let Some(b) = self.block.take() {
@@ -414,6 +422,12 @@ impl LeafCtx {
     }
 
     pub fn set_text(&mut self, ts: &mut crate::text::TextSys, pool: &mut GlyphPool, text: &str) {
+        ts.select(self.face);
+        self.set_text_cur(ts, pool, text);
+        ts.select(0);
+    }
+
+    fn set_text_cur(&mut self, ts: &mut crate::text::TextSys, pool: &mut GlyphPool, text: &str) {
         self.release(pool);
         self.text.clear();
         self.text.extend_from_slice(text.as_bytes());
@@ -426,13 +440,23 @@ impl LeafCtx {
         // the slot kernel straight into the glyph pool (ASCII, no GSUB/GPOS trigger: glyph i is byte i), or
         // the general shaper into a run (drawn as glyph instances)
         let mut blk = Shaped::default();
-        self.fast = pool.shape_block(&ts.shaper, text.as_bytes(), &mut blk);
+        // (a face without the token model, e.g. DejaVu Bold or Mono, takes the general path)
+        self.fast = ts.shaper.script.tokens.is_some() && pool.shape_block(&ts.shaper, text.as_bytes(), &mut blk);
         if !self.fast {
             ts.shape_run(text, self.size_px, &mut self.run);
             self.slow_words();
             return;
         }
         self.block = Some(blk);
+        // the block's tokens ready in the leaf's strike (rasterised on first use): the GPU's run path reads
+        // their atlas entries
+        {
+            let strike = ts.strike_in(self.face, self.size_px);
+            let crate::text::TextSys { shaper, cache, .. } = ts;
+            let tt = shaper.script.tokens.as_ref().expect("token model");
+            let n = text.len();
+            cache.prepare_tokens(strike, &tt.gid, pool.ent[blk.base as usize..blk.base as usize + n].iter().copied());
+        }
         // word table from the pool's pens: spaces found 8 bytes at a time (SWAR zero-byte mask)
         let b = &self.text;
         let n = b.len();
@@ -1048,7 +1072,8 @@ impl Rt {
             let t = &self.texts[ti as usize];
             (t.size_px, t.line_h)
         };
-        let base_off = self.text.baseline(size_px, lh);
+        let strike = self.texts[ti as usize].strike as bough_text::atlas::StrikeId;
+        let base_off = self.text.baseline_of(strike, size_px, lh);
         let ctx = self.lay.eng.ctx_mut(lid).expect("text leaf has a context");
         let k = ctx.k().max(1e-6);
         let lines = if ctx.wraps() { ctx.wrap_at(((w + 1e-3) / k).floor() as i32) } else { ctx.wrap_at(i32::MAX) };

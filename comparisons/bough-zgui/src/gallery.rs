@@ -6,9 +6,12 @@
 //! the four probe swatches (`picked`, click + hover), the text field the 22nd Tab reaches (`value`), and
 //! the 21 running animations (spinner, skeleton pulses, progress slide, OTP carets; `clock`).
 //!
-//! Not reproduced (see INPUT.md): SVG paths (icons are tinted squares), gradients (one solid stop), box
-//! shadows, non-uniform borders, transforms (the spinner's rotation is a colour phase over the same box),
-//! text wrapping (each text node is one line), font families and weights (one face).
+//! `Gallery` (the dump-geometry variant) does not reproduce: SVG paths (icons are tinted squares),
+//! gradients (one solid stop), box shadows, transforms (the spinner's rotation is a colour phase), text
+//! wrapping (each text node is one line), faces (one). `GalleryL` (the laid-out document the scenarios
+//! measure) draws all of those (deco.rs; faces in text.rs). Neither reproduces: non-uniform borders,
+//! transforms other than the spinner's turn (rotated / scaled text, the tilted card), gradient-filled text
+//! (`background-clip: text`: drawn in the text colour).
 use crate::*;
 
 include!(concat!(env!("OUT_DIR"), "/gallery_nodes.rs"));
@@ -128,17 +131,21 @@ pub trait Doc: View {
     fn turn(app: &mut App<Self>, dt: f32) -> bool;
     fn picked(&self) -> usize;
     fn value(&self) -> String;
-    /// The document's static text (size in px at scale 1, text) in the order the mount meets it: what
-    /// `bough::app::prepare` rasterises from process entry.
-    fn strikes() -> Vec<(f32, &'static str)>;
+    /// The document's static text (size in px at scale 1, text, logical face) in the order the mount meets
+    /// it, and its vector images (document, w, h points): what `bough::app::prepare` rasterises from
+    /// process entry.
+    fn strikes() -> Vec<(f32, &'static str, u8)>;
+    fn svgs() -> Vec<(&'static str, f32, f32)> {
+        Vec::new()
+    }
 }
 
 /// Every printable ASCII character: the label path readies the whole alphabet of a strike it meets.
 const ASCII: &str = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
 impl Doc for Gallery {
     const LAID_OUT: bool = false;
-    fn strikes() -> Vec<(f32, &'static str)> {
-        GALLERY.iter().filter(|n| !n.text.is_empty()).map(|n| (n.font, ASCII)).collect()
+    fn strikes() -> Vec<(f32, &'static str, u8)> {
+        GALLERY.iter().filter(|n| !n.text.is_empty()).map(|n| (n.font, ASCII, 0)).collect()
     }
     fn fresh() -> Self {
         Gallery::new()
@@ -178,6 +185,7 @@ pub fn cold_start<D: Doc>(gpu: bool) {
         app.rt.bough.len(),
         app.repaired_tiles
     );
+    println!("DECO\ticons_rasterised={}\tsvg_instr={}\tglyphs_rasterised={}\traster_ms={:.3}", app.rt.images.rasterised, app.rt.images.svg_instr, app.rt.text.cache.rasterized, app.rt.text.cache.raster_ns as f64 / 1e6);
     println!("MEASURE\tcold-start\t{name}\tms\t{:.4}\t-", dt.as_secs_f64() * 1e3);
     println!("INSTR\tcold-start\t{name}\tp50={}\tn=1", i1 - i0);
 }
@@ -190,7 +198,7 @@ pub fn cold_start<D: Doc>(gpu: bool) {
 pub fn first_pixel<D: Doc>(entry: std::time::Instant, proc0: u64, main0: u64, overlap: bool, raster: usize) {
     let cfg = config(WIDTH, HEIGHT);
     if overlap {
-        bough::app::prepare(&cfg, &D::strikes(), raster);
+        bough::app::prepare(&cfg, &D::strikes(), &D::svgs(), raster);
     }
     let mut app = App::new(D::fresh(), cfg, true);
     let mounted = entry.elapsed();
@@ -231,7 +239,16 @@ pub fn first_pixel<D: Doc>(entry: std::time::Instant, proc0: u64, main0: u64, ov
             println!("THREAD\traster-{i}\t{}\tstrikes={}\tglyphs={}\tms={:.3}", r[2], r[0], r[1], r[3] as f64 / 1e6);
         }
     }
-    let named = main + if overlap { st.gpu_prep_instr + rast } else { 0 };
+    let sv = bough::deco::prerender_svg_stats();
+    if overlap {
+        println!("THREAD\tsvg-workers\t{}\timages={}\tms={:.3}", sv[1], sv[0], sv[2] as f64 / 1e6);
+    }
+    println!("DECO\ticons_rasterised_on_main={}\tsvg_instr_on_main={}", app.rt.images.rasterised, app.rt.images.svg_instr);
+    let fp = bough::text::FACE_PREP_INSTR.load(std::sync::atomic::Ordering::Relaxed);
+    if overlap {
+        println!("THREAD\tface-prep\t{fp}");
+    }
+    let named = main + if overlap { st.gpu_prep_instr + rast + sv[1] + fp } else { 0 };
     println!("GLYPHS\trasterised_on_main={}\traster_ms_on_main={:.3}\ttext_nodes={}", app.rt.text.cache.rasterized, app.rt.text.cache.raster_ns as f64 / 1e6, D::strikes().len());
     println!("THREAD\tother\t{}", proc.saturating_sub(named));
     println!("THREAD\tprocess\t{proc}");
@@ -345,11 +362,18 @@ pub fn kitchen<D: Doc>(gpu: bool) {
 
 // ================================================================================ the laid-out gallery
 
+/// zgui's spinner: 16 px, its mark a 4 px dot centred on the 2 px track at the top (the mark's colour from
+/// the dump, preorder 125).
+const SPINNER: f32 = 16.0;
+const SPINNER_MARK: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="2" r="2" fill="#fafafa"/></svg>"##;
+
 /// The same gallery as a laid-out document: zgui's tree with each element's computed layout declarations
 /// (`GALLERY_L`, `GALLERY_L_DECLS`; zgui's coordinates are not used), resolved at mount by bough's style
 /// path, laid out by cephal from scratch inside the root scroll view (1,585 points wide: the port less
 /// zgui's scrollbar), text measured and wrapped. Interactive nodes as in `Gallery`; the text field is
-/// anchored to its laid-out box, the progress slide is an offset group in its track.
+/// anchored to its laid-out box, the progress slide is an offset group in its track. Decorations from the
+/// dump (`GALLERY_L_DECOS`): gradients, box shadows, the SVG documents of icons and charts; faces: weight
+/// >= 600 in DejaVu Sans Bold, monospace in DejaVu Sans Mono.
 pub struct GalleryL {
     pub scroll: Signal<f32>,
     pub picked: Signal<usize>,
@@ -394,12 +418,19 @@ fn lhook(v: &GalleryL, m: &mut Mounter<'_, GalleryL>, ctx: &mut LCtx<'_>) -> LHo
             LHooked::Subtree
         }
         3 => {
-            let base = if n.border_w > 0.0 { n.border } else { n.bg };
-            m.mount(block(w, h).bg(CLEAR).rounded(n.radius).border(n.border_w.max(2.0), Color(base)).paint_with(sig!(v: GalleryL => clock), move |t| {
-                let ph = (t / 0.9).fract();
-                (with_alpha(base, 0.35 + 0.65 * ph), CLEAR)
-            }));
-            LHooked::Default
+            // zgui's spinner (zgui-ui spinner/style.rs): a 16 px ring with a 2 px track and a 4 px mark on the
+            // track, the whole turning (zui-spinner-turn, 900 ms, linear). The ring is rotation-invariant; the
+            // ring-and-mark image turns about its centre (a paint write of the instance's angle per frame).
+            let _ = (w, h);
+            m.mount(anchor(
+                SPINNER,
+                SPINNER,
+                (
+                    quad(0.0, 0.0, SPINNER, SPINNER).bg(CLEAR).rounded(SPINNER * 0.5).border(n.border_w.max(2.0), Color(n.border)),
+                    svg_image(0.0, 0.0, SPINNER, SPINNER, SPINNER_MARK).angle(sig!(v: GalleryL => clock).map(|t| (t / 0.9).fract() * std::f32::consts::TAU)),
+                ),
+            ));
+            LHooked::Subtree
         }
         4 => {
             let bg = n.bg;
@@ -428,7 +459,7 @@ pub const CONTENT_W: f32 = 1585.0;
 impl View for GalleryL {
     const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
-        scroll_y(sig!(self.scroll), [0.0, 0.0, WIDTH, HEIGHT], 0.0, ltemplate(GALLERY_L, GALLERY_L_DECLS, [CONTENT_W, f32::NAN], lhook)).bg(rgb(0xffffff)).line(LINE)
+        scroll_y(sig!(self.scroll), [0.0, 0.0, WIDTH, HEIGHT], 0.0, ltemplate(GALLERY_L, GALLERY_L_DECLS, [CONTENT_W, f32::NAN], lhook).decos(GALLERY_L_DECOS)).bg(rgb(0xffffff)).line(LINE)
     }
 }
 
@@ -447,8 +478,13 @@ pub fn turn_l(app: &mut App<GalleryL>, dt: f32) -> bool {
 
 impl Doc for GalleryL {
     const LAID_OUT: bool = true;
-    fn strikes() -> Vec<(f32, &'static str)> {
-        GALLERY_L.iter().filter(|n| !n.text.is_empty()).map(|n| (n.font, n.text)).collect()
+    fn strikes() -> Vec<(f32, &'static str, u8)> {
+        GALLERY_L.iter().filter(|n| !n.text.is_empty()).map(|n| (n.font, n.text, n.face)).collect()
+    }
+    fn svgs() -> Vec<(&'static str, f32, f32)> {
+        let mut v: Vec<(&'static str, f32, f32)> = GALLERY_L.iter().filter(|n| n.deco != 0 && !GALLERY_L_DECOS[n.deco as usize].svg.is_empty()).map(|n| (GALLERY_L_DECOS[n.deco as usize].svg, n.size[0], n.size[1])).collect();
+        v.push((SPINNER_MARK, SPINNER, SPINNER));
+        v
     }
     fn fresh() -> Self {
         GalleryL::new()
