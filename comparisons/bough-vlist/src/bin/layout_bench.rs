@@ -83,7 +83,7 @@ fn run(nodes: usize, edits: usize, fixed: bool) {
         });
     }
     let a = instrs();
-    let w0 = app.rt.lay.stats.nodes_written;
+    let w0 = app.rt.lay.stats.nodes_visited;
     let p0 = app.rt.lay.prof.acc;
     for e in 0..edits {
         app.turn(|v| {
@@ -91,11 +91,16 @@ fn run(nodes: usize, edits: usize, fixed: bool) {
         });
     }
     let per_edit = (instrs() - a) as f64 / edits as f64;
-    let written = (app.rt.lay.stats.nodes_written - w0) as f64 / edits as f64;
-    let pc = (app.rt.lay.prof.acc[2] - p0[2]) as f64 / edits as f64;
-    let pw = (app.rt.lay.prof.acc[3] - p0[3]) as f64 / edits as f64;
+    let written = (app.rt.lay.stats.nodes_visited - w0) as f64 / edits as f64;
+    if std::env::var_os("PROF").is_some() {
+        print!("[per edit:");
+        for (i, name) in bough::layout::LP_NAMES.iter().enumerate() {
+            print!(" {name} {:.0}", (app.rt.lay.prof.acc[i] - p0[i]) as f64 / edits as f64);
+        }
+        println!("]");
+    }
     println!(
-        "[of the edit: engine compute {pc:.0}, write-back {pw:.0}]\n{} nodes ({} cols x {} cards), {}: mount+layout+write {:.0} instr/node, idle turn {:.0}, edit {:.0} instr (nodes re-placed per edit {:.1})",
+        "{} nodes ({} cols x {} cards), {}: mount+layout+write {:.0} instr/node, idle turn {:.0}, edit {:.0} instr (layout nodes visited by the write-back per edit {:.1})",
         total_nodes,
         cols,
         per,

@@ -667,6 +667,7 @@ pub struct LayStats {
     pub computes: u64,
     pub nodes_added: u64,
     pub nodes_written: u64,
+    pub nodes_visited: u64,
     pub text_placed: u64,
 }
 
@@ -719,6 +720,8 @@ pub struct Lay {
     pub mount_avail: (f32, f32),
     pub pending: Vec<u32>,
     pub ready: Vec<u32>,
+    /// Nodes whose layout changed (engine's `changed()`) or whose text changed since the last write-back.
+    pub dirty: Vec<u32>,
     pub scale: f32,
     pub stats: LayStats,
     stack: Vec<(u32, f32, f32, bool)>,
@@ -738,6 +741,7 @@ impl Lay {
             mount_avail: (0.0, f32::NAN),
             pending: Vec::new(),
             ready: Vec::new(),
+            dirty: Vec::new(),
             scale,
             stats: LayStats::default(),
             stack: Vec::new(),
@@ -819,6 +823,7 @@ impl Rt {
         self.nodes[n as usize].text = text;
         self.lay.eng.invalidate(&self.bough, lid);
         self.lay.info[lid as usize].tdirty = true;
+        self.lay.dirty.push(lid);
         let root = self.lay.root_of(lid);
         if !self.lay.info[root as usize].queued {
             self.lay.info[root as usize].queued = true;
@@ -839,16 +844,12 @@ impl Rt {
             };
             self.lay.eng.layout(&self.bough, r, avail);
             self.lay.stats.computes += 1;
-            // flag what moved / resized, and the path to it
+            // what moved / resized: the write-back starts from exactly these nodes
             let mut i = 0;
             while let Some(c) = self.lay.eng.changed_at(i) {
                 i += 1;
                 self.lay.info[c as usize].needs = true;
-                let mut p = self.lay.info[c as usize].parent;
-                while p != NONE && !self.lay.info[p as usize].desc {
-                    self.lay.info[p as usize].desc = true;
-                    p = self.lay.info[p as usize].parent;
-                }
+                self.lay.dirty.push(c);
             }
             self.lay.info[r as usize].queued = false;
             self.lay.ready.push(r);
@@ -861,12 +862,8 @@ impl Rt {
     /// Write the laid-out groups back into instances and ink.
     pub fn lay_writeback_ready(&mut self) {
         self.lay.prof.reset();
-        let mut ready = std::mem::take(&mut self.lay.ready);
-        for &r in &ready {
-            self.lay_writeback(r);
-        }
-        ready.clear();
-        self.lay.ready = ready;
+        self.lay_writeback();
+        self.lay.ready.clear();
         self.lay.prof.mark(LP_WRITE);
     }
 
@@ -878,16 +875,42 @@ impl Rt {
         self.lay_writeback_ready();
     }
 
-    fn lay_writeback(&mut self, root: u32) {
+    /// Write back every group laid out since the last call: a cold group (never written) from its root down;
+    /// otherwise only from the nodes whose layout or text changed (their absolute position is the sum of the
+    /// rects up their parent chain), descending into a node's children only if it moved. A node's untouched
+    /// siblings are never visited.
+    fn lay_writeback(&mut self) {
         let mut stack = std::mem::take(&mut self.lay.stack);
         let mut kids = std::mem::take(&mut self.lay.kids);
+        let mut dirty = std::mem::take(&mut self.lay.dirty);
         stack.clear();
-        stack.push((root, 0.0, 0.0, false));
+        for &r in &self.lay.ready {
+            if !self.lay.info[r as usize].written {
+                stack.push((r, 0.0, 0.0, false));
+            }
+        }
+        for &c in &dirty {
+            let ci = self.lay.info[c as usize];
+            if !ci.live || !(ci.needs || ci.tdirty) {
+                continue;
+            }
+            let (mut px, mut py, mut p) = (0.0f32, 0.0f32, ci.parent);
+            while p != NONE {
+                let (x, y, _, _) = self.lay.eng.rect(p);
+                px += x;
+                py += y;
+                p = self.lay.info[p as usize].parent;
+            }
+            stack.push((c, px, py, false));
+        }
+        dirty.clear();
+        self.lay.dirty = dirty;
         while let Some((n, px, py, force)) = stack.pop() {
             let li = self.lay.info[n as usize];
             if !(force || li.needs || li.desc || !li.written || li.tdirty) {
                 continue;
             }
+            self.lay.stats.nodes_visited += 1;
             let (rx, ry, w, h) = self.lay.eng.rect(n);
             let (ax, ay) = (px + rx, py + ry);
             let moved = !li.written || ax != li.ax || ay != li.ay;
@@ -914,7 +937,11 @@ impl Rt {
             self.lay.eng.children_into(&self.bough, n, &mut kids);
             let fc = force || moved;
             for &c in &kids {
-                stack.push((c, ax, ay, fc));
+                // only what moved (a moved parent moves everything below it) or is flagged is visited
+                let ci = &self.lay.info[c as usize];
+                if fc || ci.needs || ci.desc || !ci.written || ci.tdirty {
+                    stack.push((c, ax, ay, fc));
+                }
             }
         }
         self.lay.stack = stack;
