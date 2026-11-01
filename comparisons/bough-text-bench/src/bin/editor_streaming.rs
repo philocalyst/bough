@@ -76,9 +76,16 @@ fn main() {
     let live_before = LIVE_BYTES.load(Ordering::Relaxed);
     PEAK_BYTES.store(live_before, Ordering::Relaxed);
     let start = Instant::now();
+    // DELTA=1: the idiomatic bough form of the same workload: the writer appends to the model it owns (a delta),
+    // instead of handing it a whole new copy to compare.
+    let delta = std::env::var("DELTA").is_ok_and(|v| v == "1");
     for _ in 0..UPDATES {
         model.push_str(TOKEN);
-        assert!(editor.set_text(black_box(model.clone())));
+        if delta {
+            assert!(editor.push_str(black_box(TOKEN)));
+        } else {
+            assert!(editor.set_text(black_box(model.clone())));
+        }
     }
     let elapsed = start.elapsed();
     let live_after = LIVE_BYTES.load(Ordering::Relaxed);
@@ -105,7 +112,8 @@ fn main() {
     assert_eq!(editor.text(), model);
     let optional = |value: Option<usize>| value.map_or("null".to_owned(), |n| n.to_string());
     println!(
-        "{{\"baseline_bytes\":{BASELINE_BYTES},\"updates\":{UPDATES},\"token_bytes\":{},\"history_entry_limit\":{HISTORY_ENTRIES},\"history_byte_limit\":{HISTORY_BYTES},\"requested_live_before_bytes\":{live_before},\"requested_live_after_bytes\":{live_after},\"requested_peak_bytes\":{peak_requested},\"elapsed_ms\":{:.6},\"rss_before_kib\":{},\"rss_after_kib\":{},\"peak_rss_kib\":{},\"undo_steps\":{undo_steps},\"redo_steps\":{redo_steps},\"recovered_bytes\":{recovered_bytes},\"correct\":true}}",
+        "{{\"form\":\"{}\",\"baseline_bytes\":{BASELINE_BYTES},\"updates\":{UPDATES},\"token_bytes\":{},\"history_entry_limit\":{HISTORY_ENTRIES},\"history_byte_limit\":{HISTORY_BYTES},\"requested_live_before_bytes\":{live_before},\"requested_live_after_bytes\":{live_after},\"requested_peak_bytes\":{peak_requested},\"elapsed_ms\":{:.6},\"rss_before_kib\":{},\"rss_after_kib\":{},\"peak_rss_kib\":{},\"undo_steps\":{undo_steps},\"redo_steps\":{redo_steps},\"recovered_bytes\":{recovered_bytes},\"correct\":true}}",
+        if delta { "delta" } else { "set_text" },
         TOKEN.len(),
         elapsed.as_secs_f64() * 1000.,
         optional(rss_before),
