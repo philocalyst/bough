@@ -15,6 +15,7 @@ copies through `[patch.crates-io]` in the root `Cargo.toml`, and `exclude = ["ve
 | wgpu-naga-bridge | 29.0.4 | e99f5305 | wgpu-core |
 | wgpu-core-deps-apple | 29.0.4 | e99f5305 | wgpu-core |
 | winit | 0.30.13 | rust-windowing/winit e9809ef54b18499bb4f2cac945719ecc2a61061b | (the host port, not started) |
+| wgsl-rs (+ -macros, -ir, -layout, -layout-macros) | 0.1.0 | schell/wgsl-rs b2de16a1b81e67d76bc265c296184f882864badb (the git checkout gpui-ce pins) | `crates/bough-gpu` shaders; `[patch."https://github.com/schell/wgsl-rs"]` |
 
 Version choice: gpui-ce (`~/projects/gpui-ce3` origin/main) pins `wgpu = "29.0.3"` and `wgsl-rs` at
 schell/wgsl-rs `b2de16a1b8`, whose naga is 29; 29.0.4 is that line's latest patch release. (The archive's
@@ -22,7 +23,15 @@ schell/wgsl-rs `b2de16a1b8`, whose naga is 29; 29.0.4 is that line's latest patc
 
 ## Local changes
 
-None yet. What the hal already exposes covers the first increment: `Device::device_from_raw`,
+* **wgsl-rs: subgroup operations.** `subgroup_exclusive_add`, `subgroup_add`, `subgroup_max`, `subgroup_ballot` in
+  `crates/wgsl-rs/src/std/subgroup.rs` (CPU model: one invocation per subgroup) and their WGSL names
+  (`subgroupExclusiveAdd`, ...) in both name tables (`wgsl-rs-macros/src/builtins.rs`,
+  `wgsl-rs-ir/src/render/builtin_lookup.rs`). naga 29 accepts them without an `enable` directive and emits
+  `simd_prefix_exclusive_sum` / `simd_sum` / `simd_max` / `simd_ballot`. The binned kernels' ordered compaction is
+  built on them (`crates/bough-gpu/src/shaders/compact.rs`, checked by `halprobe`).
+* **wgsl-rs workspace manifest**: `members` trimmed to the five vendored crates (the examples and test crates are
+  not vendored).
+* wgpu, wgpu-core, wgpu-hal, wgpu-types, naga, winit: none. What the hal already exposes covers the first increment: `Device::device_from_raw`,
 `Queue::queue_from_raw` / `as_raw`, `Device::buffer_from_raw` (the `storageModeShared` region the CPU writes in
 place), `Device::texture_from_raw` (IOSurface-backed surfaces), `ShaderInput::MetalLib` (the build-time metallib),
 `CommandEncoder::raw_command_buffer` (shared-event waits and signals between passes of a pre-armed batch), and

@@ -1,0 +1,39 @@
+use wgsl_rs::wgsl;
+
+#[wgsl(crate_path = wgsl_rs)]
+mod first_provider {
+    pub fn unrelated(x: f32) -> f32 {
+        x
+    }
+}
+
+#[wgsl(crate_path = wgsl_rs)]
+mod second_provider {
+    pub fn external_identity<T: Copy>(x: T) -> T {
+        x
+    }
+}
+
+#[wgsl]
+mod consumer {
+    use super::second_provider::*;
+    use crate::first_provider::*;
+
+    pub fn apply() -> f32 {
+        let u = unrelated(0.0);
+        let _keep = u;
+        external_identity::<f32>(2.0)
+    }
+}
+
+#[test]
+fn resolves_template_instantiation_from_correct_import() {
+    let _ = consumer::apply();
+    let full_src = consumer::WGSL_SOURCE.wgsl_source().unwrap();
+    // Under the robust mangling scheme (issue #112) the underscore in
+    // `external_identity` causes it to be escaped to `_1external_identity`.
+    assert!(
+        full_src.contains("fn _1external_identity_f32("),
+        "Expected instantiated _1external_identity_f32 in output, got:\n{full_src}"
+    );
+}

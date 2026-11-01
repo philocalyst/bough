@@ -6,14 +6,14 @@ pub mod copy {
     use wgsl_rs::std::*;
 
     storage!(group(0), binding(0), POOL: RuntimeArray<u32>);
-    texture!(group(0), binding(1), T0: TextureStorage2D<Bgra8unorm, Write>);
-    texture!(group(0), binding(2), T1: TextureStorage2D<Bgra8unorm, Write>);
-    texture!(group(0), binding(3), T2: TextureStorage2D<Bgra8unorm, Write>);
-    texture!(group(0), binding(4), T3: TextureStorage2D<Bgra8unorm, Write>);
-    texture!(group(0), binding(5), R0: Texture2D<f32>);
-    texture!(group(0), binding(6), R1: Texture2D<f32>);
-    texture!(group(0), binding(7), R2: Texture2D<f32>);
-    texture!(group(0), binding(8), R3: Texture2D<f32>);
+    texture!(group(0), binding(3), T0: TextureStorage2D<Bgra8unorm, Write>);
+    texture!(group(0), binding(4), T1: TextureStorage2D<Bgra8unorm, Write>);
+    texture!(group(0), binding(5), T2: TextureStorage2D<Bgra8unorm, Write>);
+    texture!(group(0), binding(6), T3: TextureStorage2D<Bgra8unorm, Write>);
+    texture!(group(0), binding(7), R0: Texture2D<f32>);
+    texture!(group(0), binding(8), R1: Texture2D<f32>);
+    texture!(group(0), binding(9), R2: Texture2D<f32>);
+    texture!(group(0), binding(10), R3: Texture2D<f32>);
     uniform!(group(1), binding(0), SLOT: Vec4u);
 
     /// Words of the frame slot's header (`FSlot`, 64 B); damaged-row records (`FRow`, 8 words) follow it.

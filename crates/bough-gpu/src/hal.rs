@@ -67,6 +67,11 @@ pub struct HalGpu {
     pub armed_upto: u64,
     pub released: u64,
     pub startup: Startup,
+    pub pso_compact: hal::metal::ComputePipeline,
+    pub slot_raw: Vec<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    pub bins_raw: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub bins: hal::metal::Buffer,
+    pub counts: hal::metal::Buffer,
     pub resid: Retained<ProtocolObject<dyn MTLResidencySet>>,
 }
 
@@ -121,12 +126,14 @@ impl HalGpu {
             },
             count: None,
         };
-        let e0 = vec![wgt::BindGroupLayoutEntry {
-            binding: 0,
+        let buf = |binding: u32, read_only: bool| wgt::BindGroupLayoutEntry {
+            binding,
             visibility: wgt::ShaderStages::COMPUTE,
-            ty: wgt::BindingType::Buffer { ty: wgt::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+            ty: wgt::BindingType::Buffer { ty: wgt::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None },
             count: None,
-        }];
+        };
+        // the region, the row bins, their counts (textures come from the region's bind table)
+        let e0 = vec![buf(0, true), buf(1, false), buf(2, false)];
         // textures are not bound: the kernels read them from the bind table in the region (build.rs `bindless`)
         let _ = storage;
         let e1 = [wgt::BindGroupLayoutEntry {
@@ -137,7 +144,7 @@ impl HalGpu {
         }];
         // SAFETY (this block): descriptors reference live objects of this device; the kernels' bindings match the
         // layouts (build.rs mirrors wgpu-hal's index assignment for exactly this layout).
-        let (bgl0, bgl1, layout, module, pso_copy) = unsafe {
+        let (bgl0, bgl1, layout, module, pso_copy, pso_compact) = unsafe {
             let bgl0 = device.create_bind_group_layout(&hal::BindGroupLayoutDescriptor { label: None, flags: hal::BindGroupLayoutFlags::empty(), entries: &e0 }).unwrap();
             let bgl1 = device.create_bind_group_layout(&hal::BindGroupLayoutDescriptor { label: None, flags: hal::BindGroupLayoutFlags::empty(), entries: &e1 }).unwrap();
             let layout = device
@@ -155,15 +162,25 @@ impl HalGpu {
                     cache: None,
                 })
                 .unwrap();
-            (bgl0, bgl1, layout, module, pso_copy)
+            let pso_compact = device
+                .create_compute_pipeline(&hal::ComputePipelineDescriptor {
+                    label: None,
+                    layout: &layout,
+                    stage: hal::ProgrammableStage { module: &module, entry_point: "fs_compact_test", constants: &consts, zero_initialize_workgroup_memory: false },
+                    cache: None,
+                })
+                .unwrap();
+            (bgl0, bgl1, layout, module, pso_copy, pso_compact)
         };
         st.pipeline_us = us(t);
         let mut slot_bufs = Vec::new();
+        let mut slot_raw = Vec::new();
         let mut bg1 = Vec::new();
         for &off in slots {
             let raw = raw_device.newBufferWithLength_options(16, MTLResourceOptions::StorageModeShared).unwrap();
             // SAFETY: 16 bytes of shared storage.
             unsafe { (raw.contents().as_ptr() as *mut [u32; 4]).write([off, 0, 0, 0]) };
+            slot_raw.push(raw.clone());
             // SAFETY: live buffer of 16 bytes.
             let b = unsafe { hal::metal::Device::buffer_from_raw(raw, 16) };
             let bb = [hal::BufferBinding::new_unchecked(&b, 0, None)];
@@ -177,7 +194,11 @@ impl HalGpu {
             slot_bufs.push(b);
             bg1.push(g);
         }
-        let bg0 = Self::bind0(&device, &bgl0, &region, &surfs);
+        let bins_raw = raw_device.newBufferWithLength_options(1 << 20, MTLResourceOptions::StorageModeShared).unwrap();
+        let counts_raw = raw_device.newBufferWithLength_options(4096, MTLResourceOptions::StorageModeShared).unwrap();
+        // SAFETY: live buffers of these lengths.
+        let (bins, counts) = unsafe { (hal::metal::Device::buffer_from_raw(bins_raw.clone(), 1 << 20), hal::metal::Device::buffer_from_raw(counts_raw.clone(), 4096)) };
+        let bg0 = Self::bind0(&device, &bgl0, &region, &bins, &counts);
         // SAFETY: device-owned objects.
         let (fence, encoder) = unsafe {
             (device.create_fence().unwrap(), device.create_command_encoder(&hal::CommandEncoderDescriptor { label: None, queue: &queue }).unwrap())
@@ -232,6 +253,11 @@ impl HalGpu {
             armed_upto: 0,
             released: 0,
             startup: st,
+            pso_compact,
+            slot_raw,
+            bins_raw,
+            bins,
+            counts,
             resid: set,
         }
     }
@@ -269,11 +295,10 @@ impl HalGpu {
         Surface { io, raw, tex, write_view, read_view }
     }
 
-    fn bind0(device: &hal::metal::Device, bgl0: &hal::metal::BindGroupLayout, region: &hal::metal::Buffer, surfs: &[Surface]) -> hal::metal::BindGroup {
-        let _ = surfs;
-        let bb = [hal::BufferBinding::new_unchecked(region, 0, None)];
+    fn bind0(device: &hal::metal::Device, bgl0: &hal::metal::BindGroupLayout, region: &hal::metal::Buffer, bins: &hal::metal::Buffer, counts: &hal::metal::Buffer) -> hal::metal::BindGroup {
+        let bb = [hal::BufferBinding::new_unchecked(region, 0, None), hal::BufferBinding::new_unchecked(bins, 0, None), hal::BufferBinding::new_unchecked(counts, 0, None)];
         let tb: Vec<hal::TextureBinding<'_, hal::metal::TextureView>> = Vec::new();
-        let entries = vec![hal::BindGroupEntry { binding: 0, resource_index: 0, count: 1 }];
+        let entries: Vec<hal::BindGroupEntry> = (0..3).map(|i| hal::BindGroupEntry { binding: i, resource_index: i, count: 1 }).collect();
         // SAFETY: the bind group references live objects matching `bgl0`.
         unsafe {
             device
@@ -358,6 +383,32 @@ impl HalGpu {
         }
         self.released += 1;
         self.ev.setSignaledValue(2 * self.released - 1);
+    }
+
+    /// Self-test of the subgroup compaction (`fs_compact_test`): compacts the set bits of the 8 region words at
+    /// byte offset `off` (slot 2's uniform carries it) into the bins; returns (lane, total) per hit.
+    pub fn compact_test(&mut self, off: u32, words: [u32; 8]) -> Vec<(u32, u32)> {
+        // SAFETY: `off` + 32 lies in the region and slot 2's 16-byte uniform buffer; the GPU is idle.
+        unsafe {
+            (self.region_ptr.add(off as usize) as *mut [u32; 8]).write(words);
+            let u = self.slot_raw[2].contents().as_ptr() as *mut u32;
+            *u.add(1) = off;
+            self.encoder.begin_encoding(None).unwrap();
+            self.encoder.begin_compute_pass(&hal::ComputePassDescriptor { label: None, timestamp_writes: None });
+            self.encoder.set_compute_pipeline(&self.pso_compact);
+            self.encoder.set_bind_group(&self.layout, 0, &self.bg0, &[]);
+            self.encoder.set_bind_group(&self.layout, 1, &self.bg1[2], &[]);
+            self.encoder.dispatch([1, 1, 1]);
+            self.encoder.end_compute_pass();
+            let cb = self.encoder.end_encoding().unwrap();
+            self.fence_value += 1;
+            self.queue.submit(&[&cb], &[], (&mut self.fence, self.fence_value)).unwrap();
+            self.device.wait(&self.fence, self.fence_value, None).unwrap();
+            self.encoder.reset_all(std::iter::once(cb));
+            let n: u32 = words.iter().map(|w| w.count_ones()).sum();
+            let b = self.bins_raw.contents().as_ptr() as *const [u32; 4];
+            (0..n as usize).map(|i| ((*b.add(i))[0], (*b.add(i))[1])).collect()
+        }
     }
 
     pub fn surface_pixels(&self, i: usize) -> Vec<u8> {

@@ -66,6 +66,13 @@ fn main() {
     println!("fs_copy (wgsl-rs -> naga -> metallib, through wgpu-hal): {bad} wrong pixels of {}", w * h);
     assert_eq!(bad, 0);
 
+    // 2b. the subgroup compaction (wgsl-rs subgroup ops -> naga -> simd_prefix_exclusive_sum / simd_sum)
+    let words = [0x8000_0001u32, 0, 0xFFFF_FFFF, 0x0F0F_0F0F, 0, 0x10, 0xAAAA_AAAA, 1];
+    let got = g.compact_test(slots[2] + 64, words);
+    let want: Vec<(u32, u32)> = (0..256u32).filter(|&i| (words[(i >> 5) as usize] >> (i & 31)) & 1 != 0).map(|i| (i, words.iter().map(|w| w.count_ones()).sum())).collect();
+    println!("subgroup compaction (wgsl-rs): {} hits, in order and complete: {}", got.len(), got == want);
+    assert_eq!(got, want);
+
     // 3. per-frame instructions: a one-tile copy (the floor, not the copy's GPU cost)
     let small = SlotCopy { src: 1, rect: [0, 0, 32, 32], dx: 0, dy: -1 };
     for k in 0..2 {

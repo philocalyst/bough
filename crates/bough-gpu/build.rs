@@ -15,12 +15,15 @@ fn binding_map() -> msl::BindingMap {
     let mut m = BTreeMap::new();
     let rb = |group, binding| naga::ResourceBinding { group, binding };
     m.insert(rb(0, 0), msl::BindTarget { buffer: Some(0), mutable: false, ..Default::default() });
+    m.insert(rb(0, 1), msl::BindTarget { buffer: Some(1), mutable: true, ..Default::default() });
+    m.insert(rb(0, 2), msl::BindTarget { buffer: Some(2), mutable: true, ..Default::default() });
+    // textures (bindings 3..): never bound; the bindless transform reads them from the bind table
     for i in 0..4u32 {
-        m.insert(rb(0, 1 + i), msl::BindTarget { texture: Some(i as u8), mutable: true, ..Default::default() });
-        m.insert(rb(0, 5 + i), msl::BindTarget { texture: Some(4 + i as u8), ..Default::default() });
+        m.insert(rb(0, 3 + i), msl::BindTarget { texture: Some(i as u8), mutable: true, ..Default::default() });
+        m.insert(rb(0, 7 + i), msl::BindTarget { texture: Some(4 + i as u8), ..Default::default() });
     }
-    m.insert(rb(0, 9), msl::BindTarget { texture: Some(8), ..Default::default() });
-    m.insert(rb(1, 0), msl::BindTarget { buffer: Some(1), ..Default::default() });
+    m.insert(rb(0, 11), msl::BindTarget { texture: Some(8), ..Default::default() });
+    m.insert(rb(1, 0), msl::BindTarget { buffer: Some(3), ..Default::default() });
     m
 }
 
@@ -35,7 +38,7 @@ const BIND_TABLE: &str = "struct BoughBind {
 };
 ";
 
-/// Mechanical bindless transform of naga's MSL (WGSL cannot name a texture held in a buffer): every texture
+/// Mechanical transform of naga's MSL. Bindless (WGSL cannot name a texture held in a buffer): every texture
 /// parameter of an entry point (`T0..T3`, `R0..R3`, `ATLAS`) is dropped from the signature and read from the bind
 /// table in the region instead. So an encoder binds only the region and the slot: a pre-armed frame names no
 /// surface (no per-frame `setTexture`, and IOSurfaceIsInUse reports only the compositor), as on the direct path.
@@ -60,6 +63,13 @@ fn bindless(msl: &str) -> String {
             fetch.push_str(&format!("    {ty} {name} = __fb.{field};\n"));
             continue;
         }
+        // workgroup memory as kernel-scope `threadgroup` variables (static size, so the encoder sets no
+        // threadgroup-memory length: a passthrough metallib tells wgpu-hal nothing about it)
+        if in_sig && line.starts_with(", threadgroup ") && line.ends_with('&') == false && line.contains('&') {
+            let decl = line[2..].replace('&', "");
+            fetch.push_str(&format!("    {decl};\n"));
+            continue;
+        }
         if in_sig && line == ") {" {
             in_sig = false;
             out.push_str(line);
@@ -80,16 +90,16 @@ fn bindless(msl: &str) -> String {
 fn main() {
     println!("cargo:rerun-if-changed=src/shaders");
     let out = std::env::var("OUT_DIR").unwrap();
-    let modules: &[(&wgsl_rs::Source, &[&str])] = &[(&shaders::copy::copy::WGSL_SOURCE, &["fs_copy"])];
-    let mut msl_all = String::new();
-    for (i, (src, entries)) in modules.iter().enumerate() {
+    let modules: &[(&wgsl_rs::Source, &[&str])] = &[(&shaders::copy::copy::WGSL_SOURCE, &["fs_copy"]), (&shaders::compact::compact::WGSL_SOURCE, &["fs_compact_test"])];
+    let mut airs = Vec::new();
+    for (src, entries) in modules.iter() {
         let wgsl = src.wgsl_source().unwrap_or_else(|e| panic!("wgsl-rs module {}: {e}", src.name));
         std::fs::write(format!("{out}/{}.wgsl", src.name), &wgsl).unwrap();
         let module = naga::front::wgsl::parse_str(&wgsl).unwrap_or_else(|e| panic!("{}: {}", src.name, e.emit_to_string(&wgsl)));
         let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
             .validate(&module)
             .unwrap_or_else(|e| panic!("{}: {e:?}", src.name));
-        let res = msl::EntryPointResources { resources: binding_map(), immediates_buffer: None, sizes_buffer: Some(2) };
+        let res = msl::EntryPointResources { resources: binding_map(), immediates_buffer: None, sizes_buffer: Some(4) };
         let options = msl::Options {
             lang_version: (3, 0),
             per_entry_point_map: entries.iter().map(|e| (e.to_string(), res.clone())).collect(),
@@ -101,15 +111,17 @@ fn main() {
             ..Default::default()
         };
         let (text, _) = msl::write_string(&module, &info, &options, &msl::PipelineOptions::default()).unwrap_or_else(|e| panic!("{}: {e:?}", src.name));
-        msl_all.push_str(&format!("// ---- module {} (wgsl-rs -> naga -> bindless transform)\n", src.name));
-        msl_all.push_str(&bindless(&text));
-        let _ = i;
+        // one translation unit per module (naga's helpers and types are per module), linked into one metallib
+        let metal = format!("{out}/{}.metal", src.name);
+        // naga's helpers (`naga_div`, ...) have external linkage: give each module its own names
+        let text = text.replace("naga_", &format!("naga_{}_", src.name));
+        std::fs::write(&metal, format!("// module {} (wgsl-rs -> naga -> bindless transform)\n{}", src.name, bindless(&text))).unwrap();
+        let air = format!("{out}/{}.air", src.name);
+        let s = Command::new("xcrun").args(["-sdk", "macosx", "metal", "-O2", "-std=metal3.0", "-c", &metal, "-o", &air]).status().expect("xcrun metal");
+        assert!(s.success(), "metal compile of the naga output failed ({metal})");
+        airs.push(air);
     }
-    let metal = format!("{out}/bough_gpu.metal");
-    std::fs::write(&metal, &msl_all).unwrap();
-    let (air, lib) = (format!("{out}/bough_gpu.air"), format!("{out}/bough_gpu.metallib"));
-    let s = Command::new("xcrun").args(["-sdk", "macosx", "metal", "-O2", "-std=metal3.0", "-c", &metal, "-o", &air]).status().expect("xcrun metal");
-    assert!(s.success(), "metal compile of the naga output failed ({metal})");
-    let s = Command::new("xcrun").args(["-sdk", "macosx", "metallib", &air, "-o", &lib]).status().expect("xcrun metallib");
+    let lib = format!("{out}/bough_gpu.metallib");
+    let s = Command::new("xcrun").args(["-sdk", "macosx", "metallib"]).args(&airs).args(["-o", &lib]).status().expect("xcrun metallib");
     assert!(s.success(), "metallib failed");
 }

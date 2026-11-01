@@ -1151,7 +1151,6 @@ dependencies = [
 [[package]]
 name = "wgsl-rs"
 version = "0.1.0"
-source = "git+https://github.com/schell/wgsl-rs?rev=b2de16a1b81e67d76bc265c296184f882864badb#b2de16a1b81e67d76bc265c296184f882864badb"
 dependencies = [
  "glam",
  "half",
@@ -1164,12 +1163,10 @@ dependencies = [
 [[package]]
 name = "wgsl-rs-ir"
 version = "0.1.0"
-source = "git+https://github.com/schell/wgsl-rs?rev=b2de16a1b81e67d76bc265c296184f882864badb#b2de16a1b81e67d76bc265c296184f882864badb"
 
 [[package]]
 name = "wgsl-rs-macros"
 version = "0.1.0"
-source = "git+https://github.com/schell/wgsl-rs?rev=b2de16a1b81e67d76bc265c296184f882864badb#b2de16a1b81e67d76bc265c296184f882864badb"
 dependencies = [
  "itertools",
  "proc-macro2",
@@ -1269,3 +1266,11 @@ version = "29.0.4"
 [[patch.unused]]
 name = "winit"
 version = "0.30.13"
+
+[[patch.unused]]
+name = "wgsl-rs-layout"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "wgsl-rs-layout-macros"
+version = "0.1.0"
