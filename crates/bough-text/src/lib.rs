@@ -15,6 +15,7 @@
 pub mod atlas;
 pub mod lines;
 pub mod numeric;
+pub mod para;
 pub mod pool;
 pub mod script;
 pub mod shape;
