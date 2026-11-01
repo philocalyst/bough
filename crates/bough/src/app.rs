@@ -243,6 +243,25 @@ impl<V: View> App<V> {
     #[cfg(not(target_os = "macos"))]
     fn sync(&mut self) {}
 
+    /// `sync` for the input module (an input turn writes the region, so the GPU must be done with it).
+    pub(crate) fn sync_pub(&mut self) {
+        self.sync();
+    }
+
+    /// The window is now `w` x `h` device px: the tile-row buffer follows and every surface is stale.
+    pub(crate) fn resized(&mut self, w: i32, h: i32) {
+        let _ = w;
+        self.rows = vec![0; (h as usize).div_ceil(32)];
+        for e in &mut self.held {
+            *e = None;
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(g) = self.gpu.as_mut() {
+            g.sync();
+            g.set_layout(self.rt.layout);
+        }
+    }
+
     /// One turn: run the handler, settle the wires it queued (text patches and marks happen inside the
     /// wires), lay out what changed.
     pub fn turn(&mut self, f: impl FnOnce(&mut V)) {

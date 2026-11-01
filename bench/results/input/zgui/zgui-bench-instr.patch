@@ -1,0 +1,1767 @@
+diff -ruN a/crates/zgui-bench/Cargo.toml b/crates/zgui-bench/Cargo.toml
+--- a/crates/zgui-bench/Cargo.toml	2026-11-01 00:27:30
++++ b/crates/zgui-bench/Cargo.toml	2026-11-01 05:17:25
+@@ -31,6 +31,10 @@
+ zgui-platform-winit = { path = "../zgui-platform-winit", version = "0.1.0" }
+ zgui-vocab = { path = "../zgui-vocab", version = "0.1.0" }
+ zgui-geom = { path = "../zgui-geom", version = "0.1.0" }
++libc = "0.2"
++zgui-css = { path = "../zgui-css", version = "0.1.0" }
++zgui-dom = { path = "../zgui-dom", version = "0.1.0" }
++zgui-view-dom = { path = "../zgui-view-dom", version = "0.1.0" }
+ 
+ [lints]
+ workspace = true
+diff -ruN a/crates/zgui-bench/src/bin/label-churn.rs b/crates/zgui-bench/src/bin/label-churn.rs
+--- a/crates/zgui-bench/src/bin/label-churn.rs	2026-11-01 00:27:30
++++ b/crates/zgui-bench/src/bin/label-churn.rs	2026-11-01 05:10:50
+@@ -203,12 +203,18 @@
+     let zoom = RwSignal::new_local(0_usize);
+     let mut harness = opened(zoom);
+     let mut step = 0;
+-    let mut frame = |_| {
++    let mut frame = |turn: usize| {
+         step += 1;
++        let instr0 = zgui_bench::instr::now();
+         let started = Instant::now();
+         zoom.set(step);
+         harness.settle(64);
+-        started.elapsed()
++        let elapsed = started.elapsed();
++        let spent = zgui_bench::instr::since(instr0);
++        if turn >= sample::WARMUP {
++            zgui_bench::instr::record("label-churn.frame", spent);
++        }
++        elapsed
+     };
+     let rounds: Vec<f64> = (0..5).map(|_| sample::median_ns(&mut frame)).collect();
+     let mut sorted = rounds.clone();
+@@ -223,4 +229,7 @@
+             .collect::<Vec<_>>()
+             .join(" "),
+     );
++    if let Some(line) = zgui_bench::instr::line("label-churn", "label-churn.frame") {
++        println!("{line}");
++    }
+ }
+diff -ruN a/crates/zgui-bench/src/bin/resize-slope/main.rs b/crates/zgui-bench/src/bin/resize-slope/main.rs
+--- a/crates/zgui-bench/src/bin/resize-slope/main.rs	2026-11-01 00:27:30
++++ b/crates/zgui-bench/src/bin/resize-slope/main.rs	2026-11-01 05:11:02
+@@ -121,16 +121,31 @@
+ fn main() {
+     let mut resizes = Vec::new();
+     let mut contents = Vec::new();
++    let mut resize_instr = Vec::new();
++    let mut content_instr = Vec::new();
+ 
+     for rows in ROWS {
+         let warm = RwSignal::new_local(false);
+         let mut harness = opened(rows, warm);
+         let boxes = boxes(&harness);
+-        let resize = measure::configures(&mut harness);
+-        let content = measure::content_changes(&mut harness, warm);
++        let (resize, resize_i) = measure::configures(&mut harness);
++        let (content, content_i) = measure::content_changes(&mut harness, warm);
+         println!("SIZE rows={rows} boxes={boxes} resize_us={resize:.3} content_us={content:.3}",);
++        println!(
++            "INSTR resize-slope rows={rows} boxes={boxes} configure_p50={resize_i:.0} \
++             content_change_p50={content_i:.0} n=48"
++        );
+         resizes.push((boxes as f64, resize));
+         contents.push((boxes as f64, content));
++        resize_instr.push((boxes as f64, resize_i));
++        content_instr.push((boxes as f64, content_i));
++    }
++    if let (Some(r), Some(c)) = (fit::slope(&resize_instr), fit::slope(&content_instr)) {
++        println!(
++            "INSTR resize-slope slope configure={r:.2} instr/box content_change={c:.2} instr/box \
++             ratio={:.4}",
++            r / c
++        );
+     }
+ 
+     let verdict = verdict::Verdict::of(&resizes, &contents);
+diff -ruN a/crates/zgui-bench/src/bin/resize-slope/measure.rs b/crates/zgui-bench/src/bin/resize-slope/measure.rs
+--- a/crates/zgui-bench/src/bin/resize-slope/measure.rs	2026-11-01 00:27:30
++++ b/crates/zgui-bench/src/bin/resize-slope/measure.rs	2026-11-01 05:11:02
+@@ -31,14 +31,17 @@
+ }
+ 
+ /// Delivers one configure and drives the loop until it goes quiet, returning how long that took.
+-fn configure(harness: &mut Harness<Runtime>, width: f32) -> Duration {
++/// The instructions of the last span timed by [`configure`], for the caller that wants them.
++fn configure(harness: &mut Harness<Runtime>, width: f32) -> (Duration, f64) {
++    let instr0 = zgui_bench::instr::now();
+     let started = Instant::now();
+     harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+         DevicePx(width),
+         DevicePx(HEIGHT),
+     )));
+     harness.settle(256);
+-    started.elapsed()
++    let elapsed = started.elapsed();
++    (elapsed, zgui_bench::instr::since(instr0))
+ }
+ 
+ /// The median cost of one configure, in microseconds.
+@@ -46,16 +49,19 @@
+ /// The widths cycle rather than repeat, because a configure that restates the size the window
+ /// already has is a configure the window is entitled to answer with nothing at all — and a
+ /// measurement made of those measures the check that refuses them.
+-pub(crate) fn configures(harness: &mut Harness<Runtime>) -> f64 {
++pub(crate) fn configures(harness: &mut Harness<Runtime>) -> (f64, f64) {
+     let width = |turn: usize| WIDTH - ((turn % 16) as f32) * 8.0;
+     for turn in 0..WARMUP {
+         configure(harness, width(turn));
+     }
+-    let mut samples: Vec<f64> = (0..REPEATS)
+-        .map(|turn| configure(harness, width(turn + WARMUP)).as_secs_f64() * 1e6)
+-        .collect();
++    let (mut samples, mut instructions): (Vec<f64>, Vec<f64>) = (0..REPEATS)
++        .map(|turn| {
++            let (elapsed, spent) = configure(harness, width(turn + WARMUP));
++            (elapsed.as_secs_f64() * 1e6, spent)
++        })
++        .unzip();
+     configure(harness, WIDTH);
+-    median(&mut samples)
++    (median(&mut samples), median(&mut instructions))
+ }
+ 
+ /// The median cost of one whole-document content change, in microseconds.
+@@ -67,18 +73,23 @@
+ pub(crate) fn content_changes(
+     harness: &mut Harness<Runtime>,
+     warm: RwSignal<bool, LocalStorage>,
+-) -> f64 {
++) -> (f64, f64) {
+     let flip = |harness: &mut Harness<Runtime>| {
++        let instr0 = zgui_bench::instr::now();
+         let started = Instant::now();
+         warm.set(!warm.get());
+         harness.settle(256);
+-        started.elapsed()
++        let elapsed = started.elapsed();
++        (elapsed, zgui_bench::instr::since(instr0))
+     };
+     for _ in 0..WARMUP {
+         flip(harness);
+     }
+-    let mut samples: Vec<f64> = (0..REPEATS)
+-        .map(|_| flip(harness).as_secs_f64() * 1e6)
+-        .collect();
+-    median(&mut samples)
++    let (mut samples, mut instructions): (Vec<f64>, Vec<f64>) = (0..REPEATS)
++        .map(|_| {
++            let (elapsed, spent) = flip(harness);
++            (elapsed.as_secs_f64() * 1e6, spent)
++        })
++        .unzip();
++    (median(&mut samples), median(&mut instructions))
+ }
+diff -ruN a/crates/zgui-bench/src/dump.rs b/crates/zgui-bench/src/dump.rs
+--- a/crates/zgui-bench/src/dump.rs	1969-12-31 16:00:00
++++ b/crates/zgui-bench/src/dump.rs	2026-11-01 05:23:29
+@@ -0,0 +1,1072 @@
++//! The `dump` phase: writes the documents the scenarios drive, and the motion curves they take, as
++//! TSV, so another framework's document can be compared with them element by element.
++//!
++//! Usage: `ZGUI_DUMP_DIR=<dir> zgui-bench dump <s13|shell|table|glide_scroll|glide_kitchen|shell_motion>`.
++//! Each runs in its own process because a document mounted on a thread that has mounted another
++//! is a document whose caches are somebody else's.
++
++use std::collections::HashMap;
++use std::fmt::Write as _;
++use std::path::PathBuf;
++use std::time::Duration;
++
++use zgui::geom::{CssPx, Point};
++use zgui::prelude::*;
++use zgui::runtime::{Runtime, Window};
++use zgui::view::{AttrName, NodeId, ViewHost};
++use zgui::vocab::PointerAction;
++use zgui_dom::{NodeKey, NodeKind};
++use zgui_platform_headless::Harness;
++
++use crate::scenario::fixture::{self, Fixture};
++use crate::scenario::{quiet, shell};
++
++fn out_dir() -> PathBuf {
++    let dir = PathBuf::from(
++        std::env::var("ZGUI_DUMP_DIR").expect("ZGUI_DUMP_DIR names the output directory"),
++    );
++    std::fs::create_dir_all(&dir).expect("the output directory can be made");
++    dir
++}
++
++fn write(name: &str, text: &str) {
++    let path = out_dir().join(name);
++    std::fs::write(&path, text).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
++    eprintln!("wrote {}", path.display());
++}
++
++pub(crate) fn run(what: &str) {
++    match what {
++        "s13" => document("gallery_s13", "s13"),
++        "shell" => document("shell", "shell"),
++        "table" => document("table", "table"),
++        "glide_scroll" => glide_scroll(),
++        "glide_kitchen" => glide_kitchen(),
++        "shell_motion" => shell_motion(),
++        other => panic!("unknown dump `{other}`"),
++    }
++}
++
++// ---------------------------------------------------------------------------------------------
++// Colours
++
++/// `rgb(…)`/`rgba(…)` as `#rrggbbaa`; anything else is passed through.
++fn hex(value: &str) -> String {
++    let value = value.trim();
++    let Some(open) = value.find('(') else {
++        return value.to_owned();
++    };
++    let name = &value[..open];
++    if name == "oklch" || name == "oklab" {
++        let inner = value[open + 1..].trim_end_matches(')');
++        let parts: Vec<f32> = inner
++            .split([' ', '/'])
++            .filter(|part| !part.is_empty())
++            .filter_map(|part| part.parse::<f32>().ok())
++            .collect();
++        if parts.len() < 3 {
++            return value.to_owned();
++        }
++        let (l, a, b) = if name == "oklch" {
++            let hue = parts[2].to_radians();
++            (parts[0], parts[1] * hue.cos(), parts[1] * hue.sin())
++        } else {
++            (parts[0], parts[1], parts[2])
++        };
++        let alpha = parts.get(3).copied().unwrap_or(1.0);
++        let l_ = (l + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
++        let m_ = (l - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);
++        let s_ = (l - 0.089_484_18 * a - 1.291_485_5 * b).powi(3);
++        let linear = [
++            4.076_741_7 * l_ - 3.307_711_6 * m_ + 0.230_969_94 * s_,
++            -1.268_438 * l_ + 2.609_757_4 * m_ - 0.341_319_4 * s_,
++            -0.004_196_086 * l_ - 0.703_418_6 * m_ + 1.707_614_7 * s_,
++        ];
++        let gamma = |v: f32| {
++            let v = v.clamp(0.0, 1.0);
++            if v <= 0.003_130_8 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
++        };
++        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "clamped")]
++        let byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
++        return format!(
++            "#{:02x}{:02x}{:02x}{:02x}",
++            byte(gamma(linear[0])),
++            byte(gamma(linear[1])),
++            byte(gamma(linear[2])),
++            byte(alpha)
++        );
++    }
++    if name != "rgb" && name != "rgba" {
++        return value.to_owned();
++    }
++    let inner = value[open + 1..].trim_end_matches(')');
++    let parts: Vec<f32> = inner
++        .split([',', ' ', '/'])
++        .filter(|part| !part.is_empty())
++        .filter_map(|part| {
++            if let Some(percent) = part.strip_suffix('%') {
++                percent.parse::<f32>().ok().map(|p| p / 100.0)
++            } else {
++                part.parse::<f32>().ok()
++            }
++        })
++        .collect();
++    if parts.len() < 3 {
++        return value.to_owned();
++    }
++    let alpha = parts.get(3).copied().unwrap_or(1.0);
++    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "clamped")]
++    let byte = |v: f32| v.round().clamp(0.0, 255.0) as u8;
++    format!(
++        "#{:02x}{:02x}{:02x}{:02x}",
++        byte(parts[0]),
++        byte(parts[1]),
++        byte(parts[2]),
++        byte(alpha * 255.0)
++    )
++}
++
++// ---------------------------------------------------------------------------------------------
++// The document walk
++
++/// The properties given a column of their own, in the order the columns appear.
++const NAMED: &[(&str, &str)] = &[
++    ("display", "display"),
++    ("position", "position"),
++    ("flex_direction", "flex-direction"),
++    ("flex_wrap", "flex-wrap"),
++    ("flex_grow", "flex-grow"),
++    ("flex_shrink", "flex-shrink"),
++    ("flex_basis", "flex-basis"),
++    ("width", "width"),
++    ("height", "height"),
++    ("min_width", "min-width"),
++    ("min_height", "min-height"),
++    ("max_width", "max-width"),
++    ("max_height", "max-height"),
++    ("padding_t", "padding-top"),
++    ("padding_r", "padding-right"),
++    ("padding_b", "padding-bottom"),
++    ("padding_l", "padding-left"),
++    ("margin_t", "margin-top"),
++    ("margin_r", "margin-right"),
++    ("margin_b", "margin-bottom"),
++    ("margin_l", "margin-left"),
++    ("row_gap", "row-gap"),
++    ("column_gap", "column-gap"),
++    ("align_items", "align-items"),
++    ("align_self", "align-self"),
++    ("justify_content", "justify-content"),
++    ("overflow_x", "overflow-x"),
++    ("overflow_y", "overflow-y"),
++    ("box_sizing", "box-sizing"),
++    ("grid_template_columns", "grid-template-columns"),
++    ("grid_column_start", "grid-column-start"),
++    ("grid_column_end", "grid-column-end"),
++    ("bg_color", "background-color"),
++    ("bg_image", "background-image"),
++    ("border_w_t", "border-top-width"),
++    ("border_w_r", "border-right-width"),
++    ("border_w_b", "border-bottom-width"),
++    ("border_w_l", "border-left-width"),
++    ("border_s_t", "border-top-style"),
++    ("border_c_t", "border-top-color"),
++    ("border_c_r", "border-right-color"),
++    ("border_c_b", "border-bottom-color"),
++    ("border_c_l", "border-left-color"),
++    ("radius_tl", "border-top-left-radius"),
++    ("radius_tr", "border-top-right-radius"),
++    ("radius_br", "border-bottom-right-radius"),
++    ("radius_bl", "border-bottom-left-radius"),
++    ("opacity", "opacity"),
++    ("box_shadow", "box-shadow"),
++    ("outline_style", "outline-style"),
++    ("outline_width", "outline-width"),
++    ("outline_color", "outline-color"),
++    ("font_size", "font-size"),
++    ("font_weight", "font-weight"),
++    ("font_family", "font-family"),
++    ("color", "color"),
++    ("line_height", "line-height"),
++    ("text_align", "text-align"),
++    ("white_space", "white-space"),
++    ("z_index", "z-index"),
++    ("transform", "transform"),
++    ("animation_name", "animation-name"),
++    ("animation_duration", "animation-duration"),
++    ("transition_property", "transition-property"),
++    ("transition_duration", "transition-duration"),
++    ("cursor", "cursor"),
++    ("pointer_events", "pointer-events"),
++];
++
++/// Columns that are colours, and are written as hex.
++fn is_colour(css: &str) -> bool {
++    css.ends_with("color")
++}
++
++struct Doc {
++    rows: Vec<String>,
++    /// Preorder index of each emitted node, by key.
++    index_of: HashMap<NodeKey, usize>,
++    /// What each row is, for the report: (preorder, testid, classes).
++    labels: Vec<(String, String, String)>,
++    elements: usize,
++    texts: usize,
++    markers: usize,
++    max_depth: usize,
++    scrollers: Vec<String>,
++    /// The right and bottom edge of the furthest element box, device px.
++    extent: (f32, f32),
++}
++
++fn clean(text: &str) -> String {
++    text.replace(['\t', '\n', '\r'], " ")
++}
++
++fn rect_cols(rect: Option<zgui::geom::Rect<zgui::geom::DevicePx, zgui::geom::Device>>) -> String {
++    match rect {
++        Some(rect) => format!(
++            "{:.2}\t{:.2}\t{:.2}\t{:.2}",
++            rect.origin.x.0, rect.origin.y.0, rect.size.width.0, rect.size.height.0
++        ),
++        None => "\t\t\t".to_owned(),
++    }
++}
++
++fn walk(window: &Window, focusables: &[NodeId]) -> Doc {
++    let document = window.document().borrow();
++    let dom = window.dom();
++    let host = window.host();
++    let layout = window.layout().borrow();
++    let store = document.store();
++    let testid = AttrName::new("data-testid");
++    let tabindex = AttrName::new("tabindex");
++
++    let tab_of: HashMap<NodeKey, usize> = focusables
++        .iter()
++        .enumerate()
++        .filter_map(|(at, node)| zgui_view_dom::id::to_document(*node).map(|key| (key, at)))
++        .collect();
++
++    // The initial value of every longhand, once, so a node's "other" column lists only what
++    // somebody (or the theme) set.
++    let initial = zgui_css::StyleDraft::initial().build();
++    let longhands = zgui_css::parity::catalog::canonical_longhands();
++    let initial_values: Vec<Option<String>> = longhands
++        .iter()
++        .map(|name| zgui_css::parity::observe::computed_value(&initial, name))
++        .collect();
++    let named: std::collections::HashSet<&str> = NAMED.iter().map(|(_, css)| *css).collect();
++
++    let mut doc = Doc {
++        rows: Vec::new(),
++        index_of: HashMap::new(),
++        labels: Vec::new(),
++        elements: 0,
++        texts: 0,
++        markers: 0,
++        max_depth: 0,
++        scrollers: Vec::new(),
++        extent: (0.0, 0.0),
++    };
++
++    let mut stack: Vec<(zgui_dom::NodeIndex, usize)> = Vec::new();
++    {
++        let mut children = Vec::new();
++        let mut next = store.core(document.document_index()).first_child();
++        while let Some(child) = next {
++            children.push(child);
++            next = store.core(child).next_sibling();
++        }
++        for child in children.into_iter().rev() {
++            stack.push((child, 0));
++        }
++    }
++    // The nearest ancestor element's style, for the text nodes under it.
++    let mut parent_style: HashMap<zgui_dom::NodeIndex, zgui_css::ComputedStyle> = HashMap::new();
++
++    while let Some((index, depth)) = stack.pop() {
++        let record = document.node(index);
++        let kind = record.kind();
++        let key = store.key_of(index);
++        let id = zgui_view_dom::id::to_view(key);
++
++        // children first (so the stack is right), regardless of what this node is
++        let mut children = Vec::new();
++        let mut next = store.core(index).first_child();
++        while let Some(child) = next {
++            children.push(child);
++            next = store.core(child).next_sibling();
++        }
++
++        let style = match kind {
++            NodeKind::Element => record.primary_style(),
++            NodeKind::Text => {
++                // The text inherits its parent's style.
++                let parent = store.core(index).parent();
++                parent.and_then(|parent| parent_style.get(&parent).cloned())
++            }
++            _ => None,
++        };
++        if kind == NodeKind::Element {
++            if let Some(style) = &style {
++                parent_style.insert(index, style.clone());
++            }
++        }
++        let child_depth = match kind {
++            NodeKind::Element | NodeKind::Text => depth + 1,
++            _ => depth,
++        };
++        for child in children.into_iter().rev() {
++            stack.push((child, child_depth));
++        }
++
++        let (kind_name, tag) = match kind {
++            NodeKind::Element => ("element", record.record().local_name().as_str().to_owned()),
++            NodeKind::Text => ("text", "#text".to_owned()),
++            NodeKind::Marker => {
++                doc.markers += 1;
++                continue;
++            }
++            _ => continue,
++        };
++
++        let preorder = doc.rows.len();
++        doc.index_of.insert(key, preorder);
++        doc.max_depth = doc.max_depth.max(depth);
++        if kind == NodeKind::Element {
++            doc.elements += 1;
++        } else {
++            doc.texts += 1;
++        }
++
++        let classes: Vec<String> = store
++            .classes_of(index)
++            .iter()
++            .map(|class| class.0.as_ref().to_owned())
++            .collect();
++        let classes = classes.join(" ");
++        let (test_id, elem_id) = if kind == NodeKind::Element {
++            (
++                dom.attribute(id, testid).unwrap_or_default(),
++                record
++                    .record()
++                    .id_attr()
++                    .map(|id| id.to_string())
++                    .unwrap_or_default(),
++            )
++        } else {
++            (String::new(), String::new())
++        };
++
++        let boxes = layout.boxes_of(key);
++        let fragments: usize = boxes
++            .iter()
++            .map(|b| layout.fragments_of_box(*b).len())
++            .sum();
++        let window_box = host.window_box(id);
++        if kind == NodeKind::Element {
++            if let Some(rect) = window_box {
++                doc.extent.0 = doc.extent.0.max(rect.origin.x.0 + rect.size.width.0);
++                doc.extent.1 = doc.extent.1.max(rect.origin.y.0 + rect.size.height.0);
++            }
++        }
++
++        let mut row = String::new();
++        let _ = write!(
++            row,
++            "{preorder}\t{depth}\t{kind_name}\t{tag}\t{}\t{}\t{}\t{}\t{}\t{}",
++            clean(&classes),
++            clean(&test_id),
++            clean(&elem_id),
++            rect_cols(window_box),
++            boxes.len(),
++            fragments,
++        );
++
++        // computed style columns
++        let mut other = String::new();
++        for (_, css) in NAMED {
++            let value = style
++                .as_ref()
++                .and_then(|style| zgui_css::parity::observe::computed_value(style, css))
++                .unwrap_or_default();
++            let value = if is_colour(css) { hex(&value) } else { value };
++            let _ = write!(row, "\t{}", clean(&value));
++        }
++        if kind == NodeKind::Element {
++            if let Some(style) = &style {
++                for (name, init) in longhands.iter().zip(&initial_values) {
++                    if named.contains(name.as_str())
++                        || name.contains("block")
++                        || name.contains("inline")
++                    {
++                        continue;
++                    }
++                    let value = zgui_css::parity::observe::computed_value(style, name);
++                    if value != *init {
++                        if let Some(value) = value {
++                            let value = if is_colour(name) { hex(&value) } else { value };
++                            let _ = write!(other, "{name}:{};", clean(&value));
++                        }
++                    }
++                }
++            }
++        }
++
++        // text
++        let text = if kind == NodeKind::Text {
++            clean(&dom.text_content(id))
++        } else {
++            String::new()
++        };
++        let _ = write!(row, "\t{text}");
++
++        // interaction
++        let flags = record.record().flags();
++        let focusable = flags.contains(zgui_dom::NodeFlags::FOCUSABLE);
++        let tab = tab_of.get(&key).map(ToString::to_string).unwrap_or_default();
++        let tab_attr = if kind == NodeKind::Element {
++            dom.attribute(id, tabindex).unwrap_or_default()
++        } else {
++            String::new()
++        };
++        let listeners: Vec<String> = store
++            .columns()
++            .listeners
++            .get(key)
++            .map(|set| set.iter().map(|l| format!("{:?}", l.kind)).collect())
++            .unwrap_or_default();
++        let semantics = if kind == NodeKind::Element {
++            dom.semantics(id)
++        } else {
++            None
++        };
++        let role = semantics
++            .as_ref()
++            .map(|s| format!("{:?}", s.role))
++            .unwrap_or_default();
++        let label = semantics
++            .as_ref()
++            .and_then(|s| s.label.as_ref().map(ToString::to_string))
++            .unwrap_or_default();
++        let editable = matches!(role.as_str(), "TextInput" | "TextField" | "TextBox" | "MultilineTextInput" | "SearchInput" | "PasswordInput")
++            || matches!(tag.as_str(), "input" | "textarea");
++        let _ = write!(
++            row,
++            "\t{}\t{tab}\t{}\t{}\t{}\t{}\t{}",
++            u8::from(focusable),
++            clean(&tab_attr),
++            u8::from(editable),
++            clean(&listeners.join(",")),
++            clean(&role),
++            clean(&label),
++        );
++
++        // scroll
++        let region = boxes
++            .first()
++            .and_then(|first| zgui_layout::scroll_region::region_of(&layout, *first));
++        match region {
++            Some(region) => {
++                let position = host.scroll_position(id);
++                let _ = write!(
++                    row,
++                    "\t1\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}\t{}",
++                    region.content.width.0,
++                    region.content.height.0,
++                    region.scrollport.size.width.0,
++                    region.scrollport.size.height.0,
++                    position.offset.x.0,
++                    position.offset.y.0,
++                    u8::from(region.scrolls_x),
++                    u8::from(region.scrolls_y),
++                );
++                doc.scrollers.push(format!(
++                    "preorder={preorder} tag={tag} testid={test_id} classes=[{classes}] content={:.0}x{:.0} port={:.0}x{:.0} scrolls_x={} scrolls_y={}",
++                    region.content.width.0,
++                    region.content.height.0,
++                    region.scrollport.size.width.0,
++                    region.scrollport.size.height.0,
++                    region.scrolls_x,
++                    region.scrolls_y,
++                ));
++            }
++            None => row.push_str("\t0\t\t\t\t\t\t\t\t"),
++        }
++
++        let running = if kind == NodeKind::Element {
++            host.running_animations(id)
++        } else {
++            0
++        };
++        let _ = write!(row, "\t{running}\t{}", clean(&other));
++
++        doc.labels.push((test_id, classes, tag));
++        doc.rows.push(row);
++    }
++    doc
++}
++
++fn header() -> String {
++    let mut head = String::from(
++        "preorder\tdepth\tkind\ttag\tclasses\ttestid\tid\tx\ty\tw\th\tlayout_boxes\tfragments",
++    );
++    for (column, _) in NAMED {
++        head.push('\t');
++        head.push_str(column);
++    }
++    head.push_str(
++        "\ttext\tfocusable\ttab_stop\ttabindex_attr\teditable\tlisteners\ta11y_role\ta11y_label\
++         \tscroll_container\tscroll_content_w\tscroll_content_h\tscroll_port_w\tscroll_port_h\
++         \tscroll_offset_x\tscroll_offset_y\tscrolls_x\tscrolls_y\trunning_animations\tother_non_initial",
++    );
++    head
++}
++
++fn runtime_for(which: &str) -> Runtime {
++    match which {
++        "s13" => crate::gallery::runtime("s13"),
++        "shell" => shell::runtime(),
++        "table" => fixture::runtime(Fixture::Table),
++        other => panic!("unknown document {other}"),
++    }
++}
++
++fn centre_css(window: &Window, node: NodeId) -> Option<(f32, f32)> {
++    let scale = window.scale().get();
++    let rect = window.host().window_box(node)?;
++    Some((
++        (rect.origin.x.0 + rect.size.width.0 / 2.0) / scale,
++        (rect.origin.y.0 + rect.size.height.0 / 2.0) / scale,
++    ))
++}
++
++fn document(file: &str, which: &str) {
++    let before = zgui_profile::counter::snapshot();
++    let mut harness: Harness<Runtime> = crate::drive::harness(runtime_for(which));
++    let opened = before.delta(&zgui_profile::counter::snapshot());
++    // The first frame's display list.
++    let first_frame_ops = harness.app().windows()[0].scene().ops().len();
++    quiet(&mut harness);
++
++    let window = &harness.app().windows()[0];
++    let root = window.dom().root_node();
++    let focusables = window.host().focusables(root);
++
++    let doc = walk(window, &focusables);
++    let mut text = header();
++    text.push('\n');
++    for row in &doc.rows {
++        text.push_str(row);
++        text.push('\n');
++    }
++    write(&format!("{file}.tsv"), &text);
++
++    // Tab order.
++    let mut tabs = String::from("tab_stop\tpreorder\ttestid\ttag\tclasses\n");
++    for (at, node) in focusables.iter().enumerate() {
++        if let Some(key) = zgui_view_dom::id::to_document(*node) {
++            if let Some(pre) = doc.index_of.get(&key) {
++                let (t, c, tag) = &doc.labels[*pre];
++                let _ = writeln!(tabs, "{at}\t{pre}\t{t}\t{tag}\t{c}");
++            }
++        }
++    }
++    write(&format!("{file}.tabs.tsv"), &tabs);
++
++    // Meta.
++    let mut meta = String::new();
++    let (boxes, fragments) = crate::inspect::document(window);
++    let _ = writeln!(meta, "document: {which} ({}x{} CSS px, scale {})", crate::gallery::WIDTH, crate::gallery::HEIGHT, window.scale().get());
++    let _ = writeln!(meta, "layout boxes (window.layout().keys().len()): {boxes}");
++    let _ = writeln!(meta, "fragments (inspect::document): {fragments}");
++    let _ = writeln!(
++        meta,
++        "dom nodes emitted to TSV: {} elements + {} text nodes = {} rows; {} markers skipped; max depth {}",
++        doc.elements,
++        doc.texts,
++        doc.rows.len(),
++        doc.markers,
++        doc.max_depth
++    );
++    let _ = writeln!(meta, "document store len: {}", window.document().borrow().len());
++    let _ = writeln!(
++        meta,
++        "focusable elements in tab order (host.focusables(root)): {}",
++        focusables.len()
++    );
++    let _ = writeln!(
++        meta,
++        "primitives in the display list after the first frame (scene.ops().len()): {first_frame_ops}"
++    );
++    let _ = writeln!(
++        meta,
++        "counters moved by opening the window + first frame (nonzero only): {opened:?}"
++    );
++    let _ = writeln!(
++        meta,
++        "  primitives_emitted={} primitives_culled={} bounds_tree_inserts={} chunks_reencoded={}",
++        opened.primitives_emitted, opened.primitives_culled, opened.bounds_tree_inserts, opened.chunks_reencoded
++    );
++    let centres = crate::inspect::swatch_centres(window);
++    let _ = writeln!(
++        meta,
++        "swatch centres (34x34 boxes, CSS px, sorted by x): {}",
++        centres
++            .iter()
++            .map(|p| format!("({:.2},{:.2})", p.x.0, p.y.0))
++            .collect::<Vec<_>>()
++            .join(" ")
++    );
++    if which == "shell" {
++        for index in 0..shell::TRIGGERS {
++            let c = shell::centre(&harness, &format!("tip-{index}"));
++            let _ = writeln!(meta, "tip-{index} centre (CSS px): ({:.2},{:.2})", c.x.0, c.y.0);
++        }
++        let c = shell::centre(&harness, "dock-handle");
++        let _ = writeln!(meta, "dock-handle centre (CSS px): ({:.2},{:.2})", c.x.0, c.y.0);
++    }
++    let window = &harness.app().windows()[0];
++    let position = window.host().scroll_position(root);
++    let _ = writeln!(
++        meta,
++        "root element scroll extent (device px): content {:.0}x{:.0}, scrollport {:.0}x{:.0}, offset ({:.0},{:.0})",
++        position.content_size.width.0,
++        position.content_size.height.0,
++        position.scrollport.width.0,
++        position.scrollport.height.0,
++        position.offset.x.0,
++        position.offset.y.0,
++    );
++    let _ = writeln!(
++        meta,
++        "document extent (furthest element box right/bottom, device px): {:.0} x {:.0}",
++        doc.extent.0, doc.extent.1
++    );
++    let _ = writeln!(meta, "scroll containers ({}):", doc.scrollers.len());
++    for line in &doc.scrollers {
++        let _ = writeln!(meta, "  {line}");
++    }
++
++    // A full repaint at a different width, for the cost of drawing everything once more.
++    {
++        let before = zgui_profile::counter::snapshot();
++        harness.deliver_to_first(zgui::platform::SurfaceEvent::Resized(zgui::geom::Size::new(
++            zgui::geom::DevicePx(crate::gallery::WIDTH + 8.0),
++            zgui::geom::DevicePx(crate::gallery::HEIGHT),
++        )));
++        harness.settle(64);
++        let moved = before.delta(&zgui_profile::counter::snapshot());
++        let _ = writeln!(
++            meta,
++            "one resize step (+8 px width) from rest: primitives_emitted={} culled={} scene ops after={} boxes_rebuilt={} nodes_relaid_out={}",
++            moved.primitives_emitted,
++            moved.primitives_culled,
++            harness.app().windows()[0].scene().ops().len(),
++            moved.boxes_rebuilt,
++            moved.nodes_relaid_out
++        );
++        harness.deliver_to_first(zgui::platform::SurfaceEvent::Resized(zgui::geom::Size::new(
++            zgui::geom::DevicePx(crate::gallery::WIDTH),
++            zgui::geom::DevicePx(crate::gallery::HEIGHT),
++        )));
++        harness.settle(64);
++    }
++
++    // Tab traversal to a text field, exactly as the kitchen scenario does it.
++    let (tabs_needed, costs) = crate::input::focus_a_field_timed(&mut harness);
++    let window = &harness.app().windows()[0];
++    let focused = {
++        use zgui::prelude::GetUntracked;
++        window.host().focused().get_untracked()
++    };
++    let _ = writeln!(
++        meta,
++        "focus_a_field_timed: {tabs_needed} Tab presses (loop stops at 400 if no text field is reached); input::typing={}; median press {:.1} us",
++        crate::input::typing(&harness),
++        {
++            let mut c = costs.clone();
++            c.sort_by(f64::total_cmp);
++            c.get(c.len() / 2).copied().unwrap_or(0.0)
++        }
++    );
++    match focused.and_then(zgui_view_dom::id::to_document) {
++        Some(key) => {
++            let pre = doc.index_of.get(&key).copied();
++            let label = pre.map(|p| doc.labels[p].clone());
++            let _ = writeln!(
++                meta,
++                "ends on: preorder={pre:?} testid/classes/tag={label:?} (tab_stop index in the order above: {:?})",
++                focusables
++                    .iter()
++                    .position(|node| zgui_view_dom::id::to_document(*node) == Some(key))
++            );
++        }
++        None => {
++            let _ = writeln!(meta, "ends on: nothing focused");
++        }
++    }
++    write(&format!("{file}.meta.txt"), &meta);
++}
++
++// ---------------------------------------------------------------------------------------------
++// Scroll physics
++
++/// The scroll container with the most to scroll, found by looking, not by name.
++fn biggest_scroller(window: &Window) -> Option<NodeKey> {
++    let document = window.document().borrow();
++    let layout = window.layout().borrow();
++    let store = document.store();
++    let mut best: Option<(f32, NodeKey)> = None;
++    let mut stack = vec![document.document_index()];
++    while let Some(index) = stack.pop() {
++        let key = store.key_of(index);
++        if let Some(first) = layout.boxes_of(key).first() {
++            if let Some(region) = zgui_layout::scroll_region::region_of(&layout, *first) {
++                let extra = region.content.height.0 - region.scrollport.size.height.0;
++                if extra > 1.0 && best.is_none_or(|(b, _)| extra > b) {
++                    best = Some((extra, key));
++                }
++            }
++        }
++        let mut next = store.core(index).first_child();
++        while let Some(child) = next {
++            stack.push(child);
++            next = store.core(child).next_sibling();
++        }
++    }
++    best.map(|(_, key)| key)
++}
++
++fn offset_y(harness: &Harness<Runtime>, key: NodeKey) -> (f32, f32) {
++    let window = &harness.app().windows()[0];
++    let at = window.scroll().borrow().offset_of(key);
++    (at.x.0, at.y.0)
++}
++
++fn glide_scroll() {
++    let mut harness = crate::drive::harness(fixture::runtime(Fixture::LongList));
++    quiet(&mut harness);
++    let middle = Point::new(
++        CssPx(crate::gallery::WIDTH / 2.0),
++        CssPx(crate::gallery::HEIGHT / 2.0),
++    );
++    harness.deliver_to_first(crate::input::pointer(PointerAction::Moved, middle));
++    harness.settle(64);
++    let key = biggest_scroller(&harness.app().windows()[0]).expect("the list scrolls");
++    let scale = harness.app().windows()[0].scale().get();
++
++    let mut tsv = String::from("tick\tkind\toffset_y_device_px\toffset_y_css_px\toffset_x\tframes_run\tboxes_rebuilt\tnodes_relaid_out\tprimitives_emitted\tgliding_after\n");
++    let _ = writeln!(
++        tsv,
++        "-1\tstart\t{:.4}\t{:.4}\t{:.4}\t0\t0\t0\t0\t{}",
++        offset_y(&harness, key).1,
++        offset_y(&harness, key).1 / scale,
++        offset_y(&harness, key).0,
++        u8::from(crate::input::gliding(&harness))
++    );
++    for tick in 0..120 {
++        let mark = zgui_profile::counter::snapshot();
++        let (kind, ran) = if tick % 40 == 0 {
++            harness.deliver_to_first(crate::input::wheel(middle, 6.0));
++            let settled = harness.settle(64);
++            harness.advance(Duration::from_micros(8_333));
++            ("notch", settled as u64 + harness.pump() as u64)
++        } else {
++            harness.advance(Duration::from_micros(8_333));
++            ("tick", harness.pump() as u64)
++        };
++        let moved = mark.delta(&zgui_profile::counter::snapshot());
++        let (x, y) = offset_y(&harness, key);
++        let _ = writeln!(
++            tsv,
++            "{tick}\t{kind}\t{y:.4}\t{:.4}\t{x:.4}\t{ran}\t{}\t{}\t{}\t{}",
++            y / scale,
++            moved.boxes_rebuilt,
++            moved.nodes_relaid_out,
++            moved.primitives_emitted,
++            u8::from(crate::input::gliding(&harness))
++        );
++    }
++    write("glide_scroll.tsv", &tsv);
++    let settings = harness.app().windows()[0].scroll_settings();
++    write(
++        "glide_scroll.meta.txt",
++        &format!(
++            "LongList fixture ({} rows of {} px), pointer at window middle ({}, {}), wheel(middle, 6.0) every 40 ticks, 120 Hz ticks of 8333 us, first 3 notches.\nscale {scale}; scroll settings: lines_per_notch={} direction={:?}\n",
++            fixture::LIST_ROWS,
++            fixture::LIST_ROW_HEIGHT,
++            middle.x.0,
++            middle.y.0,
++            settings.lines_per_notch,
++            settings.direction
++        ),
++    );
++}
++
++/// Whatever container the scroller has displaced, the one displaced furthest first.
++fn moving(window: &Window) -> Vec<(NodeKey, f32, f32)> {
++    let mut found: Vec<(NodeKey, f32, f32)> = window
++        .scroll()
++        .borrow()
++        .composed()
++        .iter()
++        .filter(|(_, at)| at.x.0 != 0.0 || at.y.0 != 0.0)
++        .map(|(key, at)| (key, at.x.0, at.y.0))
++        .collect();
++    found.sort_by(|a, b| b.2.abs().total_cmp(&a.2.abs()));
++    found
++}
++
++fn describe(window: &Window, key: NodeKey) -> String {
++    let document = window.document().borrow();
++    let store = document.store();
++    let Some(index) = store.index_of(key) else {
++        return "?".to_owned();
++    };
++    let classes: Vec<String> = store
++        .classes_of(index)
++        .iter()
++        .map(|class| class.0.as_ref().to_owned())
++        .collect();
++    format!(
++        "{}[{}]",
++        document.node(index).record().local_name().as_str(),
++        classes.join(" ")
++    )
++}
++
++/// The container the scroller has displaced furthest: its description and offset.
++fn lead(harness: &Harness<Runtime>) -> (String, f32) {
++    let window = &harness.app().windows()[0];
++    match moving(window).first() {
++        Some((key, _, y)) => (describe(window, *key), *y),
++        None => ("-".to_owned(), 0.0),
++    }
++}
++
++fn glide_kitchen() {
++    let mut harness = crate::drive::opened("s13");
++    quiet(&mut harness);
++    let centres = crate::inspect::swatch_centres(&harness.app().windows()[0]);
++    let middle = Point::new(
++        CssPx(crate::gallery::WIDTH / 2.0),
++        CssPx(crate::gallery::HEIGHT / 2.0),
++    );
++    // The same preamble the scenario runs before the glide: tab to a field, 32 keystrokes (with
++    // the backspaces), 32 swatch clicks.
++    use zgui::vocab::{KeyCode, KeyEvent, NamedKey, PhysicalKey};
++    let (tabs, _) = crate::input::focus_a_field_timed(&mut harness);
++    let letters = ["a", "b", "c", "d", "e", "f", "g", "h"];
++    for step in 0..32 {
++        let letter = letters[step % letters.len()];
++        harness.deliver_to_first(crate::input::key(KeyEvent::character(letter)));
++        harness.settle(64);
++        harness.deliver_to_first(crate::input::key_up(KeyEvent::character(letter)));
++        harness.settle(64);
++        if step % 8 == 7 {
++            for _ in 0..8 {
++                harness.deliver_to_first(crate::input::key(KeyEvent::named(
++                    NamedKey::Backspace,
++                    PhysicalKey::Code(KeyCode::Backspace),
++                )));
++                harness.settle(64);
++                harness.deliver_to_first(crate::input::key_up(KeyEvent::named(
++                    NamedKey::Backspace,
++                    PhysicalKey::Code(KeyCode::Backspace),
++                )));
++                harness.settle(64);
++            }
++        }
++    }
++    for step in 0..32 {
++        let at = centres[step % centres.len()];
++        harness.deliver_to_first(crate::input::pointer(PointerAction::Moved, at));
++        harness.settle(64);
++        harness.deliver_to_first(crate::input::pointer(PointerAction::Pressed, at));
++        harness.settle(64);
++        harness.deliver_to_first(crate::input::pointer(PointerAction::Released, at));
++        harness.settle(64);
++    }
++    harness.deliver_to_first(crate::input::pointer(PointerAction::Moved, middle));
++    harness.settle(64);
++
++    let scale = harness.app().windows()[0].scale().get();
++    let mut tsv = String::from("notch\tlines\ttick\tcontainer\toffset_y_device_px\toffset_y_css_px\tframes_run\tboxes_rebuilt\tnodes_relaid_out\tprimitives_emitted\tgliding_after\n");
++    let mut summary = String::new();
++    for step in 0..8 {
++        let lines = if step % 2 == 0 { 3.0 } else { -3.0 };
++        let mark = zgui_profile::counter::snapshot();
++        harness.deliver_to_first(crate::input::wheel(middle, lines));
++        let settled = harness.settle(64);
++        let moved = mark.delta(&zgui_profile::counter::snapshot());
++        let (name, start) = lead(&harness);
++        let _ = writeln!(
++            tsv,
++            "{step}\t{lines}\t0\t{name}\t{start:.4}\t{:.4}\t{settled}\t{}\t{}\t{}\t{}",
++            start / scale,
++            moved.boxes_rebuilt,
++            moved.nodes_relaid_out,
++            moved.primitives_emitted,
++            u8::from(crate::input::gliding(&harness))
++        );
++        let mut carried = 0;
++        let mut frames_with_work = 0;
++        while crate::input::gliding(&harness) && carried < 60 {
++            let mark = zgui_profile::counter::snapshot();
++            harness.advance(Duration::from_micros(16_667));
++            let ran = harness.pump();
++            carried += 1;
++            if ran > 0 {
++                frames_with_work += 1;
++            }
++            let moved = mark.delta(&zgui_profile::counter::snapshot());
++            let (name, y) = lead(&harness);
++            let _ = writeln!(
++                tsv,
++                "{step}\t{lines}\t{carried}\t{name}\t{y:.4}\t{:.4}\t{ran}\t{}\t{}\t{}\t{}",
++                y / scale,
++                moved.boxes_rebuilt,
++                moved.nodes_relaid_out,
++                moved.primitives_emitted,
++                u8::from(crate::input::gliding(&harness))
++            );
++        }
++        let end = lead(&harness).1;
++        let _ = writeln!(
++            summary,
++            "notch {step} (lines {lines}): glided {carried} ticks of 16.667 ms ({frames_with_work} with a frame), offset {start:.2} -> {end:.2} device px ({:.2} css px)",
++            (end - start) / scale
++        );
++    }
++    write("glide_kitchen.tsv", &tsv);
++    write(
++        "glide_kitchen.meta.txt",
++        &format!(
++            "gallery s13 after the kitchen scenario's preamble ({tabs} Tabs, 32 keystrokes, 32 swatch clicks); pointer at window middle; wheel(middle, +-3.0) alternating, 60 Hz ticks of 16667 us while input::gliding (cap 60). scale {scale}.\nTick 0 is the state right after the wheel event + settle, before any tick.\n{summary}"
++        ),
++    );
++}
++
++// ---------------------------------------------------------------------------------------------
++// App-shell drag and tooltips
++
++fn panel_heights(harness: &Harness<Runtime>) -> Vec<f32> {
++    let window = &harness.app().windows()[0];
++    window
++        .nodes_with_class("zui-resizable__panel")
++        .into_iter()
++        .filter_map(|node| window.host().window_box(node))
++        .map(|rect| rect.size.height.0)
++        .collect()
++}
++
++fn shell_motion() {
++    let mut harness = crate::drive::harness(shell::runtime());
++    quiet(&mut harness);
++    let mut meta = String::new();
++    let window = &harness.app().windows()[0];
++    let panels = window.nodes_with_class("zui-resizable__panel");
++    let _ = writeln!(meta, "ResizablePanel elements found (class zui-resizable__panel): {}", panels.len());
++    for node in &panels {
++        let _ = writeln!(meta, "  initial rect (device px x,y,w,h): {}", rect_cols(window.host().window_box(*node)).replace('\t', ","));
++    }
++
++    // Tooltips: the scenario's sweep, with what each crossing ran.
++    let aims: Vec<_> = (0..shell::TRIGGERS)
++        .map(|index| shell::centre(&harness, &format!("tip-{index}")))
++        .collect();
++    let mut tips = String::from("sweep\ttrigger\tframes_settle\tframes_idle6\tframes_total\ttooltips_mounted\ttooltip_x\ttooltip_y\ttooltip_w\ttooltip_h\ttext\n");
++    harness.deliver_to_first(crate::input::pointer(PointerAction::Entered, aims[0]));
++    harness.settle(64);
++    let mut crossing = |harness: &mut Harness<Runtime>, label: &str, trigger: &str, at: Point<CssPx, zgui::geom::Css>| {
++        harness.deliver_to_first(crate::input::pointer(PointerAction::Moved, at));
++        let settled = harness.settle(64) as u64;
++        let mut idle = 0_u64;
++        for _ in 0..6 {
++            harness.advance(Duration::from_micros(16_667));
++            idle += harness.pump() as u64;
++        }
++        let window = &harness.app().windows()[0];
++        let content = window.nodes_with_class("zui-tooltip");
++        let rect = content
++            .first()
++            .map(|node| rect_cols(window.host().window_box(*node)))
++            .unwrap_or_else(|| "\t\t\t".to_owned());
++        let text = content
++            .first()
++            .map(|node| clean(&window.dom().text_content(*node)))
++            .unwrap_or_default();
++        let _ = writeln!(
++            tips,
++            "{label}\t{trigger}\t{settled}\t{idle}\t{}\t{}\t{rect}\t{text}",
++            settled + idle,
++            content.len()
++        );
++    };
++    for sweep in 0..shell::SWEEPS {
++        for (index, &at) in aims.iter().enumerate() {
++            crossing(&mut harness, &sweep.to_string(), &format!("tip-{index}"), at);
++        }
++    }
++    let away = Point::new(CssPx(crate::gallery::WIDTH / 2.0), CssPx(200.0));
++    crossing(&mut harness, "away", "-", away);
++    write("tooltip_sweep.tsv", &tips);
++
++    // Drag: the scenario's, with both panel heights after every step.
++    let start = shell::centre(&harness, "dock-handle");
++    harness.deliver_to_first(crate::input::pointer(PointerAction::Moved, start));
++    harness.settle(64);
++    harness.deliver_to_first(shell::primary(PointerAction::Pressed, start));
++    harness.settle(64);
++    let mut drag = String::from("step\tpointer_y_css\tframes_run\tpanel0_h\tpanel1_h\tpanel0_y\tpanel1_y\tboxes_rebuilt\tnodes_relaid_out\tprimitives_emitted\n");
++    let heights = |harness: &Harness<Runtime>| {
++        let window = &harness.app().windows()[0];
++        window
++            .nodes_with_class("zui-resizable__panel")
++            .into_iter()
++            .filter_map(|node| window.host().window_box(node))
++            .map(|r| (r.origin.y.0, r.size.height.0))
++            .collect::<Vec<_>>()
++    };
++    let at_rest = heights(&harness);
++    let _ = writeln!(
++        drag,
++        "-1\t{:.2}\t0\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t0\t0\t0",
++        start.y.0, at_rest[0].1, at_rest[1].1, at_rest[0].0, at_rest[1].0
++    );
++    let mut y = start.y.0;
++    for step in 0..shell::DRAG_STEPS {
++        y += if step < shell::DRAG_STEPS / 2 { -shell::DRAG_STEP } else { shell::DRAG_STEP };
++        let mark = zgui_profile::counter::snapshot();
++        harness.deliver_to_first(crate::input::pointer(
++            PointerAction::Moved,
++            Point::new(start.x, CssPx(y)),
++        ));
++        let ran = harness.settle(64);
++        let moved = mark.delta(&zgui_profile::counter::snapshot());
++        harness.advance(Duration::from_micros(8_333));
++        let now = heights(&harness);
++        let _ = writeln!(
++            drag,
++            "{step}\t{y:.2}\t{ran}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}\t{}\t{}",
++            now[0].1, now[1].1, now[0].0, now[1].0, moved.boxes_rebuilt, moved.nodes_relaid_out, moved.primitives_emitted
++        );
++    }
++    harness.deliver_to_first(shell::primary(
++        PointerAction::Released,
++        Point::new(start.x, CssPx(y)),
++    ));
++    harness.settle(64);
++    write("shell_drag.tsv", &drag);
++    let _ = panel_heights(&harness);
++    let _ = writeln!(
++        meta,
++        "drag: {} steps of {} px (first half up, second half down) from the dock-handle centre; see shell_drag.tsv and tooltip_sweep.tsv",
++        shell::DRAG_STEPS,
++        shell::DRAG_STEP
++    );
++    write("shell_motion.meta.txt", &meta);
++}
+diff -ruN a/crates/zgui-bench/src/input.rs b/crates/zgui-bench/src/input.rs
+--- a/crates/zgui-bench/src/input.rs	2026-11-01 00:27:30
++++ b/crates/zgui-bench/src/input.rs	2026-11-01 05:07:29
+@@ -86,6 +86,7 @@
+     let mut tabs = 0;
+     let mut costs = Vec::new();
+     while !typing(harness) && tabs < 400 {
++        let instr0 = zgui_bench::instr::now();
+         let started = std::time::Instant::now();
+         for state in [key, key_up] {
+             harness.deliver_to_first(state(KeyEvent::named(
+@@ -95,6 +96,7 @@
+             harness.settle(64);
+         }
+         costs.push(started.elapsed().as_secs_f64() * 1e6);
++        zgui_bench::instr::record("kitchen.tab_traversal", zgui_bench::instr::since(instr0));
+         tabs += 1;
+     }
+     (tabs, costs)
+diff -ruN a/crates/zgui-bench/src/instr.rs b/crates/zgui-bench/src/instr.rs
+--- a/crates/zgui-bench/src/instr.rs	1969-12-31 16:00:00
++++ b/crates/zgui-bench/src/instr.rs	2026-11-01 05:10:33
+@@ -0,0 +1,105 @@
++//! Process-wide retired instructions, read from the kernel (macOS `proc_pid_rusage`).
++//!
++//! Added for the bough/zgui comparison: every span the scenarios time is also counted in
++//! instructions, so a number can be compared across machines and across load.
++
++#![allow(unsafe_code, reason = "one FFI call into libproc")]
++
++use std::cell::RefCell;
++use std::sync::OnceLock;
++
++/// Retired instructions of the whole process (every thread, user and kernel as the OS accounts).
++#[must_use]
++pub fn now() -> u64 {
++    let mut info = core::mem::MaybeUninit::<libc::rusage_info_v4>::zeroed();
++    // SAFETY: `info` is a correctly sized, writable rusage_info_v4 and the pid is our own.
++    let rc = unsafe {
++        libc::proc_pid_rusage(
++            libc::getpid(),
++            libc::RUSAGE_INFO_V4,
++            info.as_mut_ptr().cast::<libc::rusage_info_t>(),
++        )
++    };
++    assert_eq!(rc, 0, "proc_pid_rusage failed");
++    // SAFETY: the call succeeded, so the struct is initialised.
++    unsafe { info.assume_init() }.ri_instructions
++}
++
++/// What an empty measured span costs: `now()`, the stopwatch start and read, then the closing read.
++/// Calibrated once, with the same shape the scenarios use, and subtracted by [`since`].
++fn overhead() -> u64 {
++    static OVERHEAD: OnceLock<u64> = OnceLock::new();
++    *OVERHEAD.get_or_init(|| {
++        let mut costs: Vec<u64> = (0..6_000)
++            .map(|_| {
++                let start = now();
++                let stopwatch = std::time::Instant::now();
++                core::hint::black_box(stopwatch.elapsed());
++                now().saturating_sub(start)
++            })
++            .skip(1_000)
++            .collect();
++        costs.sort_unstable();
++        costs[costs.len() / 2]
++    })
++}
++
++/// Instructions since `start` (a value from [`now`]), minus the calibrated cost of the read itself.
++#[must_use]
++pub fn since(start: u64) -> f64 {
++    let spent = now().saturating_sub(start);
++    spent.saturating_sub(overhead()) as f64
++}
++
++/// The calibrated per-read overhead, for the report.
++#[must_use]
++pub fn read_overhead() -> u64 {
++    overhead()
++}
++
++thread_local! {
++    static LEDGER: RefCell<Vec<(String, Vec<f64>)>> = const { RefCell::new(Vec::new()) };
++}
++
++/// Files one sample of instructions under a measurement's name.
++pub fn record(name: &str, instructions: f64) {
++    LEDGER.with(|ledger| {
++        let mut ledger = ledger.borrow_mut();
++        if let Some((_, samples)) = ledger.iter_mut().find(|(n, _)| n == name) {
++            samples.push(instructions);
++        } else {
++            ledger.push((name.to_owned(), vec![instructions]));
++        }
++    });
++}
++
++/// `(p10, p50, p90, n)` of the samples filed under `name`, if any.
++#[must_use]
++pub fn quantiles(name: &str) -> Option<(f64, f64, f64, usize)> {
++    LEDGER.with(|ledger| {
++        let ledger = ledger.borrow();
++        let (_, samples) = ledger.iter().find(|(n, _)| n == name)?;
++        let mut sorted = samples.clone();
++        sorted.sort_by(f64::total_cmp);
++        let at = |fraction: f64| {
++            let index = (((sorted.len() - 1) as f64) * fraction).round() as usize;
++            sorted[index.min(sorted.len() - 1)]
++        };
++        Some((at(0.10), at(0.50), at(0.90), sorted.len()))
++    })
++}
++
++/// The median of `name`'s samples.
++#[must_use]
++pub fn p50(name: &str) -> f64 {
++    quantiles(name).map_or(0.0, |(_, p50, _, _)| p50)
++}
++
++/// The `INSTR` line for one measurement, if it has samples.
++#[must_use]
++pub fn line(scenario: &str, name: &str) -> Option<String> {
++    let (p10, p50, p90, n) = quantiles(name)?;
++    Some(format!(
++        "INSTR {scenario} {name} p50={p50:.0} p10={p10:.0} p90={p90:.0} n={n}"
++    ))
++}
+diff -ruN a/crates/zgui-bench/src/lib.rs b/crates/zgui-bench/src/lib.rs
+--- a/crates/zgui-bench/src/lib.rs	2026-11-01 00:27:30
++++ b/crates/zgui-bench/src/lib.rs	2026-11-01 05:06:56
+@@ -12,6 +12,7 @@
+ //! [`reference::watch`] records what a frame damaged, which is a fraction and therefore already
+ //! dimensionless.
+ 
+-#![forbid(unsafe_code)]
++#![deny(unsafe_code)]
+ 
++pub mod instr;
+ pub mod reference;
+diff -ruN a/crates/zgui-bench/src/main.rs b/crates/zgui-bench/src/main.rs
+--- a/crates/zgui-bench/src/main.rs	2026-11-01 00:27:30
++++ b/crates/zgui-bench/src/main.rs	2026-11-01 05:18:59
+@@ -76,6 +76,7 @@
+ mod shell;
+ 
+ mod draw;
++mod dump;
+ mod drive;
+ mod gallery;
+ mod growth;
+@@ -156,6 +157,10 @@
+     if phase == "vector" {
+         let variant = std::env::args().nth(3);
+         crate::scenario::vector::main(&size, variant.as_deref());
++        return;
++    }
++    if phase == "dump" {
++        crate::dump::run(&size);
+         return;
+     }
+     if phase == "scenario" {
+diff -ruN a/crates/zgui-bench/src/scenario/cold.rs b/crates/zgui-bench/src/scenario/cold.rs
+--- a/crates/zgui-bench/src/scenario/cold.rs	2026-11-01 00:27:30
++++ b/crates/zgui-bench/src/scenario/cold.rs	2026-11-01 05:07:08
+@@ -31,6 +31,8 @@
+ /// Runs the scenario.
+ pub(crate) fn run() -> Outcome {
+     let before = zgui_profile::counter::snapshot();
++    let _ = zgui_bench::instr::read_overhead();
++    let instr0 = zgui_bench::instr::now();
+     let started = std::time::Instant::now();
+ 
+     let mut harness = zgui_platform_headless::Harness::new(crate::gallery::runtime("s13"));
+@@ -40,6 +42,7 @@
+     )));
+     harness.settle(256);
+     let elapsed = started.elapsed();
++    zgui_bench::instr::record("cold.first_frame", zgui_bench::instr::since(instr0));
+     let moved = before.delta(&zgui_profile::counter::snapshot());
+ 
+     let boxes = harness.app().windows()[0].layout().borrow().keys().len();
+diff -ruN a/crates/zgui-bench/src/scenario/hover.rs b/crates/zgui-bench/src/scenario/hover.rs
+--- a/crates/zgui-bench/src/scenario/hover.rs	2026-11-01 00:27:30
++++ b/crates/zgui-bench/src/scenario/hover.rs	2026-11-01 05:07:08
+@@ -36,10 +36,13 @@
+         let index = step % rows;
+         let at = fixture::table_row_centre(index);
+         let mark = zgui_profile::counter::snapshot();
++        let instr0 = zgui_bench::instr::now();
+         let started = std::time::Instant::now();
+         harness.deliver_to_first(crate::input::pointer(PointerAction::Moved, at));
+         let ran = harness.settle(64);
+-        samples.push(started.elapsed().as_secs_f64() * 1e6);
++        let elapsed = started.elapsed().as_secs_f64() * 1e6;
++        zgui_bench::instr::record("hover.crossing", zgui_bench::instr::since(instr0));
++        samples.push(elapsed);
+         let moved = mark.delta(&zgui_profile::counter::snapshot());
+         frames += ran;
+         emitted += moved.primitives_emitted;
+diff -ruN a/crates/zgui-bench/src/scenario/idle.rs b/crates/zgui-bench/src/scenario/idle.rs
+--- a/crates/zgui-bench/src/scenario/idle.rs	2026-11-01 00:27:30
++++ b/crates/zgui-bench/src/scenario/idle.rs	2026-11-01 05:07:08
+@@ -56,9 +56,12 @@
+     let mut turns = Vec::with_capacity(TURNS);
+     for _ in 0..TURNS {
+         harness.advance(std::time::Duration::from_micros(16_667));
++        let instr0 = zgui_bench::instr::now();
+         let started = std::time::Instant::now();
+         frames += harness.pump();
+-        turns.push(started.elapsed().as_secs_f64() * 1e6);
++        let elapsed = started.elapsed().as_secs_f64() * 1e6;
++        zgui_bench::instr::record("idle.turn", zgui_bench::instr::since(instr0));
++        turns.push(elapsed);
+     }
+     let moved = before.delta(&zgui_profile::counter::snapshot());
+     let pace = Pace::of(&turns, INTERVAL_US);
+diff -ruN a/crates/zgui-bench/src/scenario/kitchen.rs b/crates/zgui-bench/src/scenario/kitchen.rs
+--- a/crates/zgui-bench/src/scenario/kitchen.rs	2026-11-01 00:27:30
++++ b/crates/zgui-bench/src/scenario/kitchen.rs	2026-11-01 05:07:29
+@@ -58,10 +58,13 @@
+     let letters = ["a", "b", "c", "d", "e", "f", "g", "h"];
+     for step in 0..REPEATS {
+         let letter = letters[step % letters.len()];
++        let instr0 = zgui_bench::instr::now();
+         let started = std::time::Instant::now();
+         harness.deliver_to_first(crate::input::key(KeyEvent::character(letter)));
+         harness.settle(64);
+-        keys.push(started.elapsed().as_secs_f64() * 1e6);
++        let elapsed = started.elapsed().as_secs_f64() * 1e6;
++        zgui_bench::instr::record("kitchen.keystroke", zgui_bench::instr::since(instr0));
++        keys.push(elapsed);
+         harness.deliver_to_first(crate::input::key_up(KeyEvent::character(letter)));
+         harness.settle(64);
+         if step % 8 == 7 {
+@@ -87,10 +90,13 @@
+         let at = centres[step % centres.len()];
+         harness.deliver_to_first(crate::input::pointer(PointerAction::Moved, at));
+         harness.settle(64);
++        let instr0 = zgui_bench::instr::now();
+         let started = std::time::Instant::now();
+         harness.deliver_to_first(crate::input::pointer(PointerAction::Pressed, at));
+         harness.settle(64);
+-        clicks.push(started.elapsed().as_secs_f64() * 1e6);
++        let elapsed = started.elapsed().as_secs_f64() * 1e6;
++        zgui_bench::instr::record("kitchen.click", zgui_bench::instr::since(instr0));
++        clicks.push(elapsed);
+         harness.deliver_to_first(crate::input::pointer(PointerAction::Released, at));
+         harness.settle(64);
+     }
+@@ -105,11 +111,15 @@
+         harness.settle(64);
+         let mut carried = 0;
+         while crate::input::gliding(&harness) && carried < 60 {
++            let instr0 = zgui_bench::instr::now();
+             let started = std::time::Instant::now();
+             harness.advance(std::time::Duration::from_micros(16_667));
+             let ran = harness.pump();
++            let elapsed = started.elapsed().as_secs_f64() * 1e6;
++            let spent = zgui_bench::instr::since(instr0);
+             if ran > 0 {
+-                ticks.push(started.elapsed().as_secs_f64() * 1e6);
++                zgui_bench::instr::record("kitchen.glide_tick", spent);
++                ticks.push(elapsed);
+             }
+             carried += 1;
+         }
+@@ -122,13 +132,16 @@
+             reason = "a step index bounded by the repeat count"
+         )]
+         let width = crate::gallery::WIDTH + (step % 24) as f32 * 8.0;
++        let instr0 = zgui_bench::instr::now();
+         let started = std::time::Instant::now();
+         harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+             DevicePx(width),
+             DevicePx(crate::gallery::HEIGHT),
+         )));
+         harness.settle(64);
+-        resizes.push(started.elapsed().as_secs_f64() * 1e3);
++        let elapsed = started.elapsed().as_secs_f64() * 1e3;
++        zgui_bench::instr::record("kitchen.resize", zgui_bench::instr::since(instr0));
++        resizes.push(elapsed);
+     }
+ 
+     // Untouched, but not still: the gallery ships an indeterminate progress bar, so this is what a
+@@ -137,10 +150,13 @@
+     // what the cheapest thing a loop can actually have to do costs.
+     let mut untouched = Vec::with_capacity(UNTOUCHED_TURNS);
+     for _ in 0..UNTOUCHED_TURNS {
++        let instr0 = zgui_bench::instr::now();
+         let started = std::time::Instant::now();
+         harness.advance(std::time::Duration::from_micros(16_667));
+         harness.pump();
+-        untouched.push(started.elapsed().as_secs_f64() * 1e6);
++        let elapsed = started.elapsed().as_secs_f64() * 1e6;
++        zgui_bench::instr::record("kitchen.untouched_turn", zgui_bench::instr::since(instr0));
++        untouched.push(elapsed);
+     }
+ 
+     let all = before.delta(&zgui_profile::counter::snapshot());
+diff -ruN a/crates/zgui-bench/src/scenario/mod.rs b/crates/zgui-bench/src/scenario/mod.rs
+--- a/crates/zgui-bench/src/scenario/mod.rs	2026-11-01 00:27:30
++++ b/crates/zgui-bench/src/scenario/mod.rs	2026-11-01 05:17:25
+@@ -16,7 +16,7 @@
+ 
+ pub(crate) mod band;
+ mod cold;
+-mod fixture;
++pub(crate) mod fixture;
+ mod hover;
+ mod idle;
+ mod record;
+@@ -30,7 +30,7 @@
+ pub(crate) use crate::scenario::record::write;
+ 
+ mod kitchen;
+-mod shell;
++pub(crate) mod shell;
+ mod thread;
+ 
+ /// Every scenario, in the order a report lists them.
+@@ -188,6 +188,11 @@
+                 )
+             ),
+         );
++    }
++    for measurement in &outcome.measurements {
++        if let Some(line) = zgui_bench::instr::line(outcome.scenario, measurement.name) {
++            println!("{line}");
++        }
+     }
+     println!(
+         "PACE\t{}\t{:.4}\t{}\t{}",
+diff -ruN a/crates/zgui-bench/src/scenario/scroll.rs b/crates/zgui-bench/src/scenario/scroll.rs
+--- a/crates/zgui-bench/src/scenario/scroll.rs	2026-11-01 00:27:30
++++ b/crates/zgui-bench/src/scenario/scroll.rs	2026-11-01 05:07:08
+@@ -83,10 +83,12 @@
+             continue;
+         }
+         let mark = zgui_profile::counter::snapshot();
++        let instr0 = zgui_bench::instr::now();
+         let started = std::time::Instant::now();
+         harness.advance(std::time::Duration::from_micros(8_333));
+         let ran = harness.pump();
+         let cost = started.elapsed().as_secs_f64() * 1e6;
++        let spent = zgui_bench::instr::since(instr0);
+         if ran == 0 {
+             continue;
+         }
+@@ -102,11 +104,13 @@
+         // in the translation bucket and be reported, which is exactly the result worth catching.
+         if moved.boxes_rebuilt == 0 {
+             translation.push(cost);
++            zgui_bench::instr::record("scroll.translation", spent);
+             stray.restyles += moved.elements_restyled;
+             stray.relayouts += moved.nodes_relaid_out;
+             stray.hit_index_rebuilds += moved.hit_index_rebuilds;
+         } else {
+             recycle.push(cost);
++            zgui_bench::instr::record("scroll.recycle", spent);
+             rebuild.boxes += moved.boxes_rebuilt;
+             rebuild.nodes += moved.nodes_relaid_out;
+             rebuild.emitted += moved.primitives_emitted;
+diff -ruN a/crates/zgui-bench/src/scenario/shell.rs b/crates/zgui-bench/src/scenario/shell.rs
+--- a/crates/zgui-bench/src/scenario/shell.rs	2026-11-01 00:27:30
++++ b/crates/zgui-bench/src/scenario/shell.rs	2026-11-01 05:17:25
+@@ -33,25 +33,25 @@
+ use crate::scenario::{Outcome, counters, fixture, quiet};
+ 
+ /// How many icon buttons the head holds, each with a tooltip.
+-const TRIGGERS: usize = 12;
++pub(crate) const TRIGGERS: usize = 12;
+ 
+ /// How many rows the page holds.
+-const ROWS: usize = 48;
++pub(crate) const ROWS: usize = 48;
+ 
+ /// How many lines the dock's log holds.
+-const LINES: usize = 5_000;
++pub(crate) const LINES: usize = 5_000;
+ 
+ /// How tall one log line is.
+ const LINE_HEIGHT: f32 = 18.0;
+ 
+ /// How many times the pointer sweeps the head.
+-const SWEEPS: usize = 3;
++pub(crate) const SWEEPS: usize = 3;
+ 
+ /// How many steps one drag takes, and how far each one moves the edge.
+-const DRAG_STEPS: usize = 60;
++pub(crate) const DRAG_STEPS: usize = 60;
+ 
+ /// How far one drag step moves the dock's edge, in CSS pixels.
+-const DRAG_STEP: f32 = 5.0;
++pub(crate) const DRAG_STEP: f32 = 5.0;
+ 
+ /// How many window sizes the resize phase steps through.
+ const RESIZE_STEPS: usize = 40;
+@@ -145,7 +145,7 @@
+ }
+ 
+ /// Builds the runtime holding the shell.
+-fn runtime() -> Runtime {
++pub(crate) fn runtime() -> Runtime {
+     fixture::custom(SHEET, |cx| {
+         Box::new(view! { Shell() }.into_view().build(cx))
+     })
+@@ -157,7 +157,7 @@
+ ///
+ /// Panics when nothing carries the name, because every phase below aims at one and a pointer
+ /// aimed at nothing measures nothing.
+-fn centre(harness: &Harness<Runtime>, name: &str) -> Point<CssPx, Css> {
++pub(crate) fn centre(harness: &Harness<Runtime>, name: &str) -> Point<CssPx, Css> {
+     let window = &harness.app().windows()[0];
+     let attribute = zgui::view::AttrName::new("data-testid");
+     let dom = window.dom();
+@@ -187,7 +187,7 @@
+ }
+ 
+ /// Lets every running transition and animation finish.
+-fn idle(harness: &mut Harness<Runtime>, frames: usize) {
++pub(crate) fn idle(harness: &mut Harness<Runtime>, frames: usize) {
+     for _ in 0..frames {
+         harness.advance(Duration::from_micros(16_667));
+         harness.pump();
+@@ -216,19 +216,22 @@
+     let before = zgui_profile::counter::snapshot();
+     for _ in 0..SWEEPS {
+         for &at in &aims {
++            let instr0 = zgui_bench::instr::now();
+             let started = std::time::Instant::now();
+             harness.deliver_to_first(crate::input::pointer(PointerAction::Moved, at));
+             harness.settle(64);
+             idle(harness, 6);
+-            crossings.push(started.elapsed().as_secs_f64() * 1e6);
++            let elapsed = started.elapsed().as_secs_f64() * 1e6;
++            zgui_bench::instr::record("shell.tooltip_crossing", zgui_bench::instr::since(instr0));
++            crossings.push(elapsed);
+         }
+     }
+     // Off the head, so the last tooltip closes and unmounts inside the measurement.
+     let away = Point::new(CssPx(crate::gallery::WIDTH / 2.0), CssPx(200.0));
+-    crossings.push(timed(
+-        harness,
+-        crate::input::pointer(PointerAction::Moved, away),
+-    ));
++    let instr0 = zgui_bench::instr::now();
++    let leave = timed(harness, crate::input::pointer(PointerAction::Moved, away));
++    zgui_bench::instr::record("shell.tooltip_crossing", zgui_bench::instr::since(instr0));
++    crossings.push(leave);
+     idle(harness, 6);
+     let moved = before.delta(&zgui_profile::counter::snapshot());
+     Tooltips {
+@@ -239,7 +242,7 @@
+ }
+ 
+ /// A pointer event carrying the primary button, as a press and a release do.
+-fn primary(action: PointerAction, at: Point<CssPx, Css>) -> SurfaceEvent {
++pub(crate) fn primary(action: PointerAction, at: Point<CssPx, Css>) -> SurfaceEvent {
+     SurfaceEvent::Pointer {
+         action,
+         event: PointerEvent::mouse(at).with_button(PointerButton::Primary),
+@@ -276,10 +279,13 @@
+         } else {
+             DRAG_STEP
+         };
+-        steps.push(timed(
++        let instr0 = zgui_bench::instr::now();
++        let took = timed(
+             harness,
+             crate::input::pointer(PointerAction::Moved, Point::new(start.x, CssPx(y))),
+-        ));
++        );
++        zgui_bench::instr::record("shell.drag_step", zgui_bench::instr::since(instr0));
++        steps.push(took);
+         harness.advance(Duration::from_micros(8_333));
+     }
+     let moved = before.delta(&zgui_profile::counter::snapshot());
+@@ -324,10 +330,13 @@
+             DevicePx(crate::gallery::WIDTH - shrink),
+             DevicePx(crate::gallery::HEIGHT - shrink / 2.0),
+         );
++        let instr0 = zgui_bench::instr::now();
+         let started = std::time::Instant::now();
+         harness.deliver_to_first(SurfaceEvent::Resized(size));
+         harness.settle(64);
+-        steps.push(started.elapsed().as_secs_f64() * 1e6);
++        let elapsed = started.elapsed().as_secs_f64() * 1e6;
++        zgui_bench::instr::record("shell.resize_step", zgui_bench::instr::since(instr0));
++        steps.push(elapsed);
+         harness.advance(Duration::from_micros(16_667));
+         harness.pump();
+     }
+diff -ruN a/crates/zgui-bench/src/scenario/thread.rs b/crates/zgui-bench/src/scenario/thread.rs
+--- a/crates/zgui-bench/src/scenario/thread.rs	2026-11-01 00:27:30
++++ b/crates/zgui-bench/src/scenario/thread.rs	2026-11-01 05:07:29
+@@ -273,10 +273,12 @@
+         )]
+         let width = crate::gallery::WIDTH + (step % CYCLE) as f32 * 8.0;
+         let mark = counter::snapshot();
++        let instr0 = zgui_bench::instr::now();
+         let started = std::time::Instant::now();
+         harness.deliver_to_first(SurfaceEvent::Resized(wide(width)));
+         harness.settle(64);
+         let cost = started.elapsed().as_secs_f64() * 1e3;
++        zgui_bench::instr::record("thread.resize", zgui_bench::instr::since(instr0));
+         let moved = mark.delta(&counter::snapshot());
+         steps.cost_ms.push(cost);
+         steps.relaid.push(sample(moved.nodes_relaid_out));
+--- a/Cargo.lock	2026-11-01 00:27:30
++++ b/Cargo.lock	2026-11-01 05:19:00
+@@ -5715,7 +5715,10 @@
+ name = "zgui-bench"
+ version = "0.1.0"
+ dependencies = [
++ "libc",
+  "zgui",
++ "zgui-css",
++ "zgui-dom",
+  "zgui-geom",
+  "zgui-layout",
+  "zgui-platform-headless",
+@@ -5728,6 +5731,7 @@
+  "zgui-ui-icons",
+  "zgui-ui-primitives",
+  "zgui-ui-tokens",
++ "zgui-view-dom",
+  "zgui-vocab",
+ ]
+ 

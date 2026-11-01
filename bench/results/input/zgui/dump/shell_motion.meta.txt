@@ -1,0 +1,4 @@
+ResizablePanel elements found (class zui-resizable__panel): 2
+  initial rect (device px x,y,w,h): 0.00,42.00,1600.00,650.00
+  initial rect (device px x,y,w,h): 0.00,693.00,1600.00,350.00
+drag: 60 steps of 5 px (first half up, second half down) from the dock-handle centre; see shell_drag.tsv and tooltip_sweep.tsv

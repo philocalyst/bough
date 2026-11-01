@@ -1,0 +1,9 @@
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+SCENARIO scroll 10000 rows, 191 translation frames and 184 recycle frames at 120 Hz; offset 5265.0
+MEASURE	scroll	scroll.translation	us	0.7500	p50=0.7500;p95=1.6250;p99=1.8750;max=2.6670;n=191
+INSTR	scroll	scroll.translation	p50=7006	p10=6740	p95=11527	max=13191	n=191
+MEASURE	scroll	scroll.recycle	us	2.7910	p50=2.7910;p95=4.3750;p99=10.2920;max=25.7500;n=184
+INSTR	scroll	scroll.recycle	p50=21909	p10=17357	p95=31310	max=40829	n=184
+MEASURE	scroll	scroll.translation.relayouts	computes	0.0000	-
+MEASURE	scroll	scroll.translation.hit_rebuilds	rebuilds	0.0000	-
+NOTE	scroll	one row shift mounts 1.07 rows

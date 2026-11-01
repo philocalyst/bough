@@ -1,0 +1,135 @@
+tab_stop	preorder	testid	tag	classes
+0	33		control	swatch
+1	34		control	swatch
+2	35		control	swatch swatch-picked
+3	36		control	swatch
+4	74		control	zs-9123059c zui-button zui-button--default
+5	76		control	zs-9123059c zui-button zui-button--secondary
+6	78		control	zs-9123059c zui-button zui-button--destructive
+7	80		control	zs-9123059c zui-button zui-button--outline
+8	82		control	zs-9123059c zui-button zui-button--ghost
+9	84		control	zs-9123059c zui-button zui-button--link
+10	90		control	zs-9123059c zui-button zui-button--default zui-button--xs
+11	92		control	zs-9123059c zui-button zui-button--default zui-button--sm
+12	94		control	zs-9123059c zui-button zui-button--default
+13	96		control	zs-9123059c zui-button zui-button--default zui-button--lg
+14	102		control	zs-9123059c zui-button zui-button--default zui-button--icon-xs
+15	104		control	zs-9123059c zui-button zui-button--default zui-button--icon-sm
+16	106		control	zs-9123059c zui-button zui-button--default zui-button--icon
+17	108		control	zs-9123059c zui-button zui-button--default zui-button--icon-lg
+18	114		control	zs-9123059c zui-button zui-button--default zui-button--sm
+19	117		control	zs-9123059c zui-button zui-button--default
+20	120		control	zs-9123059c zui-button zui-button--outline
+21	302		field	zui-input zs-3dbfed25 zui-field
+22	308		field	zui-input zs-3dbfed25 zui-field
+23	320		editor	zui-textarea zs-5d4345bc zui-field
+24	333		control	zs-b16e7457 zui-otp
+25	369		control	zs-b16e7457 zui-otp
+26	408		control	zs-b16e7457 zui-otp
+27	440		control	zs-c2753049 zui-select zui-select--sm
+28	448		control	zs-c2753049 zui-select
+29	460		control	zs-c6a372cb zui-switch zui-switch--sm
+30	462		control	zs-c6a372cb zui-switch
+31	475		field	zui-input zs-3dbfed25 zui-field
+32	481		control	zs-9123059c zui-button zui-button--default
+33	493		control	zs-ebce6584 zui-checkbox
+34	496		control	zs-ebce6584 zui-checkbox
+35	499		control	zs-ebce6584 zui-checkbox
+36	510		control	zs-ebce6584 zui-checkbox
+37	527		control	zui-radio-group__item zs-ca2fb024
+38	544		control	zs-c6a372cb zui-switch
+39	560		control	zs-a02e2b75 zui-toggle
+40	562		control	zs-a02e2b75 zui-toggle zui-toggle--outline
+41	564		control	zs-a02e2b75 zui-toggle zui-toggle--sm
+42	566		control	zs-a02e2b75 zui-toggle zui-toggle--lg
+43	575		control	zs-a02e2b75 zui-toggle zui-toggle-group__item
+44	592		control	zs-1a67963f zui-slider
+45	637		control	zs-9123059c zui-button zui-button--ghost zui-button--icon-sm
+46	643		control	zs-9123059c zui-button zui-button--outline
+47	645		control	zs-9123059c zui-button zui-button--default
+48	661		control	zs-9123059c zui-button zui-button--secondary zui-button--sm
+49	663		control	zs-9123059c zui-button zui-button--secondary zui-button--sm
+50	684	toast-plain	control	zs-9123059c zui-button zui-button--default
+51	686		control	zs-9123059c zui-button zui-button--destructive
+52	688		control	zs-9123059c zui-button zui-button--secondary
+53	690		control	zs-9123059c zui-button zui-button--outline
+54	701		control	zui-accordion__trigger
+55	733		control	zui-collapsible__trigger
+56	750		control	zui-tabs__trigger
+57	756		box	zui-tabs__content
+58	769		control	zui-tabs__trigger
+59	775		box	zui-tabs__content
+60	790	dialog-trigger	control	zs-9123059c zui-button zui-button--default
+61	796		control	zs-9123059c zui-button zui-button--destructive
+62	808	sheet-trigger	control	zs-9123059c zui-button zui-button--outline
+63	814		control	zs-9123059c zui-button zui-button--outline
+64	826	popover-trigger	control	zs-9123059c zui-button zui-button--outline
+65	833		control	zs-9123059c zui-button zui-button--default zui-button--icon
+66	836		control	zs-9123059c zui-button zui-button--default zui-button--icon
+67	842		box	zui-hover-card__trigger
+68	855	menu-trigger	control	zs-9123059c zui-button zui-button--outline
+69	874		control	zui-menubar__trigger
+70	892	select-trigger	control	zs-c2753049 zui-select
+71	921		field	zui-input zs-3dbfed25 zui-input-group__field zui-field zui-combobox__input
+72	944		field	zui-input zs-3dbfed25 zui-command__input zui-field zui-combobox__input
+73	977		control	zui-breadcrumb__link
+74	982		control	zui-breadcrumb__link
+75	1001		control	zui-pagination__link zui-pagination__previous
+76	1006		control	zui-pagination__link
+77	1009		control	zui-pagination__link
+78	1012		control	zui-pagination__link
+79	1018		control	zui-pagination__link zui-pagination__next
+80	1037	nav-trigger	control	zui-navigation-menu__trigger
+81	1045		control	zui-navigation-menu__link
+82	1071		control	zui-sidebar__menu-button
+83	1075		control	zui-sidebar__menu-button
+84	1081		control	zui-sidebar__menu-button
+85	1086		control	zui-sidebar__menu-sub-button
+86	1089		control	zui-sidebar__menu-sub-button
+87	1092		control	zui-sidebar__menu-sub-button
+88	1096		control	zui-sidebar__menu-button
+89	1100		control	zui-sidebar__menu-button
+90	1109		control	zui-sidebar__menu-button
+91	1113		control	zui-sidebar__menu-button
+92	1117		control	zui-sidebar__menu-button
+93	1127	sidebar-trigger	control	zui-sidebar__trigger
+94	1191		control	zui-scroll-area__bar
+95	1206		control	zui-resizable__handle
+96	1235		control	zui-carousel__arrow zui-carousel__arrow--next
+97	1283		field	zui-input zs-3dbfed25 zui-data-table__search zui-field
+98	1292		control	zs-ebce6584 zui-checkbox
+99	1296		control	zui-data-table__sort
+100	1298		control	zui-data-table__grip
+101	1300		control	zui-data-table__sort
+102	1302		control	zui-data-table__grip
+103	1307		control	zs-ebce6584 zui-checkbox
+104	1316		control	zs-ebce6584 zui-checkbox
+105	1325		control	zs-ebce6584 zui-checkbox
+106	1336		control	zui-data-table__step
+107	1339		control	zui-data-table__step
+108	1377		vector	zui-chart__mark
+109	1378		vector	zui-chart__mark
+110	1379		vector	zui-chart__mark
+111	1380		vector	zui-chart__mark
+112	1381		vector	zui-chart__mark
+113	1434		vector	zui-chart__mark
+114	1435		vector	zui-chart__mark
+115	1436		vector	zui-chart__mark
+116	1437		vector	zui-chart__mark
+117	1438		vector	zui-chart__mark
+118	1482		vector	zui-chart__mark
+119	1483		vector	zui-chart__mark
+120	1484		vector	zui-chart__mark
+121	1485		vector	zui-chart__mark
+122	1486		vector	zui-chart__mark
+123	1548		control	zui-calendar__step
+124	1550		control	zui-calendar__step
+125	1654		control	zui-calendar__day
+126	1707		control	zui-calendar__step
+127	1709		control	zui-calendar__step
+128	1744		control	zui-calendar__day
+129	2016		control	zui-date-picker__trigger
+130	2212		editor	caret-text caret-upright
+131	2214		editor	caret-text caret-turned
+132	2250		control	zs-9123059c zui-button zui-button--default
+133	2253		control	zs-9123059c zui-button zui-button--outline
