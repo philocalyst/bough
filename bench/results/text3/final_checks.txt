@@ -1,0 +1,7 @@
+i18n: 7.8 us per frame, 142.9 us a locale switch (133485 instructions a frame, 2531112 a switch, render=false)
+           134764259  instructions retired
+template: 11.5 us per frame, 0.8 us a locale switch (132490 instructions a frame, 9800 a switch, render=false)
+           125376124  instructions retired
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+label-churn: 30 labels relabelled, 3.0 us/frame median of round medians (5.8 3.5 3.0 3.0 3.0), 48136 instructions/frame, render=false, text sets 9000
+ALL-DONE

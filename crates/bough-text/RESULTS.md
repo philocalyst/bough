@@ -49,7 +49,7 @@ output lines as the originals). zgx was rebuilt from 06debe9d on this Mac (`benc
 
 | workload (units) | zgx / zgui | **bough** | ratio |
 |---|---:|---:|---:|
-| zgui **label-churn**, 30 labels relabelled (µs/frame, median of round medians) | 1,348.3 (zgui baseline) | **3.2** (53.6 K instr/frame); 219.6 with the GPU frame | **420×** |
+| zgui **label-churn**, 30 labels relabelled (µs/frame, median of round medians) | 1,348.3 (zgui baseline) | **3.0-3.2** (48.1-53.6 K instr/frame); 219.6 with the GPU frame | **420-450×** |
 | zgx **text_bench**, whole run (M instr) | 4,464-4,511 (SF NS/Menlo); 4,336-4,390 (DejaVu driver) | **106-108** | **41×** |
 | &nbsp;&nbsp;1000 paragraphs, first measure (ms) | 52.5-55.7 (DejaVu) / 37.4-67.0 (stock) | **1.50** (16.2-17.9 M instr) | 35× |
 | &nbsp;&nbsp;same paragraphs, same width (ms) | 41.5-65.9 / 31.7-53.4 | **0.00** (64 K instr) | – |
@@ -58,7 +58,7 @@ output lines as the originals). zgx was rebuilt from 06debe9d on this Mac (`benc
 | zgx **editor_streaming**, whole run (M instr) | 229.8-232.2 | **178.5-180.2** | 1.28× |
 | &nbsp;&nbsp;elapsed (ms) / requested peak (bytes) | 10.7-12.6 / 1,096,496 | 9.3-13.8 / **1,062,708** | ≈ / 1.03× |
 | zgx **i18n_bench** (Rust), i18n: µs/frame, µs a locale switch | 176-242, 603-807 | **7.7-10.7, 129-281** | ~20×, ~4× |
-| &nbsp;&nbsp;whole run (M instr), i18n / template | 1,227-1,233 / 1,201-1,203 | **134 / see final_checks.txt** | 9× |
+| &nbsp;&nbsp;whole run (M instr), i18n / template | 1,227-1,233 / 1,201-1,203 | **134-135 / 125** | 9.1× / 9.6× |
 | zgx-script **i18n_bench**, whole run (M instr): message / template / switch | 606-618 / 609-610 / 566-569 | **116 / 114 / 151** | 5.3× / 5.3× / 3.8× |
 | zgx-script **code_editor_bench** (bough: the text engine's part, see III.4): open to first screen | 25.2-31.3 ms, 189-192 M | **0.78-1.28 ms, 9.1-9.5 M** | 20× |
 | &nbsp;&nbsp;keystroke to frame | 3.09-3.87 ms, 5.3-5.4 M | **0.005 ms, 0.083 M** | 64× (instr) |
