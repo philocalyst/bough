@@ -114,7 +114,7 @@ pub fn run_window<V: View>(
             let blk = RcBlock::new(move |_t: NonNull<NSTimer>| {
                 let mut a = app_rc.borrow_mut();
                 (tick.borrow_mut())(&mut a);
-                let drew = a.frame();
+                let drew = a.frame_paced();
                 after_frame(&app_rc, &trim, &mut a, drew);
             });
             let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(p.as_secs_f64(), true, &blk) };
@@ -188,7 +188,7 @@ pub fn run_window_linked<V: View>(
         if let Some((app, t0)) = &state {
             let mut a = app.borrow_mut();
             cb(&mut a, t0.elapsed().as_secs_f64());
-            let drew = a.frame();
+            let drew = a.frame_paced();
             if !drew {
                 link.setPaused(true);
             }
@@ -377,7 +377,7 @@ pub fn run_interactive<V: View>(
                     let blk = RcBlock::new(move |_t: NonNull<NSTimer>| {
                         if let Ok(mut a) = app.try_borrow_mut() {
                             if a.next_blink().is_some() && a.tick(half as f32) {
-                                let drew = a.frame();
+                                let drew = a.frame_paced();
                                 after_frame(&app, &trim, &mut a, drew);
                             }
                         }
@@ -403,7 +403,7 @@ pub fn run_interactive<V: View>(
                 *last = None;
                 return;
             }
-            let drew = a.frame();
+            let drew = a.frame_paced();
             after_frame(app, &trim, &mut a, drew);
         }
     })

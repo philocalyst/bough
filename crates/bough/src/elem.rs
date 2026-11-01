@@ -797,13 +797,22 @@ impl<F, V> Bars<'_, F, V> {
 fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage: bool) -> NRect {
     let n = &mut rt.nodes[node as usize];
     let count = n.series.len();
+    // The samples that leave or are overwritten: with the new series they bound every old and new bar top
+    // (a shift by one keeps all old samples but the first). The value was there all along: the strip union
+    // comes from the series, not from reading the instances back.
+    let (mut smin, mut smax) = (f32::INFINITY, f32::NEG_INFINITY);
     if n.series_ok && key == n.series_key.wrapping_add(1) {
+        (smin, smax) = (n.series[0], n.series[0]);
         n.series.copy_within(1.., 0);
         n.series[count - 1] = f(key + count as u64 - 1);
     } else if !n.series_ok || key != n.series_key {
         for (i, s) in n.series.iter_mut().enumerate() {
+            smin = if *s < smin { *s } else { smin };
+            smax = if *s > smax { *s } else { smax };
             *s = f(key + i as u64);
         }
+    } else {
+        return rt.bough.visible_ink_handle(n.handle).unwrap_or(NRect::EMPTY);
     }
     n.series_ok = true;
     n.series_key = key;
@@ -817,17 +826,19 @@ fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage:
     let band = edge_band(KIND_SOLID, 0.0, 0.0) as f32;
     let (inst, series) = (&mut rt.inst, &rt.nodes[node as usize].series);
     // Bars are bottom-anchored on the geometry grid: only their top edges move (x, width and bottom are
-    // fixed, written at mount). The edge-band rule (`Bough::damage_edges`) gives each moved bar the strip
-    // between its old and new top plus a solid's band; their union is covered by ONE rect: the sparkline's
-    // columns between the highest and the lowest moved top (a min / max folded in registers, 2 selects a
-    // bar). The bars' bodies below the lowest top, which old ∪ new repaints every tick, are never damaged.
-    let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+    // fixed, written at mount; `bottom - y` is exact on the grid). The edge-band rule (`Bough::damage_edges`)
+    // gives each moved bar the strip between its old and new top plus a solid's band; their union is
+    // covered by ONE rect: the sparkline's columns between the highest and the lowest top any old or new
+    // sample gives (2 selects a bar on the samples, no instance read back). The bars' bodies below that,
+    // which old ∪ new repaints every tick, are never damaged.
+    let y_of = |s: f32| snap(y0 + (base_pt - (max_h * s).max(min_h)) * scale);
     let mut top = f32::MAX;
     for i in 0..count {
-        let h = (max_h * series[i]).max(min_h);
-        let y = snap(y0 + (base_pt - h) * scale);
+        let s = series[i];
+        smin = if s < smin { s } else { smin };
+        smax = if s > smax { s } else { smax };
+        let y = y_of(s);
         let p = &mut inst[first + i];
-        let oy = p.pos[1];
         if !damage {
             p.pos[0] = snap(x0 + i as f32 * step);
             p.size[0] = wb;
@@ -835,13 +846,10 @@ fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage:
         p.pos[1] = y;
         p.size[1] = bottom - y;
         top = if y < top { y } else { top };
-        // an unmoved bar has oy == y: it would add only its band, so it is not folded
-        let (mn, mx) = if oy < y { (oy, y) } else { (y, oy) };
-        let moved = damage && oy != y;
-        lo = if moved && mn < lo { mn } else { lo };
-        hi = if moved && mx > hi { mx } else { hi };
     }
-    if lo <= hi {
+    if damage {
+        // y falls as the sample rises: the highest top comes from the largest sample
+        let (lo, hi) = (y_of(smax), y_of(smin));
         let xa = snap(x0) + sx;
         let r = NRect::new(xa.floor() as i32, (lo + sy - band).floor() as i32, (xa + snap((count as f32 - 1.0) * step) + wb).ceil() as i32, (hi + sy + band).ceil() as i32);
         let clip = rt.nodes[node as usize].clip;

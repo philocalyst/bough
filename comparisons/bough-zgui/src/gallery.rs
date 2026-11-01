@@ -121,7 +121,7 @@ pub fn turn(app: &mut App<Gallery>, dt: f32) -> bool {
     if !app.tick(dt) {
         app.flush();
     }
-    app.frame()
+    app.frame_paced()
 }
 
 /// What the kitchen and cold-start drivers need of a gallery document (the dump-placed one or the laid-out one).
@@ -473,7 +473,7 @@ pub fn turn_l(app: &mut App<GalleryL>, dt: f32) -> bool {
     if !app.tick(dt) {
         app.flush();
     }
-    app.frame()
+    app.frame_paced()
 }
 
 impl Doc for GalleryL {

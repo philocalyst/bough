@@ -76,3 +76,23 @@ fn resize_grows_and_shrinks_the_surfaces_exactly() {
         }
     }
 }
+
+#[test]
+fn paced_and_input_frames_publish_exactly_in_order() {
+    // clock-driven turns publish at the next turn on the calling thread, input turns through the publisher;
+    // mixed, every presented surface is exact and the last commit shows the last frame
+    let (mut app, mut work) = lab_app(0, true);
+    for t in 0..60 {
+        work.tick();
+        app.turn(|l| lab_publish(l, &work, Mode::Both));
+        let drew = if t % 3 == 0 { app.frame() } else { app.frame_paced() };
+        assert!(drew);
+        if t % 7 == 0 {
+            exact(&mut app, &format!("mixed tick {t}"));
+        }
+    }
+    let g = app.gpu.as_mut().unwrap();
+    g.sync();
+    g.publisher_idle();
+    exact(&mut app, "mixed end");
+}
