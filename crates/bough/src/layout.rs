@@ -94,6 +94,8 @@ pub struct Spec {
     pub abs: Option<(f32, f32)>,
     /// `position: relative`: the containing block of absolutely positioned children.
     pub relative: bool,
+    /// `overflow: clip`: content overflow stays inside the box for layout (cephal stops propagating there).
+    pub clip: bool,
 }
 
 impl Spec {
@@ -115,6 +117,7 @@ impl Spec {
             justify: None,
             abs: None,
             relative: false,
+            clip: false,
         }
     }
 
@@ -179,6 +182,9 @@ impl Spec {
         st.justify_content = self.justify.map(Self::justify_c);
         if self.relative {
             st.position = Position::Relative;
+        }
+        if self.clip {
+            st.overflow = cephal::Point { x: cephal::style::Overflow::Clip, y: cephal::style::Overflow::Clip };
         }
         if let Some((x, y)) = self.abs {
             st.position = Position::Absolute;
@@ -268,6 +274,12 @@ pub trait Styled: Sized {
         self.spec_mut().justify = Some(j);
         self
     }
+    /// `overflow: clip`: the box's content overflow does not reach its parent's layout (an edit inside
+    /// stops propagating here).
+    fn clip_overflow(mut self) -> Self {
+        self.spec_mut().clip = true;
+        self
+    }
     /// `position: relative` (the containing block of `abs` children).
     fn relative(mut self) -> Self {
         self.spec_mut().relative = true;
@@ -346,11 +358,34 @@ impl Hash for SpecKey {
 
 // =============================================================================== measured text
 
-/// A measured text leaf's state: the shaped run (font units), its bytes and the last wrap.
+/// One word (a run of non-spaces) of a measured text: its bytes `ws..we` and the pen positions, in font units,
+/// where it starts (`x0`) and where it ends (`x1`: the pen at the following space, i.e. including the kerning
+/// step into it, as `wrap_greedy` reads `x[we-1] + advance(we-1)`).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Word {
+    pub ws: u32,
+    pub we: u32,
+    pub x0: i32,
+    pub x1: i32,
+}
+
+/// A measured text leaf's state.
+///
+/// The text is shaped once into a `GlyphRun` (the NEON table shaper, rustybuzz when a trigger or non-ASCII byte
+/// needs it). **Fast path** (the table shaper covered it, so glyph i is byte i): measuring and wrapping work on a
+/// *word table* built from the run in one byte scan (the ~65 words of a paragraph, each with its start and end pen
+/// position), not on its ~400 glyphs: `wrap_greedy`'s decision (break before a word whose right edge is past the
+/// line) becomes a loop over words, 9x cheaper (see LAYOUT.md). **Slow path**: `wrap_greedy` over the run, and only
+/// when glyph i is byte i.
 #[derive(Clone, Default)]
 pub struct LeafCtx {
+    pub fast: bool,
+    pub words: Vec<Word>,
+    /// Fast path: width of the text on one line, trailing spaces excluded (font units).
+    pub line_w: i32,
     pub run: GlyphRun,
     pub text: Vec<u8>,
+    /// First byte (fast) / glyph (slow) of each line of the last wrap.
     pub starts: Vec<u32>,
     /// `max_units` of the wrap in `starts` (`i32::MIN`: none) and its widest line, in font units.
     pub wrapped_at: i32,
@@ -359,6 +394,7 @@ pub struct LeafCtx {
     pub min_word: i32,
     pub wrap: bool,
     pub ascii: bool,
+    pub upem: f32,
     pub size_px: f32,
     pub lh_px: f32,
 }
@@ -372,43 +408,115 @@ impl LeafCtx {
         self.text.clear();
         self.text.extend_from_slice(text.as_bytes());
         self.ascii = text.is_ascii();
-        ts.shape_run(text, self.size_px, &mut self.run);
+        self.upem = ts.shaper.script.upem as f32;
         self.wrapped_at = i32::MIN;
         self.min_word = -1;
+        // the table shaper (no GSUB/GPOS trigger, ASCII: glyph i is byte i) or rustybuzz
+        self.fast = ts.shaper.shape_into(text, self.size_px, &mut self.run);
+        if !self.fast {
+            ts.shape_run(text, self.size_px, &mut self.run);
+            return;
+        }
+        // word table from the run: spaces found 8 bytes at a time (SWAR zero-byte mask), words between them
+        let (b, run) = (&self.text, &self.run);
+        let n = b.len();
+        let words = &mut self.words;
+        words.clear();
+        let mut start = 0usize;
+        let mut push = |start: usize, end: usize, words: &mut Vec<Word>| {
+            let x1 = if end < n { run.x[end] } else { run.width };
+            words.push(Word { ws: start as u32, we: end as u32, x0: run.x[start], x1 });
+        };
+        let mut base = 0usize;
+        const LO7: u64 = 0x7f7f_7f7f_7f7f_7f7f;
+        while base + 8 <= n {
+            let chunk = u64::from_le_bytes(b[base..base + 8].try_into().unwrap());
+            let t = chunk ^ 0x2020_2020_2020_2020;
+            // 0x80 in exactly the bytes of `t` that are zero (the spaces)
+            let mut m = !(((t & LO7) + LO7) | t | LO7);
+            while m != 0 {
+                let p = base + (m.trailing_zeros() >> 3) as usize;
+                m &= m - 1;
+                if p > start {
+                    push(start, p, words);
+                }
+                start = p + 1;
+            }
+            base += 8;
+        }
+        for p in base..n {
+            if b[p] == b' ' {
+                if p > start {
+                    push(start, p, words);
+                }
+                start = p + 1;
+            }
+        }
+        if n > start {
+            push(start, n, words);
+        }
+        self.line_w = self.words.last().map_or(0, |w| w.x1);
     }
 
     #[inline]
     fn k(&self) -> f32 {
-        self.size_px / self.run.upem.max(1) as f32
+        self.size_px / self.upem.max(1.0)
     }
 
-    /// Wrap at `max_units`; returns the line count (`starts` holds the first glyph of each line).
+    /// Does this text wrap at all (a paragraph, whose slow path additionally needs glyph i = byte i)?
+    #[inline]
+    fn wraps(&self) -> bool {
+        self.wrap && self.ascii && (self.fast || self.run.len() == self.text.len())
+    }
+
+    /// Wrap at `max_units`; returns the line count (`starts` holds the first byte / glyph of each line).
     pub fn wrap_at(&mut self, max_units: i32) -> usize {
         if self.wrapped_at == max_units && !self.starts.is_empty() {
             return self.starts.len();
         }
         self.wrapped_at = max_units;
         WRAP_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let n = self.run.len();
-        if n == 0 {
+        let empty = self.run.is_empty();
+        if empty {
             self.starts.clear();
             self.starts.push(0);
             self.widest = 0;
             return 1;
         }
-        if !self.wrap || !self.ascii {
+        if !self.wraps() {
             self.starts.clear();
             self.starts.push(0);
-            self.widest = self.run.width;
+            self.widest = if self.fast { self.line_w } else { self.line_width() };
             return 1;
         }
+        if self.fast {
+            // wrap_greedy over the word table: break before a word whose right edge is past the line
+            self.starts.clear();
+            self.starts.push(0);
+            let (mut line_x0, mut has_word, mut widest, mut last_x1) = (0i32, false, 0i32, 0i32);
+            for w in &self.words {
+                if has_word && w.x1 - line_x0 > max_units {
+                    widest = widest.max(last_x1 - line_x0);
+                    self.starts.push(w.ws);
+                    line_x0 = w.x0;
+                }
+                has_word = true;
+                last_x1 = w.x1;
+            }
+            self.widest = widest.max(last_x1 - line_x0);
+            return self.starts.len();
+        }
+        let n = self.run.len();
         let lines = wrap_greedy(&self.run, &self.text, max_units, &mut self.starts);
         let mut widest = 0;
         for i in 0..lines {
             let a = self.starts[i] as usize;
             let mut b = if i + 1 < lines { self.starts[i + 1] as usize } else { n };
-            while b > a + 1 && self.text[b - 1] == b' ' {
+            while b > a && self.text[b - 1] == b' ' {
                 b -= 1;
+            }
+            if b == a {
+                continue;
             }
             let right = self.run.x[b - 1] + self.run.advance(b - 1);
             widest = widest.max(right - self.run.x[a]);
@@ -419,36 +527,50 @@ impl LeafCtx {
 
     /// Width of the whole text on one line, trailing spaces excluded (font units).
     fn line_width(&self) -> i32 {
+        if self.fast {
+            return self.line_w;
+        }
         let n = self.run.len();
         if n == 0 {
             return 0;
         }
         let mut b = n;
-        while b > 1 && self.ascii && self.text[b - 1] == b' ' {
+        while b > 0 && self.ascii && self.text.get(b - 1) == Some(&b' ') {
             b -= 1;
         }
+        if b == 0 {
+            return 0;
+        }
         self.run.x[b - 1] + self.run.advance(b - 1)
+    }
+
+    #[doc(hidden)]
+    pub fn longest_word_for_test(&mut self) -> i32 {
+        self.longest_word()
     }
 
     fn longest_word(&mut self) -> i32 {
         if self.min_word >= 0 {
             return self.min_word;
         }
-        let n = self.run.len();
-        let mut best = 0;
-        let mut i = 0;
-        while i < n {
-            let s = i;
-            while i < n && self.text[i] != b' ' {
-                i += 1;
+        let best = if self.fast {
+            self.words.iter().map(|w| w.x1 - w.x0).max().unwrap_or(0)
+        } else {
+            let (n, mut best, mut i) = (self.run.len(), 0, 0);
+            while i < n && self.wraps() {
+                let s = i;
+                while i < n && self.text[i] != b' ' {
+                    i += 1;
+                }
+                if i > s {
+                    best = best.max(self.run.x[i - 1] + self.run.advance(i - 1) - self.run.x[s]);
+                }
+                while i < n && self.text[i] == b' ' {
+                    i += 1;
+                }
             }
-            if i > s {
-                best = best.max(self.run.x[i - 1] + self.run.advance(i - 1) - self.run.x[s]);
-            }
-            while i < n && self.text[i] == b' ' {
-                i += 1;
-            }
-        }
+            best
+        };
         self.min_word = best;
         best
     }
@@ -458,8 +580,8 @@ impl LeafCtx {
         MEASURE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let k = self.k().max(1e-6);
         let lh = self.lh_px;
-        if !self.wrap || !self.ascii {
-            let w = self.run.width as f32 * k;
+        if !self.wraps() {
+            let w = self.line_width() as f32 * k;
             return MeasureOutput::from_size(Size { width: input.known_dimensions.width.unwrap_or(w), height: input.known_dimensions.height.unwrap_or(lh) });
         }
         let width = match (input.known_dimensions.width, input.available_space.width) {
@@ -553,7 +675,7 @@ pub struct LayStats {
 /// (instances + ink), unmount.
 pub struct LProf {
     pub on: bool,
-    pub acc: [u64; 5],
+    pub acc: [u64; 8],
     last: u64,
     ovh: u64,
 }
@@ -562,7 +684,10 @@ pub const LP_INSERT: usize = 1;
 pub const LP_COMPUTE: usize = 2;
 pub const LP_WRITE: usize = 3;
 pub const LP_UNMOUNT: usize = 4;
-pub const LP_NAMES: [&str; 5] = ["mount", "insert", "compute", "write-back", "unmount"];
+pub const LP_TEXT_SET: usize = 5;
+pub const LP_TEXT_EMIT: usize = 6;
+pub const LP_TEXT_COPY: usize = 7;
+pub const LP_NAMES: [&str; 8] = ["mount", "insert", "compute", "write-back", "unmount", "(text set_text)", "(text emit)", "(text copy+ink)"];
 impl LProf {
     pub fn enable(&mut self) {
         self.on = true;
@@ -607,7 +732,7 @@ impl Lay {
     pub fn new(scale: f32) -> Lay {
         Lay {
             eng: Eng::new(),
-            prof: LProf { on: false, acc: [0; 5], last: 0, ovh: 0 },
+            prof: LProf { on: false, acc: [0; 8], last: 0, ovh: 0 },
             info: Vec::new(),
             cur: NONE,
             mount_avail: (0.0, f32::NAN),
@@ -821,23 +946,32 @@ impl Rt {
             (n.space, n.clip, n.run, n.color, n.strike as usize, n.size_px, n.line_h)
         };
         let base_off = self.text.baseline(size_px, lh);
+        // the run must hold one instance per glyph (the kernel writes straight into it)
+        let n = self.lay.eng.ctx_mut(lid).expect("text leaf has a context").run.len();
+        if n > (1usize << self.runs[run_id as usize].class) {
+            self.regrow_run(run_id, n);
+        }
+        let first = self.runs[run_id as usize].first;
+        let dst = self.inst_ptr(first);
+        let cap = 1usize << self.runs[run_id as usize].class;
         let Rt { lay, text, .. } = self;
         let ctx = lay.eng.ctx_mut(lid).expect("text leaf has a context");
         let k = ctx.k().max(1e-6);
         let _ = reflow;
-        let lines = if ctx.wrap && ctx.ascii {
-            ctx.wrap_at(((w + 1e-3) / k).floor() as i32)
-        } else {
-            ctx.wrap_at(i32::MAX)
-        };
-        text.scratch.clear();
-        let n = ctx.run.len();
+        let lines = if ctx.wraps() { ctx.wrap_at(((w + 1e-3) / k).floor() as i32) } else { ctx.wrap_at(i32::MAX) };
+        lay.prof.reset();
+        // The glyph kernel writes the instances straight into the node's pool run (a `Vec` view of the run: its
+        // capacity is the run's, and it never grows: at most one instance per glyph, and the run was sized for it).
+        // SAFETY: `dst` points at `cap` instances of pool memory owned by this run; the view is never dropped or
+        // reallocated (`cap >= n >= the number of instances every `instances` call reserves for).
+        let mut out = std::mem::ManuallyDrop::new(unsafe { Vec::<Instance>::from_raw_parts(dst, 0, cap) });
         for i in 0..lines {
             let a = ctx.starts[i] as usize;
             let b = if i + 1 < lines { ctx.starts[i + 1] as usize } else { n };
             if b <= a {
                 continue;
             }
+            // the line as its own run (positions rebased to the line start)
             let line = &mut lay.line;
             line.gid.clear();
             line.x.clear();
@@ -850,31 +984,57 @@ impl Rt {
             line.x.extend(ctx.run.x[a..b].iter().map(|v| v - x0));
             line.width = (if b < n { ctx.run.x[b] } else { ctx.run.width }) - x0;
             let baseline = (y + i as f32 * lh + base_off).round();
-            text.cache.instances(strike, line, x, baseline, color, &mut text.scratch);
+            text.cache.instances(strike, line, x, baseline, color, &mut out);
         }
-        let cnt = text.scratch.len();
-        if cnt > (1usize << self.runs[run_id as usize].class) {
-            self.regrow_run(run_id, cnt);
-        }
-        let first = self.runs[run_id as usize].first;
+        let cnt = out.len();
+        debug_assert_eq!(out.as_ptr(), dst as *const Instance, "the run was not reallocated");
+        lay.prof.mark(LP_TEXT_EMIT);
         self.runs[run_id as usize].len = cnt as u32;
-        let dst = self.inst_ptr(first);
-        let src = self.text.scratch.as_ptr();
-        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-        let clipw = clip as u32;
+        // stamp space + clip and take the glyph quads' union, one NEON pass
+        let b = unsafe { stamp_and_bounds(dst, cnt, space, clip as u32) };
+        let ink = if cnt == 0 { NRect::EMPTY } else { self.ink_rect(space, b[0], b[1], b[2] - b[0], b[3] - b[1], 1.0) };
+        let hd = self.nodes[li.rtn as usize].handle;
+        self.bough.set_ink_handle(hd, ink);
+        self.lay.prof.mark(LP_TEXT_COPY);
+    }
+}
+
+/// Stamp `space` and the clip index into `cnt` instances in place, and return the union of their quads
+/// `[x0, y0, x1, y1]`: per instance one vector load, an extract + add (x + w, y + h), a min and a max.
+///
+/// # Safety
+/// `dst` must be valid for `cnt` instances.
+unsafe fn stamp_and_bounds(dst: *mut Instance, cnt: usize, space: u16, clip: u32) -> [f32; 4] {
+    const SPACE: usize = std::mem::offset_of!(Instance, space);
+    const CLIP: usize = std::mem::offset_of!(Instance, aux) + 12;
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        use core::arch::aarch64::*;
+        let (mut mn, mut mx) = (vdupq_n_f32(f32::MAX), vdupq_n_f32(f32::MIN));
         for i in 0..cnt {
-            let mut g: Instance = unsafe { *src.add(i) };
+            let p = dst.add(i) as *mut u8;
+            let v = vld1q_f32(p as *const f32); // x y w h
+            let sum = vaddq_f32(v, vextq_f32::<2>(v, v)); // x+w y+h ..
+            mn = vminq_f32(mn, v);
+            mx = vmaxq_f32(mx, sum);
+            (p.add(SPACE) as *mut u16).write_unaligned(space);
+            (p.add(CLIP) as *mut u32).write_unaligned(clip);
+        }
+        [vgetq_lane_f32::<0>(mn), vgetq_lane_f32::<1>(mn), vgetq_lane_f32::<0>(mx), vgetq_lane_f32::<1>(mx)]
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    unsafe {
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for i in 0..cnt {
+            let g = &mut *dst.add(i);
             x0 = x0.min(g.xy[0]);
             y0 = y0.min(g.xy[1]);
             x1 = x1.max(g.xy[0] + g.wh[0]);
             y1 = y1.max(g.xy[1] + g.wh[1]);
             g.space = space;
-            g.aux[3] = clipw;
-            unsafe { dst.add(i).write(g) };
+            g.aux[3] = clip;
         }
-        let ink = if cnt == 0 { NRect::EMPTY } else { self.ink_rect(space, x0, y0, x1 - x0, y1 - y0, 1.0) };
-        let hd = self.nodes[li.rtn as usize].handle;
-        self.bough.set_ink_handle(hd, ink);
+        [x0, y0, x1, y1]
     }
 }
 
@@ -1058,7 +1218,9 @@ impl<V: 'static, S: IntoProp<String>> Element<V> for Para<S> {
         let lh_px = self.lh * s;
         let strike = m.rt.text.strike(size_px);
         let mut ctx = LeafCtx::new(size_px, lh_px, self.wrap);
+        m.rt.lay.prof.reset();
         ctx.set_text(&mut m.rt.text, &init);
+        m.rt.lay.prof.mark(LP_TEXT_SET);
         let hd = m.rt.bough.new_handle();
         let lid = m.rt.lay.eng.add(hd, &self.spec, s, Some(ctx));
         let _parent = attach(m, lid);

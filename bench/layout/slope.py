@@ -9,7 +9,7 @@ import os, re, statistics, subprocess, sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRATCH = os.environ.get("ZGX_COPY", "/private/tmp/claude-501/-Users-mileswirht-Downloads-designs-reactivity/16fd4c0d-6057-492e-b9c5-0daf75a4051a/scratchpad/zgx-copy")
 BIN = {"bough": f"{ROOT}/target/dist/vlist_headless",
-       "bough-deep": f"{ROOT}/target/dist-deep/vlist_headless",
+       "bough-deep": f"{SCRATCH}/../target-deep/dist/vlist_headless", "bough-deepkids": f"{SCRATCH}/../target-deepkids/dist/vlist_headless",
        "zgx": f"{SCRATCH}/target/dist/examples/vlist_headless"}
 FONT = "/Users/mileswirht/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf"
 
@@ -19,7 +19,7 @@ def instr(fw, mode, render, ticks):
     m = re.search(r"(\d+)\s+instructions retired", p.stderr)
     return int(m.group(1))
 
-def slope(fw, mode, render, a=300, b=600, reps=3):
+def slope(fw, mode, render, a=int(os.environ.get('A', 600)), b=int(os.environ.get('B', 3600)), reps=int(os.environ.get('REPS', 5))):
     xs = [(instr(fw, mode, render, b) - instr(fw, mode, render, a)) / (b - a) for _ in range(reps)]
     return statistics.median(xs), min(xs), max(xs)
 

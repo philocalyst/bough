@@ -30,7 +30,7 @@ fn main() {
     }
     let t0 = bough_metal::perf::snap();
     let start = std::time::Instant::now();
-    let mut warm = (t0.instrs, 0usize, [0u64; 5], 0u64, [0u64; 5]);
+    let mut warm = (t0.instrs, 0usize, [0u64; 5], 0u64, [0u64; 8]);
     let mut frames = 0u64;
     for tick in 1..=ticks {
         if tick == 60 {

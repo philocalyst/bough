@@ -212,3 +212,78 @@ fn incremental_edits_equal_cold_layout_and_fresh_mount() {
         same(step, &dump(&app), &dump(&fresh));
     }
 }
+
+// ------------------------------------------------------------------ the word-table text pipeline vs the glyph-run one
+
+/// The fast path (word table over the dense step table; fused kernel per line) must equal the slow path
+/// (shaped `GlyphRun` + `wrap_greedy`; `instances` over rebased line runs): same line starts, widths, longest
+/// word, and the same instances, for random ASCII strings (leading / trailing / repeated spaces, words wider than the
+/// line) at random widths and sizes.
+#[test]
+fn word_table_pipeline_equals_glyph_run_pipeline() {
+    use bough::layout::LeafCtx;
+    use bough::text::TextSys;
+    let mut ts = TextSys::new(FONT);
+    let mut st = 0x1234_5678_9abc_def1u64;
+    let mut rnd = move || {
+        st ^= st << 13;
+        st ^= st >> 7;
+        st ^= st << 17;
+        st
+    };
+    let alphabet = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,;:!?-_()[]/ ";
+    let mut checked = 0;
+    for case in 0..3000 {
+        let len = (rnd() % 220) as usize;
+        let mut text: String = (0..len).map(|_| alphabet[(rnd() % alphabet.len() as u64) as usize] as char).collect();
+        if case % 7 == 0 {
+            text = format!("  {text}   ");
+        }
+        if case % 11 == 0 {
+            text.push_str(&"w".repeat(80));
+        }
+        let size = [10.0f32, 14.0, 28.0][(rnd() % 3) as usize];
+        let mut fast = LeafCtx::new(size, size * 1.4, true);
+        fast.set_text(&mut ts, &text);
+        if !fast.fast {
+            continue; // a trigger (f-ligature pair): the slow path is the only path
+        }
+        let mut slow = fast.clone();
+        ts.shape_run(&text, size, &mut slow.run);
+        slow.fast = false;
+        assert_eq!(slow.run.len(), text.len());
+        assert_eq!(fast.longest_word_for_test(), slow.longest_word_for_test(), "longest word of {text:?}");
+        for _ in 0..4 {
+            let max_units = (rnd() % (60 * size as u64 * 40)) as i32 + 1;
+            let (lf, ls) = (fast.wrap_at(max_units), slow.wrap_at(max_units));
+            assert_eq!(lf, ls, "line count of {text:?} at {max_units}");
+            assert_eq!(fast.starts, slow.starts, "line starts of {text:?} at {max_units}");
+            assert_eq!(fast.widest, slow.widest, "widest line of {text:?} at {max_units}");
+            // instances line by line
+            let strike = ts.strike(size);
+            let n = text.len();
+            for i in 0..lf {
+                let a = fast.starts[i] as usize;
+                let b = if i + 1 < lf { fast.starts[i + 1] as usize } else { n };
+                if b <= a {
+                    continue;
+                }
+                let mut out_fast = Vec::new();
+                ts.cache.shape_instances_ascii(&ts.shaper, strike, &text[a..b], 3.0, 40.0, 0xff00ff00, &mut out_fast).expect("ASCII, no trigger");
+                let mut line = bough_text::GlyphRun::default();
+                let x0 = slow.run.x[a];
+                line.gid.extend_from_slice(&slow.run.gid[a..b]);
+                line.x.extend(slow.run.x[a..b].iter().map(|v| v - x0));
+                line.upem = slow.run.upem;
+                line.size = slow.run.size;
+                line.identity_clusters = true;
+                line.width = (if b < n { slow.run.x[b] } else { slow.run.width }) - x0;
+                let mut out_slow = Vec::new();
+                ts.cache.instances(strike, &line, 3.0, 40.0, 0xff00ff00, &mut out_slow);
+                assert!(out_fast == out_slow, "instances of line {i} of {text:?}");
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 5000);
+}

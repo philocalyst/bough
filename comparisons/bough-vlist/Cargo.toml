@@ -13,8 +13,10 @@ deep-kids = ["bough/deep-kids"]
 [dependencies]
 bough = { path = "../../crates/bough" }
 bough-metal = { path = "../../crates/bough-metal" }
+bough-text = { path = "../../crates/bough-text" }
 zgx-workload = { path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }
 libc = "0.2"
+cephal = { path = "/Users/mileswirht/Downloads/ilo-prod-work/cephal", default-features = false, features = ["flex", "block"] }
 
 [[bin]]
 name = "vlist_workload"
@@ -31,3 +33,12 @@ path = "src/bin/vlist_shot.rs"
 
 [dev-dependencies]
 cephal = { path = "/Users/mileswirht/Downloads/ilo-prod-work/cephal", default-features = false, features = ["flex", "block"] }
+[[bin]]
+name = "layout_bench"
+path = "src/bin/layout_bench.rs"
+[[bin]]
+name = "cephal_raw"
+path = "src/bin/cephal_raw.rs"
+[[bin]]
+name = "text_bench"
+path = "src/bin/text_bench.rs"
