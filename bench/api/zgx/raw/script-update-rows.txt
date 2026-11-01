@@ -1,0 +1,2 @@
+per update: instructions (k) and allocations, Luau against Rust
+  rows           luau   1903.2k  654.1 | rust    570.7k   81.3 | luau/rust  3.33x

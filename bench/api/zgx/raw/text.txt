@@ -1,0 +1,5 @@
+1000 paragraphs, first measure     353.44 ms
+same paragraphs, same width        857.37 ms
+same paragraphs, new width         692.90 ms
+stream 3000 chars, 6 per step     2183.69 ms
+prepared: 0.0 MB shaped, 0.0 MB compact

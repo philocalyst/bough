@@ -108,7 +108,7 @@ impl Deep {
     }
     /// Restyle node `n` (a re-description changed its spec) and invalidate it.
     pub fn set_style(&mut self, b: &Bough, n: u32, style: u32) {
-        let measured = self.n[n as usize].ctx.is_some();
+        let measured = self.n[n as usize].ctx.as_ref().is_some_and(|c| c.user.is_none());
         let keep = self.n[n as usize].flags & !META_MASK;
         self.n[n as usize].style = style;
         self.n[n as usize].flags = meta_bits(&self.styles, style, measured) | keep;
@@ -122,7 +122,7 @@ impl Deep {
             self.n.resize_with(i as usize + 1, DNode::blank);
         }
         let style = self.style_id(spec, scale);
-        let flags = meta_bits(&self.styles, style, ctx.is_some());
+        let flags = meta_bits(&self.styles, style, ctx.as_ref().is_some_and(|c| c.user.is_none()));
         let nd = &mut self.n[i as usize];
         nd.style = style;
         nd.flags = flags;
@@ -371,15 +371,16 @@ impl LayoutTree for DView<'_> {
     }
     #[inline]
     fn leaf_is_cheap(&self, node: NodeId) -> bool {
-        self.d.n[ix(node)].ctx.is_none()
+        !self.is_measured_leaf(node)
     }
+    /// A paragraph is measured; a one-line label is a sized leaf (its style holds its size).
     #[inline]
     fn is_measured_leaf(&self, node: NodeId) -> bool {
-        self.d.n[ix(node)].ctx.is_some()
+        self.d.n[ix(node)].ctx.as_ref().is_some_and(|c| c.user.is_none())
     }
     #[inline(always)]
     fn compute_leaf(&mut self, node: NodeId, inputs: LayoutInput, _: Option<&mut BlockContext<'_>>) -> LayoutOutput {
-        if self.d.n[ix(node)].ctx.is_none() {
+        if !self.is_measured_leaf(node) {
             return cephal::compute::leaf::compute_empty_leaf_layout(self, node, inputs);
         }
         measured_leaf(self, node, inputs)

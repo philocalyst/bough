@@ -52,6 +52,8 @@ pub enum Dim {
     Pt(f32),
     /// Fraction of the parent (0..=1).
     Pct(f32),
+    /// Device pixels (a one-line label's own size: see `Para`).
+    Px(f32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,6 +127,7 @@ impl Spec {
             Dim::Auto => Dimension::AUTO,
             Dim::Pt(v) => Dimension::length(v * s),
             Dim::Pct(f) => Dimension::percent(f),
+            Dim::Px(v) => Dimension::length(v),
         }
     }
     fn align(a: Align) -> AlignItems {
@@ -338,6 +341,10 @@ impl Hash for SpecKey {
                 h.write_u32(2);
                 h.write_u32(v.to_bits())
             }
+            crate::layout::Dim::Px(v) => {
+                h.write_u32(3);
+                h.write_u32(v.to_bits())
+            }
         };
         dim(h, s.w);
         dim(h, s.h);
@@ -399,6 +406,8 @@ pub struct LeafCtx {
     /// Fast path: the text shaped into a glyph-pool block (the GPU draws its lines as windows onto it; the
     /// word table is read from its pens: shaped once for measuring and drawing).
     pub block: Option<Shaped>,
+    /// A one-line label is a sized leaf: the user's spec (its size is filled in from the text, `sized_spec`).
+    pub user: Option<Spec>,
 }
 
 impl LeafCtx {
@@ -543,6 +552,26 @@ impl LeafCtx {
     }
 
     /// Width of the whole text on one line, trailing spaces excluded (font units).
+    /// A one-line label's own size (device px): its shaped width and its line height. It does not depend on
+    /// any layout input, so the label is a sized leaf, not a measured one (`Para`).
+    pub fn label_size(&self) -> (f32, f32) {
+        (self.line_width() as f32 * self.k().max(1e-6), self.lh_px)
+    }
+    /// The spec a one-line label is laid out with: the user's, with its auto width and height set to the
+    /// label's size, and no shrinking (a measured label's automatic minimum is its width).
+    pub fn sized_spec(&self, user: &Spec) -> Spec {
+        let (w, h) = self.label_size();
+        let mut s = *user;
+        if s.w == Dim::Auto {
+            s.w = Dim::Px(w);
+            s.shrink = 0.0;
+        }
+        if s.h == Dim::Auto {
+            s.h = Dim::Px(h);
+        }
+        s
+    }
+
     fn line_width(&self) -> i32 {
         if self.fast {
             return self.line_w;
@@ -749,9 +778,13 @@ pub struct Lay {
 
 impl Lay {
     pub fn new(scale: f32) -> Lay {
+        let mut prof = LProf { on: false, acc: [0; 8], last: 0, ovh: 0 };
+        if std::env::var_os("BOUGH_LPROF").is_some() {
+            prof.enable();
+        }
         Lay {
             eng: Eng::new(),
-            prof: LProf { on: false, acc: [0; 8], last: 0, ovh: 0 },
+            prof,
             info: Vec::new(),
             cur: NONE,
             mount_avail: (0.0, f32::NAN),
@@ -843,13 +876,26 @@ impl Rt {
             t.text.push_str(text);
         }
         let Rt { lay, text: ts, glyphs, .. } = self;
+        let mut resized = None;
         if let Some(ctx) = lay.eng.ctx_mut(lid) {
+            let before = ctx.label_size();
             ctx.set_text(ts, glyphs, text);
+            if let Some(u) = ctx.user {
+                // a sized label: layout runs only if its size changed (a digit change re-places the text only)
+                resized = Some((ctx.label_size() != before).then(|| ctx.sized_spec(&u)));
+            }
         }
-        self.lay.eng.invalidate(&self.bough, lid);
         self.lay.info[lid as usize].tdirty = true;
         self.lay.dirty.push(lid);
         let root = self.lay.root_of(lid);
+        match resized {
+            Some(None) => return,
+            Some(Some(spec)) => {
+                let sid = self.lay.eng.style_id(&spec, self.scale);
+                self.lay.eng.set_style(&self.bough, lid, sid);
+            }
+            None => self.lay.eng.invalidate(&self.bough, lid),
+        }
         if !self.lay.info[root as usize].queued {
             self.lay.info[root as usize].queued = true;
             self.lay.pending.push(root);
@@ -894,6 +940,10 @@ impl Rt {
 
     pub fn lay_flush(&mut self) {
         if self.lay.pending.is_empty() && self.lay.ready.is_empty() {
+            if !self.lay.dirty.is_empty() {
+                // text re-placed with no layout change (a sized label's same-width edit)
+                self.lay_writeback_ready();
+            }
             return;
         }
         self.lay_compute_pending();
@@ -1304,7 +1354,13 @@ impl<V: 'static, S: TextSrc<V>> Element<V> for Para<S> {
         }
         m.rt.lay.prof.mark(LP_TEXT_SET);
         let hd = m.rt.bough.new_handle();
-        let lid = m.rt.lay.eng.add(hd, &self.spec, s, Some(ctx));
+        let spec = if self.wrap {
+            self.spec
+        } else {
+            ctx.user = Some(self.spec);
+            ctx.sized_spec(&self.spec)
+        };
+        let lid = m.rt.lay.eng.add(hd, &spec, s, Some(ctx));
         let _parent = attach(m, lid);
         let ti = m.rt.alloc_text(TextNode {
             text: init,
@@ -1343,7 +1399,14 @@ impl<V: 'static, S: TextSrc<V>> Element<V> for Para<S> {
 
     fn update(self, m: &mut Mounter<'_, V>) {
         let lid = m.tape_next();
-        restyle(m.rt, lid, &self.spec);
+        let spec = match m.rt.lay.eng.ctx_mut(lid) {
+            Some(ctx) if ctx.user.is_some() => {
+                ctx.user = Some(self.spec);
+                ctx.sized_spec(&self.spec)
+            }
+            _ => self.spec,
+        };
+        restyle(m.rt, lid, &spec);
         let node = m.rt.lay.info[lid as usize].rtn;
         let ti = m.rt.nodes[node as usize].text;
         let s = m.rt.scale;

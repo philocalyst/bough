@@ -129,6 +129,8 @@ pub struct Node {
     pub text: u32,
     /// Layout node (index into `Rt::lay`) of an element laid out by cephal, else `NONE`.
     pub lnode: u32,
+    /// Allocation serial: tells a reused node from the one an outside table recorded (`select.rs`).
+    pub serial: u32,
 }
 
 impl Node {
@@ -155,6 +157,7 @@ impl Node {
             series_ok: false,
             text: NONE,
             lnode: NONE,
+            serial: 0,
         }
     }
 }
@@ -278,6 +281,7 @@ pub struct Rt {
     pub win_h: i32,
     next_fresh: u32,
     free_blocks: [Vec<u32>; 16],
+    free_bits: [Vec<u64>; 16],
     pub runs: Vec<Run>,
     run_free: Vec<u32>,
     pub nodes: Vec<Node>,
@@ -315,6 +319,8 @@ pub struct Rt {
     pub(crate) eviews: Vec<crate::entity::EView>,
     pub asy: crate::reader::Async,
     pub(crate) pubs: crate::changed::Pubs,
+    pub(crate) selects: crate::select::Selects,
+    next_serial: u32,
     /// Keeps a heap region alive (the GPU region is kept alive by the columns' reference count too).
     _region: Region,
 }
@@ -369,6 +375,7 @@ impl Rt {
             win_h,
             next_fresh: 0,
             free_blocks: Default::default(),
+            free_bits: Default::default(),
             runs: vec![Run::default()],
             run_free: Vec::new(),
             nodes: vec![Node::blank()],
@@ -394,6 +401,8 @@ impl Rt {
             eviews: Vec::new(),
             asy: Default::default(),
             pubs: Default::default(),
+            selects: Default::default(),
+            next_serial: 0,
             _region: region,
         }
     }
@@ -447,17 +456,50 @@ impl Rt {
     }
 
     // ------------------------------------------------------------------ instance runs
+    #[inline]
+    fn bfree(&self, c: usize, b: u32) -> bool {
+        let i = (b >> c) as usize;
+        self.free_bits[c].get(i / 64).is_some_and(|w| w >> (i % 64) & 1 != 0)
+    }
+    #[inline]
+    fn set_bfree(&mut self, c: usize, b: u32, v: bool) {
+        let i = (b >> c) as usize;
+        let w = &mut self.free_bits[c];
+        if w.len() <= i / 64 {
+            w.resize(i / 64 + 1, 0);
+        }
+        if v {
+            w[i / 64] |= 1 << (i % 64);
+        } else {
+            w[i / 64] &= !(1 << (i % 64));
+        }
+    }
+    fn push_free(&mut self, c: usize, b: u32) {
+        self.set_bfree(c, b, true);
+        self.free_blocks[c].push(b);
+    }
+    /// Pop a free block of class `c` (the stacks keep stale entries of blocks merged since: the bitmap is
+    /// the truth, so a buddy lookup is one bit test instead of a free-list scan).
+    fn pop_free(&mut self, c: usize) -> Option<u32> {
+        while let Some(b) = self.free_blocks[c].pop() {
+            if self.bfree(c, b) {
+                self.set_bfree(c, b, false);
+                return Some(b);
+            }
+        }
+        None
+    }
     /// A block of `1 << class` instances: a free block of that class, else a split of a larger free block, else
     /// fresh column (aligned to its size, so buddies pair up). Blocks are buddy-coalesced when freed, so a long
     /// run of rows of varying sizes (a list jumping about) cannot fragment the column away.
     fn alloc_block(&mut self, class: u8) -> u32 {
-        if let Some(b) = self.free_blocks[class as usize].pop() {
+        if let Some(b) = self.pop_free(class as usize) {
             return b;
         }
         for c in class as usize + 1..16 {
-            if let Some(b) = self.free_blocks[c].pop() {
+            if let Some(b) = self.pop_free(c) {
                 for lower in (class as usize..c).rev() {
-                    self.free_blocks[lower].push(b + (1 << lower));
+                    self.push_free(lower, b + (1 << lower));
                 }
                 return b;
             }
@@ -472,7 +514,7 @@ impl Rt {
             while a + (1 << c) > b {
                 c -= 1;
             }
-            self.free_blocks[c as usize].push(a);
+            self.push_free(c as usize, a);
             a += 1 << c;
         }
         self.next_fresh = b + size;
@@ -482,16 +524,14 @@ impl Rt {
         let (mut b, mut c) = (first, class as usize);
         while c < 15 {
             let buddy = b ^ (1 << c);
-            match self.free_blocks[c].iter().position(|&x| x == buddy) {
-                Some(i) => {
-                    self.free_blocks[c].swap_remove(i);
-                    b = b.min(buddy);
-                    c += 1;
-                }
-                None => break,
+            if !self.bfree(c, buddy) {
+                break;
             }
+            self.set_bfree(c, buddy, false);
+            b = b.min(buddy);
+            c += 1;
         }
-        self.free_blocks[c].push(b);
+        self.push_free(c, b);
     }
     /// A run with capacity for at least `n` instances (power-of-two size classes, buddy blocks).
     pub fn alloc_run(&mut self, n: usize) -> u32 {
@@ -518,6 +558,8 @@ impl Rt {
     pub fn alloc_node(&mut self) -> u32 {
         let mut n = Node::blank();
         n.live = true;
+        self.next_serial = self.next_serial.wrapping_add(1);
+        n.serial = self.next_serial;
         if let Some(i) = self.node_free.pop() {
             n.series = std::mem::take(&mut self.nodes[i as usize].series);
             self.nodes[i as usize] = n;

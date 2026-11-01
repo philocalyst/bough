@@ -1,0 +1,4 @@
+code: keystroke: 16.78 ms, 3.48 M instructions
+code: scroll a page: 0.40 ms, 1.38 M instructions
+code: find-all keystroke: 14.20 ms, 2.12 M instructions
+code: find-all, a new letter: 1.30 ms, 1.89 M instructions

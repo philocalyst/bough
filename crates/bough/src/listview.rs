@@ -81,7 +81,7 @@ unsafe fn mount_lrow<T: 'static>(rt: &mut Rt, reg: u32, row: *const u8, recs: &m
     rt.lay.cur = lid;
     let mut scope = Scope::default();
     {
-        let mut m = Mounter { rt, owner: row as *const T, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0 };
+        let mut m = Mounter { rt, owner: row as *const T, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false };
         // SAFETY: the function contract.
         f(unsafe { &*(row as *const T) }, &mut m);
     }

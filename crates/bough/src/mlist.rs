@@ -386,7 +386,7 @@ unsafe fn mount_mrow<V: 'static>(rt: &mut Rt, owner: *const u8, reg: usize, row:
     let before = recs.len();
     rt.lay.cur = crate::layout::NONE;
     {
-        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls: 0, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0 };
+        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls: 0, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false };
         f(unsafe { &*(owner as *const V) }, row, &mut m);
     }
     assert_eq!(scope.lroots.len(), 1, "a measured-list row must mount exactly one layout group (a column / row)");

@@ -38,6 +38,8 @@ pub struct Mounter<'a, V> {
     /// `update`: the Bough position of the next record, and the layout child index within `rt.lay.cur`.
     pub(crate) pos: usize,
     pub(crate) kid: usize,
+    /// An operand asked to keep the element's node addressable (`select`: an outside table names it).
+    pub(crate) keep: bool,
 }
 
 impl<V> Mounter<'_, V> {
@@ -67,13 +69,13 @@ impl<V> Mounter<'_, V> {
     /// A mounter for a sub-part (a dynamic item) of this one: same position state, its own scope, records
     /// buffer and tape.
     pub(crate) fn sub<'b>(&'b mut self, recs: &'b mut Vec<RecordInit>, scope: &'b mut Scope, tape: *mut Vec<u32>) -> Mounter<'b, V> {
-        Mounter { rt: &mut *self.rt, owner: self.owner, recs, scope, depth: self.depth, ox: self.ox, oy: self.oy, space: self.space, clip: self.clip, pending_num: None, cls: self.cls, tape, ti: 0, pos: self.pos, kid: self.kid }
+        Mounter { rt: &mut *self.rt, owner: self.owner, recs, scope, depth: self.depth, ox: self.ox, oy: self.oy, space: self.space, clip: self.clip, pending_num: None, cls: self.cls, tape, ti: 0, pos: self.pos, kid: self.kid, keep: false }
     }
     pub fn mount(&mut self, e: impl Element<V>) {
         e.mount(self)
     }
     /// Install a wire for `w` (an `offset_of!`-proven field of this mounter's owner type).
-    fn wire<T>(&mut self, w: &Wired<'_, T, V>, patch: PatchFn, node: u32, recipe: [u8; 16]) {
+    pub(crate) fn wire<T>(&mut self, w: &Wired<'_, T, V>, patch: PatchFn, node: u32, recipe: [u8; 16]) {
         // The runtime inference the proof replaced survives as a debug check: the operand is the owner's
         // own field (not a field of another value of the same type).
         debug_assert_eq!(w.sig as *const Signal<T> as usize, self.owner as usize + w.off as usize, "sig! operand is not a field of the mounted owner");
@@ -396,7 +398,7 @@ where
         *m.rt.inst_mut(inst) = ins;
         let ink = m.rt.ink_rect(m.space, x_px, y_px, w_px, h_px, margin);
         // a re-describing owner keeps every quad addressable (any constant may change)
-        let dynamic = m.scope.wires.len() > wires_before || m.taping();
+        let dynamic = m.scope.wires.len() > wires_before || m.taping() || std::mem::take(&mut m.keep);
         m.tape_push(node);
         let mut handle_idx = 0;
         if dynamic {
@@ -962,7 +964,7 @@ unsafe fn mount_row<V: 'static>(rt: &mut Rt, owner: *const u8, reg: usize, row: 
     let mut scope = Scope::default();
     let before = recs.len();
     {
-        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls: 0, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0 };
+        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls: 0, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false };
         // SAFETY: see the function contract.
         f(unsafe { &*(owner as *const V) }, row, &mut m);
     }

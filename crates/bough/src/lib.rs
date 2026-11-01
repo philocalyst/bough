@@ -8,6 +8,7 @@ pub mod color;
 pub mod describe;
 pub mod elem;
 pub mod entity;
+pub mod lanes;
 pub mod lay_deep;
 pub mod layout;
 pub mod list;
@@ -15,6 +16,7 @@ pub mod listview;
 pub mod mlist;
 pub mod reader;
 pub mod rt;
+pub mod select;
 pub mod signal;
 pub mod text;
 
@@ -26,6 +28,7 @@ pub mod prelude {
     pub use crate::elem::{at, bars, clip, each, quad, text, virtual_list, Element, IntoProp, Mounter, Quad, TextSrc};
     pub use crate::changed::Changed;
     pub use crate::entity::{entity_view, Entities, Entity};
+    pub use crate::lanes::{lanes, Lane};
     pub use crate::list::{List, Slot};
     pub use crate::reader::{latest, produce, Reader, Request};
     pub use crate::listview::{list, list_with};

@@ -1,0 +1,1 @@
+{"baseline_bytes":262144,"updates":1000,"token_bytes":4,"history_entry_limit":100,"history_byte_limit":4194304,"requested_live_before_bytes":528092,"requested_live_after_bytes":805900,"requested_peak_bytes":1096496,"elapsed_ms":10.426417,"rss_before_kib":null,"rss_after_kib":null,"peak_rss_kib":null,"undo_steps":100,"redo_steps":100,"recovered_bytes":265744,"correct":true}

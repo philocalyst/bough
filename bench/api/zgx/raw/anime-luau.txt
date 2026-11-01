@@ -1,0 +1,4 @@
+1000 elements, y + opacity every frame, mean per frame:
+  luau + anime engine :  1793.1 µs  (animate 1751.5, scene   41.6)  build+mount+layout  4.45 ms
+  rust signals        :     0.0 µs  (animate    0.0, scene    0.0)  build+mount+layout  0.00 ms
+  direct scene (floor):     0.0 µs  (animate    0.0, scene    0.0)  build+mount+layout  0.00 ms
