@@ -722,7 +722,7 @@ impl<V: 'static> Element<V> for TextField<'_, V> {
         } else {
             inner
         };
-        m.clip = m.rt.clip_rect(r);
+        m.clip = m.rt.scoped_clip(r, clip);
         // the caret wire first: wires run newest first, so it runs after the label's patch
         let lh = (self.size * 1.4).ceil();
         let ty = ((h - 2.0) - lh) * 0.5;

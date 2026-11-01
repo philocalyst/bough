@@ -672,7 +672,8 @@ impl<V, Ch: Element<V>> Element<V> for Clip<Ch> {
         } else {
             r
         };
-        m.clip = m.rt.clip_rect(r);
+        // inside a scroll view's content the clip moves with the content (template.rs)
+        m.clip = m.rt.scoped_clip(r, prev);
         self.1.mount(m);
         m.clip = prev;
     }
