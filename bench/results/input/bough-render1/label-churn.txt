@@ -1,0 +1,2 @@
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+label-churn: 30 labels relabelled, 270.0 us/frame median of round medians (274.8 265.0 256.6 286.2 270.0); 254396 instructions/frame (260124 263870 251539 254396 244870)

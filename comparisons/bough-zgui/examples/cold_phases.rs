@@ -28,7 +28,7 @@ fn main() {
     let _ = std::hint::black_box(rb);
     let t0 = t;
     let mut app = App::new(Gallery::new(), config(WIDTH, HEIGHT), false);
-    let t = show("App::new (all of it)", t);
+    show("App::new (all of it)", t);
     eprintln!("glyphs rasterized {} in {:.3} ms", app.rt.text.cache.rasterized, app.rt.text.cache.raster_ns as f64 / 1e6);
     let t = snap();
     app.frame();

@@ -239,3 +239,95 @@ fn shell_tooltips_and_dock_drag_are_pixel_exact() {
         same_as_fresh("shell", &mut app, App::new(fresh, config(WIDTH, HEIGHT), true));
     }
 }
+
+/// A nested document: parents with children with grandchildren, overlapping and overflowing, some of
+/// them interactive (an `on_hover` route that logs enter/leave), some pointer-transparent.
+struct Nest {
+    log: Vec<(u32, bool)>,
+}
+
+fn rect(seed: u32) -> [f32; 4] {
+    let mut r = bough_core::rng::Rng::new(seed as u64);
+    [r.range(0, 700) as f32, r.range(0, 500) as f32, r.range(20, 260) as f32, r.range(20, 200) as f32]
+}
+
+fn leaf(id: u32) -> impl Element<Nest> {
+    let [x, y, w, h] = rect(id);
+    quad(x * 0.3, y * 0.3, w * 0.5, h * 0.5).bg(Color::rgba(200, (id * 37 % 255) as u8, 90, 255)).on_hover(move |n: &mut Nest, e| n.log.push((id, e.on)))
+}
+
+impl View for Nest {
+    const FIXED: bool = true;
+    fn view(&self) -> impl Element<Self> + '_ {
+        (
+            quad(0.0, 0.0, 800.0, 600.0).bg(rgb(0x101010)),
+            each((0..12u32).map(|p| {
+                let [x, y, w, h] = rect(1000 + p);
+                quad(x, y, w, h)
+                    .bg(Color::rgba(40, 60, (p * 20) as u8, 255))
+                    .children(each((0..4u32).map(move |c| {
+                        let id = 100 + p * 10 + c;
+                        let [cx, cy, cw, ch] = rect(id);
+                        quad(cx * 0.4 - 40.0, cy * 0.4 - 40.0, cw * 0.6, ch * 0.6)
+                            .bg(Color::rgba(90, (c * 50) as u8, 140, 255))
+                            .children((leaf(id * 10 + 1), no_hit(quad(0.0, 0.0, 30.0, 30.0).bg(rgb(0xffffff)))))
+                            .on_hover(move |n: &mut Nest, e| n.log.push((id, e.on)))
+                    })))
+                    .on_hover(move |n: &mut Nest, e| n.log.push((p, e.on)))
+            })),
+        )
+    }
+}
+
+#[test]
+fn hover_enter_leave_sets_equal_the_oracle() {
+    use bough_core::{KF_INTERACT, KF_NOHIT};
+    let mut app = App::new(Nest { log: Vec::new() }, config(800.0, 600.0), false);
+    app.frame();
+    // the act ids: map each interactive record's handle to the id its route logs, by entering it alone
+    let recs = app.rt.bough.records();
+    let mut rng = bough_core::rng::Rng::new(7);
+    let mut prev: Vec<usize> = Vec::new();
+    let mut moves = 0;
+    for step in 0..3000 {
+        let (x, y) = if step % 50 == 49 { (-5.0, -5.0) } else { (rng.range(0, 799) as f32, rng.range(0, 599) as f32) };
+        let before = app.owner.log.len();
+        if x < 0.0 {
+            app.pointer_leave();
+        } else {
+            app.pointer_move(x, y);
+        }
+        app.frame();
+        moves += 1;
+        // oracle: the topmost record under the pixel (not NOHIT), then its interactive ancestors-or-self
+        let mut cur: Vec<usize> = Vec::new();
+        if x >= 0.0 {
+            let (px, py) = (x as i32, y as i32);
+            let vis = |r: &bough_core::page::Record| if r.clip == 0 { r.ink } else { r.ink.intersect(app.rt.bough.clip_rect(r.clip)).canon() };
+            if let Some(top) = recs.iter().rposition(|r| r.kind & KF_NOHIT == 0 && vis(r).contains_point(px, py)) {
+                let mut i = Some(top);
+                while let Some(j) = i {
+                    if recs[j].kind & KF_INTERACT != 0 {
+                        cur.push(j);
+                    }
+                    let d = recs[j].depth;
+                    i = (0..j).rev().find(|&k| recs[k].depth < d);
+                }
+            }
+        }
+        // the app's hover set (positions) equals the oracle's
+        let mut got: Vec<usize> = app.rt.input.hovered().iter().map(|h| app.rt.bough.pos_of(*h).unwrap()).collect();
+        got.sort();
+        let mut want = cur.clone();
+        want.sort();
+        assert_eq!(got, want, "step {step} at ({x},{y})");
+        // the routes ran for exactly the symmetric difference
+        let entered = cur.iter().filter(|p| !prev.contains(p)).count();
+        let left = prev.iter().filter(|p| !cur.contains(p)).count();
+        let log = &app.owner.log[before..];
+        assert_eq!(log.iter().filter(|e| e.1).count(), entered, "step {step}: enters");
+        assert_eq!(log.iter().filter(|e| !e.1).count(), left, "step {step}: leaves");
+        prev = cur;
+    }
+    assert!(moves == 3000 && app.rt.input.stats.crossings > 500, "{:?}", app.rt.input.stats);
+}

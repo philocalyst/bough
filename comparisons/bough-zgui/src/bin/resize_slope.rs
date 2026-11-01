@@ -31,6 +31,11 @@ fn main() {
         // boxes: the root, each row and each cell (zgui reads its layout's key count)
         let boxes = (1 + 2 * rows) as f64;
         let width = |turn: usize| SLOPE_W - (turn % 16) as f32 * 8.0;
+        let prof = std::env::var_os("PROF").is_some();
+        if prof {
+            app.rt.lay.prof.enable();
+            app.prof.enable();
+        }
         let mut s = Samples::new();
         for turn in 0..WARMUP + REPEATS {
             let w = width(turn);
@@ -41,6 +46,13 @@ fn main() {
             if turn >= WARMUP {
                 s.push(us, i);
             }
+        }
+        if prof {
+            let n = (WARMUP + REPEATS) as u64;
+            let names = bough::layout::LP_NAMES;
+            let lay: Vec<String> = app.rt.lay.prof.acc.iter().zip(names).map(|(a, n2)| format!("{n2} {}", a / n)).collect();
+            let ph: Vec<String> = app.prof.acc.iter().zip(bough::app::PHASE_NAMES).map(|(a, n2)| format!("{n2} {}", a / n)).collect();
+            println!("PROF rows={rows} per configure: layout [{}] turn [{}] stats {:?}", lay.join(", "), ph.join(", "), app.rt.lay.stats);
         }
         app.resize(SLOPE_W, SLOPE_H);
         app.frame();
