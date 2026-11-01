@@ -20,6 +20,9 @@ dependencies = [
 [[package]]
 name = "bough-core"
 version = "0.0.0"
+dependencies = [
+ "bough-damage-lab",
+]
 
 [[package]]
 name = "bough-damage-lab"
@@ -46,6 +49,9 @@ name = "bough-text"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "objc2",
+ "objc2-foundation",
+ "objc2-metal",
  "rustybuzz",
  "swash",
  "ttf-parser",
