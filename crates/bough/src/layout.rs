@@ -18,10 +18,14 @@
 //! * incremental edits (a text change) invalidate the leaf in the engine; the engine's `changed()`
 //!   set bounds the write-back to the nodes that moved or resized, and their subtrees.
 use crate::color::Color;
-use crate::elem::{ApplyBg, ApplyText, Element, IntoProp, Mounter};
+use crate::elem::{quad_instance, ApplyBg, Element, IntoProp, Mounter, TextSrc};
 use crate::rt::*;
+use crate::text::{TShape, TextNode};
 use bough_core::{NRect, RecordInit};
-use bough_text::atlas::Instance;
+use bough_metal::fused::{pay_irun, pay_runs};
+use bough_metal::instance::Instance;
+use bough_text::pool::GlyphPool;
+use bough_text::window::Shaped;
 use bough_text::wrap::wrap_greedy;
 use bough_text::GlyphRun;
 use cephal::style::{
@@ -30,19 +34,14 @@ use cephal::style::{
 use cephal::{AvailableSpace, MeasureInput, MeasureOutput, Size, Style};
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 
-pub const NONE: u32 = u32::MAX;
-/// A paint-less layout box's record (empty ink, no instances): present only in the deep variant, whose layout
-/// structure *is* the Bough's depth column.
-pub const REC_BOX: u8 = 3;
-const DEEP: bool = cfg!(feature = "deep");
+pub use crate::rt::NONE;
 
 /// Measure-callback counters (relaxed; for the cost breakdown in LAYOUT.md).
 pub static MEASURE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static WRAP_RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-#[cfg(not(feature = "deep"))]
-pub type Eng = crate::lay_mirror::Mirror;
-#[cfg(feature = "deep")]
+/// The layout engine: cephal's `LayoutTree`/`CacheAccess`/`Incremental` implemented over the Bough itself
+/// (`lay_deep.rs`; there is no second tree).
 pub type Eng = crate::lay_deep::Deep;
 
 // =============================================================================== spec (points)
@@ -397,6 +396,9 @@ pub struct LeafCtx {
     pub upem: f32,
     pub size_px: f32,
     pub lh_px: f32,
+    /// Fast path: the text shaped into a glyph-pool block (the GPU draws its lines as windows onto it; the
+    /// word table is read from its pens: shaped once for measuring and drawing).
+    pub block: Option<Shaped>,
 }
 
 impl LeafCtx {
@@ -404,28 +406,43 @@ impl LeafCtx {
         LeafCtx { wrapped_at: i32::MIN, min_word: -1, wrap, size_px, lh_px, ..Default::default() }
     }
 
-    pub fn set_text(&mut self, ts: &mut crate::text::TextSys, text: &str) {
+    /// Release the pool block (the leaf is going away).
+    pub fn release(&mut self, pool: &mut GlyphPool) {
+        if let Some(b) = self.block.take() {
+            pool.free_shaped(b);
+        }
+    }
+
+    pub fn set_text(&mut self, ts: &mut crate::text::TextSys, pool: &mut GlyphPool, text: &str) {
+        self.release(pool);
         self.text.clear();
         self.text.extend_from_slice(text.as_bytes());
         self.ascii = text.is_ascii();
         self.upem = ts.shaper.script.upem as f32;
         self.wrapped_at = i32::MIN;
         self.min_word = -1;
-        // the table shaper (no GSUB/GPOS trigger, ASCII: glyph i is byte i) or rustybuzz
-        self.fast = ts.shaper.shape_into(text, self.size_px, &mut self.run);
+        self.run.gid.clear();
+        self.run.x.clear();
+        // the slot kernel straight into the glyph pool (ASCII, no GSUB/GPOS trigger: glyph i is byte i), or
+        // the general shaper into a run (drawn as glyph instances)
+        let mut blk = Shaped::default();
+        self.fast = pool.shape_block(&ts.shaper, text.as_bytes(), &mut blk);
         if !self.fast {
             ts.shape_run(text, self.size_px, &mut self.run);
             return;
         }
-        // word table from the run: spaces found 8 bytes at a time (SWAR zero-byte mask), words between them
-        let (b, run) = (&self.text, &self.run);
+        self.block = Some(blk);
+        // word table from the pool's pens: spaces found 8 bytes at a time (SWAR zero-byte mask)
+        let b = &self.text;
         let n = b.len();
+        let xs = &pool.x[blk.base as usize..blk.base as usize + n];
+        let width = blk.width;
         let words = &mut self.words;
         words.clear();
         let mut start = 0usize;
-        let mut push = |start: usize, end: usize, words: &mut Vec<Word>| {
-            let x1 = if end < n { run.x[end] } else { run.width };
-            words.push(Word { ws: start as u32, we: end as u32, x0: run.x[start], x1 });
+        let push = |start: usize, end: usize, words: &mut Vec<Word>| {
+            let x1 = if end < n { xs[end] } else { width };
+            words.push(Word { ws: start as u32, we: end as u32, x0: xs[start], x1 });
         };
         let mut base = 0usize;
         const LO7: u64 = 0x7f7f_7f7f_7f7f_7f7f;
@@ -476,7 +493,7 @@ impl LeafCtx {
         }
         self.wrapped_at = max_units;
         WRAP_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let empty = self.run.is_empty();
+        let empty = if self.fast { self.text.is_empty() } else { self.run.is_empty() };
         if empty {
             self.starts.clear();
             self.starts.push(0);
@@ -726,7 +743,6 @@ pub struct Lay {
     pub stats: LayStats,
     stack: Vec<(u32, f32, f32, bool)>,
     kids: Vec<u32>,
-    line: GlyphRun,
     /// Roots whose text changed reactively since the last flush (for lists to re-measure rows).
     pub touched_roots: Vec<u32>,
 }
@@ -746,7 +762,6 @@ impl Lay {
             stats: LayStats::default(),
             stack: Vec::new(),
             kids: Vec::new(),
-            line: GlyphRun::default(),
             touched_roots: Vec::new(),
         }
     }
@@ -800,6 +815,11 @@ impl Rt {
             all.push(n);
             self.lay.eng.children_into(&self.bough, n, &mut stack);
         }
+        for &n in &all {
+            if let Some(ctx) = self.lay.eng.ctx_mut(n) {
+                ctx.release(&mut self.glyphs);
+            }
+        }
         self.lay.eng.remove_tree(&self.bough, root, &all);
         for n in all {
             self.lay.info[n as usize].live = false;
@@ -814,13 +834,18 @@ impl Rt {
     }
 
     /// The text of layout text node `n` changed (reactive operand): re-shape into the leaf, invalidate it.
-    pub fn lay_text_changed(&mut self, n: u32) {
+    pub fn lay_text_changed(&mut self, n: u32, text: &str) {
         let lid = self.nodes[n as usize].lnode;
-        let text = std::mem::take(&mut self.nodes[n as usize].text);
-        if let Some(ctx) = self.lay.eng.ctx_mut(lid) {
-            ctx.set_text(&mut self.text, &text);
+        let ti = self.nodes[n as usize].text;
+        {
+            let t = &mut self.texts[ti as usize];
+            t.text.clear();
+            t.text.push_str(text);
         }
-        self.nodes[n as usize].text = text;
+        let Rt { lay, text: ts, glyphs, .. } = self;
+        if let Some(ctx) = lay.eng.ctx_mut(lid) {
+            ctx.set_text(ts, glyphs, text);
+        }
         self.lay.eng.invalidate(&self.bough, lid);
         self.lay.info[lid as usize].tdirty = true;
         self.lay.dirty.push(lid);
@@ -955,113 +980,100 @@ impl Rt {
         n.y = y;
         n.w = w;
         n.h = h;
-        let inst = self.runs[n.run as usize].first;
-        let p = unsafe { &mut *self.inst_ptr(inst) };
-        p.xy = [x, y];
-        p.wh = [w, h];
-        let ink = self.ink_rect(li.space, x, y, w, h, self.nodes[li.rtn as usize].margin);
-        let hd = self.nodes[li.rtn as usize].handle;
+        let (inst, margin, hd) = (self.runs[n.run as usize].first, n.margin, n.handle);
+        let p = self.inst_mut(inst);
+        p.pos = [x, y];
+        p.size = [w, h];
+        // the old position's pixels (a sub-pixel move can keep the rounded ink), then old and new ink
+        self.bough.touch_handle(hd);
+        let ink = self.ink_rect(li.space, x, y, w, h, margin);
         self.bough.set_ink_handle(hd, ink);
     }
 
-    /// (Re)generate a laid-out text node's instances for its box at (x, y) of width `w`.
-    fn place_text(&mut self, lid: u32, x: f32, y: f32, w: f32, _h: f32, reflow: bool) {
+    /// Place a laid-out text node's lines in its box at (x, y) of width `w`: the fast path points one run
+    /// header per wrapped line at the leaf's glyph-pool block (no glyph is written); the slow path writes
+    /// glyph instances. Damage: the old and the new ink.
+    fn place_text(&mut self, lid: u32, x: f32, y: f32, w: f32, _h: f32, _reflow: bool) {
         self.lay.stats.text_placed += 1;
         let li = self.lay.info[lid as usize];
-        let (space, clip, run_id, color, strike, size_px, lh) = {
-            let n = &self.nodes[li.rtn as usize];
-            (n.space, n.clip, n.run, n.color, n.strike as usize, n.size_px, n.line_h)
+        let node = li.rtn;
+        let ti = self.nodes[node as usize].text;
+        let hd = self.nodes[node as usize].handle;
+        let (size_px, lh) = {
+            let t = &self.texts[ti as usize];
+            (t.size_px, t.line_h)
         };
         let base_off = self.text.baseline(size_px, lh);
-        // the run must hold one instance per glyph (the kernel writes straight into it)
-        let n = self.lay.eng.ctx_mut(lid).expect("text leaf has a context").run.len();
-        if n > (1usize << self.runs[run_id as usize].class) {
-            self.regrow_run(run_id, n);
-        }
-        let first = self.runs[run_id as usize].first;
-        let dst = self.inst_ptr(first);
-        let cap = 1usize << self.runs[run_id as usize].class;
-        let Rt { lay, text, .. } = self;
-        let ctx = lay.eng.ctx_mut(lid).expect("text leaf has a context");
+        let ctx = self.lay.eng.ctx_mut(lid).expect("text leaf has a context");
         let k = ctx.k().max(1e-6);
-        let _ = reflow;
         let lines = if ctx.wraps() { ctx.wrap_at(((w + 1e-3) / k).floor() as i32) } else { ctx.wrap_at(i32::MAX) };
-        lay.prof.reset();
-        // The glyph kernel writes the instances straight into the node's pool run (a `Vec` view of the run: its
-        // capacity is the run's, and it never grows: at most one instance per glyph, and the run was sized for it).
-        // SAFETY: `dst` points at `cap` instances of pool memory owned by this run; the view is never dropped or
-        // reallocated (`cap >= n >= the number of instances every `instances` call reserves for).
-        let mut out = std::mem::ManuallyDrop::new(unsafe { Vec::<Instance>::from_raw_parts(dst, 0, cap) });
-        for i in 0..lines {
-            let a = ctx.starts[i] as usize;
-            let b = if i + 1 < lines { ctx.starts[i + 1] as usize } else { n };
-            if b <= a {
-                continue;
-            }
-            // the line as its own run (positions rebased to the line start)
-            let line = &mut lay.line;
-            line.gid.clear();
-            line.x.clear();
-            line.cluster.clear();
-            line.identity_clusters = true;
-            line.upem = ctx.run.upem;
-            line.size = ctx.run.size;
-            let x0 = ctx.run.x[a];
-            line.gid.extend_from_slice(&ctx.run.gid[a..b]);
-            line.x.extend(ctx.run.x[a..b].iter().map(|v| v - x0));
-            line.width = (if b < n { ctx.run.x[b] } else { ctx.run.width }) - x0;
-            let baseline = (y + i as f32 * lh + base_off).round();
-            text.cache.instances(strike, line, x, baseline, color, &mut out);
+        let n = ctx.text.len() as u32;
+        let block = ctx.block;
+        let spans: Vec<(u32, u32)> = (0..lines).map(|i| (ctx.starts[i], if i + 1 < lines { ctx.starts[i + 1] } else { n })).collect();
+        let slow_text = if block.is_none() { Some(String::from_utf8_lossy(&ctx.text).into_owned()) } else { None };
+        self.lay.prof.reset();
+        let old_ink = self.texts[ti as usize].ink;
+        {
+            let t = &mut self.texts[ti as usize];
+            t.ox = x;
+            t.oy = (y + base_off).round();
         }
-        let cnt = out.len();
-        debug_assert_eq!(out.as_ptr(), dst as *const Instance, "the run was not reallocated");
-        lay.prof.mark(LP_TEXT_EMIT);
-        self.runs[run_id as usize].len = cnt as u32;
-        // stamp space + clip and take the glyph quads' union, one NEON pass
-        let b = unsafe { stamp_and_bounds(dst, cnt, space, clip as u32) };
-        let ink = if cnt == 0 { NRect::EMPTY } else { self.ink_rect(space, b[0], b[1], b[2] - b[0], b[3] - b[1], 1.0) };
-        let hd = self.nodes[li.rtn as usize].handle;
+        match block {
+            Some(b) => {
+                if !matches!(self.texts[ti as usize].shape, TShape::Lines { .. }) {
+                    let old = std::mem::take(&mut self.texts[ti as usize].shape);
+                    crate::text::release(self, TextNode { shape: old, ..Default::default() });
+                    let (first, cap) = self.glyphs.alloc_run_range(lines.max(1));
+                    self.texts[ti as usize].shape = TShape::Lines { block: None, owned: false, first, cap, n: 0, widths: Vec::new(), spans: Vec::new() };
+                    self.bough.set_payload_handle(hd, pay_runs(first, cap));
+                }
+                self.lines_point(ti, b, &spans, false);
+            }
+            None => {
+                // the general shaper's lines as glyph instances, one line per wrap line
+                let old = std::mem::take(&mut self.texts[ti as usize].shape);
+                crate::text::release(self, TextNode { shape: old, ..Default::default() });
+                let text = slow_text.unwrap();
+                let (strike, color, space, oy) = {
+                    let t = &self.texts[ti as usize];
+                    (t.strike as usize, t.color, t.space, t.oy)
+                };
+                self.text.scratch.clear();
+                for (i, &(a, e)) in spans.iter().enumerate() {
+                    let line = text.get(a as usize..e as usize).unwrap_or("");
+                    self.text.line(strike, size_px, line, x, (oy + i as f32 * lh).round(), color);
+                }
+                let cnt = self.text.scratch.len();
+                let run = self.alloc_run(cnt.max(1));
+                self.runs[run as usize].len = cnt as u32;
+                let first = self.runs[run as usize].first;
+                let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                for i in 0..cnt.max(1) {
+                    let ins = match self.text.scratch.get(i) {
+                        Some(g) => {
+                            x0 = x0.min(g.xy[0]);
+                            y0 = y0.min(g.xy[1]);
+                            x1 = x1.max(g.xy[0] + g.wh[0]);
+                            y1 = y1.max(g.xy[1] + g.wh[1]);
+                            Instance { pos: g.xy, size: g.wh, color: g.color, uv: g.uv, space, kind: KIND_GLYPH, ..Default::default() }
+                        }
+                        None => Instance { space, kind: KIND_GLYPH, ..Default::default() },
+                    };
+                    self.inst[(first + i as u32) as usize] = ins;
+                }
+                let ink = if cnt == 0 { NRect::EMPTY } else { self.ink_rect(space, x0, y0, x1 - x0, y1 - y0, 1.0) };
+                let t = &mut self.texts[ti as usize];
+                t.ink = ink;
+                t.shape = TShape::Glyphs { run };
+                self.nodes[node as usize].run = run;
+                self.bough.set_payload_handle(hd, pay_irun(first, cnt.max(1) as u32));
+            }
+        }
+        self.lay.prof.mark(LP_TEXT_EMIT);
+        let ink = self.texts[ti as usize].ink;
+        self.bough.damage_rect(old_ink);
         self.bough.set_ink_handle(hd, ink);
         self.lay.prof.mark(LP_TEXT_COPY);
-    }
-}
-
-/// Stamp `space` and the clip index into `cnt` instances in place, and return the union of their quads
-/// `[x0, y0, x1, y1]`: per instance one vector load, an extract + add (x + w, y + h), a min and a max.
-///
-/// # Safety
-/// `dst` must be valid for `cnt` instances.
-unsafe fn stamp_and_bounds(dst: *mut Instance, cnt: usize, space: u16, clip: u32) -> [f32; 4] {
-    const SPACE: usize = std::mem::offset_of!(Instance, space);
-    const CLIP: usize = std::mem::offset_of!(Instance, aux) + 12;
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        use core::arch::aarch64::*;
-        let (mut mn, mut mx) = (vdupq_n_f32(f32::MAX), vdupq_n_f32(f32::MIN));
-        for i in 0..cnt {
-            let p = dst.add(i) as *mut u8;
-            let v = vld1q_f32(p as *const f32); // x y w h
-            let sum = vaddq_f32(v, vextq_f32::<2>(v, v)); // x+w y+h ..
-            mn = vminq_f32(mn, v);
-            mx = vmaxq_f32(mx, sum);
-            (p.add(SPACE) as *mut u16).write_unaligned(space);
-            (p.add(CLIP) as *mut u32).write_unaligned(clip);
-        }
-        [vgetq_lane_f32::<0>(mn), vgetq_lane_f32::<1>(mn), vgetq_lane_f32::<0>(mx), vgetq_lane_f32::<1>(mx)]
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    unsafe {
-        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-        for i in 0..cnt {
-            let g = &mut *dst.add(i);
-            x0 = x0.min(g.xy[0]);
-            y0 = y0.min(g.xy[1]);
-            x1 = x1.max(g.xy[0] + g.wh[0]);
-            y1 = y1.max(g.xy[1] + g.wh[1]);
-            g.space = space;
-            g.aux[3] = clip;
-        }
-        [x0, y0, x1, y1]
     }
 }
 
@@ -1139,7 +1151,7 @@ fn attach<V>(m: &mut Mounter<'_, V>, lid: u32) -> u32 {
 
 impl<V: 'static, Bg, Ch> Element<V> for LBox<Bg, Ch>
 where
-    Bg: IntoProp<Color>,
+    Bg: IntoProp<Color, V>,
     Ch: Element<V>,
 {
     fn mount(self, m: &mut Mounter<'_, V>) {
@@ -1147,34 +1159,21 @@ where
         let hd = m.rt.bough.new_handle();
         let lid = m.rt.lay.eng.add(hd, &self.spec, s, None);
         let parent = attach(m, lid);
-        let mut deeper = false;
         if self.draw {
             let node = m.rt.alloc_node();
-            let bg = self.bg.lower::<ApplyBg, V>(m, node);
-            let kind = match (self.border.is_some(), self.radius > 0.0) {
-                (true, _) => KIND_BORDER,
-                (false, true) => KIND_RRECT,
-                _ => KIND_SOLID,
-            };
-            let margin = if kind == KIND_SOLID { 0.0 } else { 1.0 };
+            let bg = self.bg.lower::<ApplyBg>(m, node);
+            let (ins, _kind, margin) = quad_instance(bg, self.radius * s, self.border, s, m.space);
             let run = m.rt.alloc_run(1);
             m.rt.runs[run as usize].len = 1;
             let inst = m.rt.runs[run as usize].first;
-            let mut ins = Instance { xy: [0.0; 2], wh: [0.0; 2], uv: [0; 4], color: bg.0, kind, space: m.space, aux: [0, 0, 0, m.clip as u32] };
-            if let Some((bw, bc)) = self.border {
-                ins.color = bc.0;
-                ins.aux[0] = bg.0;
-                ins.aux[2] = (bw * s).to_bits();
-            }
-            ins.aux[1] = (self.radius * s).to_bits();
-            unsafe { m.rt.inst_ptr(inst).write(ins) };
+            *m.rt.inst_mut(inst) = ins;
             {
                 let n = &mut m.rt.nodes[node as usize];
                 n.handle = hd;
                 n.run = run;
                 n.space = m.space;
                 n.clip = m.clip;
-                n.kind = if self.border.is_some() { 3 } else { 1 };
+                n.kind = if self.border.is_some() { NK_BORDER } else { NK_QUAD };
                 n.color = bg.0;
                 n.margin = margin;
                 n.lnode = lid;
@@ -1183,20 +1182,16 @@ where
             m.scope.runs.push(run);
             m.rt.lay.info[lid as usize].rtn = node;
             m.rt.lay.info[lid as usize].kind = 1;
-            m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_QUAD, payload: run, handle: hd.idx });
-            m.depth += 1;
-            deeper = true;
-        } else if DEEP {
-            m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: hd.idx });
-            m.depth += 1;
-            deeper = true;
+            m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_QUAD, payload: inst, handle: hd.idx, clip: m.clip });
+        } else {
+            // a paint-less box still has a record: the layout structure IS the Bough's depth column
+            m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: hd.idx, clip: m.clip });
         }
+        m.depth += 1;
         m.rt.lay.cur = lid;
         self.ch.mount(m);
         m.rt.lay.cur = parent;
-        if deeper {
-            m.depth -= 1;
-        }
+        m.depth -= 1;
     }
 }
 
@@ -1236,31 +1231,48 @@ impl<S> Para<S> {
     }
 }
 
-impl<V: 'static, S: IntoProp<String>> Element<V> for Para<S> {
+impl<V: 'static, S: TextSrc<V>> Element<V> for Para<S> {
     fn mount(self, m: &mut Mounter<'_, V>) {
         let s = m.rt.scale;
         let node = m.rt.alloc_node();
-        let init = self.s.lower::<ApplyText, V>(m, node);
+        m.pending_num = None;
+        let init = self.s.lower(m, node);
+        let num = m.pending_num.take();
         let size_px = self.size * s;
         let lh_px = self.lh * s;
         let strike = m.rt.text.strike(size_px);
         let mut ctx = LeafCtx::new(size_px, lh_px, self.wrap);
         m.rt.lay.prof.reset();
-        ctx.set_text(&mut m.rt.text, &init);
+        {
+            let Rt { text, glyphs, .. } = &mut *m.rt;
+            ctx.set_text(text, glyphs, &init);
+        }
         m.rt.lay.prof.mark(LP_TEXT_SET);
         let hd = m.rt.bough.new_handle();
         let lid = m.rt.lay.eng.add(hd, &self.spec, s, Some(ctx));
         let _parent = attach(m, lid);
-        let run = m.rt.alloc_run(init.len().max(4));
+        let ti = m.rt.alloc_text(TextNode {
+            text: init,
+            strike: strike as u32,
+            size_px,
+            line_h: lh_px,
+            color: self.color.0,
+            ox: 0.0,
+            oy: 0.0,
+            space: m.space,
+            handle: hd,
+            ink: NRect::EMPTY,
+            shape: TShape::None,
+            per_glyph: false,
+            num,
+        });
         {
             let n = &mut m.rt.nodes[node as usize];
-            n.text = init;
-            n.run = run;
+            n.text = ti;
             n.space = m.space;
             n.clip = m.clip;
             n.kind = NK_LTEXT;
             n.color = self.color.0;
-            n.strike = strike as u32;
             n.size_px = size_px;
             n.line_h = lh_px;
             n.handle = hd;
@@ -1269,8 +1281,8 @@ impl<V: 'static, S: IntoProp<String>> Element<V> for Para<S> {
         m.rt.lay.info[lid as usize].rtn = node;
         m.rt.lay.info[lid as usize].kind = 2;
         m.scope.nodes.push(node);
-        m.scope.runs.push(run);
-        m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_TEXT, payload: run, handle: hd.idx });
+        // provisional: empty ink (never drawn) until the first write-back points the lines at the block
+        m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_TEXT, payload: 0, handle: hd.idx, clip: m.clip });
     }
 }
 

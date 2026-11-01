@@ -1,22 +1,26 @@
-//! bough: the public façade over bough-core (damage/cull), bough-text (shaping) and the Metal backend.
+//! bough: the public façade over bough-core (records, damage), bough-text (shaping into the glyph pool),
+//! cephal (layout) and bough-metal's fused presenter. One region holds everything the GPU reads
+//! (`rt.rs`); a frame's CPU work ends at the tile list (`app.rs`).
 pub mod app;
 pub mod backend;
 pub mod color;
 pub mod elem;
-pub mod lay_mirror;
-#[cfg(feature = "deep")]
 pub mod lay_deep;
 pub mod layout;
 pub mod mlist;
-pub mod repair;
 pub mod rt;
 pub mod signal;
 pub mod text;
 
+pub use bough_text::numeric::NumFmt;
+
 pub mod prelude {
     pub use crate::app::{App, Config, View};
     pub use crate::color::{rgb, Color};
-    pub use crate::elem::{at, clip, bars, each, quad, text, virtual_list, Element, IntoProp, Mounter, Quad};
+    pub use crate::elem::{at, bars, clip, each, quad, text, virtual_list, Element, IntoProp, Mounter, Quad, TextSrc};
     pub use crate::mlist::measured_list;
-    pub use crate::signal::Signal;
+    pub use crate::rt::Caps;
+    pub use crate::sig;
+    pub use crate::signal::{Signal, Wired};
+    pub use bough_text::numeric::NumFmt;
 }

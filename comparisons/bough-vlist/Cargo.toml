@@ -5,11 +5,6 @@ edition.workspace = true
 license.workspace = true
 description = "zgx's vlist scene (100k wrapped chat rows, measured virtual list) and vscroll-variable micro_bench on bough + cephal"
 
-[features]
-# Variant B: cephal over bough's storage (see crates/bough/LAYOUT.md)
-deep = ["bough/deep"]
-deep-kids = ["bough/deep-kids"]
-
 [dependencies]
 bough = { path = "../../crates/bough" }
 bough-metal = { path = "../../crates/bough-metal" }

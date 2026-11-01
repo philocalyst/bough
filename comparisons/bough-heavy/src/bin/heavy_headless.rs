@@ -49,14 +49,14 @@ fn main() {
     let t1 = bough_metal::perf::snap();
     let measured = ticks.saturating_sub(60).max(1) as f64;
     println!(
-        "{mode:?} render={render}: {:.4} ms/tick, frames presented {frames}/{ticks}, instr/tick (after 60 warm-up ticks) {:.0}, ri_instructions total {}, footprint {:.1} MB, fallbacks {}, wires run {}, text shaped {}, rows mounted {}",
+        "{mode:?} render={render}: {:.4} ms/tick, frames presented {frames}/{ticks}, instr/tick (after 60 warm-up ticks) {:.0}, ri_instructions total {}, footprint {:.1} MB, fallbacks {}, wires run {}, text set {}, rows mounted {}",
         start.elapsed().as_secs_f64() * 1e3 / ticks as f64,
         (t1.instrs - warm.0) as f64 / measured,
         t1.instrs,
         t1.footprint as f64 / 1048576.0,
         app.rt.text.fallbacks,
         app.rt.ctr.wires_run,
-        app.rt.ctr.text_shaped,
+        app.rt.ctr.text_set,
         app.rt.ctr.rows_mounted,
     );
     if phases {

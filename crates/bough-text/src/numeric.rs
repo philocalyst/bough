@@ -25,14 +25,33 @@ pub struct NumFmt {
 const POW10: [f64; 7] = [1.0, 10.0, 100.0, 1e3, 1e4, 1e5, 1e6];
 
 impl NumFmt {
-    pub fn new(prefix: &str, decimals: Option<u8>, suffix: &str) -> Self {
-        assert!(prefix.len() <= 8 && suffix.len() <= 8 && prefix.is_ascii() && suffix.is_ascii());
-        assert!(decimals.is_none_or(|d| d <= 6));
+    pub const fn new(prefix: &str, decimals: Option<u8>, suffix: &str) -> Self {
+        let (pb, sb) = (prefix.as_bytes(), suffix.as_bytes());
+        assert!(pb.len() <= 8 && sb.len() <= 8);
+        assert!(match decimals {
+            Some(d) => d <= 6,
+            None => true,
+        });
         let mut p = [0u8; 8];
-        p[..prefix.len()].copy_from_slice(prefix.as_bytes());
+        let mut i = 0;
+        while i < pb.len() {
+            assert!(pb[i] < 128);
+            p[i] = pb[i];
+            i += 1;
+        }
         let mut s = [0u8; 8];
-        s[..suffix.len()].copy_from_slice(suffix.as_bytes());
-        NumFmt { prefix: p, plen: prefix.len() as u8, suffix: s, slen: suffix.len() as u8, decimals }
+        let mut i = 0;
+        while i < sb.len() {
+            assert!(sb[i] < 128);
+            s[i] = sb[i];
+            i += 1;
+        }
+        NumFmt { prefix: p, plen: pb.len() as u8, suffix: s, slen: sb.len() as u8, decimals }
+    }
+
+    /// The prefix and suffix.
+    pub fn affixes(&self) -> (&str, &str) {
+        (core::str::from_utf8(&self.prefix[..self.plen as usize]).unwrap_or(""), core::str::from_utf8(&self.suffix[..self.slen as usize]).unwrap_or(""))
     }
 
     /// Render `v` (an `f32` for `{:.D}`; for `{}` its value is taken as `u32`) into `out`
@@ -99,6 +118,13 @@ impl NumFmt {
 /// The rendered bytes as a `&str` (they are ASCII by construction).
 #[inline]
 pub fn as_str(buf: &[u8; 16], len: usize) -> &str {
-    // SAFETY: `NumFmt` writes only ASCII (prefix/suffix are checked ASCII, digits, '-', '.').
-    unsafe { core::str::from_utf8_unchecked(&buf[..len]) }
+    NumFmt::as_str(buf, len)
+}
+
+impl NumFmt {
+    /// The rendered text (`render_*`'s output and length).
+    pub fn as_str(buf: &[u8; 16], len: usize) -> &str {
+        // SAFETY: `NumFmt` writes only ASCII (prefix/suffix are checked ASCII, digits, '-', '.').
+        unsafe { core::str::from_utf8_unchecked(&buf[..len]) }
+    }
 }

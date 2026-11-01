@@ -148,7 +148,7 @@ fn publish_txn(layer: &CALayer, io: &IOSurfaceRef, sh: &Shared, frame: u64) {
     CATransaction::setDisableActions(true);
     unsafe { layer.setContents(Some(&*(io as *const IOSurfaceRef as *const AnyObject))) };
     CATransaction::commit();
-    let now = unsafe { CACurrentMediaTime() };
+    let now = CACurrentMediaTime();
     let t0p = f64::from_bits(sh.produced_at[(frame % 8) as usize].swap(0, Relaxed));
     if t0p > 0.0 {
         sh.lat_ms.lock().unwrap().push((now - t0p) * 1e3);
@@ -457,7 +457,7 @@ impl V2 {
     fn warm_tick(&mut self) {
         self.warm_armed = false;
         let Some((period, window)) = self.warm else { return };
-        let now = unsafe { CACurrentMediaTime() };
+        let now = CACurrentMediaTime();
         if now - self.last_gpu > window {
             return; // long idle: let the GPU sleep, pay the wake once
         }
@@ -680,10 +680,10 @@ impl Presenter for V2 {
         self.gpu_frames += 1;
         let f = self.gpu_frames;
         if let Some((period, _)) = self.warm {
-            self.last_gpu = unsafe { CACurrentMediaTime() };
+            self.last_gpu = CACurrentMediaTime();
             self.arm_warm(period);
         }
-        self.sh.produced_at[(f % 8) as usize].store(unsafe { CACurrentMediaTime() }.to_bits(), Relaxed);
+        self.sh.produced_at[(f % 8) as usize].store(CACurrentMediaTime().to_bits(), Relaxed);
         match self.spec.raster {
             Raster::Render => {
                 let cmd = e.gpu.queue.commandBuffer().unwrap();

@@ -95,6 +95,13 @@ impl Thresh {
     }
 }
 
+impl Default for NRect {
+    /// The empty rect (the identity of `union`).
+    fn default() -> Self {
+        NRect::EMPTY
+    }
+}
+
 impl NRect {
     pub const EMPTY: NRect = NRect([MAXC; 4]);
 

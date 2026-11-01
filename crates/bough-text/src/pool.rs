@@ -258,6 +258,9 @@ pub struct GlyphPool {
     pub spaces: Col<[i32; 2]>,
     /// Run headers released by `free_label` / `free_run`, reused before the column grows.
     free_runs: Vec<u32>,
+    /// Released contiguous run-header ranges by size class (`1 << k` headers): a multi-line text's
+    /// lines are consecutive headers (one record draws the range).
+    free_ranges: [Vec<u32>; 12],
     /// How many updates took each path: equal-length class patch, window, window stopped at
     /// an unchanged suffix, full replacement.
     pub stats: [u64; 4],
@@ -268,8 +271,9 @@ pub struct GlyphPool {
     sc: Vec<u32>,
 }
 
+/// The snapped pixel pen of font-unit pen `x` (the shader's `floor(fma(float(x), scale, ox + 0.5))`).
 #[inline(always)]
-pub(crate) fn pen_px(x: i32, scale: f32, oxh: f32) -> i32 {
+pub fn pen_px(x: i32, scale: f32, oxh: f32) -> i32 {
     (x as f32).mul_add(scale, oxh).floor() as i32
 }
 
@@ -344,6 +348,32 @@ impl GlyphPool {
                 (self.runs.len() - 1) as u32
             }
         }
+    }
+
+    /// `n` consecutive run headers (rounded up to a power of two), all empty (`len` 0). Returns the first.
+    pub fn alloc_run_range(&mut self, n: usize) -> (u32, u32) {
+        let cap = n.max(1).next_power_of_two();
+        let k = cap.trailing_zeros() as usize;
+        let first = match self.free_ranges[k].pop() {
+            Some(f) => f,
+            None => {
+                let f = self.runs.len() as u32;
+                self.runs.resize(f as usize + cap, RunHeader::default());
+                f
+            }
+        };
+        for r in &mut self.runs[first as usize..first as usize + cap] {
+            r.len = 0;
+        }
+        (first, cap as u32)
+    }
+
+    /// Release a range from [`alloc_run_range`](Self::alloc_run_range).
+    pub fn free_run_range(&mut self, first: u32, cap: u32) {
+        for r in &mut self.runs[first as usize..(first + cap) as usize] {
+            r.len = 0;
+        }
+        self.free_ranges[cap.trailing_zeros() as usize].push(first);
     }
 
     /// Release a run header (its id may be returned by the next allocation). Draws nothing.

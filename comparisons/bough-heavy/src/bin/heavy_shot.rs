@@ -17,7 +17,7 @@ fn main() {
         app.turn(|d| publish(d, &work, mode));
         app.frame();
         if std::env::var_os("DBG").is_some() && _t < 8 || _t + 4 > ticks {
-            println!("tick {_t}: rects {:?} repaired {} px", app.debug_rects(), app.repaired_px);
+            println!("tick {_t}: repaired {} tiles", app.repaired_tiles);
         }
     }
     if std::env::var_os("BISECT").is_some() {

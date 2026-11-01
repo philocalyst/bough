@@ -1,52 +1,90 @@
-//! The runtime tables behind the façade: instance pool + size-classed run allocator, nodes (the
-//! per-element state wires patch), the wire arena, text, keyed virtual-list regions, spaces/clips.
+//! The runtime tables behind the façade, laid out in ONE region (`bough_mem::Region`): on a GPU it is the
+//! fused presenter's shared buffer, headless it is heap memory with the same layout. Every column the GPU
+//! reads is carved from it once and written in place by the CPU (bough-metal `INTERFACE.md`, fused layout):
 //!
-//! Everything here is plain data + monomorphic patch functions; the generic builder layer
-//! (`elem.rs`) lowers typed descriptions into it.
+//! | column | owner | GPU use |
+//! |---|---|---|
+//! | header, 3 frame slots | presenter | offsets, tile lists, row spans |
+//! | quad instances (48 B) | here | `payload` = an instance, or a run of them (bars, glyph-instance text) |
+//! | pages, directory ids/inks, clips | bough-core | hierarchical cull, record clip |
+//! | glyph slots `x`/`ent`, run headers, spaces | bough-text | text runs expanded by the bin pass |
+//! | strike token tables | bough-text | glyph geometry and atlas rects |
+//!
+//! Nothing is mirrored: a colour write is 4 bytes into an instance, a digit change is one `u16` per glyph
+//! slot, a scroll is one space entry plus bough-core's page offsets.
+//!
+//! Damage has two rings, both bough-core `DamageRing`s advanced in lockstep: the Bough's own (every
+//! geometry, structure and text mark) and the **paint** ring (paint-only writes: colours, glyph alphas).
+//! The split exists for content addressing: paint writes are exactly reversible and update the per-tile
+//! content hash `zob` by XOR (old state out, new state in); every other damaged tile is salted at frame
+//! time. A surface whose tile hashes equal `zob` holds the current pixels (`App::pick`).
 use crate::text::TextSys;
-use bough_core::{Bough, Handle, NRect, Plane, RecordInit};
-use bough_metal::instance::Hdr;
-use bough_text::atlas::Instance;
+use bough_core::bough::Columns;
+use bough_core::damage::DamageRing;
+use bough_core::page::Page;
+use bough_core::{Bough, Handle, NRect, RecordInit};
+use bough_mem::{Col, Region};
+use bough_metal::fused::{Layout, HDR_BYTES};
+use bough_metal::instance::Instance;
+use bough_text::atlas::TokStrike;
+use bough_text::pool::{GlyphPool, PoolColumns, RunHeader};
 use std::collections::VecDeque;
 use std::ops::Range;
 
-pub const MAX_INST: usize = 32768;
-pub const MAX_SPACES: usize = 512;
-pub const MAX_CLIPS: usize = 32;
-pub const MAX_RECTS: usize = 512;
-pub const SPACES_OFF: usize = 256;
-pub const CLIPS_OFF: usize = SPACES_OFF + MAX_SPACES * 8;
-pub const RECTS_OFF: usize = CLIPS_OFF + MAX_CLIPS * 16;
-pub const INST_OFF: usize = 16384;
-pub const LIST_OFF: usize = INST_OFF + MAX_INST * 48;
-pub const POOL_BYTES: usize = LIST_OFF + MAX_INST * 4;
-const _: () = assert!(RECTS_OFF + MAX_RECTS * 16 <= INST_OFF);
+pub const KIND_SOLID: u8 = 0;
+pub const KIND_RRECT: u8 = 1;
+pub const KIND_BORDER: u8 = 2;
+pub const KIND_GLYPH: u8 = 3;
 
-pub const KIND_SOLID: u16 = 0;
-pub const KIND_RRECT: u16 = 1;
-pub const KIND_BORDER: u16 = 2;
-
+/// Record kinds (bough-core's `kind` column; the GPU dispatches on the payload, not on this).
 pub const REC_QUAD: u8 = 1;
 pub const REC_TEXT: u8 = 2;
-/// Node kinds (see `Node::kind`): 1 quad, 2 text, 3 bordered quad, 4 bars, 5 layout-owned text (see layout.rs).
-pub const NK_LTEXT: u8 = 5;
+/// A paint-less layout box (its record carries the layout structure; empty ink, no payload).
+pub const REC_BOX: u8 = 3;
 
-/// The shared pool: header | spaces | clips | stencil rects | instances | draw list. Either a
-/// `storageModeShared` MTLBuffer (the Metal backend) or heap memory (headless, no GPU).
-pub struct Pool {
-    pub ptr: *mut u8,
-    _heap: Option<Vec<u128>>,
+/// Node kinds (`Node::kind`).
+pub const NK_QUAD: u8 = 1;
+pub const NK_TEXT: u8 = 2;
+pub const NK_BORDER: u8 = 3;
+pub const NK_BARS: u8 = 4;
+/// Layout-owned text (measured, wrapped and placed by the layout flush).
+pub const NK_LTEXT: u8 = 5;
+pub const NK_GALPHA: u8 = 6;
+
+pub const NONE: u32 = u32::MAX;
+
+/// Capacities of the region's columns (fixed for the window's life: a column never moves).
+#[derive(Clone, Copy, Debug)]
+pub struct Caps {
+    pub instances: usize,
+    pub pages: usize,
+    pub glyphs: usize,
+    pub runs: usize,
+    pub spaces: usize,
+    pub clips: usize,
+    pub strikes: usize,
 }
 
-impl Pool {
-    pub fn heap() -> Pool {
-        let mut v = vec![0u128; POOL_BYTES / 16 + 1];
-        Pool { ptr: v.as_mut_ptr() as *mut u8, _heap: Some(v) }
-    }
-    /// # Safety
-    /// `ptr` must stay valid, 16-aligned and `POOL_BYTES` long for the life of the pool.
-    pub unsafe fn external(ptr: *mut u8) -> Pool {
-        Pool { ptr, _heap: None }
+impl Caps {
+    /// Sized for the comparison scenes with headroom (heavy: ~2.6 K records / 2.3 K glyphs; vlist: ~6 K
+    /// glyphs mounted). Untouched capacity costs no memory until written.
+    pub const DEFAULT: Caps = Caps { instances: 8192, pages: 512, glyphs: 1 << 16, runs: 8192, spaces: 2048, clips: 512, strikes: 16 };
+
+    pub fn region_bytes(&self, w: u32, h: u32) -> usize {
+        let (sb, rb) = Layout::slot_bytes(w, h);
+        let a = |n: usize| n.next_multiple_of(256) + 256;
+        HDR_BYTES
+            + 3 * (a(sb) + a(rb))
+            + a(self.instances * size_of::<Instance>())
+            + a(self.pages * size_of::<Page>())
+            + 2 * a(self.pages * 8)
+            + a(self.clips * 8)
+            + a(self.spaces * 8)
+            + a(self.glyphs * 4)
+            + a(self.glyphs * 2)
+            + a(self.runs * size_of::<RunHeader>())
+            + a(self.strikes * size_of::<TokStrike>())
+            + 4096
     }
 }
 
@@ -62,13 +100,14 @@ pub struct Run {
 /// Mutable per-element state that wires patch. Quads and text share the struct (cold fields are small).
 pub struct Node {
     pub handle: Handle,
+    /// Instance run (quads, bars, glyph-instance text), or `NONE`.
     pub run: u32,
     pub space: u16,
+    /// bough-core clip id of the element's record.
     pub clip: u16,
     pub kind: u8,
     pub live: bool,
-    pub dirty: bool,
-    /// Quad: local px x, y(origin), w, h. Text: ox, baseline of the first line, -, -.
+    /// Quad: local px x, y(origin), w, h.
     pub x: f32,
     pub y: f32,
     /// Quad: space-local px y of the element's origin (the `span` operand is relative to it).
@@ -78,18 +117,15 @@ pub struct Node {
     pub radius: f32,
     pub color: u32,
     pub margin: f32,
-    pub strike: u32,
     pub size_px: f32,
     pub line_h: f32,
-    pub text: String,
-    /// Series node (`bars`): bar count, memoised samples and the key they were computed for.
+    /// Series node (`bars`): memoised samples and the key they were computed for.
     pub series: Vec<f32>,
     pub series_key: u64,
     pub series_ok: bool,
-    /// Multi-line text: the previous lines' shaped instances (a streaming log scrolls by one line
-    /// per update, so every unchanged line is re-used at a new baseline instead of re-shaped).
-    pub lines: Vec<(String, f32, Vec<Instance>)>,
-    /// Layout node (index into `Rt::lay`) of an element laid out by cephal, else `u32::MAX`.
+    /// Text state (`Rt::texts` index), or `NONE`.
+    pub text: u32,
+    /// Layout node (index into `Rt::lay`) of an element laid out by cephal, else `NONE`.
     pub lnode: u32,
 }
 
@@ -97,12 +133,11 @@ impl Node {
     fn blank() -> Node {
         Node {
             handle: Handle { idx: 0, generation: 0 },
-            run: 0,
+            run: NONE,
             space: 0,
             clip: 0,
             kind: 0,
             live: false,
-            dirty: false,
             x: 0.0,
             y: 0.0,
             y0: 0.0,
@@ -111,19 +146,23 @@ impl Node {
             radius: 0.0,
             color: 0,
             margin: 0.0,
-            strike: 0,
             size_px: 0.0,
             line_h: 0.0,
-            text: String::new(),
             series: Vec::new(),
             series_key: 0,
             series_ok: false,
-            lines: Vec::new(),
-            lnode: u32::MAX,
+            text: NONE,
+            lnode: NONE,
         }
     }
 }
 
+/// A wire's patch: `(runtime, wire, signal address, owner address)`.
+///
+/// # Safety
+/// `sig` must point at a live `Signal<T>` of exactly the type the patch was monomorphised for (guaranteed by
+/// `Wired`: the address is `owner + offset_of!(V, path)` and the field's type is checked at the `sig!` site);
+/// `owner` must point at the live owner `V`.
 pub type PatchFn = unsafe fn(&mut Rt, &Wire, *const u8, *const u8);
 
 #[derive(Clone, Copy)]
@@ -156,11 +195,13 @@ pub struct RowInfo {
 
 pub type RowMountFn = unsafe fn(&mut Rt, *const u8, usize, usize, &mut Vec<RecordInit>) -> RowInfo;
 
-pub struct Region {
+pub struct Region2 {
     pub row_h: f32,
     pub vp_x: f32,
     pub vp_y: f32,
     pub clip: u16,
+    /// The viewport (absolute device px): the scroll marks are clipped to it.
+    pub vp: NRect,
     pub depth: u16,
     pub base_pos: usize,
     pub range: Range<usize>,
@@ -175,18 +216,36 @@ pub struct Region {
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Counters {
     pub wires_run: u64,
-    pub text_shaped: u64,
+    pub text_set: u64,
     pub rows_mounted: u64,
     pub rows_unmounted: u64,
 }
 
+/// `bough_core::Plane` as bough-text's tile-mark sink: labels OR their damage rows straight into the
+/// current epoch's plane (the row band stays exact).
+pub struct CoreMarks<'a>(pub &'a mut bough_core::Plane);
+impl bough_text::pool::Marks for CoreMarks<'_> {
+    #[inline(always)]
+    fn rows(&self) -> i32 {
+        self.0.n as i32
+    }
+    #[inline(always)]
+    fn or_rows(&mut self, r0: i32, r1: i32, m: u128) {
+        self.0.or_rows(r0, r1, m)
+    }
+}
+
 pub struct Rt {
     pub bough: Bough,
+    pub glyphs: GlyphPool,
+    pub text: TextSys,
+    /// Quad (and glyph-instance) instances, the whole capacity addressable (zeroed memory is valid).
+    pub inst: Col<Instance>,
+    pub layout: Layout,
+    pub caps: Caps,
     pub scale: f32,
     pub win_w: i32,
     pub win_h: i32,
-    pub pool: Pool,
-    pub text: TextSys,
     next_fresh: u32,
     free_blocks: [Vec<u32>; 16],
     pub runs: Vec<Run>,
@@ -197,30 +256,77 @@ pub struct Rt {
     wire_free: Vec<u32>,
     /// Offsets (from the owner's address) of the owner's wired signals.
     pub wired: Vec<u32>,
-    pub text_dirty: Vec<u32>,
-    pub regions: Vec<Region>,
-    n_clips: usize,
+    pub texts: Vec<crate::text::TextNode>,
+    text_free: Vec<u32>,
+    pub regions: Vec<Region2>,
+    clip_dedupe: Vec<(NRect, u16)>,
     space_free: Vec<u16>,
     next_space: u16,
-    pub plane: Box<Plane>,
-    pub cull_out: Vec<u32>,
+    /// Paint-only damage (exactly hashed into `zob`), advanced with the Bough's ring.
+    pub paint: DamageRing,
+    /// Per-tile content hash of the current state (tiles_x * tiles_y), see the module docs.
+    pub zob: Vec<u64>,
+    pub tiles_x: usize,
+    pub tiles_y: usize,
     pub ctr: Counters,
-    /// Atlas contents changed since the backend last uploaded it.
-    pub atlas_gen: (u32, u64),
     /// The layout bridge (cephal over the mounted records) and the measured lists.
     pub lay: crate::layout::Lay,
     pub mregions: Vec<crate::mlist::MRegion>,
+    /// Keeps a heap region alive (the GPU region is kept alive by the columns' reference count too).
+    _region: Region,
 }
 
 impl Rt {
-    pub fn new(win_w: i32, win_h: i32, scale: f32, font: &[u8], pool: Pool) -> Rt {
-        let rt = Rt {
-            bough: Bough::new(win_w, win_h),
+    /// The runtime over `region` (the presenter's shared buffer, or heap memory of the same size).
+    pub fn new(win_w: i32, win_h: i32, scale: f32, font: &[u8], mut region: Region, caps: Caps) -> Rt {
+        let (sb, rb) = Layout::slot_bytes(win_w as u32, win_h as u32);
+        let hdr = region.reserve(HDR_BYTES, 64);
+        assert_eq!(hdr, 0, "the header is at offset 0");
+        let mut slot = [0u32; 3];
+        let mut rows = [0u32; 3];
+        for k in 0..3 {
+            slot[k] = region.reserve(sb, 256) as u32;
+            rows[k] = region.reserve(rb, 256) as u32;
+        }
+        let mut inst: Col<Instance> = region.carve("instances", caps.instances);
+        // SAFETY: carved memory is zeroed (fresh buffer / alloc_zeroed) and all-zero is a valid Instance.
+        unsafe { inst.set_len(caps.instances) };
+        let cols = Columns { pages: region.carve("pages", caps.pages), dir_id: region.carve("dir_id", caps.pages), dir_ink: region.carve("dir_ink", caps.pages), clips: region.carve("clips", caps.clips) };
+        let pcols = PoolColumns { x: region.carve("glyph_x", caps.glyphs), ent: region.carve("glyph_ent", caps.glyphs), runs: region.carve("runs", caps.runs), spaces: region.carve("spaces", caps.spaces) };
+        let toks: Col<TokStrike> = region.carve("tok_strikes", caps.strikes);
+        let bough = Bough::with_columns(win_w, win_h, cols);
+        let mut glyphs = GlyphPool::with_columns(pcols);
+        glyphs.set_space((caps.spaces - 1) as u16, [0, 0]); // the whole space column is addressable
+        let text = TextSys::new(font, toks);
+        let o = bough.gpu_offsets().expect("carved columns");
+        let layout = Layout {
+            w: win_w as u32,
+            h: win_h as u32,
+            inst_off: inst.region_offset().unwrap() as u32,
+            spaces_off: glyphs.spaces.region_offset().unwrap() as u32,
+            clips_off: o[3] as u32,
+            dir_id_off: o[1] as u32,
+            dir_ink_off: o[2] as u32,
+            pages_off: o[0] as u32,
+            gx_off: glyphs.x.region_offset().unwrap() as u32,
+            gent_off: glyphs.ent.region_offset().unwrap() as u32,
+            runs_off: glyphs.runs.region_offset().unwrap() as u32,
+            toks_off: text.cache.tok_offset().unwrap() as u32,
+            tok_stride: size_of::<TokStrike>() as u32,
+            slot,
+            rows,
+        };
+        let (tx, ty) = (layout.tiles_x() as usize, layout.tiles_y() as usize);
+        Rt {
+            bough,
+            glyphs,
+            text,
+            inst,
+            layout,
+            caps,
             scale,
             win_w,
             win_h,
-            pool,
-            text: TextSys::new(font),
             next_fresh: 0,
             free_blocks: Default::default(),
             runs: vec![Run::default()],
@@ -230,79 +336,64 @@ impl Rt {
             wires: vec![Wire { next: 0, dead: true, node: 0, patch: nop, recipe: [0; 16] }],
             wire_free: Vec::new(),
             wired: Vec::new(),
-            text_dirty: Vec::new(),
+            texts: Vec::new(),
+            text_free: Vec::new(),
             regions: Vec::new(),
-            n_clips: 1,
+            clip_dedupe: Vec::new(),
             space_free: Vec::new(),
             next_space: 1,
-            plane: Box::new(Plane::EMPTY),
-            cull_out: Vec::with_capacity(4096),
+            paint: DamageRing::new(win_w, win_h),
+            zob: vec![0; tx * ty],
+            tiles_x: tx,
+            tiles_y: ty,
             ctr: Counters::default(),
-            atlas_gen: (0, 0),
             lay: crate::layout::Lay::new(scale),
             mregions: Vec::new(),
-        };
-        let h = Hdr {
-            viewport: [win_w as f32, win_h as f32],
-            spaces_off: SPACES_OFF as u32,
-            clips_off: CLIPS_OFF as u32,
-            rects_off: RECTS_OFF as u32,
-            inst_off: INST_OFF as u32,
-            list_off: LIST_OFF as u32,
-        };
-        unsafe { (rt.pool.ptr as *mut Hdr).write(h) };
-        for s in 0..MAX_SPACES {
-            rt.set_space(s as u16, [0.0, 0.0]);
+            _region: region,
         }
-        for c in 0..MAX_CLIPS {
-            rt.write_clip(c, [0.0, 0.0, win_w as f32, win_h as f32]);
-        }
-        rt
     }
 
-    // ------------------------------------------------------------------ pool access
-    #[inline(always)]
-    pub fn inst_ptr(&self, i: u32) -> *mut Instance {
-        debug_assert!((i as usize) < MAX_INST);
-        unsafe { (self.pool.ptr.add(INST_OFF) as *mut Instance).add(i as usize) }
+    /// The region's first byte (header and frame slots are addressed from it).
+    pub fn region_base(&self) -> *mut u8 {
+        self._region.base()
     }
+
+    // ------------------------------------------------------------------ instances
     #[inline(always)]
-    pub fn list_ptr(&self) -> *mut u32 {
-        unsafe { self.pool.ptr.add(LIST_OFF) as *mut u32 }
+    pub fn inst_mut(&mut self, i: u32) -> &mut Instance {
+        &mut self.inst[i as usize]
     }
-    #[inline(always)]
-    pub fn rects_ptr(&self) -> *mut [f32; 4] {
-        unsafe { self.pool.ptr.add(RECTS_OFF) as *mut [f32; 4] }
-    }
+
+    // ------------------------------------------------------------------ spaces and clips
+    /// Set space `s`'s translation (device px; rounded: spaces are integral, text pens snap to pixels).
     #[inline]
-    pub fn set_space(&self, s: u16, v: [f32; 2]) {
-        unsafe { *(self.pool.ptr.add(SPACES_OFF) as *mut [f32; 2]).add(s as usize) = v };
+    pub fn set_space(&mut self, s: u16, v: [f32; 2]) {
+        self.glyphs.spaces[s as usize] = [v[0].round() as i32, v[1].round() as i32];
     }
     #[inline]
     pub fn space(&self, s: u16) -> [f32; 2] {
-        unsafe { *(self.pool.ptr.add(SPACES_OFF) as *const [f32; 2]).add(s as usize) }
+        let v = self.glyphs.spaces[s as usize];
+        [v[0] as f32, v[1] as f32]
     }
-    fn write_clip(&self, c: usize, r: [f32; 4]) {
-        unsafe { *(self.pool.ptr.add(CLIPS_OFF) as *mut [f32; 4]).add(c) = r };
-    }
-    /// A clip rect in device px (deduplicated); index 0 is the whole window.
+    /// A clip id for an absolute device-px rect (deduplicated); 0 is the whole domain.
     pub fn clip_rect(&mut self, r: [f32; 4]) -> u16 {
-        for c in 1..self.n_clips {
-            let e = unsafe { *(self.pool.ptr.add(CLIPS_OFF) as *const [f32; 4]).add(c) };
-            if e == r {
-                return c as u16;
-            }
+        let n = NRect::new(r[0].floor() as i32, r[1].floor() as i32, r[2].ceil() as i32, r[3].ceil() as i32);
+        if let Some(&(_, id)) = self.clip_dedupe.iter().find(|(c, _)| *c == n) {
+            return id;
         }
-        assert!(self.n_clips < MAX_CLIPS, "clip table full");
-        self.write_clip(self.n_clips, r);
-        self.n_clips += 1;
-        (self.n_clips - 1) as u16
+        assert!(self.bough_clip_count() < self.caps.clips, "clip column full: raise Caps::clips");
+        let id = self.bough.new_clip(n);
+        self.clip_dedupe.push((n, id));
+        id
+    }
+    fn bough_clip_count(&self) -> usize {
+        self.clip_dedupe.len() + 1
     }
     pub fn alloc_space(&mut self) -> u16 {
         if let Some(s) = self.space_free.pop() {
             return s;
         }
-        assert!((self.next_space as usize) < MAX_SPACES, "space table full");
+        assert!((self.next_space as usize) < self.caps.spaces - 1, "space column full: raise Caps::spaces");
         self.next_space += 1;
         self.next_space - 1
     }
@@ -312,8 +403,8 @@ impl Rt {
 
     // ------------------------------------------------------------------ instance runs
     /// A block of `1 << class` instances: a free block of that class, else a split of a larger free block, else
-    /// fresh pool (aligned to its size, so buddies pair up). Blocks are buddy-coalesced when freed, so a long
-    /// run of rows of varying sizes (a list jumping about) cannot fragment the pool away.
+    /// fresh column (aligned to its size, so buddies pair up). Blocks are buddy-coalesced when freed, so a long
+    /// run of rows of varying sizes (a list jumping about) cannot fragment the column away.
     fn alloc_block(&mut self, class: u8) -> u32 {
         if let Some(b) = self.free_blocks[class as usize].pop() {
             return b;
@@ -328,7 +419,7 @@ impl Rt {
         }
         let size = 1u32 << class;
         let b = (self.next_fresh + size - 1) & !(size - 1);
-        assert!((b + size) as usize <= MAX_INST, "instance pool full");
+        assert!((b + size) as usize <= self.caps.instances, "instance column full ({}): raise Caps::instances", self.caps.instances);
         // the alignment gap becomes free blocks (largest aligned pieces that fit)
         let mut a = self.next_fresh;
         while a < b {
@@ -357,7 +448,7 @@ impl Rt {
         }
         self.free_blocks[c].push(b);
     }
-    /// A run with capacity for at least `n` instances (power-of-two size classes, free lists).
+    /// A run with capacity for at least `n` instances (power-of-two size classes, buddy blocks).
     pub fn alloc_run(&mut self, n: usize) -> u32 {
         let class = (n.max(1).next_power_of_two().trailing_zeros()) as u8;
         let first = self.alloc_block(class);
@@ -378,26 +469,12 @@ impl Rt {
             self.run_free.push(i);
         }
     }
-    /// Grow a run in place of its id: new block, same id (the record's payload never changes).
-    pub(crate) fn regrow_run(&mut self, i: u32, n: usize) {
-        let r = self.runs[i as usize];
-        self.free_block(r.first, r.class);
-        let class = (n.next_power_of_two().trailing_zeros()) as u8;
-        let first = self.alloc_block(class);
-        self.runs[i as usize] = Run { first, len: r.len, class, live: true };
-    }
-
     // ------------------------------------------------------------------ nodes and wires
     pub fn alloc_node(&mut self) -> u32 {
         let mut n = Node::blank();
         n.live = true;
         if let Some(i) = self.node_free.pop() {
-            let old = std::mem::take(&mut self.nodes[i as usize].text);
-            n.text = old;
-            n.text.clear();
             n.series = std::mem::take(&mut self.nodes[i as usize].series);
-            n.lines = std::mem::take(&mut self.nodes[i as usize].lines);
-            n.lines.clear();
             self.nodes[i as usize] = n;
             i
         } else {
@@ -406,9 +483,28 @@ impl Rt {
         }
     }
     pub fn free_node(&mut self, i: u32) {
+        let t = std::mem::replace(&mut self.nodes[i as usize].text, NONE);
+        if t != NONE {
+            self.free_text(t);
+        }
         self.nodes[i as usize].live = false;
         self.node_free.push(i);
     }
+    pub(crate) fn alloc_text(&mut self, t: crate::text::TextNode) -> u32 {
+        if let Some(i) = self.text_free.pop() {
+            self.texts[i as usize] = t;
+            i
+        } else {
+            self.texts.push(t);
+            (self.texts.len() - 1) as u32
+        }
+    }
+    fn free_text(&mut self, t: u32) {
+        let tn = std::mem::take(&mut self.texts[t as usize]);
+        crate::text::release(self, tn);
+        self.text_free.push(t);
+    }
+
     /// Install a wire on the signal whose head is `head` (the signal lives at `owner + off`).
     pub fn add_wire(&mut self, head: &std::cell::Cell<u32>, off: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
         let h = head.get();
@@ -429,11 +525,17 @@ impl Rt {
     }
 
     /// Run every queued signal's wires. Dead wires are unlinked as they are met.
-    pub fn settle(&mut self, owner: *const u8) {
+    ///
+    /// # Safety
+    /// `owner` must point at the live owner whose wired signals were installed through `Wired` (every
+    /// offset in `wired` is an `offset_of!`-proven `Signal<_>` field of it; the head is the first field of
+    /// every `Signal`, `#[repr(C)]`).
+    pub unsafe fn settle(&mut self, owner: *const u8) {
         let mut k = 0;
         while k < self.wired.len() {
             let off = self.wired[k] as usize;
             k += 1;
+            // SAFETY: see the function contract: a Signal<_> lives at owner + off, its head first.
             let sig = unsafe { owner.add(off) };
             let head = unsafe { &*(sig as *const std::cell::Cell<u32>) };
             let h = head.get();
@@ -455,6 +557,7 @@ impl Rt {
                     self.wire_free.push(i);
                 } else {
                     self.ctr.wires_run += 1;
+                    // SAFETY: the wire was installed for this signal's type and the owner's type.
                     unsafe { (w.patch)(self, &w, sig, owner) };
                     prev = i;
                 }
@@ -475,108 +578,41 @@ impl Rt {
         NRect::new(x0, y0, x1, y1)
     }
 
-    /// Re-derive a quad node's ink and write it through (old and new support to damage).
+    /// Re-derive a quad node's ink and write it through: the old and the new ink are damaged even when the
+    /// rounded rects are equal (a sub-pixel change of an edge still changes its anti-aliased pixels).
     #[inline]
     pub fn quad_ink(&mut self, node: u32) {
         let n = &self.nodes[node as usize];
         let ink = self.ink_rect(n.space, n.x, n.y, n.w, n.h, n.margin);
         let h = n.handle;
+        self.bough.touch_handle(h);
         self.bough.set_ink_handle(h, ink);
     }
 
-    // ------------------------------------------------------------------ text
-    /// Shape the node's text into its instance run and refresh ink. Used at mount and by the text phase.
-    pub fn apply_text(&mut self, node: u32) {
-        let ink = self.shape_node(node);
-        let h = self.nodes[node as usize].handle;
-        self.bough.set_ink_handle(h, ink);
-    }
-
-    /// Shape the node's text into its run; returns the new ink (the caller writes it through).
-    pub fn shape_node(&mut self, node: u32) -> NRect {
-        self.ctr.text_shaped += 1;
-        let (strike, size_px, color, ox, oy0, lh, space, clip, run) = {
-            let n = &self.nodes[node as usize];
-            (n.strike as usize, n.size_px, n.color, n.x, n.y, n.line_h, n.space, n.clip, n.run)
-        };
-        let text = std::mem::take(&mut self.nodes[node as usize].text);
-        self.text.scratch.clear();
-        let mut oy = oy0;
-        if text.contains('\n') {
-            let mut old = std::mem::take(&mut self.nodes[node as usize].lines);
-            let mut fresh: Vec<(String, f32, Vec<Instance>)> = Vec::with_capacity(old.len().max(4));
-            for (i, line) in text.split('\n').enumerate() {
-                let start = self.text.scratch.len();
-                let hit = if old.get(i).is_some_and(|c| c.0 == line) { Some(i) } else { old.iter().position(|c| c.0 == line) };
-                match hit {
-                    Some(j) => {
-                        let dy = oy - old[j].1;
-                        self.text.scratch.extend(old[j].2.iter().map(|g| {
-                            let mut g = *g;
-                            g.xy[1] += dy;
-                            g
-                        }));
-                    }
-                    None => {
-                        self.text.line(strike, size_px, line, ox, oy, color);
-                    }
-                }
-                let (mut s, mut v) = old.pop().map(|e| (e.0, e.2)).unwrap_or_default();
-                s.clear();
-                s.push_str(line);
-                v.clear();
-                v.extend_from_slice(&self.text.scratch[start..]);
-                fresh.push((s, oy, v));
-                oy += lh;
-            }
-            self.nodes[node as usize].lines = fresh;
-        } else {
-            self.text.line(strike, size_px, &text, ox, oy, color);
+    /// A paint-only write to `h`'s record (colour, glyph alphas): its visible ink goes to the paint ring and
+    /// the content hash of its tiles changes from `old` to `new` (exactly reversible).
+    pub fn paint_write(&mut self, h: Handle, old: u64, new: u64) {
+        let Some(ink) = self.bough.visible_ink_handle(h) else { return };
+        let ink = ink.intersect(self.bough.window()).canon();
+        if ink.is_empty() {
+            return;
         }
-        self.nodes[node as usize].text = text;
-        let cnt = self.text.scratch.len();
-        if cnt > (1usize << self.runs[run as usize].class) {
-            self.regrow_run(run, cnt);
-        }
-        let first = self.runs[run as usize].first;
-        self.runs[run as usize].len = cnt as u32;
-        let dst = self.inst_ptr(first);
-        let src = self.text.scratch.as_ptr();
-        // copy + stamp space/clip + union of glyph quads (ink) in one pass
-        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-        let clipw = clip as u32;
-        for i in 0..cnt {
-            let mut g = unsafe { *src.add(i) };
-            x0 = x0.min(g.xy[0]);
-            y0 = y0.min(g.xy[1]);
-            x1 = x1.max(g.xy[0] + g.wh[0]);
-            y1 = y1.max(g.xy[1] + g.wh[1]);
-            g.space = space;
-            g.aux[3] = clipw;
-            unsafe { dst.add(i).write(g) };
-        }
-        if cnt == 0 { NRect::EMPTY } else { self.ink_rect(space, x0, y0, x1 - x0, y1 - y0, 1.0) }
-    }
-
-    /// The text phase: shape every node a wire marked dirty.
-    pub fn flush_text(&mut self) {
-        let mut d = std::mem::take(&mut self.text_dirty);
-        for &n in &d {
-            // a node freed and reallocated this turn leaves a stale entry behind: only a live node
-            // that is still marked dirty is shaped (`alloc_node` resets the flag)
-            let node = &mut self.nodes[n as usize];
-            if node.dirty && node.live {
-                node.dirty = false;
-                if node.kind == NK_LTEXT {
-                    // wrapped / laid-out text: re-measured and re-placed by the layout flush
-                    self.lay_text_changed(n);
-                } else {
-                    self.apply_text(n);
-                }
+        self.paint.add_inside(ink);
+        let d = old ^ new;
+        let [x0, y0, x1, y1] = ink.to_xyxy();
+        let (tx0, ty0, tx1, ty1) = ((x0 >> 5) as usize, (y0 >> 5) as usize, ((x1 - 1) >> 5) as usize, ((y1 - 1) >> 5) as usize);
+        for ty in ty0..=ty1.min(self.tiles_y - 1) {
+            let row = &mut self.zob[ty * self.tiles_x..(ty + 1) * self.tiles_x];
+            for z in &mut row[tx0..=tx1.min(self.tiles_x - 1)] {
+                *z ^= d;
             }
         }
-        d.clear();
-        self.text_dirty = d;
+    }
+
+    /// The text-mark sink of the current epoch.
+    #[inline(always)]
+    pub fn marks(&mut self) -> CoreMarks<'_> {
+        CoreMarks(self.bough.plane_mut())
     }
 
     // ------------------------------------------------------------------ release
@@ -619,6 +655,7 @@ impl Rt {
         let f = self.regions[reg].mount_row;
         let mut built: Vec<RowInfo> = Vec::with_capacity(range.len());
         for row in range {
+            // SAFETY: `mount_row` was monomorphised for the owner's type at mount (`mount_row::<V>`).
             built.push(unsafe { f(self, owner, reg, row, &mut recs) });
             self.ctr.rows_mounted += 1;
         }
@@ -635,6 +672,9 @@ impl Rt {
     }
 
     /// Initial rows of a region at mount time: rows are built into `recs` (the caller inserts them).
+    ///
+    /// # Safety
+    /// `owner` must point at the live owner the region's row function was monomorphised for.
     pub unsafe fn region_initial(&mut self, reg: usize, owner: *const u8, scroll_pt: f32, recs: &mut Vec<RecordInit>) {
         let r = &mut self.regions[reg];
         r.scroll_px = (scroll_pt * self.scale).round();
@@ -642,6 +682,7 @@ impl Rt {
         r.range = range.clone();
         let f = r.mount_row;
         for row in range {
+            // SAFETY: as in `region_mount`.
             let info = unsafe { f(self, owner, reg, row, recs) };
             self.ctr.rows_mounted += 1;
             self.regions[reg].rows.push_back(info);
@@ -653,8 +694,12 @@ impl Rt {
         [r.vp_x, r.vp_y + row as f32 * r.row_h - r.scroll_px]
     }
 
-    /// Scroll a region: unmount rows that left the range, move the survivors through their
-    /// spaces (not rewritten), mount rows that entered.
+    /// Scroll a region: unmount rows that left the range, move the survivors through their spaces (not
+    /// rewritten) and bough-core's page offsets (`scroll_run`: damage = viewport ∩ old ∪ viewport ∩ new),
+    /// mount rows that entered.
+    ///
+    /// # Safety
+    /// As `region_initial`.
     pub unsafe fn region_scroll(&mut self, reg: usize, owner: *const u8, scroll_pt: f32) {
         let new_px = (scroll_pt * self.scale).round();
         let new_range = (self.regions[reg].visible)(scroll_pt);
@@ -672,7 +717,6 @@ impl Rt {
             unsafe { self.region_mount(reg, owner, new_range, false) };
             return;
         }
-        // rows leaving at the front / back
         let drop_front = new_range.start.saturating_sub(old_range.start);
         let drop_back = old_range.end.saturating_sub(new_range.end);
         if drop_front > 0 {
@@ -681,20 +725,17 @@ impl Rt {
         if drop_back > 0 {
             self.region_remove(reg, false, drop_back);
         }
-        // survivors: new scroll through their spaces; ink translated as one contiguous run
         let dy = (new_px - old_px) as i32;
-        let r = &mut self.regions[reg];
-        r.scroll_px = new_px;
-        let base = r.base_pos;
-        let nrec: usize = r.rows.iter().map(|x| x.nrec as usize).sum();
-        for row in r.rows.iter() {
-            let s = row.space;
-            let mut o = unsafe { *(self.pool.ptr.add(SPACES_OFF) as *const [f32; 2]).add(s as usize) };
-            o[1] -= dy as f32;
-            unsafe { *(self.pool.ptr.add(SPACES_OFF) as *mut [f32; 2]).add(s as usize) = o };
+        self.regions[reg].scroll_px = new_px;
+        let (base, nrec, vp) = {
+            let r = &self.regions[reg];
+            (r.base_pos, r.rows.iter().map(|x| x.nrec as usize).sum::<usize>(), r.vp)
+        };
+        for i in 0..self.regions[reg].rows.len() {
+            let s = self.regions[reg].rows[i].space as usize;
+            self.glyphs.spaces[s][1] -= dy;
         }
-        self.bough.translate_run(base, nrec, 0, -dy);
-        // rows entering
+        self.bough.scroll_run(base, nrec, 0, -dy, vp);
         let surv_start = old_range.start.max(new_range.start);
         let surv_end = old_range.end.min(new_range.end);
         self.regions[reg].range = new_range.clone();

@@ -34,33 +34,68 @@ pub fn font_bytes() -> Vec<u8> {
 const FONT_BYTES_FALLBACK: &[u8] = zgx_workload::FONT_BYTES;
 
 pub fn config(scale: f32) -> Config {
-    Config { width_pt: WIDTH, height_pt: HEIGHT, scale, font: font_bytes(), ring: std::env::var("BOUGH_RING").ok().and_then(|v| v.parse().ok()).unwrap_or(0) }
+    let mut c = Config::new(WIDTH, HEIGHT, scale, font_bytes());
+    c.ring = std::env::var("BOUGH_RING").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    c
 }
+
+/// The numbers behind zgx's value strings, and their formats: `NumFmt` renders them straight into the
+/// labels (no `String`), equal to the workload's `format!` output (`tests/correctness.rs` checks it).
+pub fn tile_v(tile: usize, live: u64) -> f32 {
+    let s = sample(900 + tile, live);
+    match tile {
+        0 => 12_000. + 40_000. * s,
+        1 => 3. * s,
+        2 => 4. + 30. * s,
+        3 => 40. + 200. * s,
+        4 => (800 + (s * 400.) as u32) as f32,
+        _ => ((s * 5_000.) as u32) as f32,
+    }
+}
+pub fn tile_fmt(tile: usize) -> NumFmt {
+    match tile {
+        0 => NumFmt::new("", Some(0), ""),
+        1 => NumFmt::new("", Some(2), "%"),
+        2 | 3 => NumFmt::new("", Some(1), " ms"),
+        _ => NumFmt::new("", None, ""),
+    }
+}
+pub fn card_v(card: usize, live: u64) -> f32 {
+    4. + 96. * sample(card, live)
+}
+pub fn latency_v(row: usize, live: u64) -> f32 {
+    2. + 120. * sample(row + 2000, live)
+}
+pub fn throughput_v(row: usize, live: u64) -> f32 {
+    0.2 + 48. * sample(row + 3000, live)
+}
+pub const MS: NumFmt = NumFmt::new("", Some(1), " ms");
+pub const MBS: NumFmt = NumFmt::new("", Some(2), " MB/s");
 
 fn panel<Ch>(pos: (f32, f32), size: (f32, f32), radius: f32, ch: Ch) -> Quad<Color, f32, (f32, f32), Ch> {
     quad(pos.0, pos.1, size.0, size.1).rounded(radius).border(1.0, rgb(BORDER)).bg(rgb(PANEL)).children(ch)
 }
 
-fn tile<'a>(i: usize, live: &'a Signal<u64>) -> impl Element<Dash> + 'a {
+fn tile<'a>(i: usize, live: Wired<'a, u64, Dash>) -> impl Element<Dash> + 'a {
     panel(
         tile_position(i),
         TILE,
         8.0,
         (
             text(tile_label(i)).at(TILE_LABEL.0, TILE_LABEL.1).size(11.0).line_height(14.0).color(rgb(MUTED)),
-            text(live.map(move |l| tile_value(i, *l))).at(TILE_VALUE.0, TILE_VALUE.1).size(20.0).line_height(26.0).color(rgb(TEXT)),
+            text(live.num(move |l| tile_v(i, *l), tile_fmt(i))).at(TILE_VALUE.0, TILE_VALUE.1).size(20.0).line_height(26.0).color(rgb(TEXT)),
         ),
     )
 }
 
-fn card<'a>(i: usize, live: &'a Signal<u64>) -> impl Element<Dash> + 'a {
+fn card<'a>(i: usize, live: Wired<'a, u64, Dash>) -> impl Element<Dash> + 'a {
     panel(
         card_position(i),
         CARD,
         6.0,
         (
             text(card_title(i)).at(CARD_TITLE.0, CARD_TITLE.1).size(11.0).line_height(14.0).color(rgb(MUTED)),
-            text(live.map(move |l| card_value(i, *l))).at(CARD_VALUE.0, CARD_VALUE.1).size(16.0).line_height(20.0).color(rgb(TEXT)),
+            text(live.num(move |l| card_v(i, *l), MS)).at(CARD_VALUE.0, CARD_VALUE.1).size(16.0).line_height(20.0).color(rgb(TEXT)),
             quad(PROGRESS.0, PROGRESS.1, PROGRESS.2, PROGRESS.3).rounded(2.0).bg(rgb(TRACK)),
             quad(PROGRESS.0, PROGRESS.1, 0.0, PROGRESS.3).rounded(2.0).bg(rgb(ACCENT)).width(live.map(move |l| card_progress(i, *l))),
             // the 26-bar sparkline: one run record, bar `i` = `bar_height(card, i, live)`
@@ -69,23 +104,23 @@ fn card<'a>(i: usize, live: &'a Signal<u64>) -> impl Element<Dash> + 'a {
     )
 }
 
-fn cell<'a, S: IntoProp<String> + 'a>(s: S, column: usize, color: Color) -> impl Element<Dash> + 'a {
+fn cell<'a, S: TextSrc<Dash> + 'a>(s: S, column: usize, color: Color) -> impl Element<Dash> + 'a {
     text(s).at(COLUMNS[column].0, CELL_TOP).size(12.0).line_height(16.0).color(color)
 }
 
-fn table_row<'a>(live: &'a Signal<u64>, row: usize) -> impl Element<Dash> + 'a {
+fn table_row<'a>(live: Wired<'a, u64, Dash>, row: usize) -> impl Element<Dash> + 'a {
     quad(0.0, 0.0, TABLE.0, TABLE_ROW).bg(rgb(row_color(row))).children((
         cell(row_id(row), 0, rgb(MUTED)),
         cell(row_worker(row), 1, rgb(TEXT)),
         quad(PILL.0, PILL.1, PILL.2, PILL.3).rounded(8.0).bg(live.map(move |l| rgb(status(row, *l).1))).children(
             text(live.map(move |l| status(row, *l).0.to_owned())).at(PILL_TEXT.0, PILL_TEXT.1).size(10.0).line_height(14.0).color(rgb(TEXT)),
         ),
-        cell(live.map(move |l| row_latency(row, *l)), 3, rgb(TEXT)),
-        cell(live.map(move |l| row_throughput(row, *l)), 4, rgb(TEXT)),
+        cell(live.num(move |l| latency_v(row, *l), MS), 3, rgb(TEXT)),
+        cell(live.num(move |l| throughput_v(row, *l), MBS), 4, rgb(TEXT)),
     ))
 }
 
-fn table<'a>(live: &'a Signal<u64>, scroll: &'a Signal<f32>) -> impl Element<Dash> + 'a {
+fn table<'a>(live: Wired<'a, u64, Dash>, scroll: Wired<'a, f32, Dash>) -> impl Element<Dash> + 'a {
     let _ = live;
     panel(
         TABLE_ORIGIN,
@@ -100,7 +135,7 @@ fn table<'a>(live: &'a Signal<u64>, scroll: &'a Signal<f32>) -> impl Element<Das
                 TABLE_ROW,
                 [0.0, TABLE_HEADER, TABLE.0 - 2.0, TABLE.1 - 2.0 - TABLE_HEADER],
                 row_range,
-                |d: &Dash, row: usize, m: &mut Mounter<'_, Dash>| m.mount(table_row(&d.live, row)),
+                |d: &Dash, row: usize, m: &mut Mounter<'_, Dash>| m.mount(table_row(sig!(d: Dash => live), row)),
             ),
         ),
     )
@@ -111,14 +146,14 @@ impl View for Dash {
         (
             quad(0.0, 0.0, WIDTH, HEIGHT).bg(rgb(BACKGROUND)),
             text(TITLE).at(TITLE_ORIGIN.0, TITLE_ORIGIN.1).size(18.0).line_height(24.0).color(rgb(TEXT)),
-            each((0..TILES).map(|i| tile(i, &self.live))),
-            each((0..CARDS).map(|i| card(i, &self.live))),
-            table(&self.live, &self.scroll),
+            each((0..TILES).map(|i| tile(i, sig!(self.live)))),
+            each((0..CARDS).map(|i| card(i, sig!(self.live)))),
+            table(sig!(self.live), sig!(self.scroll)),
             panel(
                 LOG_ORIGIN,
                 LOG,
                 8.0,
-                text(&self.log).at(LOG_TEXT.0, LOG_TEXT.1).size(11.0).line_height(LOG_LINE_HEIGHT).color(rgb(MUTED)),
+                text(sig!(self.log)).at(LOG_TEXT.0, LOG_TEXT.1).size(11.0).line_height(LOG_LINE_HEIGHT).color(rgb(MUTED)),
             ),
         )
     }

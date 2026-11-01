@@ -48,7 +48,7 @@ pub enum ShaderSource {
 }
 
 pub static SHADER_SRC: &str = include_str!("shader.metal");
-static METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.metallib"));
+pub static METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.metallib"));
 
 #[derive(Default, Clone, Debug)]
 pub struct StartupTimes {

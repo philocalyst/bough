@@ -5,15 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "bough: the public facade (Signal, View, typed builders, turns) over bough-core, bough-text and the Metal backend"
 
-[features]
-# Variant B: cephal's LayoutTree / CacheAccess / Incremental implemented directly over bough's storage
-# (instead of mirroring the nodes into cephal's own Tree).
-deep = []
-# With `deep`: child ids cached in the side column instead of scanned from the depth column.
-deep-kids = ["deep"]
-
 [dependencies]
-bough-core = { path = "../bough-core", features = ["tile32"] }
+bough-core = { path = "../bough-core" }
+bough-mem = { path = "../bough-mem" }
 bough-text = { path = "../bough-text" }
 bough-metal = { path = "../bough-metal" }
 rustybuzz = "0.20"

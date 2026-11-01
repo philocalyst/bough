@@ -36,7 +36,7 @@ pub const RECEIVER_KEEPS: usize = if 2 * MIN_FILL < CAP / 2 { 2 * MIN_FILL } els
 /// Directory pages per chunk summary.
 pub const CHUNK: usize = 64;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Handle {
     pub idx: u32,
     pub generation: u32,
@@ -1161,6 +1161,40 @@ impl Bough {
             }
         }
         dirty.clear();
+    }
+
+    /// Change the payload of a handle's record (what the GPU draws for it: an instance, a run of instances,
+    /// a range of text runs). No damage: the caller marks what the change repaints.
+    pub fn set_payload_handle(&mut self, h: Handle, payload: u32) -> bool {
+        match self.handle_ptr(h) {
+            Some((p, s)) => {
+                // SAFETY: bound handles point at live pages; s < CAP; &mut self is exclusive.
+                let pg = unsafe { &mut *p };
+                pg.wgen = pg.wgen.wrapping_add(1);
+                pg.payload[s] = payload;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `set_ink_handle` without damage (the caller produced exact tile marks itself, e.g. bough-text).
+    pub fn set_ink_handle_nodamage(&mut self, h: Handle, ink: NRect) -> bool {
+        match self.handle_loc(h) {
+            Some((d, s)) => {
+                self.set_ink_at(d, s, ink, false);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Absolute visible ink (ink ∩ clip) of a handle's record.
+    #[inline]
+    pub fn visible_ink_handle(&self, h: Handle) -> Option<NRect> {
+        let (p, s) = self.handle_ptr(h)?;
+        // SAFETY: bound handles point at live pages; s < CAP.
+        Some(self.visible_in(unsafe { &*p }, s))
     }
 
     /// Mark the record's ink damaged (a paint-only write: colour, glyph content, image).

@@ -23,6 +23,7 @@ version = "0.0.0"
 dependencies = [
  "block2",
  "bough-core",
+ "bough-mem",
  "bough-metal",
  "bough-text",
  "cephal",

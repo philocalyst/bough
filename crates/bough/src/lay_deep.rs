@@ -1,12 +1,15 @@
-//! Variant B: cephal's `LayoutTree` / `CacheAccess` / `Incremental` implemented directly over bough's
-//! storage. There is no second tree:
+//! cephal's `LayoutTree` / `CacheAccess` / `Incremental` implemented directly over bough's storage (LAYOUT.md
+//! "Variant B, deep-kids": the one layout path; the mirror into cephal's own `Tree` is gone). There is no
+//! second tree:
 //!
 //! * a layout node **is** a Bough record (painted ones are the quad / text records; paint-less boxes get an
 //!   empty-ink `REC_BOX` record) and its cephal `NodeId` is the record's handle index;
 //! * structure comes from the depth column: `Incremental::parent` / `depth` are `Bough::parent` /
-//!   `depth_at`, `children` is `Bough::children` (page-skipping depth scans). With the `deep-kids` feature the
-//!   first `children()` of a container caches its child ids in the side column instead (the structure does
-//!   not change while a group lives);
+//!   `depth_at`; a container's child ids are kept in the side column as they are appended at mount (the
+//!   structure does not change while a group lives), so `children` never scans siblings;
+//! * **absolute positioning at any depth**: each container's out-of-flow record (`AbsoluteContext`) is kept
+//!   in a side map, so an absolutely positioned box finds its containing block through any number of
+//!   static ancestors (cephal does not keep placements here: every out-of-flow pass re-places);
 //! * styles are interned `cephal::owned::StyleTable` entries shared between all nodes with the same `Spec`
 //!   (one table lookup per node at mount, no `Style` is built or hashed after the first);
 //! * the answer caches (`NodeCache`: one word until the first store) and the layouts sit in side columns
@@ -22,12 +25,10 @@ use cephal::compute::plan::StylePlan;
 use cephal::owned::StyleTable;
 use cephal::schedule::{Incremental, Scheduler, META_MASK};
 use cephal::style::Display;
-use cephal::tree::{CacheAccess, Layout, LayoutInput, LayoutOutput, LayoutTree, MeasureInput, MeasureOutput, NodeCache, NodeId, NodeKind, QueryMeta};
+use cephal::tree::{AbsoluteContext, CacheAccess, Layout, LayoutInput, LayoutOutput, LayoutTree, MeasureInput, MeasureOutput, NodeCache, NodeId, NodeKind, QueryMeta};
 use cephal::{AvailableSpace, Size, Style};
 use std::collections::HashMap;
 
-/// Child ids cached in the side column (feature `deep-kids`) instead of scanned from the depth column.
-const KIDS_CACHED: bool = cfg!(feature = "deep-kids");
 
 struct DNode {
     style: u32,
@@ -57,6 +58,8 @@ pub struct Deep {
     scheduler: Scheduler,
     last_root: Option<(u32, Size<AvailableSpace>)>,
     changed: Vec<u32>,
+    /// Out-of-flow records of containers (by node), see the module docs.
+    abs: HashMap<u32, AbsoluteContext, FxBuild>,
 }
 
 #[inline(always)]
@@ -85,6 +88,7 @@ impl Deep {
             scheduler: Scheduler::new(),
             last_root: None,
             changed: Vec::new(),
+            abs: HashMap::default(),
         }
     }
 
@@ -124,9 +128,7 @@ impl Deep {
     pub fn append(&mut self, parent: u32, child: u32) {
         let p = &mut self.n[parent as usize];
         p.nkids += 1;
-        if KIDS_CACHED {
-            p.kids.push(child);
-        }
+        p.kids.push(child);
     }
 
     pub fn ctx_mut(&mut self, n: u32) -> Option<&mut LeafCtx> {
@@ -147,6 +149,7 @@ impl Deep {
             nd.ctx = None;
             nd.kids.clear();
             nd.nkids = 0;
+            self.abs.remove(&i);
         }
     }
 
@@ -210,6 +213,7 @@ impl Deep {
             scheduler: Scheduler::new(),
             last_root: None,
             changed: Vec::new(),
+            abs: HashMap::default(),
         };
         cold.layout(b, root, avail);
         let mut out = Vec::new();
@@ -237,25 +241,12 @@ struct DViewRef<'a> {
     b: &'a Bough,
 }
 
-enum Kids<'a> {
-    Scan { b: &'a Bough, next: usize, end: usize },
-    List(std::slice::Iter<'a, u32>),
-}
+struct Kids<'a>(std::slice::Iter<'a, u32>);
 impl Iterator for Kids<'_> {
     type Item = NodeId;
     #[inline]
     fn next(&mut self) -> Option<NodeId> {
-        match self {
-            Kids::Scan { b, next, end } => {
-                if *next >= *end {
-                    return None;
-                }
-                let c = *next;
-                *next = b.subtree_end(c);
-                Some(nid(b.record(c).handle))
-            }
-            Kids::List(it) => it.next().map(|&i| nid(i)),
-        }
+        self.0.next().map(|&i| nid(i))
     }
 }
 
@@ -265,15 +256,7 @@ impl<'a> DViewRef<'a> {
         self.b.pos_of(Handle { idx: i, generation: self.d.n[i as usize].hgen }).expect("layout node is in the Bough")
     }
     fn kids(&self, i: u32) -> Kids<'a> {
-        let nd = &self.d.n[i as usize];
-        if nd.nkids == 0 {
-            return Kids::List([].iter());
-        }
-        if KIDS_CACHED {
-            return Kids::List(nd.kids.iter());
-        }
-        let p = self.pos(i);
-        Kids::Scan { b: self.b, next: p + 1, end: self.b.subtree_end(p) }
+        Kids(self.d.n[i as usize].kids.iter())
     }
 }
 
@@ -306,16 +289,7 @@ impl LayoutTree for DView<'_> {
 
     #[inline]
     fn children(&self, node: NodeId) -> Kids<'_> {
-        let nd = &self.d.n[ix(node)];
-        if nd.nkids == 0 {
-            return Kids::List([].iter());
-        }
-        if KIDS_CACHED {
-            return Kids::List(nd.kids.iter());
-        }
-        let r = self.r();
-        let p = r.pos(ix(node) as u32);
-        Kids::Scan { b: self.b, next: p + 1, end: self.b.subtree_end(p) }
+        Kids(self.d.n[ix(node)].kids.iter())
     }
     #[inline]
     fn child_count(&self, node: NodeId) -> usize {
@@ -400,6 +374,25 @@ impl LayoutTree for DView<'_> {
     #[inline]
     fn measure_ignores_available_height(&self) -> bool {
         true
+    }
+    fn set_absolute_context(&mut self, node: NodeId, context: AbsoluteContext) {
+        if self.speculation > 0 {
+            return;
+        }
+        self.d.abs.insert(ix(node) as u32, context);
+    }
+    #[inline]
+    fn clear_absolute_context(&mut self, node: NodeId) {
+        if self.speculation > 0 || self.d.abs.is_empty() {
+            return;
+        }
+        self.d.abs.remove(&(ix(node) as u32));
+    }
+    fn absolute_context(&self, node: NodeId) -> Option<&AbsoluteContext> {
+        self.d.abs.get(&(ix(node) as u32))
+    }
+    fn take_absolute_context(&mut self, node: NodeId) -> Option<AbsoluteContext> {
+        self.d.abs.remove(&(ix(node) as u32))
     }
 }
 

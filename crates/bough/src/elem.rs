@@ -1,14 +1,15 @@
-//! Typed builders, operands (`IntoProp`) and their lowering into the runtime tables.
+//! Typed builders, operands (`IntoProp`, `TextSrc`) and their lowering into the runtime tables.
 //!
-//! `Element<V>` is implemented by every builder; `mount` lowers it: allocates records / instance
-//! runs / nodes, and installs wires for every operand that is a signal or a `sig.map(f)` of a field
-//! of the owner (the owner-relative-offset trick: `offset = addr(field) - addr(owner)`; a signal
-//! outside the owner's storage is read once, as a constant of this description).
+//! `Element<V>` is implemented by every builder; `mount` lowers it: allocates records, instances, text
+//! nodes, and installs wires for every operand that is a wired signal (`sig!`, see `signal.rs`). A plain
+//! `&Signal<T>` borrow is a constant of this description (no wire).
 use crate::color::Color;
 use crate::rt::*;
-use crate::signal::{Map, Signal};
-use bough_core::RecordInit;
-use bough_text::atlas::Instance;
+use crate::signal::{Num, Signal, WMap, Wired};
+use crate::text::{TShape, TextNode};
+use bough_core::{Handle, NRect, RecordInit};
+use bough_metal::fused::pay_irun;
+use bough_metal::instance::Instance;
 use std::marker::PhantomData;
 use std::ops::Range;
 
@@ -24,7 +25,10 @@ pub struct Mounter<'a, V> {
     pub(crate) ox: f32,
     pub(crate) oy: f32,
     pub(crate) space: u16,
+    /// bough-core clip id the records mounted now get.
     pub(crate) clip: u16,
+    /// The `NumFmt` of a numeric text operand being lowered (handed to its text node).
+    pub(crate) pending_num: Option<bough_text::numeric::NumFmt>,
 }
 
 impl<V> Mounter<'_, V> {
@@ -34,15 +38,13 @@ impl<V> Mounter<'_, V> {
     pub fn mount(&mut self, e: impl Element<V>) {
         e.mount(self)
     }
-    /// Owner-relative offset of a signal, if it lives inside the owner.
-    fn offset_of<T>(&self, s: &Signal<T>) -> Option<u32> {
-        let a = s as *const Signal<T> as usize;
-        let o = self.owner as usize;
-        (a >= o && a + std::mem::size_of::<Signal<T>>() <= o + std::mem::size_of::<V>()).then(|| (a - o) as u32)
-    }
-    fn wire(&mut self, head: &std::cell::Cell<u32>, off: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) {
-        let w = self.rt.add_wire(head, off, patch, node, recipe);
-        self.scope.wires.push(w);
+    /// Install a wire for `w` (an `offset_of!`-proven field of this mounter's owner type).
+    fn wire<T>(&mut self, w: &Wired<'_, T, V>, patch: PatchFn, node: u32, recipe: [u8; 16]) {
+        // The runtime inference the proof replaced survives as a debug check: the operand is the owner's
+        // own field (not a field of another value of the same type).
+        debug_assert_eq!(w.sig as *const Signal<T> as usize, self.owner as usize + w.off as usize, "sig! operand is not a field of the mounted owner");
+        let i = self.rt.add_wire(w.sig.head(), w.off, patch, node, recipe);
+        self.scope.wires.push(i);
     }
 }
 
@@ -103,70 +105,82 @@ where
 /// How a property's new value is applied to its node (monomorphic, one per property).
 pub trait Apply {
     type P: 'static;
-    /// # Safety
-    /// `node` must be a live node of the kind this property belongs to.
-    unsafe fn apply(rt: &mut Rt, node: u32, v: &Self::P);
+    fn apply(rt: &mut Rt, node: u32, v: &Self::P);
 }
 
-pub trait IntoProp<P: 'static>: Sized {
+/// An operand of property type `P` for owner `V`: a constant, or a wired signal (`sig!`) / projection.
+pub trait IntoProp<P: 'static, V>: Sized {
     /// The initial value; installs a wire when the operand is dynamic.
-    fn lower<K: Apply<P = P>, V: 'static>(self, m: &mut Mounter<'_, V>, node: u32) -> P;
+    fn lower<K: Apply<P = P>>(self, m: &mut Mounter<'_, V>, node: u32) -> P;
 }
 
 macro_rules! const_prop {
     ($($t:ty),*) => {$(
-        impl IntoProp<$t> for $t {
+        impl<V> IntoProp<$t, V> for $t {
             #[inline]
-            fn lower<K: Apply<P = $t>, V: 'static>(self, _: &mut Mounter<'_, V>, _: u32) -> $t { self }
+            fn lower<K: Apply<P = $t>>(self, _: &mut Mounter<'_, V>, _: u32) -> $t { self }
         }
     )*};
 }
-const_prop!(f32, (f32, f32), Color, String);
+const_prop!(f32, (f32, f32), Color);
 
-impl IntoProp<String> for &'static str {
-    fn lower<K: Apply<P = String>, V: 'static>(self, _: &mut Mounter<'_, V>, _: u32) -> String {
-        self.to_owned()
-    }
-}
-
-unsafe fn patch_sig<K: Apply, T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8)
-where
-    K: Apply<P = T>,
-{
-    let s = unsafe { &*(sig as *const Signal<T>) };
-    unsafe { K::apply(rt, w.node, &**s) };
-}
-
-unsafe fn patch_map<K: Apply, T: 'static, F: Fn(&T) -> K::P + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
-    let s = unsafe { &*(sig as *const Signal<T>) };
-    let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
-    let v = f(&**s);
-    unsafe { K::apply(rt, w.node, &v) };
-}
-
-impl<'a, T: Clone + 'static> IntoProp<T> for &'a Signal<T> {
-    fn lower<K: Apply<P = T>, V: 'static>(self, m: &mut Mounter<'_, V>, node: u32) -> T {
-        if let Some(off) = m.offset_of(self) {
-            m.wire(self.head(), off, patch_sig::<K, T>, node, [0; 16]);
-        }
+/// A plain borrow is a constant of this description (re-read only when the owner re-describes).
+impl<T: Clone + 'static, V> IntoProp<T, V> for &Signal<T> {
+    fn lower<K: Apply<P = T>>(self, _: &mut Mounter<'_, V>, _: u32) -> T {
         (**self).clone()
     }
 }
 
-impl<'a, T: 'static, F, P: 'static> IntoProp<P> for Map<'a, T, F>
+/// # Safety
+/// The wire contract (`PatchFn`): `sig` is a `Signal<T>`.
+unsafe fn patch_sig<K: Apply<P = T>, T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    // SAFETY: see the function contract.
+    let s = unsafe { &*(sig as *const Signal<T>) };
+    K::apply(rt, w.node, s);
+}
+
+/// # Safety
+/// As `patch_sig`; the recipe holds an `F` written by `lower`.
+unsafe fn patch_map<K: Apply, T: 'static, F: Fn(&T) -> K::P + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    // SAFETY: see the function contract; F is Copy and was written unaligned into the 16-byte recipe.
+    let s = unsafe { &*(sig as *const Signal<T>) };
+    let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
+    let v = f(s);
+    K::apply(rt, w.node, &v);
+}
+
+fn recipe_of<F: Copy>(f: F) -> [u8; 16] {
+    const { assert!(size_of::<F>() <= 16, "map closure: at most 16 bytes of captures") };
+    let mut r = [0u8; 16];
+    // SAFETY: size_of::<F>() <= 16 (checked at compile time); unaligned write into a byte array.
+    unsafe { std::ptr::write_unaligned(r.as_mut_ptr() as *mut F, f) };
+    r
+}
+
+impl<'a, T: Clone + 'static, V> IntoProp<T, V> for Wired<'a, T, V> {
+    fn lower<K: Apply<P = T>>(self, m: &mut Mounter<'_, V>, node: u32) -> T {
+        m.wire(&self, patch_sig::<K, T>, node, [0; 16]);
+        self.get().clone()
+    }
+}
+
+impl<'a, T: 'static, V, F, P: 'static> IntoProp<P, V> for WMap<'a, T, V, F>
 where
     F: Fn(&T) -> P + Copy + 'static,
 {
-    fn lower<K: Apply<P = P>, V: 'static>(self, m: &mut Mounter<'_, V>, node: u32) -> P {
-        const { assert!(std::mem::size_of::<F>() <= 16 && std::mem::align_of::<F>() <= 8, "map closure: at most 16 bytes of captures") };
-        let init = (self.f)(&**self.sig);
-        if let Some(off) = m.offset_of(self.sig) {
-            let mut recipe = [0u8; 16];
-            unsafe { std::ptr::write_unaligned(recipe.as_mut_ptr() as *mut F, self.f) };
-            m.wire(self.sig.head(), off, patch_map::<K, T, F>, node, recipe);
-        }
+    fn lower<K: Apply<P = P>>(self, m: &mut Mounter<'_, V>, node: u32) -> P {
+        let init = (self.f)(self.w.get());
+        m.wire(&self.w, patch_map::<K, T, F>, node, recipe_of(self.f));
         init
     }
+}
+
+/// Paint hash of a record state (content addressing, `Rt::paint_write`).
+#[inline(always)]
+pub(crate) fn phash(h: Handle, v: u64) -> u64 {
+    let x = ((h.idx as u64) << 32 | h.generation as u64) ^ v.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let x = (x ^ (x >> 31)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^ (x >> 29)
 }
 
 // =============================================================================== properties
@@ -174,34 +188,32 @@ where
 pub struct ApplyBg;
 pub struct ApplyW;
 pub struct ApplySpan;
-pub struct ApplyText;
 
 impl Apply for ApplyBg {
     type P = Color;
     #[inline]
-    unsafe fn apply(rt: &mut Rt, node: u32, v: &Color) {
+    fn apply(rt: &mut Rt, node: u32, v: &Color) {
         let n = &mut rt.nodes[node as usize];
         if n.color == v.0 {
             return;
         }
+        let old = n.color;
         n.color = v.0;
-        let (h, inst, bordered) = (n.handle, rt.runs[n.run as usize].first, n.kind == 3);
-        let p = rt.inst_ptr(inst);
-        unsafe {
-            if bordered {
-                (*p).aux[0] = v.0;
-            } else {
-                (*p).color = v.0;
-            }
+        let (h, inst, bordered) = (n.handle, rt.runs[n.run as usize].first, n.kind == NK_BORDER);
+        let p = rt.inst_mut(inst);
+        if bordered {
+            p.color2 = v.0;
+        } else {
+            p.color = v.0;
         }
-        rt.bough.touch_handle(h);
+        rt.paint_write(h, phash(h, old as u64), phash(h, v.0 as u64));
     }
 }
 
 impl Apply for ApplyW {
     type P = f32;
     #[inline]
-    unsafe fn apply(rt: &mut Rt, node: u32, v: &f32) {
+    fn apply(rt: &mut Rt, node: u32, v: &f32) {
         let w = *v * rt.scale;
         let n = &mut rt.nodes[node as usize];
         if n.w == w {
@@ -209,7 +221,7 @@ impl Apply for ApplyW {
         }
         n.w = w;
         let inst = rt.runs[n.run as usize].first;
-        unsafe { (*rt.inst_ptr(inst)).wh[0] = w };
+        rt.inst_mut(inst).size[0] = w;
         rt.quad_ink(node);
     }
 }
@@ -218,7 +230,7 @@ impl Apply for ApplySpan {
     /// (y, height) in points relative to the element's origin.
     type P = (f32, f32);
     #[inline]
-    unsafe fn apply(rt: &mut Rt, node: u32, v: &(f32, f32)) {
+    fn apply(rt: &mut Rt, node: u32, v: &(f32, f32)) {
         let n = &mut rt.nodes[node as usize];
         let (y, h) = (n.y0 + v.0 * rt.scale, v.1 * rt.scale);
         if n.y == y && n.h == h {
@@ -227,29 +239,10 @@ impl Apply for ApplySpan {
         n.y = y;
         n.h = h;
         let inst = rt.runs[n.run as usize].first;
-        unsafe {
-            let p = rt.inst_ptr(inst);
-            (*p).xy[1] = y;
-            (*p).wh[1] = h;
-        }
+        let p = rt.inst_mut(inst);
+        p.pos[1] = y;
+        p.size[1] = h;
         rt.quad_ink(node);
-    }
-}
-
-impl Apply for ApplyText {
-    type P = String;
-    #[inline]
-    unsafe fn apply(rt: &mut Rt, node: u32, v: &String) {
-        let n = &mut rt.nodes[node as usize];
-        if n.text == *v {
-            return;
-        }
-        n.text.clear();
-        n.text.push_str(v);
-        if !n.dirty {
-            n.dirty = true;
-            rt.text_dirty.push(node);
-        }
     }
 }
 
@@ -296,39 +289,46 @@ impl<Bg, Wd, Sp, Ch> Quad<Bg, Wd, Sp, Ch> {
     }
 }
 
+/// The 48-byte instance of a quad (kind from the radius/border).
+pub(crate) fn quad_instance(bg: Color, radius_px: f32, border: Option<(f32, Color)>, scale: f32, space: u16) -> (Instance, u8, f32) {
+    let kind = match (border.is_some(), radius_px > 0.0) {
+        (true, _) => KIND_BORDER,
+        (false, true) => KIND_RRECT,
+        _ => KIND_SOLID,
+    };
+    let margin = if kind == KIND_SOLID { 0.0 } else { 1.0 };
+    let mut ins = Instance { color: bg.0, radius: radius_px, space, kind, ..Default::default() };
+    if let Some((bw, bc)) = border {
+        ins.color = bc.0;
+        ins.color2 = bg.0;
+        ins.bw = bw * scale;
+    }
+    (ins, kind, margin)
+}
+
 impl<V: 'static, Bg, Wd, Sp, Ch> Element<V> for Quad<Bg, Wd, Sp, Ch>
 where
-    Bg: IntoProp<Color>,
-    Wd: IntoProp<f32>,
-    Sp: IntoProp<(f32, f32)>,
+    Bg: IntoProp<Color, V>,
+    Wd: IntoProp<f32, V>,
+    Sp: IntoProp<(f32, f32), V>,
     Ch: Element<V>,
 {
     fn mount(self, m: &mut Mounter<'_, V>) {
         let node = m.rt.alloc_node();
         let wires_before = m.scope.wires.len();
-        let bg = self.bg.lower::<ApplyBg, V>(m, node);
-        let w = self.wd.lower::<ApplyW, V>(m, node);
-        let (y, h) = self.sp.lower::<ApplySpan, V>(m, node);
+        let bg = self.bg.lower::<ApplyBg>(m, node);
+        let w = self.wd.lower::<ApplyW>(m, node);
+        let (y, h) = self.sp.lower::<ApplySpan>(m, node);
         let s = m.rt.scale;
         let (x_px, y0_px) = ((m.ox + self.x) * s, m.oy * s);
         let (y_px, h_px, w_px) = (y0_px + y * s, h * s, w * s);
-        let kind = match (self.border.is_some(), self.radius > 0.0) {
-            (true, _) => KIND_BORDER,
-            (false, true) => KIND_RRECT,
-            _ => KIND_SOLID,
-        };
-        let margin = if kind == KIND_SOLID { 0.0 } else { 1.0 };
+        let (mut ins, _kind, margin) = quad_instance(bg, self.radius * s, self.border, s, m.space);
+        ins.pos = [x_px, y_px];
+        ins.size = [w_px, h_px];
         let run = m.rt.alloc_run(1);
         m.rt.runs[run as usize].len = 1;
         let inst = m.rt.runs[run as usize].first;
-        let mut ins = Instance { xy: [x_px, y_px], wh: [w_px, h_px], uv: [0; 4], color: bg.0, kind, space: m.space, aux: [0, 0, 0, m.clip as u32] };
-        if let Some((bw, bc)) = self.border {
-            ins.color = bc.0;
-            ins.aux[0] = bg.0;
-            ins.aux[2] = (bw * s).to_bits();
-        }
-        ins.aux[1] = (self.radius * s).to_bits();
-        unsafe { m.rt.inst_ptr(inst).write(ins) };
+        *m.rt.inst_mut(inst) = ins;
         let ink = m.rt.ink_rect(m.space, x_px, y_px, w_px, h_px, margin);
         let dynamic = m.scope.wires.len() > wires_before;
         let mut handle_idx = 0;
@@ -340,7 +340,7 @@ where
             n.run = run;
             n.space = m.space;
             n.clip = m.clip;
-            n.kind = if self.border.is_some() { 3 } else { 1 };
+            n.kind = if self.border.is_some() { NK_BORDER } else { NK_QUAD };
             n.x = x_px;
             n.y = y_px;
             n.y0 = y0_px;
@@ -353,7 +353,7 @@ where
             m.rt.free_node(node);
         }
         m.scope.runs.push(run);
-        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: run, handle: handle_idx });
+        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: inst, handle: handle_idx, clip: m.clip });
         // children: inside the border
         let bw = self.border.map_or(0.0, |b| b.0);
         let (ox, oy) = (m.ox, m.oy);
@@ -369,6 +369,122 @@ where
 
 // =============================================================================== text
 
+/// A text content operand for owner `V`: a constant (`&'static str`, `String`, a plain `&Signal<String>`
+/// borrow), a wired `Signal<String>`, a projection to `String`, or a numeric operand (`.num(f, fmt)`: the
+/// value is rendered into the label without a `String`).
+pub trait TextSrc<V>: Sized {
+    fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String;
+}
+
+impl<V> TextSrc<V> for &'static str {
+    fn lower(self, _: &mut Mounter<'_, V>, _: u32) -> String {
+        self.to_owned()
+    }
+}
+impl<V> TextSrc<V> for String {
+    fn lower(self, _: &mut Mounter<'_, V>, _: u32) -> String {
+        self
+    }
+}
+impl<V> TextSrc<V> for &Signal<String> {
+    fn lower(self, _: &mut Mounter<'_, V>, _: u32) -> String {
+        (**self).clone()
+    }
+}
+
+/// The text node of `node` was given a new value.
+#[inline]
+fn set_node_text(rt: &mut Rt, node: u32, s: &str) {
+    let n = &rt.nodes[node as usize];
+    let ti = n.text;
+    if n.kind == NK_LTEXT {
+        rt.lay_text_changed(node, s);
+    } else {
+        rt.text_set(ti, s);
+    }
+}
+
+/// # Safety
+/// Wire contract: `sig` is a `Signal<String>`.
+unsafe fn patch_text(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    // SAFETY: see the function contract.
+    let s = unsafe { &*(sig as *const Signal<String>) };
+    set_node_text(rt, w.node, s);
+}
+
+/// # Safety
+/// Wire contract: `sig` is a `Signal<T>`; the recipe holds an `F`.
+unsafe fn patch_text_map<T: 'static, F: Fn(&T) -> String + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    // SAFETY: see the function contract.
+    let s = unsafe { &*(sig as *const Signal<T>) };
+    let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
+    let v = f(s);
+    set_node_text(rt, w.node, &v);
+}
+
+/// Render `v` with `fmt` (16-byte vector, no `String`); `format!` only past 16 bytes or for non-finite values.
+fn render_num(fmt: &bough_text::numeric::NumFmt, v: f32, buf: &mut [u8; 16], slow: &mut String) -> usize {
+    *buf = [0; 16];
+    let r = if fmt.decimals.is_some() { fmt.render_f32(v, buf) } else { fmt.render_u32(v as u32, buf) };
+    match r {
+        Some(n) => n,
+        None => {
+            slow.clear();
+            use std::fmt::Write;
+            let (p, s) = fmt.affixes();
+            match fmt.decimals {
+                Some(d) => write!(slow, "{p}{v:.*}{s}", d as usize).unwrap(),
+                None => write!(slow, "{p}{}{s}", v as u32).unwrap(),
+            }
+            usize::MAX
+        }
+    }
+}
+
+/// # Safety
+/// Wire contract: `sig` is a `Signal<T>`; the recipe holds an `F`; the node's text has a `NumFmt`.
+unsafe fn patch_text_num<T: 'static, F: Fn(&T) -> f32 + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    // SAFETY: see the function contract.
+    let s = unsafe { &*(sig as *const Signal<T>) };
+    let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
+    let v = f(s);
+    let ti = rt.nodes[w.node as usize].text;
+    let fmt = rt.texts[ti as usize].num.expect("numeric text node");
+    let mut buf = [0u8; 16];
+    let mut slow = String::new();
+    let n = render_num(&fmt, v, &mut buf, &mut slow);
+    if n == usize::MAX {
+        set_node_text(rt, w.node, &slow);
+    } else {
+        set_node_text(rt, w.node, bough_text::numeric::as_str(&buf, n));
+    }
+}
+
+impl<'a, V> TextSrc<V> for Wired<'a, String, V> {
+    fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String {
+        m.wire(&self, patch_text, node, [0; 16]);
+        self.get().clone()
+    }
+}
+impl<'a, T: 'static, V, F: Fn(&T) -> String + Copy + 'static> TextSrc<V> for WMap<'a, T, V, F> {
+    fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String {
+        let init = (self.f)(self.w.get());
+        m.wire(&self.w, patch_text_map::<T, F>, node, recipe_of(self.f));
+        init
+    }
+}
+impl<'a, T: 'static, V, F: Fn(&T) -> f32 + Copy + 'static> TextSrc<V> for Num<'a, T, V, F> {
+    fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String {
+        let v = (self.f)(self.w.get());
+        m.wire(&self.w, patch_text_num::<T, F>, node, recipe_of(self.f));
+        m.pending_num = Some(self.fmt);
+        let mut buf = [0u8; 16];
+        let mut slow = String::new();
+        let n = render_num(&self.fmt, v, &mut buf, &mut slow);
+        if n == usize::MAX { slow } else { bough_text::numeric::as_str(&buf, n).to_owned() }
+    }
+}
+
 pub struct Text<S, G = ()> {
     s: S,
     x: f32,
@@ -379,7 +495,7 @@ pub struct Text<S, G = ()> {
     g: G,
 }
 
-/// Text from a constant, `&Signal<String>`-like or `sig.map(f)` operand. Single line, or explicit
+/// Text from a constant, a wired `sig!` operand, a projection or a numeric operand. Single line, or explicit
 /// multi-line (`\n`); positioned at (x, y) with `size`/`line_height` in points.
 pub fn text<S>(s: S) -> Text<S> {
     Text { s, x: 0.0, y: 0.0, size: 12.0, lh: 16.0, color: Color::rgba(255, 255, 255, 255), g: () }
@@ -403,102 +519,120 @@ impl<S, G> Text<S, G> {
         self.color = c;
         self
     }
-    /// Per-glyph alpha from a signal: one wire writes the colour word of every glyph instance of the
-    /// run (`f(char index, char count, &value) -> alpha`; spaces own no instance). No reshaping, no
-    /// geometry change: it is the `bars` mechanism for colour. For constant ASCII text.
-    pub fn glyph_alpha<'a, T>(self, sig: &'a Signal<T>, f: fn(usize, usize, &T) -> u8) -> Text<S, GlyphAlpha<'a, T>> {
+    /// Per-glyph alpha from a wired signal: one wire writes the colour word of every glyph instance of the
+    /// text (`f(char index, char count, &value) -> alpha`; spaces own no instance). No reshaping, no geometry
+    /// change: it is the `bars` mechanism for colour. For constant ASCII text.
+    pub fn glyph_alpha<'a, T, V>(self, sig: Wired<'a, T, V>, f: fn(usize, usize, &T) -> u8) -> Text<S, GlyphAlpha<'a, T, V>> {
         Text { s: self.s, x: self.x, y: self.y, size: self.size, lh: self.lh, color: self.color, g: GlyphAlpha { sig, f } }
     }
 }
 
 /// A run-level operand of a text node (see `Text::glyph_alpha`); `()` is none.
 pub trait GlyphOp<V>: Sized {
+    /// Does it need one instance per glyph?
+    const PER_GLYPH: bool;
     fn install(self, m: &mut Mounter<'_, V>, node: u32);
 }
 impl<V> GlyphOp<V> for () {
+    const PER_GLYPH: bool = false;
     #[inline]
     fn install(self, _: &mut Mounter<'_, V>, _: u32) {}
 }
-pub struct GlyphAlpha<'a, T> {
-    sig: &'a Signal<T>,
+pub struct GlyphAlpha<'a, T, V> {
+    sig: Wired<'a, T, V>,
     f: fn(usize, usize, &T) -> u8,
 }
 
-fn set_glyph_alpha<T>(rt: &mut Rt, node: u32, f: fn(usize, usize, &T) -> u8, v: &T) {
+/// Write the glyph alphas; returns the paint hash of the new state.
+fn set_glyph_alpha<T>(rt: &mut Rt, node: u32, f: fn(usize, usize, &T) -> u8, v: &T) -> u64 {
     let n = &rt.nodes[node as usize];
-    let first = rt.runs[n.run as usize].first;
-    let rgb = n.color & 0x00ff_ffff;
-    let bytes = n.text.as_bytes();
-    let count = bytes.len();
+    let (first, rgb, ti) = (rt.runs[n.run as usize].first, n.color & 0x00ff_ffff, n.text);
+    let count = rt.texts[ti as usize].text.len();
     let mut j = 0u32;
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b' ' {
+    let mut hsh = 0u64;
+    for i in 0..count {
+        if rt.texts[ti as usize].text.as_bytes()[i] == b' ' {
             continue;
         }
         let a = f(i, count, v) as u32;
-        unsafe { (*rt.inst_ptr(first + j)).color = rgb | a << 24 };
+        rt.inst[(first + j) as usize].color = rgb | a << 24;
+        hsh = hsh.rotate_left(5) ^ a as u64 ^ (j as u64) << 40;
         j += 1;
     }
+    hsh
 }
 
+/// # Safety
+/// Wire contract: `sig` is a `Signal<T>`; the recipe holds the `fn`.
 unsafe fn patch_galpha<T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    // SAFETY: see the function contract.
     let s = unsafe { &*(sig as *const Signal<T>) };
     let f: fn(usize, usize, &T) -> u8 = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const _) };
-    set_glyph_alpha(rt, w.node, f, &**s);
-    let h = rt.nodes[w.node as usize].handle;
-    rt.bough.touch_handle(h);
-}
-
-impl<'a, V: 'static, T: 'static> GlyphOp<V> for GlyphAlpha<'a, T> {
-    fn install(self, m: &mut Mounter<'_, V>, node: u32) {
-        set_glyph_alpha(m.rt, node, self.f, &**self.sig);
-        if let Some(off) = m.offset_of(self.sig) {
-            let mut recipe = [0u8; 16];
-            unsafe { std::ptr::write_unaligned(recipe.as_mut_ptr() as *mut fn(usize, usize, &T) -> u8, self.f) };
-            m.wire(self.sig.head(), off, patch_galpha::<T>, node, recipe);
-        }
+    let new = set_glyph_alpha(rt, w.node, f, s);
+    let n = &mut rt.nodes[w.node as usize];
+    let (h, old) = (n.handle, std::mem::replace(&mut n.series_key, new));
+    if old != new {
+        rt.paint_write(h, phash(h, old), phash(h, new));
     }
 }
 
-impl<V: 'static, S: IntoProp<String>, G: GlyphOp<V>> Element<V> for Text<S, G> {
+impl<'a, V: 'static, T: 'static> GlyphOp<V> for GlyphAlpha<'a, T, V> {
+    const PER_GLYPH: bool = true;
+    fn install(self, m: &mut Mounter<'_, V>, node: u32) {
+        let hsh = set_glyph_alpha(m.rt, node, self.f, self.sig.get());
+        m.rt.nodes[node as usize].series_key = hsh;
+        m.wire(&self.sig, patch_galpha::<T>, node, recipe_of(self.f));
+    }
+}
+
+impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
     fn mount(self, m: &mut Mounter<'_, V>) {
         let node = m.rt.alloc_node();
         let wires_before = m.scope.wires.len();
-        let init = self.s.lower::<ApplyText, V>(m, node);
+        m.pending_num = None;
+        let init = self.s.lower(m, node);
+        let num = m.pending_num.take();
         let s = m.rt.scale;
         let size_px = self.size * s;
         let lh_px = self.lh * s;
         let strike = m.rt.text.strike(size_px);
         let base = ((m.oy + self.y) * s + m.rt.text.baseline(size_px, lh_px)).round();
-        let run = m.rt.alloc_run(init.len().max(4));
+        let dynamic = G::PER_GLYPH || m.scope.wires.len() > wires_before;
+        let hd = if dynamic { m.rt.bough.new_handle() } else { Handle { idx: 0, generation: 0 } };
+        let ti = m.rt.alloc_text(TextNode {
+            text: init,
+            strike: strike as u32,
+            size_px,
+            line_h: lh_px,
+            color: self.color.0,
+            ox: (m.ox + self.x) * s,
+            oy: base,
+            space: m.space,
+            handle: hd,
+            ink: NRect::EMPTY,
+            shape: TShape::None,
+            per_glyph: G::PER_GLYPH,
+            num,
+        });
+        let payload = m.rt.text_build(ti);
         {
             let n = &mut m.rt.nodes[node as usize];
-            n.text = init;
-            n.run = run;
+            n.text = ti;
             n.space = m.space;
             n.clip = m.clip;
-            n.kind = 2;
-            n.x = (m.ox + self.x) * s;
-            n.y = base;
+            n.kind = if G::PER_GLYPH { NK_GALPHA } else { NK_TEXT };
             n.color = self.color.0;
-            n.strike = strike as u32;
+            n.handle = hd;
             n.size_px = size_px;
             n.line_h = lh_px;
+            if let TShape::Glyphs { run } = m.rt.texts[ti as usize].shape {
+                n.run = run;
+            }
         }
-        let ink = m.rt.shape_node(node);
         self.g.install(m, node);
-        let dynamic = m.scope.wires.len() > wires_before;
-        let mut handle_idx = 0;
-        if dynamic {
-            let hd = m.rt.bough.new_handle();
-            handle_idx = hd.idx;
-            m.rt.nodes[node as usize].handle = hd;
-            m.scope.nodes.push(node);
-        } else {
-            m.rt.free_node(node);
-        }
-        m.scope.runs.push(run);
-        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_TEXT, payload: run, handle: handle_idx });
+        m.scope.nodes.push(node);
+        let ink = m.rt.texts[ti as usize].ink;
+        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_TEXT, payload, handle: hd.idx, clip: m.clip });
     }
 }
 
@@ -520,7 +654,8 @@ impl<V, Ch: Element<V>> Element<V> for At<Ch> {
     }
 }
 
-/// Children clipped to a rect (points, relative to the current origin): one vertex-stage clamp.
+/// Children clipped to a rect (points, relative to the current origin): a bough-core clip id on their
+/// records (visible ink = ink ∩ clip for damage and cull; the GPU clamps every quad and glyph to it).
 pub struct Clip<Ch>(pub [f32; 4], pub Ch);
 pub fn clip<Ch>(x: f32, y: f32, w: f32, h: f32, ch: Ch) -> Clip<Ch> {
     Clip([x, y, w, h], ch)
@@ -532,6 +667,13 @@ impl<V, Ch: Element<V>> Element<V> for Clip<Ch> {
         let [x, y, w, h] = self.0;
         let r = [o[0] + (m.ox + x) * s, o[1] + (m.oy + y) * s, o[0] + (m.ox + x + w) * s, o[1] + (m.oy + y + h) * s];
         let prev = m.clip;
+        let r = if prev != 0 {
+            // nested clips compose (intersection)
+            let p = m.rt.bough.clip_rect(prev).to_xyxy();
+            [r[0].max(p[0] as f32), r[1].max(p[1] as f32), r[2].min(p[2] as f32), r[3].min(p[3] as f32)]
+        } else {
+            r
+        };
         m.clip = m.rt.clip_rect(r);
         self.1.mount(m);
         m.clip = prev;
@@ -540,11 +682,11 @@ impl<V, Ch: Element<V>> Element<V> for Clip<Ch> {
 
 // =============================================================================== virtual list
 
-/// A keyed virtual-list region: rows `visible(scroll)` are mounted (each an owner of its own
-/// wires), rows that leave the range are unmounted, and rows are positioned through per-row
-/// spaces — a scroll writes the space table and translates the rows' ink, it never rewrites rows.
+/// A keyed virtual-list region: rows `visible(scroll)` are mounted (each an owner of its own wires), rows
+/// that leave the range are unmounted, and rows are positioned through per-row spaces — a scroll writes the
+/// space table and moves bough-core's page offsets, it never rewrites rows.
 pub struct VirtualList<'a, V> {
-    scroll: &'a Signal<f32>,
+    scroll: Wired<'a, f32, V>,
     row_h: f32,
     vp: [f32; 4],
     visible: fn(f32) -> Range<usize>,
@@ -554,7 +696,7 @@ pub struct VirtualList<'a, V> {
 
 /// `vp` = (x, y, w, h) of the viewport in points (the rows' clip); rows are `row_h` points tall.
 pub fn virtual_list<'a, V>(
-    scroll: &'a Signal<f32>,
+    scroll: Wired<'a, f32, V>,
     row_h: f32,
     vp: [f32; 4],
     visible: fn(f32) -> Range<usize>,
@@ -563,6 +705,8 @@ pub fn virtual_list<'a, V>(
     VirtualList { scroll, row_h, vp, visible, row, _v: PhantomData }
 }
 
+/// # Safety
+/// `owner` points at the live owner `V`; `reg`'s row function is a `fn(&V, usize, &mut Mounter<V>)`.
 unsafe fn mount_row<V: 'static>(rt: &mut Rt, owner: *const u8, reg: usize, row: usize, recs: &mut Vec<RecordInit>) -> RowInfo {
     let space = rt.alloc_space();
     let origin = rt.region_row_space_origin(reg, row);
@@ -571,17 +715,22 @@ unsafe fn mount_row<V: 'static>(rt: &mut Rt, owner: *const u8, reg: usize, row: 
         let r = &rt.regions[reg];
         (r.clip, r.depth, r.row_fn)
     };
+    // SAFETY: the region was created by `VirtualList::<V>::mount` from a `fn(&V, usize, &mut Mounter<V>)`.
     let f: fn(&V, usize, &mut Mounter<'_, V>) = unsafe { std::mem::transmute::<usize, fn(&V, usize, &mut Mounter<'_, V>)>(f) };
     let mut scope = Scope::default();
     let before = recs.len();
     {
-        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip };
+        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None };
+        // SAFETY: see the function contract.
         f(unsafe { &*(owner as *const V) }, row, &mut m);
     }
     RowInfo { nrec: (recs.len() - before) as u32, space, scope }
 }
 
+/// # Safety
+/// Wire contract: `sig` is a `Signal<f32>`; `owner` is the region's owner.
 unsafe fn patch_scroll(rt: &mut Rt, w: &Wire, sig: *const u8, owner: *const u8) {
+    // SAFETY: see the function contract.
     let s = unsafe { &*(sig as *const Signal<f32>) };
     unsafe { rt.region_scroll(w.node as usize, owner, **s) };
 }
@@ -593,12 +742,14 @@ impl<'a, V: 'static> Element<V> for VirtualList<'a, V> {
         let [x, y, w, h] = self.vp;
         let (vx, vy) = (o[0] + (m.ox + x) * s, o[1] + (m.oy + y) * s);
         let clip = m.rt.clip_rect([vx, vy, vx + w * s, vy + h * s]);
+        let vp = m.rt.bough.clip_rect(clip);
         let reg = m.rt.regions.len();
-        m.rt.regions.push(Region {
+        m.rt.regions.push(Region2 {
             row_h: self.row_h * s,
             vp_x: vx,
             vp_y: vy,
             clip,
+            vp,
             depth: m.depth,
             base_pos: m.recs.len(),
             range: 0..0,
@@ -608,22 +759,21 @@ impl<'a, V: 'static> Element<V> for VirtualList<'a, V> {
             mount_row: mount_row::<V>,
             row_fn: self.row as usize,
         });
-        if let Some(off) = m.offset_of(self.scroll) {
-            m.wire(self.scroll.head(), off, patch_scroll, reg as u32, [0; 16]);
-        }
-        unsafe { m.rt.region_initial(reg, m.owner as *const u8, **self.scroll, m.recs) };
+        m.wire(&self.scroll, patch_scroll, reg as u32, [0; 16]);
+        // SAFETY: the owner pointer is the mounted owner (`App::new` / a row mount).
+        unsafe { m.rt.region_initial(reg, m.owner as *const u8, *self.scroll.get(), m.recs) };
     }
 }
 
 // =============================================================================== bars (series run)
 
-/// A sliding-window bar series: one record owning a run of `count` solid quads. Bar `i` has height
-/// `max(max_h * sample(key + i), min_h)` points growing up from `base`. When `key` advances by one
-/// the window shifts and only the new rightmost sample is computed (the memoised samples are the
-/// value that was there all along); any other jump recomputes every sample. One wire, one ink write
+/// A sliding-window bar series: one record owning a run of `count` solid quads (the GPU expands the run).
+/// Bar `i` has height `max(max_h * sample(key + i), min_h)` points growing up from `base`. When `key`
+/// advances by one the window shifts and only the new rightmost sample is computed (the memoised samples
+/// are the value that was there all along); any other jump recomputes every sample. One wire, one ink write
 /// (old and new union) per update however many bars there are.
-pub struct Bars<'a, F> {
-    key: &'a Signal<u64>,
+pub struct Bars<'a, F, V> {
+    key: Wired<'a, u64, V>,
     sample: F,
     x: f32,
     step: f32,
@@ -635,7 +785,8 @@ pub struct Bars<'a, F> {
     color: Color,
 }
 
-pub fn bars<'a, F: Fn(u64) -> f32 + Copy + 'static>(
+#[allow(clippy::too_many_arguments)]
+pub fn bars<'a, F: Fn(u64) -> f32 + Copy + 'static, V>(
     x: f32,
     step: f32,
     width: f32,
@@ -643,22 +794,22 @@ pub fn bars<'a, F: Fn(u64) -> f32 + Copy + 'static>(
     base: f32,
     max_h: f32,
     min_h: f32,
-    key: &'a Signal<u64>,
+    key: Wired<'a, u64, V>,
     sample: F,
-) -> Bars<'a, F> {
+) -> Bars<'a, F, V> {
     Bars { key, sample, x, step, width, count, base, max_h, min_h, color: Color::rgba(255, 255, 255, 255) }
 }
 
-impl<F> Bars<'_, F> {
+impl<F, V> Bars<'_, F, V> {
     pub fn color(mut self, c: Color) -> Self {
         self.color = c;
         self
     }
 }
 
-/// Recompute the node's samples for `key` (shifting when the key advanced by one) and write the
-/// bar instances; returns the union ink.
-fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F) -> bough_core::NRect {
+/// Recompute the node's samples for `key` (shifting when the key advanced by one) and write the bar
+/// instances; returns the union ink.
+fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F) -> NRect {
     let n = &mut rt.nodes[node as usize];
     let count = n.series.len();
     if n.series_ok && key == n.series_key.wrapping_add(1) {
@@ -671,7 +822,7 @@ fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F) -> boug
     }
     n.series_ok = true;
     n.series_key = key;
-    // geometry: n.x = x of bar 0 (px), n.w = bar width px, n.h = step px, n.radius = base px (space-local),
+    // geometry: n.x = x of bar 0 (px), n.w = bar width px, n.h = step px, n.y = base pt (space-local),
     // n.margin = max_h pt, n.line_h = min_h pt, n.size_px = scale
     let (x0, wpx, step, base_pt, max_h, min_h, scale, y0) = (n.x, n.w, n.h, n.y, n.margin, n.line_h, n.size_px, n.y0);
     let first = rt.runs[n.run as usize].first;
@@ -679,11 +830,9 @@ fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F) -> boug
     for i in 0..count {
         let h = (max_h * rt.nodes[node as usize].series[i]).max(min_h);
         let y = y0 + (base_pt - h) * scale;
-        let p = rt.inst_ptr(first + i as u32);
-        unsafe {
-            (*p).xy = [x0 + i as f32 * step, y];
-            (*p).wh = [wpx, h * scale];
-        }
+        let p = rt.inst_mut(first + i as u32);
+        p.pos = [x0 + i as f32 * step, y];
+        p.size = [wpx, h * scale];
         top = top.min(y);
     }
     let space = rt.nodes[node as usize].space;
@@ -691,32 +840,35 @@ fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F) -> boug
     rt.ink_rect(space, x0, top, (count as f32 - 1.0) * step + wpx, bottom - top, 0.0)
 }
 
+/// # Safety
+/// Wire contract: `sig` is a `Signal<u64>`; the recipe holds an `F`.
 unsafe fn patch_bars<F: Fn(u64) -> f32 + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    // SAFETY: see the function contract.
     let key = **unsafe { &*(sig as *const Signal<u64>) };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
     let ink = write_bars(rt, w.node, key, f);
     let h = rt.nodes[w.node as usize].handle;
+    // the bars changed inside the old union too: old and new ink, even when the union is the same
+    rt.bough.touch_handle(h);
     rt.bough.set_ink_handle(h, ink);
 }
 
-impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a, F> {
+impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a, F, V> {
     fn mount(self, m: &mut Mounter<'_, V>) {
-        const { assert!(std::mem::size_of::<F>() <= 16 && std::mem::align_of::<F>() <= 8) };
         let s = m.rt.scale;
         let node = m.rt.alloc_node();
         let run = m.rt.alloc_run(self.count);
         m.rt.runs[run as usize].len = self.count as u32;
         let first = m.rt.runs[run as usize].first;
         for i in 0..self.count {
-            let ins = Instance { xy: [0.0; 2], wh: [0.0; 2], uv: [0; 4], color: self.color.0, kind: KIND_SOLID, space: m.space, aux: [0, 0, 0, m.clip as u32] };
-            unsafe { m.rt.inst_ptr(first + i as u32).write(ins) };
+            *m.rt.inst_mut(first + i as u32) = Instance { color: self.color.0, space: m.space, kind: KIND_SOLID, ..Default::default() };
         }
         {
             let n = &mut m.rt.nodes[node as usize];
             n.run = run;
             n.space = m.space;
             n.clip = m.clip;
-            n.kind = 4;
+            n.kind = NK_BARS;
             n.x = (m.ox + self.x) * s;
             n.w = self.width * s;
             n.h = self.step * s;
@@ -729,23 +881,12 @@ impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a,
             n.series.resize(self.count, 0.0);
             n.series_ok = false;
         }
-        let ink = write_bars(m.rt, node, **self.key, self.sample);
-        let mut recipe = [0u8; 16];
-        unsafe { std::ptr::write_unaligned(recipe.as_mut_ptr() as *mut F, self.sample) };
-        let before = m.scope.wires.len();
-        if let Some(off) = m.offset_of(self.key) {
-            m.wire(self.key.head(), off, patch_bars::<F>, node, recipe);
-        }
-        let mut handle_idx = 0;
-        if m.scope.wires.len() > before {
-            let hd = m.rt.bough.new_handle();
-            handle_idx = hd.idx;
-            m.rt.nodes[node as usize].handle = hd;
-            m.scope.nodes.push(node);
-        } else {
-            m.rt.free_node(node);
-        }
+        let ink = write_bars(m.rt, node, *self.key.get(), self.sample);
+        m.wire(&self.key, patch_bars::<F>, node, recipe_of(self.sample));
+        let hd = m.rt.bough.new_handle();
+        m.rt.nodes[node as usize].handle = hd;
+        m.scope.nodes.push(node);
         m.scope.runs.push(run);
-        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: run, handle: handle_idx });
+        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: pay_irun(first, self.count as u32), handle: hd.idx, clip: m.clip });
     }
 }

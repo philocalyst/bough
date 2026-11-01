@@ -5,7 +5,8 @@
 //!   `prefix(k)`, `row_at(y)` and a point update are O(log n)); unseen rows count as an estimate
 //!   (zgx's measured_virtual_list: a three-line row);
 //! * only rows entering / leaving the range are mounted / unmounted; a scroll writes one space entry per
-//!   mounted row and translates their ink as one contiguous run (instances are never rewritten);
+//!   mounted row and moves the survivors' records as one contiguous run (`scroll_run`: bough-core page
+//!   offsets, damage = viewport ∩ old ∪ viewport ∩ new; instances and glyphs are never rewritten);
 //! * **anchoring**: the first visible row and the offset inside it are fixed while measurement runs, so
 //!   a row measured above the viewport (taller or shorter than its estimate) moves the scroll offset by
 //!   the difference instead of moving the content; the same loop is what makes a **jump** converge: the
@@ -14,8 +15,8 @@
 //!   the range is stable (it takes 1-3 passes).
 use crate::elem::{Element, Mounter};
 use crate::rt::*;
-use crate::signal::Signal;
-use bough_core::RecordInit;
+use crate::signal::{Signal, Wired};
+use bough_core::{NRect, RecordInit};
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::ops::Range;
@@ -124,6 +125,8 @@ pub struct MRegion {
     /// Viewport, device px: x, y, w, h.
     pub vp: [f32; 4],
     pub clip: u16,
+    /// The viewport as a damage clip (absolute device px).
+    pub vpr: NRect,
     pub depth: u16,
     pub base_pos: usize,
     pub overscan: usize,
@@ -282,6 +285,7 @@ impl Rt {
         let mut pos = base_pos;
         // pending contiguous survivors with one shift: (first record, count, dy)
         let mut run: Option<(usize, usize, i32)> = None;
+        let vpr = self.mregions[reg].vpr;
         for i in 0..n {
             let (space, nrec, fresh, h) = {
                 let r = &self.mregions[reg];
@@ -300,20 +304,20 @@ impl Rt {
                         Some((_, cnt, d)) if *d == dy => *cnt += nrec,
                         _ => {
                             if let Some((a, c, d)) = run.take() {
-                                self.bough.translate_run(a, c, 0, d);
+                                self.bough.scroll_run(a, c, 0, d, vpr);
                             }
                             run = Some((pos, nrec, dy));
                         }
                     }
                 } else if let Some((a, c, d)) = run.take() {
-                    self.bough.translate_run(a, c, 0, d);
+                    self.bough.scroll_run(a, c, 0, d, vpr);
                 }
             }
             p += h as i64;
             pos += nrec;
         }
         if let Some((a, c, d)) = run.take() {
-            self.bough.translate_run(a, c, 0, d);
+            self.bough.scroll_run(a, c, 0, d, vpr);
         }
         self.mregions[reg].scroll_px = s;
         self.lay_writeback_ready();
@@ -345,7 +349,7 @@ impl Rt {
 // =============================================================================== element
 
 pub struct MeasuredList<'a, V> {
-    scroll: &'a Signal<f32>,
+    scroll: Wired<'a, f32, V>,
     rows: usize,
     estimate_pt: f32,
     vp: [f32; 4],
@@ -358,7 +362,7 @@ pub struct MeasuredList<'a, V> {
 /// counted as `estimate_pt`, `overscan` extra rows mounted either side. `row` mounts one row; its outermost
 /// layout box (`column` / `row`) is the row's group, laid out at the viewport width.
 pub fn measured_list<'a, V>(
-    scroll: &'a Signal<f32>,
+    scroll: Wired<'a, f32, V>,
     rows: usize,
     estimate_pt: f32,
     vp: [f32; 4],
@@ -380,7 +384,7 @@ unsafe fn mount_mrow<V: 'static>(rt: &mut Rt, owner: *const u8, reg: usize, row:
     let before = recs.len();
     rt.lay.cur = crate::layout::NONE;
     {
-        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip };
+        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None };
         f(unsafe { &*(owner as *const V) }, row, &mut m);
     }
     assert_eq!(scope.lroots.len(), 1, "a measured-list row must mount exactly one layout group (a column / row)");
@@ -401,31 +405,28 @@ impl<'a, V: 'static> Element<V> for MeasuredList<'a, V> {
         let [x, y, w, h] = self.vp;
         let (vx, vy) = (o[0] + (m.ox + x) * s, o[1] + (m.oy + y) * s);
         let clip = m.rt.clip_rect([vx, vy, vx + w * s, vy + h * s]);
+        let vpr = m.rt.bough.clip_rect(clip);
         let reg = m.rt.mregions.len();
         let est = (self.estimate_pt * s).round() as i32;
         m.rt.mregions.push(MRegion {
             idx: HeightIndex::new(self.rows, est),
             vp: [vx, vy, w * s, h * s],
             clip,
+            vpr,
             depth: m.depth,
             base_pos: m.recs.len(),
             overscan: self.overscan,
             range: 0..0,
             rows: VecDeque::new(),
             scroll_px: 0,
-            init_scroll_pt: **self.scroll,
+            init_scroll_pt: *self.scroll.get(),
             mount_row: mount_mrow::<V>,
             row_fn: self.row as usize,
             stats: MStats::default(),
         });
         let sc = self.scroll;
-        if let Some(off) = {
-            let a = sc as *const Signal<f32> as usize;
-            let ow = m.owner as usize;
-            (a >= ow && a + std::mem::size_of::<Signal<f32>>() <= ow + std::mem::size_of::<V>()).then(|| (a - ow) as u32)
-        } {
-            let wi = m.rt.add_wire(sc.head(), off, patch_mscroll, reg as u32, [0; 16]);
-            m.scope.wires.push(wi);
-        }
+        debug_assert_eq!(sc.sig as *const Signal<f32> as usize, m.owner as usize + sc.off as usize);
+        let wi = m.rt.add_wire(sc.sig.head(), sc.off, patch_mscroll, reg as u32, [0; 16]);
+        m.scope.wires.push(wi);
     }
 }
