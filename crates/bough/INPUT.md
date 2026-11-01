@@ -164,6 +164,7 @@ animates. Accessory activation, mouse-moved events accepted, no focus taken.
 | every pixel of every hit cell answers like its seed pixel | same | exhaustive per cell |
 | a cell judged valid after random edits (insert, remove, translate, scroll, ink, clip) still answers the same everywhere | same | exact; both outcomes exercised |
 | tab order forward/backward, first/last flagged == oracle | same | equal |
+| hover sets and the enter/leave routes == oracle (the symmetric difference of the old and new interactive chains of the brute-force topmost record), 3,000 moves over nested, overlapping, overflowing and pointer-transparent records, with window leaves | `bough-zgui/tests/input.rs` `hover_enter_leave_sets_equal_the_oracle` | equal at every step |
 | presented == full redraw after every interaction, ring ages 1–4 and the windowed ring; retained == fresh mount | `bough-zgui/tests/input.rs`: hover crossings and leave, hover toggles via held surfaces, list glides, the gallery (22 tabs, typing, caret moves, Home/End/Delete/Backspace, clicks, root glides moving clips and the ring, animations), label churn, resize relayout, shell tooltips (fades) and the dock drag | 0 differing bytes |
 | GPOS pair table == per-pair probe | `debug_assert` in `SimpleScript::build`, every pair of every font the bough-text tests load | equal |
 | existing gates | `cargo test --workspace --release` | all green; STATUS §1.1 slopes unchanged within noise (canonical's own binaries re-measured today: heavy stream 179.1 K, this branch 178.0–181 K) |
@@ -194,10 +195,12 @@ animates. Accessory activation, mouse-moved events accepted, no focus taken.
   `kitchen.resize` is reported as `kitchen.resize_repaint_only` and not compared (the template does not reflow);
   `shell.resize_step` and `thread.resize` were not ported.
 * **The drag probe ties.** Both frameworks spend ~200 K main-thread instructions per synthetic move. bough's own work
-  per move is ~6 K (the headless span); with frames suppressed the probe still measures 113 K per move, which is
-  AppKit's dispatch of a posted event, and a frame adds ~100 K of Metal encode/commit plus the per-frame Core Animation
-  transaction that the IOSurface ring publishes on the main thread. Closing it needs the presenter to publish without
-  a main-thread transaction (CAMetalLayer drawables, or a render thread), which is bough-metal's area; not built.
+  per move is ~6 K (the headless span). Measured by elimination (`BOUGH_NOFRAME`, `BOUGH_NOPUBLISH`): 113 K per move is
+  AppKit's dispatch of a posted event (frames suppressed), ~45 K is the Metal encode and commit, ~55 K is the
+  presenter's publish (the wait for the GPU and the Core Animation transaction that puts the IOSurface on the layer, on
+  the main thread). zgx presents through CAMetalLayer drawables, whose presentation is scheduled by Metal rather than
+  committed by a main-thread transaction. Closing the gap needs the presenter to publish without a main-thread
+  transaction (drawables, or a render thread): bough-metal's area, not built.
 * **Windowed resize**: `App::resize` is headless-complete (damage, tiles, layout, slots) but the presenter's
   IOSurfaces keep their creation size, so a window cannot yet grow past it. Not built.
 * **Nested scroll views** do not follow an outer scroll's space (inner clips do); tooltips' rects are absolute (a
