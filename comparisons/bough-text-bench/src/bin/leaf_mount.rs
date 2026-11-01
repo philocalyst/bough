@@ -30,6 +30,7 @@ pub struct OldLeaf {
 use bough::layout::Word;
 use bough_text::window::Shaped;
 use bough_text::wrap::wrap_greedy;
+#[allow(dead_code)]
 impl OldLeaf {
     pub fn new(size_px: f32, lh_px: f32, wrap: bool) -> OldLeaf {
         OldLeaf { wrapped_at: i32::MIN, min_word: -1, wrap, size_px, lh_px, ..Default::default() }
