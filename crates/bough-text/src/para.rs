@@ -75,7 +75,6 @@ pub struct ParaStats {
 
 pub struct Para {
     pub text: Vec<u8>,
-    pub runs: Vec<Run>,
     /// Pool block holding the byte slots (`base`, capacity `cap`).
     pub base: u32,
     pub cap: u32,
@@ -83,14 +82,31 @@ pub struct Para {
     pub width: i32,
     /// A token beyond ASCII was shaped (the strike must have it rasterized: a cold check by the caller).
     pub exotic: bool,
+    /// One line, never wrapped (a label): no word table is kept (the degenerate paragraph: slots only).
+    pub line_only: bool,
     pub words: Vec<Word>,
-    /// The last two wraps (by width).
-    wraps: [Wrap; 2],
-    /// Words `>= dirty_from` changed since the wraps were made, shifted by `dirty_shift` words after `dirty_to`
-    /// (`u32::MAX`: clean).
+    /// The latest wrap (one width).
+    wrap: Wrap,
+    /// Everything a paragraph needs only once it is edited, streamed, set in several fonts or wrapped at a second
+    /// width: carved on first use, so a paragraph that is shaped and wrapped once (a list row) carries one
+    /// pointer of it, and writes nothing to it.
+    cold: Option<Box<Cold>>,
+}
+
+/// Cold halves carved so far (a diagnostic: a list row that is shaped and wrapped once carves none).
+#[doc(hidden)]
+pub static COLD_HALVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The cold half of a [`Para`].
+#[derive(Clone, Default)]
+struct Cold {
+    runs: Vec<Run>,
+    /// The wrap at the previous width.
+    prev: Wrap,
+    /// Words changed since the wraps were made (merged).
     pending: Option<Pending>,
-    pub stats: ParaStats,
-    /// Rewrap scratch (the old line table), reused: no allocation per edit.
+    stats: ParaStats,
+    /// Rewrap scratch (the old line table), reused.
     old_l: Vec<(u32, i32)>,
 }
 
@@ -106,33 +122,45 @@ struct Pending {
 /// The fonts a paragraph may use (index = `Run::font`); all share one `upem`.
 pub type Fonts<'a> = &'a [&'a Shaper];
 
-/// A clone is a **measuring copy**: text, runs, words and wraps, but no pool block (the original owns it), so it
+/// A clone is a **measuring copy**: text, words and wraps, but no pool block (the original owns it), so it
 /// measures and wraps like the original and is re-`set` (not edited) if its text changes.
 impl Clone for Para {
     fn clone(&self) -> Self {
-        Para {
-            text: self.text.clone(),
-            runs: self.runs.clone(),
-            base: u32::MAX,
-            cap: 0,
-            width: self.width,
-            exotic: self.exotic,
-            words: self.words.clone(),
-            wraps: self.wraps.clone(),
-            pending: self.pending,
-            stats: self.stats,
-            old_l: Vec::new(),
-        }
+        Para { text: self.text.clone(), base: u32::MAX, cap: 0, width: self.width, exotic: self.exotic, line_only: self.line_only, words: self.words.clone(), wrap: self.wrap.clone(), cold: self.cold.clone() }
     }
 }
 
 impl Default for Para {
     fn default() -> Self {
-        Para { text: Vec::new(), runs: Vec::new(), base: u32::MAX, cap: 0, width: 0, exotic: false, words: Vec::new(), wraps: Default::default(), pending: None, stats: ParaStats::default(), old_l: Vec::new() }
+        Para { text: Vec::new(), base: u32::MAX, cap: 0, width: 0, exotic: false, line_only: false, words: Vec::new(), wrap: Wrap::default(), cold: None }
     }
 }
 
 impl Para {
+    fn cold(&mut self) -> &mut Cold {
+        self.cold.get_or_insert_with(|| {
+            COLD_HALVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Default::default()
+        })
+    }
+
+    /// The font runs (empty: one run in font 0).
+    pub fn runs(&self) -> &[Run] {
+        self.cold.as_ref().map_or(&[], |c| &c.runs)
+    }
+
+    /// What edits and re-wraps did (zero until the paragraph's cold half exists).
+    pub fn stats(&self) -> ParaStats {
+        self.cold.as_ref().map_or(ParaStats::default(), |c| c.stats)
+    }
+
+    #[inline]
+    fn count(&mut self, f: impl FnOnce(&mut ParaStats)) {
+        if let Some(c) = self.cold.as_mut() {
+            f(&mut c.stats);
+        }
+    }
+
     pub fn release(&mut self, pool: &mut GlyphPool) {
         if self.base != u32::MAX {
             pool.free_block(self.base, self.cap);
@@ -160,16 +188,16 @@ impl Para {
 
     /// The font run of byte `i` (index into `runs`; no runs = one run in font 0, no allocation).
     fn run_of(&self, i: u32) -> usize {
-        self.runs.partition_point(|r| r.start <= i).saturating_sub(1)
+        self.runs().partition_point(|r| r.start <= i).saturating_sub(1)
     }
 
     #[inline]
     fn font(&self, k: usize) -> usize {
-        self.runs.get(k).map_or(0, |r| r.font as usize)
+        self.runs().get(k).map_or(0, |r| r.font as usize)
     }
 
     fn run_end(&self, k: usize) -> u32 {
-        self.runs.get(k + 1).map_or(self.text.len() as u32, |r| r.start)
+        self.runs().get(k + 1).map_or(self.text.len() as u32, |r| r.start)
     }
 
     /// Shape bytes `[a, e)` (a word boundary on both sides, or the text's ends) starting at pen `x`, run by run.
@@ -185,7 +213,8 @@ impl Para {
             // it; `s` is UTF-8 cut at ASCII bytes (spaces, run starts at word boundaries).
             let (w, ex) = unsafe { any_slots(sh, s, x, pool.x.as_mut_ptr().add((self.base + i) as usize), pool.ent.as_mut_ptr().add((self.base + i) as usize))? };
             self.exotic |= ex;
-            self.stats.bytes_shaped += s.len() as u64;
+            let len = s.len() as u64;
+            self.count(|st| st.bytes_shaped += len);
             x = w;
             i = end;
         }
@@ -193,20 +222,19 @@ impl Para {
     }
 
     /// Words of bytes `[a, e)` (`a` a word start or a space, `e` a word end or the text's end), from the pens in
-    /// the pool, appended to `out`. Word boundaries come from a space mask built 16 bytes at a time (NEON
-    /// compare + the `shrn` nibble mask): a word starts where a non-space follows a space and ends where a space
-    /// follows a non-space, so the loop runs per word, not per byte.
+    /// the pool, appended to `out`. The spaces of 16 bytes at a time come out of one NEON compare as a bit mask
+    /// (the `shrn` nibble trick); the loop runs once per space, and a word is the bytes between two spaces.
     fn words_of(&self, pool: &GlyphPool, a: u32, e: u32, out: &mut Vec<Word>) {
         let t = &self.text;
-        let xs = &pool.x[self.base as usize..];
         let n = t.len() as u32;
-        let width = self.width;
-        let push = |ws: u32, we: u32, out: &mut Vec<Word>| {
+        let (xs, width) = (&pool.x[self.base as usize..self.base as usize + n as usize + 1], self.width);
+        let mut start = a;
+        let mut i = a;
+        #[inline(always)]
+        fn push(out: &mut Vec<Word>, xs: &[i32], n: u32, width: i32, ws: u32, we: u32) {
             let x1 = if we < n { xs[we as usize] } else { width };
             out.push(Word { ws, we, x0: xs[ws as usize], x1 });
-        };
-        let mut i = a;
-        let mut start: Option<u32> = None;
+        }
         #[cfg(target_arch = "aarch64")]
         unsafe {
             use core::arch::aarch64::*;
@@ -214,40 +242,46 @@ impl Para {
             // SAFETY: each load reads 16 bytes inside `t[..e]`.
             while i + 16 <= e {
                 let eq = vceqq_u8(vld1q_u8(t.as_ptr().add(i as usize)), sp);
-                // bit 4k of `m` set iff byte k is a space
-                let m = vget_lane_u64::<0>(vreinterpret_u64_u8(vshrn_n_u16::<4>(vreinterpretq_u16_u8(eq)))) & 0x1111_1111_1111_1111;
-                // boundaries: a byte whose space-ness differs from the previous byte's
-                let prev_space = match start { Some(_) => 0u64, None => 1 };
-                let flips = m ^ ((m << 4) | prev_space);
-                let mut f = flips & 0x1111_1111_1111_1111;
-                while f != 0 {
-                    let k = (f.trailing_zeros() >> 2) as u32;
-                    f &= f - 1;
-                    match start {
-                        None => start = Some(i + k),
-                        Some(ws) => {
-                            push(ws, i + k, out);
-                            start = None;
-                        }
+                let mut m = vget_lane_u64::<0>(vreinterpret_u64_u8(vshrn_n_u16::<4>(vreinterpretq_u16_u8(eq)))) & 0x1111_1111_1111_1111;
+                while m != 0 {
+                    let p = i + (m.trailing_zeros() >> 2);
+                    m &= m - 1;
+                    if p > start {
+                        push(out, xs, n, width, start, p);
                     }
+                    start = p + 1;
                 }
                 i += 16;
             }
         }
         while i < e {
-            let space = t[i as usize] == b' ';
-            match (start, space) {
-                (None, false) => start = Some(i),
-                (Some(ws), true) => {
-                    push(ws, i, out);
-                    start = None;
+            if t[i as usize] == b' ' {
+                if i > start {
+                    push(out, xs, n, width, start, i);
                 }
-                _ => {}
+                start = i + 1;
             }
             i += 1;
         }
-        if let Some(ws) = start {
-            push(ws, e, out);
+        if e > start {
+            push(out, xs, n, width, start, e);
+        }
+    }
+
+    /// The width of the text on one line, trailing spaces excluded (font units): the pen at the first trailing
+    /// space, or the end pen.
+    pub fn line_width(&self, pool: &GlyphPool) -> i32 {
+        let t = &self.text;
+        let mut e = t.len();
+        while e > 0 && t[e - 1] == b' ' {
+            e -= 1;
+        }
+        if e == t.len() {
+            self.width
+        } else if e == 0 {
+            0
+        } else {
+            pool.x[self.base as usize + e]
         }
     }
 
@@ -255,25 +289,33 @@ impl Para {
     pub fn set(&mut self, pool: &mut GlyphPool, fonts: Fonts, text: &str, runs: &[Run]) -> Result<(), Refusal> {
         self.text.clear();
         self.text.extend_from_slice(text.as_bytes());
-        self.runs.clear();
-        if !(runs.len() == 1 && runs[0] == (Run { start: 0, font: 0 })) {
-            self.runs.extend_from_slice(runs);
-        }
-        if !self.runs.is_empty() && self.runs[0].start != 0 {
-            self.runs.insert(0, Run { start: 0, font: 0 });
+        let single = runs.is_empty() || (runs.len() == 1 && runs[0] == (Run { start: 0, font: 0 }));
+        if !single || self.cold.is_some() {
+            let c = self.cold();
+            c.runs.clear();
+            if !single {
+                c.runs.extend_from_slice(runs);
+                if c.runs[0].start != 0 {
+                    c.runs.insert(0, Run { start: 0, font: 0 });
+                }
+            }
         }
         self.ensure(pool, self.text.len() + 16);
         let n = self.text.len() as u32;
         self.width = self.shape_range(pool, fonts, 0, n, 0)?;
         let mut words = std::mem::take(&mut self.words);
         words.clear();
-        self.words_of(pool, 0, n, &mut words);
-        self.words = words;
-        for w in &mut self.wraps {
-            w.lines.clear();
-            w.max_units = i32::MIN;
+        if !self.line_only {
+            self.words_of(pool, 0, n, &mut words);
         }
-        self.pending = None;
+        self.words = words;
+        self.wrap.lines.clear();
+        self.wrap.max_units = i32::MIN;
+        if let Some(c) = self.cold.as_mut() {
+            c.prev.lines.clear();
+            c.prev.max_units = i32::MIN;
+            c.pending = None;
+        }
         Ok(())
     }
 
@@ -316,16 +358,17 @@ impl Para {
     /// Append `more` in font `font` (a stream). Shapes only the new bytes plus the word they continue.
     pub fn append(&mut self, pool: &mut GlyphPool, fonts: Fonts, more: &str, font: u8) -> Result<(), Refusal> {
         let old_n = self.text.len() as u32;
-        let last = self.runs.last().map_or(0, |r| r.font);
+        let last = self.runs().last().map_or(0, |r| r.font);
+        let c = self.cold();
         if last != font {
-            if self.runs.is_empty() {
-                self.runs.push(Run { start: 0, font: 0 });
+            if c.runs.is_empty() {
+                c.runs.push(Run { start: 0, font: 0 });
             }
             if old_n == 0 {
-                self.runs.clear();
-                self.runs.push(Run { start: 0, font });
+                c.runs.clear();
+                c.runs.push(Run { start: 0, font });
             } else {
-                self.runs.push(Run { start: old_n, font });
+                c.runs.push(Run { start: old_n, font });
             }
         }
         self.text.extend_from_slice(more.as_bytes());
@@ -338,6 +381,9 @@ impl Para {
         let n = self.text.len() as u32;
         let first_changed = self.words.partition_point(|w| w.ws < a);
         self.width = self.reshape(pool, fonts, a, n)?;
+        if self.line_only {
+            return Ok(());
+        }
         let old_words = self.words.len() as i32;
         self.words.truncate(first_changed);
         let mut tail = std::mem::take(&mut self.words);
@@ -352,7 +398,8 @@ impl Para {
     /// Replace the text by `new` (one font run: the paragraph's first) re-shaping only the changed words; the
     /// suffix's slots and words shift by constants. Equal to `set` (gated).
     pub fn edit(&mut self, pool: &mut GlyphPool, fonts: Fonts, new: &str) -> Result<(), Refusal> {
-        debug_assert!(self.runs.len() <= 1, "edit is single-run");
+        debug_assert!(self.runs().len() <= 1, "edit is single-run");
+        self.cold();
         let nb = new.as_bytes();
         let (on, nn) = (self.text.len(), nb.len());
         let p = first_diff(&self.text, nb);
@@ -389,7 +436,7 @@ impl Para {
         let pen_after = self.reshape(pool, fonts, a as u32, e_new as u32)?;
         let new_sfx_x = if sfx > 0 {
             // the last changed glyph steps into the suffix's first byte (a space), not into the end
-            let tt = fonts[self.runs.first().map_or(0, |r| r.font) as usize].script.tokens.as_ref().expect("token model");
+            let tt = fonts[self.runs().first().map_or(0, |r| r.font) as usize].script.tokens.as_ref().expect("token model");
             if e_new > a {
                 let mut g = e_new - 1;
                 while g > a && pool.ent[b + g] == crate::script::TOK_PH as u16 {
@@ -410,9 +457,12 @@ impl Para {
         let dx = new_sfx_x.wrapping_sub(old_sfx_x);
         if sfx > 0 && dx != 0 {
             add_pens(&mut pool.x[b + e_new..b + nn], dx);
-            self.stats.slots_shifted += sfx as u64;
+            self.count(|st| st.slots_shifted += sfx as u64);
         }
         self.width = if sfx > 0 { self.width.wrapping_add(dx) } else { pen_after };
+        if self.line_only {
+            return Ok(());
+        }
         // words: splice the changed ones, shift the rest by the two constants
         let mut mid = Vec::new();
         self.words_of(pool, a as u32, e_new as u32, &mut mid);
@@ -431,7 +481,8 @@ impl Para {
 
     /// Record a word change for the cached wraps (merging with an earlier pending one conservatively).
     fn mark(&mut self, from: u32, to_new: u32, dw: i32) {
-        self.pending = Some(match self.pending {
+        let c = self.cold();
+        c.pending = Some(match c.pending {
             None => Pending { from, to_new, dw },
             Some(p) => {
                 // the union of both changes in the newest table
@@ -446,38 +497,50 @@ impl Para {
     /// stays alone). Cached per width; after an edit, re-wraps from the line before the change until a line start
     /// equals an old one shifted by the edit.
     pub fn wrap(&mut self, max_units: i32) -> &Wrap {
-        if let Some(p) = self.pending.take() {
-            // bring both cached wraps up to date (each converges on its own)
-            for k in 0..2 {
-                if self.wraps[k].max_units != i32::MIN && !self.wraps[k].lines.is_empty() {
-                    let mut w = std::mem::take(&mut self.wraps[k]);
-                    self.rewrap(&mut w, p);
-                    self.wraps[k] = w;
-                }
+        if let Some(p) = self.cold.as_mut().and_then(|c| c.pending.take()) {
+            // bring the cached wraps up to date (each converges on its own)
+            if !self.wrap.lines.is_empty() {
+                let mut w = std::mem::take(&mut self.wrap);
+                self.rewrap(&mut w, p);
+                self.wrap = w;
+            }
+            if self.cold.as_ref().is_some_and(|c| !c.prev.lines.is_empty()) {
+                let mut w = std::mem::take(&mut self.cold().prev);
+                self.rewrap(&mut w, p);
+                self.cold().prev = w;
             }
         }
-        let k = match self.wraps.iter().position(|w| w.max_units == max_units && !w.lines.is_empty()) {
-            Some(k) => k,
-            None => {
-                // evict the older entry (slot 1 moves to 0)
-                self.wraps.swap(0, 1);
-                let mut w = std::mem::take(&mut self.wraps[1]);
-                w.max_units = max_units;
-                w.lines.clear();
-                self.greedy(&mut w, 0, 0);
-                self.wraps[1] = w;
-                1
-            }
-        };
-        &self.wraps[k]
+        if self.wrap.max_units == max_units && !self.wrap.lines.is_empty() {
+            return &self.wrap;
+        }
+        if self.cold.as_ref().is_some_and(|c| c.prev.max_units == max_units && !c.prev.lines.is_empty()) {
+            let c = self.cold.as_mut().unwrap();
+            std::mem::swap(&mut c.prev, &mut self.wrap);
+            return &self.wrap;
+        }
+        // a new width: the current wrap becomes the previous one (the cold half exists from the second width on)
+        if !self.wrap.lines.is_empty() {
+            let mut cur = std::mem::take(&mut self.wrap);
+            std::mem::swap(&mut self.cold().prev, &mut cur);
+            self.wrap = cur;
+        }
+        let mut w = std::mem::take(&mut self.wrap);
+        w.max_units = max_units;
+        w.lines.clear();
+        self.greedy(&mut w, 0, 0);
+        self.wrap = w;
+        &self.wrap
     }
 
     /// The cached wrap at `max_units`, if it is current (after `wrap`).
     pub fn wrap_cached(&self, max_units: i32) -> Option<&Wrap> {
-        if self.pending.is_some() {
+        if self.cold.as_ref().is_some_and(|c| c.pending.is_some()) {
             return None;
         }
-        self.wraps.iter().find(|w| w.max_units == max_units && !w.lines.is_empty())
+        if self.wrap.max_units == max_units && !self.wrap.lines.is_empty() {
+            return Some(&self.wrap);
+        }
+        self.cold.as_ref().map(|c| &c.prev).filter(|w| w.max_units == max_units && !w.lines.is_empty())
     }
 
     /// Full greedy wrap from line `line` (whose first word is `w0`), truncating what follows.
@@ -506,7 +569,8 @@ impl Para {
         }
         w.lines.push((start, last - x0));
         w.widest = widest.max(last - x0);
-        self.stats.words_wrapped += (words.len() - w0 as usize) as u64;
+        let k = (words.len() - w0 as usize) as u64;
+        self.count(|st| st.words_wrapped += k);
         w.lines.len()
     }
 
@@ -523,7 +587,7 @@ impl Para {
         let line = l.saturating_sub(1);
         let w0 = w.lines[line].0;
         // the old table moves to the scratch vector; the wrap keeps its own buffer (truncated in place)
-        let mut old = std::mem::take(&mut self.old_l);
+        let mut old = std::mem::take(&mut self.cold().old_l);
         old.clear();
         old.extend_from_slice(&w.lines);
         w.lines.truncate(line);
@@ -548,9 +612,10 @@ impl Para {
                     if k < old.len() && old[k].0 as i64 == o {
                         w.lines.extend(old[k..].iter().map(|&(s, wd)| ((s as i64 + p.dw as i64) as u32, wd)));
                         w.widest = w.lines.iter().map(|l| l.1).max().unwrap_or(0);
-                        self.stats.words_wrapped += scanned;
-                        self.stats.converged += 1;
-                        self.old_l = old;
+                        let c = self.cold();
+                        c.stats.words_wrapped += scanned;
+                        c.stats.converged += 1;
+                        c.old_l = old;
                         return;
                     }
                 }
@@ -563,8 +628,9 @@ impl Para {
         }
         w.lines.push((start, last - x0));
         w.widest = w.lines.iter().map(|l| l.1).max().unwrap_or(0);
-        self.stats.words_wrapped += scanned;
-        self.old_l = old;
+        let c = self.cold();
+        c.stats.words_wrapped += scanned;
+        c.old_l = old;
     }
 
     /// Byte offset where line `i` of `wrap` starts.

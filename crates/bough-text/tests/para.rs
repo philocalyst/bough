@@ -90,10 +90,10 @@ fn random_edits_equal_a_fresh_paragraph_and_a_full_rewrap() {
         if t.len() > 900 {
             t.truncate(at(150.min(n)));
         }
-        let before = p.stats;
+        let before = p.stats();
         let prev = text.clone();
         p.edit(&mut pool, &fonts, &t).unwrap();
-        shaped += p.stats.bytes_shaped - before.bytes_shaped;
+        shaped += p.stats().bytes_shaped - before.bytes_shaped;
         text = t;
         let mut fp = GlyphPool::new();
         let mut q = Para::default();
@@ -107,9 +107,9 @@ fn random_edits_equal_a_fresh_paragraph_and_a_full_rewrap() {
             let got = p.wrap(mu).clone();
             assert_eq!(got, fresh_wrap(&fonts, &text, &[], mu), "step {step}: wrap at {mu} of {text:?}");
         }
-        conv = p.stats.converged;
+        conv = p.stats().converged;
     }
-    println!("{reps} edits: {shaped} bytes shaped in total, {conv} re-wraps converged early, {} words wrapped", p.stats.words_wrapped);
+    println!("{reps} edits: {shaped} bytes shaped in total, {conv} re-wraps converged early, {} words wrapped", p.stats().words_wrapped);
     assert!(conv > 0);
 }
 
@@ -131,7 +131,7 @@ fn mid_paragraph_edits_rewrap_a_few_lines() {
     p.set(&mut pool, &fonts, &words.join(" "), &[]).unwrap();
     let mu = 100_000;
     let lines = p.wrap(mu).len();
-    let before = p.stats;
+    let before = p.stats();
     for k in 0..200 {
         let i = 100 + (k * 37) % 130;
         words[i] = vocab[pick() % vocab.len()].into();
@@ -139,9 +139,9 @@ fn mid_paragraph_edits_rewrap_a_few_lines() {
         p.edit(&mut pool, &fonts, &t).unwrap();
         assert_eq!(p.wrap(mu).clone(), fresh_wrap(&fonts, &t, &[], mu));
     }
-    let per_edit = (p.stats.words_wrapped - before.words_wrapped) as f64 / 200.0;
-    let shaped = (p.stats.bytes_shaped - before.bytes_shaped) as f64 / 200.0;
-    println!("{lines} lines, 330 words: {per_edit:.1} words re-wrapped and {shaped:.1} bytes shaped per edit, {} converged", p.stats.converged);
+    let per_edit = (p.stats().words_wrapped - before.words_wrapped) as f64 / 200.0;
+    let shaped = (p.stats().bytes_shaped - before.bytes_shaped) as f64 / 200.0;
+    println!("{lines} lines, 330 words: {per_edit:.1} words re-wrapped and {shaped:.1} bytes shaped per edit, {} converged", p.stats().converged);
     // greedy wrapping can ripple (a moved break moves the next one); on average it re-syncs within a few lines
     assert!(per_edit < 330.0 * 0.3 && shaped < 32.0);
 }
@@ -196,8 +196,8 @@ fn rich_stream_equals_the_paragraph_set_at_once() {
         }
         steps += 1;
     }
-    println!("{steps} steps: {} bytes shaped (text {}), {} words wrapped, {} early convergences", p.stats.bytes_shaped, text.len(), p.stats.words_wrapped, p.stats.converged);
-    assert!(p.stats.bytes_shaped < 3 * text.len() as u64);
+    println!("{steps} steps: {} bytes shaped (text {}), {} words wrapped, {} early convergences", p.stats().bytes_shaped, text.len(), p.stats().words_wrapped, p.stats().converged);
+    assert!(p.stats().bytes_shaped < 3 * text.len() as u64);
 }
 
 /// Whole-text replacements by unrelated sentences (the façade layout test's edits), wraps at several widths
