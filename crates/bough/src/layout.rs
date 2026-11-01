@@ -415,6 +415,17 @@ impl LeafCtx {
         LeafCtx { wrapped_at: i32::MIN, min_word: -1, wrap, size_px, lh_px, ..Default::default() }
     }
 
+    /// This state, emptied for a new leaf (its buffers' capacity kept).
+    pub fn reset(mut self, size_px: f32, lh_px: f32, wrap: bool) -> LeafCtx {
+        debug_assert!(self.block.is_none(), "a recycled leaf state holds no glyph block");
+        self.words.clear();
+        self.run.gid.clear();
+        self.run.x.clear();
+        self.text.clear();
+        self.starts.clear();
+        LeafCtx { fast: false, line_w: 0, wrapped_at: i32::MIN, widest: 0, min_word: -1, wrap, ascii: false, upem: 0.0, size_px, lh_px, block: None, user: None, ..self }
+    }
+
     /// Release the pool block (the leaf is going away).
     pub fn release(&mut self, pool: &mut GlyphPool) {
         if let Some(b) = self.block.take() {
@@ -774,6 +785,7 @@ pub struct Lay {
     kids: Vec<u32>,
     /// Roots whose text changed reactively since the last flush (for lists to re-measure rows).
     pub touched_roots: Vec<u32>,
+    stack_ids: Vec<u32>,
 }
 
 impl Lay {
@@ -796,6 +808,7 @@ impl Lay {
             stack: Vec::new(),
             kids: Vec::new(),
             touched_roots: Vec::new(),
+            stack_ids: Vec::new(),
         }
     }
 
@@ -841,22 +854,14 @@ impl Rt {
     /// Release a group: its layout nodes (the drawables are released with the scope's nodes).
     pub fn lay_remove_root(&mut self, root: u32) {
         let mut stack = std::mem::take(&mut self.lay.kids);
-        stack.clear();
-        stack.push(root);
-        let mut all: Vec<u32> = Vec::new();
-        while let Some(n) = stack.pop() {
-            all.push(n);
-            self.lay.eng.children_into(&self.bough, n, &mut stack);
-        }
+        let mut all = std::mem::take(&mut self.lay.stack_ids);
+        all.clear();
+        // the leaves' text states (and their glyph blocks) are reclaimed later (`Rt::reclaim`)
+        self.lay.eng.remove_group(root, &mut stack, &mut all);
         for &n in &all {
-            if let Some(ctx) = self.lay.eng.ctx_mut(n) {
-                ctx.release(&mut self.glyphs);
-            }
-        }
-        self.lay.eng.remove_tree(&self.bough, root, &all);
-        for n in all {
             self.lay.info[n as usize].live = false;
         }
+        self.lay.stack_ids = all;
         if let Some(i) = self.lay.pending.iter().position(|&r| r == root) {
             self.lay.pending.swap_remove(i);
         }
@@ -910,7 +915,8 @@ impl Rt {
         for &r in &pend {
             let li = self.lay.info[r as usize];
             let avail = Size {
-                width: AvailableSpace::Definite(li.avail_w),
+                // a list row before its container is laid out: max-content, re-laid out at the width after
+                width: if li.avail_w.is_nan() { AvailableSpace::MaxContent } else { AvailableSpace::Definite(li.avail_w) },
                 height: if li.avail_h.is_nan() { AvailableSpace::MaxContent } else { AvailableSpace::Definite(li.avail_h) },
             };
             self.lay.eng.layout(&self.bough, r, avail);
@@ -924,6 +930,7 @@ impl Rt {
             }
             self.lay.info[r as usize].queued = false;
             self.lay.ready.push(r);
+            self.lists_root_computed(r);
         }
         pend.clear();
         self.lay.pending = pend;
@@ -939,14 +946,21 @@ impl Rt {
     }
 
     pub fn lay_flush(&mut self) {
-        if self.lay.pending.is_empty() && self.lay.ready.is_empty() {
+        if self.lay.pending.is_empty() && self.lay.ready.is_empty() && !self.lists.regs.iter().any(|r| r.dirty && !r.dead) {
             if !self.lay.dirty.is_empty() {
                 // text re-placed with no layout change (a sized label's same-width edit)
                 self.lay_writeback_ready();
             }
             return;
         }
-        self.lay_compute_pending();
+        // list regions place their rows between a compute pass and the write-back; a placement may queue
+        // more layout (a container's height, rows at a new width): bounded passes
+        for _ in 0..8 {
+            self.lay_compute_pending();
+            if !self.lists_place() || self.lay.pending.is_empty() {
+                break;
+            }
+        }
         self.lay_writeback_ready();
     }
 
@@ -1346,7 +1360,7 @@ impl<V: 'static, S: TextSrc<V>> Element<V> for Para<S> {
         let size_px = self.size * s;
         let lh_px = self.lh * s;
         let strike = m.rt.text.strike(size_px);
-        let mut ctx = LeafCtx::new(size_px, lh_px, self.wrap);
+        let mut ctx = m.rt.lay.eng.fresh_ctx(size_px, lh_px, self.wrap);
         m.rt.lay.prof.reset();
         {
             let Rt { text, glyphs, .. } = &mut *m.rt;

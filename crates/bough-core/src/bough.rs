@@ -529,6 +529,35 @@ impl Bough {
         self.reindex_pages(at);
     }
 
+    /// Remove directory entries `[d, d+k)` (whole pages emptied by one `remove_run`) in one pass: each
+    /// column shifts its tail once and the pages after are re-indexed once (removing them one at a time
+    /// shifted the tail and re-indexed the rest `k` times).
+    fn dir_remove_range(&mut self, d: usize, k: usize) {
+        if k == 0 {
+            return;
+        }
+        if k == 1 {
+            return self.dir_remove(d);
+        }
+        for i in d..d + k {
+            // SAFETY: live page.
+            let id = unsafe { (*self.d_ptr[i]).id };
+            self.pool.free(id);
+        }
+        let n = self.d_ptr.len();
+        self.d_ptr.drain(d..d + k);
+        self.d_id.copy_within(d + k..n, d);
+        self.d_id.truncate(n - k);
+        self.d_ink.copy_within(d + k..n, d);
+        self.d_ink.truncate(n - k);
+        self.d_min_depth.drain(d..d + k);
+        self.d_len.drain(d..d + k);
+        for _ in 0..k {
+            self.prefix.shrink();
+        }
+        self.reindex_pages(d);
+    }
+
     fn dir_remove(&mut self, d: usize) {
         // SAFETY: live page.
         let id = unsafe { (*self.d_ptr[d]).id };
@@ -760,6 +789,8 @@ impl Bough {
         let mut freed = false;
         let mut trimmed: [(usize, usize); 4] = [(0, 0); 4];
         let mut ntrim = 0usize;
+        // whole pages emptied: one contiguous directory range, removed after the walk
+        let (mut full_at, mut full_n) = (usize::MAX, 0usize);
         while remaining > 0 {
             let l = self.d_len[d] as usize;
             let n = remaining.min(l - s);
@@ -788,7 +819,11 @@ impl Bough {
             }
             if n == l {
                 freed = true;
-                self.dir_remove(d);
+                if full_n == 0 {
+                    full_at = d;
+                }
+                full_n += 1;
+                d += 1;
             } else {
                 if ntrim < 4 {
                     trimmed[ntrim] = (d, n);
@@ -816,6 +851,7 @@ impl Bough {
             s = 0;
             remaining -= n;
         }
+        self.dir_remove_range(full_at, full_n);
         self.total -= len;
         if !freed && ntrim <= 4 {
             // Pure trims: add each page's negative delta instead of rebuilding.

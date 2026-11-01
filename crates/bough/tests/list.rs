@@ -173,6 +173,13 @@ fn dump(app: &App<impl View>) -> Dump {
 }
 fn same(ctx: &str, a: &Dump, b: &Dump) {
     assert_eq!(a.len(), b.len(), "{ctx}: record count");
+    if std::env::var_os("LIST_DEBUG").is_some() {
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            if x.2 != y.2 {
+                eprintln!("  rec {i} kind {} depth {} ink {:?} fresh {:?}", x.0, x.1, x.2, y.2);
+            }
+        }
+    }
     for (i, (x, y)) in a.iter().zip(b).enumerate() {
         assert!(x.0 == y.0 && x.1 == y.1, "{ctx}: record {i} kind/depth {:?} != {:?}", (x.0, x.1), (y.0, y.1));
         assert!(x.2 == y.2, "{ctx}: record {i} (kind {}) ink {:?} != fresh {:?}", x.0, x.2, y.2);
@@ -215,6 +222,9 @@ fn list_region_equals_fresh_mount_after_random_deltas() {
                 ops.push((r.below(13), r.next(), r.next()));
             }
             let mut rr = Rng(r.next() | 1);
+            if std::env::var_os("LIST_DEBUG").is_some() {
+                eprintln!("seed {seed} turn {turn} n {} ops {:?}", a.owner.items.len(), ops.iter().map(|o| o.0).collect::<Vec<_>>());
+            }
             a.turn(|v| {
                 for &(k, x, y) in &ops {
                     let n = v.items.len();

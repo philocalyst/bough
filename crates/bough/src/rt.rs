@@ -201,6 +201,8 @@ pub struct Scope {
     pub lroots: Vec<u32>,
     /// Dynamic parts of a re-describing owner (`describe.rs`), released with their items.
     pub dyns: Vec<u32>,
+    /// List regions mounted in this scope (`listview.rs`), released with their rows.
+    pub lregs: Vec<u32>,
 }
 
 pub struct RowInfo {
@@ -312,6 +314,8 @@ pub struct Rt {
     pub mregions: Vec<crate::mlist::MRegion>,
     /// List regions (`listview.rs`).
     pub lists: crate::listview::Lists,
+    /// Released subtrees whose resources return to the free lists at the next frames (`reclaim`).
+    pub(crate) reclaim_q: Vec<Scope>,
     /// Dynamic parts of re-describing owners (`describe.rs`).
     pub dyns: crate::describe::Dyns,
     /// Entity views (`entity.rs`), async producers / cohort / executor (`reader.rs`), and this turn's
@@ -397,6 +401,7 @@ impl Rt {
             lay: crate::layout::Lay::new(scale),
             mregions: Vec::new(),
             lists: Default::default(),
+            reclaim_q: Vec::new(),
             dyns: Default::default(),
             eviews: Vec::new(),
             asy: Default::default(),
@@ -808,22 +813,64 @@ impl Rt {
     }
 
     // ------------------------------------------------------------------ release
-    pub fn release_scope(&mut self, s: Scope) {
-        for w in s.wires {
+    /// Release what a subtree held. Two phases (`reclaim`): **now**, everything that could still reach the
+    /// subtree is cut (its wires die, its layout groups leave the engine, its list regions stop), which is
+    /// O(wires + layout nodes) of flag writes; **later**, at the next frames' `reclaim`, its nodes, texts,
+    /// instance runs, glyph blocks and dynamic items return to their free lists. The removal frame pays
+    /// only the cut and bough-core's O(pages) run removal.
+    pub fn release_scope(&mut self, mut s: Scope) {
+        self.cut_scope(&mut s);
+        if !(s.nodes.is_empty() && s.runs.is_empty() && s.dyns.is_empty()) {
+            self.reclaim_q.push(s);
+        }
+    }
+
+    fn cut_scope(&mut self, s: &mut Scope) {
+        for w in s.wires.drain(..) {
             self.wires[w as usize].dead = true;
         }
-        for n in s.nodes {
-            self.free_node(n);
-        }
-        for r in s.runs {
-            self.free_run(r);
-        }
-        for r in s.lroots {
+        for r in s.lroots.drain(..) {
             self.lay_remove_root(r);
         }
-        for d in s.dyns {
-            self.release_dyn(d);
+        for r in s.lregs.drain(..) {
+            self.lr_release_region(r as usize);
         }
+        // dynamic items are cut now too (their wires may sit on live signals)
+        for &d in &s.dyns {
+            let mut items = std::mem::take(&mut self.dyns.parts[d as usize]);
+            for it in &mut items {
+                self.cut_scope(&mut it.scope);
+            }
+            self.dyns.parts[d as usize] = items;
+        }
+    }
+
+    /// Return up to about `budget` released nodes to the free lists (see `release_scope`); returns whether
+    /// anything is still waiting.
+    pub fn reclaim(&mut self, mut budget: usize) -> bool {
+        while budget > 0 {
+            let Some(mut s) = self.reclaim_q.pop() else { break };
+            while budget > 0 {
+                if let Some(n) = s.nodes.pop() {
+                    self.free_node(n);
+                } else if let Some(r) = s.runs.pop() {
+                    self.free_run(r);
+                } else if let Some(d) = s.dyns.pop() {
+                    self.release_dyn(d);
+                } else {
+                    break;
+                }
+                budget -= 1;
+            }
+            if !(s.nodes.is_empty() && s.runs.is_empty() && s.dyns.is_empty()) {
+                self.reclaim_q.push(s);
+            }
+        }
+        // layout leaves' glyph blocks; their states are kept for reuse
+        while budget > 0 && self.lay.eng.reclaim_orphan(&mut self.glyphs) {
+            budget -= 1;
+        }
+        !self.reclaim_q.is_empty() || !self.lay.eng.orphans.is_empty()
     }
 
     // ------------------------------------------------------------------ virtual-list regions

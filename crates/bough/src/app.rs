@@ -52,6 +52,9 @@ impl Config {
     }
 }
 
+/// Released nodes returned to the free lists per idle frame or turn (`Rt::reclaim`).
+pub const RECLAIM_BUDGET: usize = 4096;
+
 pub const PH_UPDATE: usize = 0;
 pub const PH_TEXT: usize = 1;
 pub const PH_DAMAGE: usize = 2;
@@ -262,6 +265,7 @@ impl<V: View> App<V> {
     /// wires), lay out what changed.
     pub fn turn(&mut self, f: impl FnOnce(&mut V)) {
         self.sync();
+        self.rt.reclaim(RECLAIM_BUDGET);
         self.prof.reset();
         self.rt.pubs.clear();
         self.rt.admit();
@@ -457,6 +461,8 @@ impl<V: View> App<V> {
         let core = !self.rt.bough.plane(0).is_clear();
         let paint = !self.rt.paint.plane(0).is_clear();
         if !core && !paint {
+            // an idle frame returns released subtrees' resources (`Rt::reclaim`), a budget at a time
+            self.rt.reclaim(RECLAIM_BUDGET);
             return false;
         }
         self.prof.reset();
@@ -566,6 +572,11 @@ impl<V: View> App<V> {
             return (0..self.held.len()).any(|i| Some(i) != self.shown && g.surfs[i].touched.get() && !g.surfs[i].volatile.get());
         }
         false
+    }
+
+    /// Are released subtrees' resources still waiting to return to the free lists (`Rt::reclaim`)?
+    pub fn reclaiming(&self) -> bool {
+        !self.rt.reclaim_q.is_empty() || !self.rt.lay.eng.orphans.is_empty()
     }
 
     /// The tile rows the last repair covered (tests and diagnostics).

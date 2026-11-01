@@ -97,6 +97,12 @@ impl TextSys {
         }
         let s = self.cache.strike(size_px);
         self.strikes.push((key, s));
+        // the strike's ASCII tokens are drawable from the start, whichever path shapes into it first (a
+        // laid-out text's pool block has no label to prepare them: it drew nothing until some label of the
+        // same size happened to exist)
+        if let Some(tt) = self.shaper.script.tokens.as_ref() {
+            self.cache.prepare_tokens(s, &tt.gid, 0x20..0x7F);
+        }
         s
     }
 
