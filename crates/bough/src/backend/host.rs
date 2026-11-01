@@ -19,6 +19,27 @@ use std::time::Duration;
 struct Trim {
     timer: RefCell<Option<objc2::rc::Retained<NSTimer>>>,
     pushed: Cell<Option<std::time::Instant>>,
+    retry_armed: Cell<bool>,
+}
+
+/// After a frame: arm the trim push, and, if the frame was skipped because the compositor held every
+/// surface (`App::retry`), a one-shot retry timer (never more than one armed).
+fn after_frame<V: View>(app: &Rc<RefCell<App<V>>>, st: &Rc<Trim>, a: &mut App<V>, drew: bool) {
+    if drew && a.needs_trim() {
+        push_trim(app, st);
+    }
+    if a.retry && !st.retry_armed.get() {
+        st.retry_armed.set(true);
+        let (app, st2) = (app.clone(), st.clone());
+        let blk = RcBlock::new(move |_t: NonNull<NSTimer>| {
+            st2.retry_armed.set(false);
+            let Ok(mut a) = app.try_borrow_mut() else { return };
+            let drew = a.frame();
+            after_frame(&app, &st2, &mut a, drew);
+        });
+        let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(a.retry_delay_ms() as f64 / 1000.0, false, &blk) };
+        unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&t, objc2_foundation::NSRunLoopCommonModes) };
+    }
 }
 const TRIM_AFTER: f64 = 1.0;
 
@@ -67,7 +88,11 @@ pub fn run_window<V: View>(
         let Some((view, tick, report)) = init.take() else { return };
         link.setPaused(true);
         let scale = host.scale() as f32;
-        let mut app = App::new(view, make_cfg(scale), true);
+        let mut cfg = make_cfg(scale);
+        if cfg.ring == 0 {
+            cfg.ring = 2; // windowed: two surfaces; a third is never written (frames the compositor cannot take are skipped)
+        }
+        let mut app = App::new(view, cfg, true);
         {
             let g = app.gpu.as_mut().unwrap();
             g.publish = std::env::var_os("BOUGH_NOPUBLISH").is_none();
@@ -83,9 +108,8 @@ pub fn run_window<V: View>(
             let blk = RcBlock::new(move |_t: NonNull<NSTimer>| {
                 let mut a = app_rc.borrow_mut();
                 (tick.borrow_mut())(&mut a);
-                if a.frame() && a.needs_trim() {
-                    push_trim(&app_rc, &trim);
-                }
+                let drew = a.frame();
+                after_frame(&app_rc, &trim, &mut a, drew);
             });
             let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(p.as_secs_f64(), true, &blk) };
             t.setTolerance(0.0005);
@@ -150,7 +174,11 @@ pub fn run_window_linked<V: View>(
     bough_metal::app::run_sized(title, w, h, move |host, _link| {
         if let Some((view, report)) = init.take() {
             let scale = host.scale() as f32;
-            let mut app = App::new(view, make_cfg(scale), true);
+            let mut cfg = make_cfg(scale);
+        if cfg.ring == 0 {
+            cfg.ring = 2; // windowed: two surfaces; a third is never written (frames the compositor cannot take are skipped)
+        }
+        let mut app = App::new(view, cfg, true);
             {
                 let g = app.gpu.as_mut().unwrap();
                 g.publish = std::env::var_os("BOUGH_NOPUBLISH").is_none();
@@ -191,9 +219,8 @@ pub fn run_window_linked<V: View>(
         if let Some((app, t0)) = &state {
             let mut a = app.borrow_mut();
             cb(&mut a, t0.elapsed().as_secs_f64());
-            if a.frame() && a.needs_trim() {
-                push_trim(app, &trim);
-            }
+            let drew = a.frame();
+            after_frame(app, &trim, &mut a, drew);
         }
     })
 }

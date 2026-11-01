@@ -17,7 +17,9 @@ pub struct Config {
     pub height_pt: f32,
     pub scale: f32,
     pub font: Vec<u8>,
-    /// Surfaces in the ring (age tracking is per surface). 4 = compositor holds two + one drawing + one spare.
+    /// Surfaces in the ring (age tracking is per surface). 0 = the default: 4 offscreen (round-robin, ages 1..4),
+    /// 2 in a window (`host`): the compositor holds one, the other is drawn; if it holds both the frame waits
+    /// ~7 ms and is then skipped and retried, so a window never writes a third surface.
     pub ring: usize,
 }
 
@@ -76,6 +78,10 @@ pub struct App<V: View> {
     pub surf_stats: SurfStats,
     /// `frames` value when each ring slot was last drawn into.
     last_use: Vec<u64>,
+    /// The last `frame()` had damage but no surface to draw it into: the host must call `frame()` again
+    /// after `retry_delay_ms()`.
+    pub retry: bool,
+    retry_ms: u64,
     /// Running average (us) of how long the compositor held every surface (see `pick_surface`).
     wait_us: f32,
     trim_mark: u64,
@@ -88,10 +94,10 @@ pub struct SurfStats {
     pub uses: [u64; 8],
     /// Frames that found every surface held by the compositor and waited for one.
     pub waits: u64,
+    /// ... and gave up after ~7 ms: skipped, damage kept pending, retried by the host.
+    pub skipped: u64,
     /// Polls of the compositor's hold on the ring (one per 200 us of waiting, plus the first check of each frame).
     pub polls: u64,
-    /// ... and gave up waiting (drew into the least recently drawn surface anyway).
-    pub forced: u64,
     /// Surfaces found purged (volatile memory reclaimed) when made resident again.
     pub purged: u64,
     /// Trim passes that made at least one surface volatile.
@@ -146,6 +152,8 @@ impl<V: View> App<V> {
             repaired_px: 0,
             surf_stats: SurfStats::default(),
             last_use: vec![0; ring],
+            retry: false,
+            retry_ms: 2,
             wait_us: 1500.0,
             trim_mark: 0,
         }
@@ -189,7 +197,14 @@ impl<V: View> App<V> {
             return false;
         }
         let n = self.ages.len();
-        let idx = self.pick_surface();
+        let Some(idx) = self.pick_surface() else {
+            self.surf_stats.skipped += 1;
+            self.retry = true;
+            self.retry_ms = (self.retry_ms * 2).clamp(4, 128);
+            return false;
+        };
+        self.retry = false;
+        self.retry_ms = 2;
         self.next_surf = (idx + 1) % n;
         let epoch = self.rt.bough.epoch();
         let (w, h) = (self.rt.win_w, self.rt.win_h);
@@ -249,56 +264,53 @@ impl<V: View> App<V> {
         true
     }
 
-    /// Choose the ring surface for the next frame. Windowed (surfaces are published to the layer): the
-    /// lowest-indexed surface the compositor does not hold, among the first two; a third (fourth) slot
-    /// is only written if the compositor has held the others for 10 (20) ms. Slots contention never
-    /// requires are never written, so they cost nothing (an IOSurface is unbacked until first written):
-    /// the 4-slot ring costs what the 2 (rarely 3) in use cost. If nothing frees up in 24 ms, take the
-    /// surface drawn longest ago. Offscreen: round-robin over the whole ring (nothing holds a surface).
-    fn pick_surface(&mut self) -> usize {
+    /// Choose the ring surface for the next frame, or `None` if the compositor still holds every one.
+    /// Windowed (surfaces are published to the layer): the free slot drawn longest ago (the one the
+    /// compositor releases next; a slot contention never requires is never written and costs nothing:
+    /// an IOSurface is unbacked until first written). If all are held, wait up to ~7 ms for a release
+    /// (learned: sleep most of the usual wait in one go, then poll `IOSurfaceIsInUse` at 150 us), then
+    /// give up: the frame is skipped, its damage stays pending, and the host retries
+    /// (`App::retry_delay_ms`). Skipping instead of growing the ring is what keeps memory flat: the
+    /// compositor can only show the latest frame, so a frame it cannot take yet is better drawn later,
+    /// from the latest state, than drawn now into a third surface. Never draws into a held surface.
+    /// Offscreen: round-robin over the whole ring (nothing holds a surface).
+    fn pick_surface(&mut self) -> Option<usize> {
         let n = self.ages.len();
         #[cfg(target_os = "macos")]
         if let Some(g) = self.gpu.as_ref().filter(|g| g.publish) {
             use std::time::{Duration, Instant};
-            // Poll the slots in order of how long ago they were drawn (the oldest is the one the compositor
-            // releases next, so in steady state one `is_in_use` call per poll), lowest index first among ties.
-            let first_free = |s: &Self, allowed: usize| -> Option<usize> {
+            // slots in order of how long ago they were drawn: in steady state the first one polled is the one
+            // the compositor lets go of next (one `is_in_use` call per poll)
+            let first_free = |s: &Self| -> Option<usize> {
                 let mut order = [0usize; 8];
-                let m = allowed.min(8);
+                let m = n.min(8);
                 for (k, o) in order.iter_mut().enumerate().take(m) {
                     *o = k;
                 }
                 order[..m].sort_by_key(|&c| s.last_use[c]);
-                // a never-drawn slot has last_use 0 like slot 0 of a fresh ring: lowest index wins the tie
                 order[..m].iter().copied().find(|&c| !g.is_in_use(c))
             };
             self.surf_stats.polls += 1;
-            if let Some(c) = first_free(self, 2.min(n)) {
-                return c;
+            if let Some(c) = first_free(self) {
+                return Some(c);
             }
             self.surf_stats.waits += 1;
-            // Held by the compositor: it lets go at its next refresh, about `wait_us` from now (a running
-            // average of past waits). Sleep most of that in one go, then poll finely, so a 120 Hz window
-            // does not spin on IOSurfaceIsInUse. A 3rd (4th) slot is only written after 10 (20) ms; at 24 ms the surface drawn longest ago is taken.
             let t0 = Instant::now();
             std::thread::sleep(Duration::from_micros((self.wait_us * 0.7) as u64));
             loop {
                 let waited = t0.elapsed().as_micros() as u64;
-                let allowed = (2 + (waited / 10_000) as usize).min(n);
                 self.surf_stats.polls += 1;
-                if let Some(c) = first_free(self, allowed) {
-                    self.wait_us = 0.8 * self.wait_us + 0.2 * (waited as f32).min(8000.0);
-                    return c;
+                if let Some(c) = first_free(self) {
+                    self.wait_us = 0.8 * self.wait_us + 0.2 * (waited as f32).min(7000.0);
+                    return Some(c);
                 }
-                if waited > 24_000 {
-                    break;
+                if waited > 7_000 {
+                    return None;
                 }
                 std::thread::sleep(Duration::from_micros(150));
             }
-            self.surf_stats.forced += 1;
-            return (0..n).min_by_key(|&c| self.ages[c].map_or(0, |e| e + 1)).unwrap();
         }
-        self.next_surf % n
+        Some(self.next_surf % n)
     }
 
     /// Release what a calm window does not need: every surface except the one on screen becomes
@@ -332,6 +344,11 @@ impl<V: View> App<V> {
             return (0..self.ages.len()).any(|i| i != self.last_surface && self.ages[i].is_some() && !g.ring[i].volatile.get());
         }
         false
+    }
+
+    /// How long the host should wait before retrying a skipped frame (backs off 4, 8 .. 128 ms).
+    pub fn retry_delay_ms(&self) -> u64 {
+        self.retry_ms
     }
 
     /// Frames presented so far (the host's trim timer compares this across ticks).
