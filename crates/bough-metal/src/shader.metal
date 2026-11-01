@@ -13,8 +13,8 @@ struct Instance {          // 48 bytes, mirrors instance.rs
     float  bw;             // 28  border width
     ushort4 uv;            // 32  glyph atlas texels x,y,w,h
     ushort space;          // 40  index into spaces[]
-    uchar  kind;           // 42  0 solid, 1 rrect, 2 border, 3 glyph
-    uchar  flags;          // 43
+    uchar  kind;           // 42  0 solid, 1 rrect, 2 border, 3 glyph, 4 image, 5 gradient, 6 shadow
+    uchar  flags;          // 43  ink margin in px beyond the box (0: the kind's default)
     uint   ext;            // 44  clip index
 };
 
@@ -460,6 +460,7 @@ struct TgRec {
     float radius, bw;
     ushort2 uv;
     ushort kind, pad;
+    float2 gc;         // gradient: radial centre as fractions of the box
 };
 
 static half4 shade_h(threadgroup const TgRec& r, float2 c, texture2d<float> atlas) {
@@ -936,6 +937,13 @@ constant uint FPG_PAYLOAD = 768;
 constant uint FPG_CLIP = 1280;
 constant uint FPG_OFFL = 1436;
 
+// The ink margin beyond an instance's box: none for a solid quad, 1 px for an SDF edge, or the instance's
+// own (`flags`: a shadow's blur extent, a rotated image's corners). The CPU's ink rects use the same value.
+static float f_margin(uint kind, uint flags) {
+    return kind == 0u ? 0.0 : (flags != 0u ? float(flags) : 1.0);
+}
+
+
 static float4 f_clip(device const uchar* pool, device const FHdr& h, uint c) {
     short4 r = ((device const short4*)(pool + h.clips_off))[c];
     return float4(float(r.x), float(r.y), -float(r.z), -float(r.w));
@@ -1086,7 +1094,7 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                                 if (gk2 < in_) {
                                     device const FInst& q = inst[i0 + gk2];
                                     float2 q0 = q.pos + f_space(pool, h, q.space);
-                                    float m = q.kind == 0 ? 0.0 : 1.0;
+                                    float m = f_margin(q.kind, q.flags);
                                     float2 qa = clamp(q0 - m, cl.xy, cl.zw);
                                     float2 qb = clamp(q0 + q.size + m, cl.xy, cl.zw);
                                     if (qa.x < qb.x && qa.y < qb.y) {
@@ -1115,10 +1123,81 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
     }
 }
 
+static float2 f_erf2(float2 x) {
+    float2 s = sign(x), a = abs(x);
+    x = 1.0 + (0.278393 + (0.230389 + 0.078108 * (a * a)) * a) * a;
+    x *= x;
+    return s - s / (x * x);
+}
+// A rounded box's Gaussian shadow (Evan Wallace's closed form along x, 4 samples along y).
+static float f_shadow_x(float x, float y, float sigma, float corner, float2 hs) {
+    float delta = min(hs.y - corner - abs(y), 0.0);
+    float curved = hs.x - corner + sqrt(max(0.0, corner * corner - delta * delta));
+    float2 integral = 0.5 + 0.5 * f_erf2((x + float2(-curved, curved)) * (0.70710678 / sigma));
+    return integral.y - integral.x;
+}
+static float f_shadow(float2 p, float2 hs, float sigma, float corner) {
+    float low = p.y - hs.y, high = p.y + hs.y;
+    float start = clamp(-3.0 * sigma, low, high), end = clamp(3.0 * sigma, low, high);
+    float step = (end - start) * 0.25;
+    float y = start + step * 0.5, v = 0.0;
+    for (int i = 0; i < 4; i++) {
+        float g = exp(-(y * y) / (2.0 * sigma * sigma)) / (2.5066283 * sigma);
+        v += f_shadow_x(p.x, p.y - y, sigma, corner, hs) * g * step;
+        y += step;
+    }
+    return v;
+}
+
+// The fused tile kernel's shading: the base kinds as `shade_h`, plus images (premultiplied RGBA, rotated
+// about their centre by `radius` rad, bilinear), gradients (a 256-texel premultiplied ramp in the image
+// atlas, linear at angle `bw` (CSS: 0 = to top, clockwise) or a radial circle about `gc` (fractions of the
+// box) reaching its farthest corner, in a rounded box) and box shadows (blur sigma `bw`).
+static half4 shade_f(threadgroup const TgRec& r, float2 c, texture2d<float> atlas, texture2d<float> img) {
+    if (r.kind < 4u) return shade_h(r, c, atlas);
+    if (!(c.x >= r.q.x && c.x < r.q.z && c.y >= r.q.y && c.y < r.q.w)) return half4(0.0h);
+    float2 p = c - r.centre;
+    switch (r.kind) {
+    case 4: {
+        float cs = cos(r.radius), sn = sin(r.radius);
+        float2 t = float2(p.x * cs + p.y * sn, -p.x * sn + p.y * cs) + r.half_ - 0.5;
+        float2 sz = r.half_ * 2.0;
+        if (t.x <= -1.0 || t.y <= -1.0 || t.x >= sz.x || t.y >= sz.y) return half4(0.0h);
+        float2 f0 = floor(t), fr = t - f0;
+        int2 i0 = int2(f0);
+        float4 acc = float4(0.0);
+        for (int k = 0; k < 4; k++) {
+            int2 d = int2(k & 1, k >> 1);
+            int2 q = i0 + d;
+            if (q.x < 0 || q.y < 0 || q.x >= int(sz.x) || q.y >= int(sz.y)) continue;
+            float wgt = (d.x == 1 ? fr.x : 1.0 - fr.x) * (d.y == 1 ? fr.y : 1.0 - fr.y);
+            acc += img.read(uint2(int2(r.uv) + q)) * wgt;
+        }
+        return half4(acc) * r.pm.a; }
+    case 5: {
+        float t;
+        if (r.pad == 0u) {
+            float2 dir = float2(sin(r.bw), -cos(r.bw));
+            float len = abs(2.0 * r.half_.x * dir.x) + abs(2.0 * r.half_.y * dir.y);
+            t = dot(p, dir) / len + 0.5;
+        } else {
+            float2 g = (r.gc - 0.5) * 2.0 * r.half_;
+            t = length(p - g) / length(abs(g) + r.half_);
+        }
+        float x = clamp(t, 0.0, 1.0) * 255.0;
+        float i = min(floor(x), 254.0), f = x - i;
+        float4 c0 = img.read(uint2(r.uv) + uint2(uint(i), 0u)), c1 = img.read(uint2(r.uv) + uint2(uint(i) + 1u, 0u));
+        float cov = clamp(0.5 - sd_rbox(p, r.half_, r.radius), 0.0, 1.0);
+        return half4(mix(c0, c1, f) * cov); }
+    default:
+        return r.pm * half(clamp(f_shadow(p, r.half_, r.bw, r.radius), 0.0, 1.0));
+    }
+}
+
 // Solid quads are pixel-exact (no AA margin); the others carry a 1 px margin for their SDF edge.
 static bool f_stage_rec(device const FInst& in, float2 off, float4 cl, uint2 o, thread TgRec& r, thread bool& cover) {
     float2 p0 = in.pos + off;
-    float m = in.kind == 0 ? 0.0 : 1.0;
+    float m = f_margin(in.kind, in.flags);
     float2 qa = clamp(p0 - m, cl.xy, cl.zw);
     float2 qb = clamp(p0 + in.size + m, cl.xy, cl.zw);
     r.q = float4(qa, qb);
@@ -1131,10 +1210,12 @@ static bool f_stage_rec(device const FInst& in, float2 off, float4 cl, uint2 o, 
     r.bw = in.bw;
     r.uv = in.uv.xy;
     r.kind = in.kind;
+    r.pad = in.uv.z;
+    r.gc = float2(as_type<float>(in.color), as_type<float>(in.color2));
     float k = in.kind == 1 ? max(in.radius, 0.5) + 1.0 : max(in.radius, 0.5 + in.bw) + 1.0;
     float4 cb = float4(r.centre - (r.half_ - k), r.centre + (r.half_ - k));
     cb = float4(max(cb.xy, qa), min(cb.zw, qb));
-    r.core = in.kind == 0 ? float4(qa, qb) : (in.kind == 3 ? float4(0.0) : cb);
+    r.core = in.kind == 0 ? float4(qa, qb) : (in.kind >= 3 ? float4(0.0) : cb);
     r.cv = in.kind == 2 ? r.pm2 : r.pm;
     cover = in.kind == 0 && (in.color >> 24) == 255u && qa.x <= float(o.x) + 0.5 && qa.y <= float(o.y) + 0.5
             && qb.x > float(o.x) + 31.5 && qb.y > float(o.y) + 31.5;
@@ -1176,7 +1257,8 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
                     texture2d<float, access::write> t0 [[texture(1)]],
                     texture2d<float, access::write> t1 [[texture(2)]],
                     texture2d<float, access::write> t2 [[texture(3)]],
-                    texture2d<float, access::write> t3 [[texture(4)]]) {
+                    texture2d<float, access::write> t3 [[texture(4)]],
+                    texture2d<float> img [[texture(5)]]) {
     device const FHdr& h = *(device const FHdr*)pool;
     device const FSlot& fs = *(device const FSlot*)(pool + slot.x);
     device const FRow* frows = (device const FRow*)(pool + slot.x + 32);
@@ -1245,7 +1327,7 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
                 continue;
             }
             for (uint j = 0; j < 4; j++) {
-                half4 sh = shade_h(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas);
+                half4 sh = shade_f(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas, img);
                 acc[j] = sh + acc[j] * (1.0h - sh.a);
             }
         }

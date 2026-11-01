@@ -217,7 +217,11 @@ pub struct Fused {
     pool_len: usize,
     atlas: Tex,
     atlas_dims: (u32, u32),
+    /// Premultiplied RGBA images (icons, gradient ramps), `IMG_W` x `IMG_H`, created at first use.
+    img: Option<Tex>,
     bins: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// Keeps the memory of a wrapped region alive (`new_on`).
+    _pool_keep: Option<Box<dyn std::any::Any>>,
     counts: Retained<ProtocolObject<dyn MTLBuffer>>,
     pub bin_cap: u32,
     pub surfs: Vec<Surface>,
@@ -243,9 +247,51 @@ pub struct Fused {
     batch: usize,
 }
 
-impl Fused {
-    /// A presenter for a `w` x `h` px window whose region is a `region_len`-byte shared buffer.
-    pub fn new(w: usize, h: usize, scale: f64, region_len: usize, surfaces: usize, bin_cap: u32) -> Fused {
+/// The image atlas's size (premultiplied RGBA8 texels).
+pub const IMG_W: u32 = 1024;
+pub const IMG_H: u32 = 1024;
+
+/// The device-side state that does not depend on a window: the device (the driver's loading: 22–29 ms on
+/// this Mac, most of a cold start), the queues, the library and the two pipelines. `prepare_in_background`
+/// builds it on another thread from process entry while the main thread mounts, shapes and lays out.
+pub struct GpuPrep {
+    device: Dev,
+    queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    aux: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    pso_bin: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pso_tile: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    /// The window-sized resources, when the window was known: ((w, h, surfaces, bin_cap), atlas, bins,
+    /// counts, surfaces).
+    res: Option<PrepRes>,
+    /// Instructions the building thread retired (thread_selfcounts), 0 if built on the caller's thread.
+    pub instructions: u64,
+    pub nanos: u64,
+}
+
+type PrepRes = ((usize, usize, usize, u32), Retained<ProtocolObject<dyn MTLTexture>>, Retained<ProtocolObject<dyn MTLBuffer>>, Retained<ProtocolObject<dyn MTLBuffer>>, Vec<Surface>);
+
+// SAFETY: Metal devices, command queues and pipeline states are thread-safe objects (Apple's Metal
+// programming guide: "MTLDevice, MTLCommandQueue ... are thread-safe"); the struct only moves them from the
+// thread that built them to the one that uses them.
+unsafe impl Send for GpuPrep {}
+
+unsafe extern "C" {
+    fn thread_selfcounts(kind: i32, buffer: *mut u64, size: usize) -> i32;
+}
+
+/// The calling thread's retired instructions (xnu's per-thread counters).
+pub fn thread_instructions() -> u64 {
+    let mut c = [0u64; 2];
+    // SAFETY: kind 1 fills two u64s (instructions, cycles); `c` has 16 bytes.
+    unsafe { thread_selfcounts(1, c.as_mut_ptr(), 16) };
+    c[0]
+}
+
+impl GpuPrep {
+    /// The device state, plus the window-sized resources (atlas, bins, surfaces) when `dims` names the
+    /// window: (w, h px, surfaces, bin capacity).
+    pub fn new(dims: Option<(usize, usize, usize, u32)>) -> GpuPrep {
+        let (i0, t0) = (thread_instructions(), std::time::Instant::now());
         let device = MTLCreateSystemDefaultDevice().expect("no Metal device");
         let queue = device.newCommandQueue().expect("queue");
         let aux = device.newCommandQueue().expect("aux queue");
@@ -257,13 +303,79 @@ impl Fused {
         };
         let pso_bin = pso(ns_string!("fs_bin"));
         let pso_tile = pso(ns_string!("fs_tile"));
-        let pool = device.newBufferWithLength_options(region_len, MTLResourceOptions::StorageModeShared).expect("region buffer");
+        let res = dims.map(|(w, h, surfaces, bin_cap)| {
+            let (atlas, bins, counts) = Fused::new_bins(&device, h, bin_cap);
+            let surfs = (0..surfaces.clamp(1, MAX_SURFACES)).map(|_| Fused::new_surface(&device, w, h)).collect();
+            ((w, h, surfaces, bin_cap), atlas, bins, counts, surfs)
+        });
+        GpuPrep { device, queue, aux, pso_bin, pso_tile, res, instructions: thread_instructions() - i0, nanos: t0.elapsed().as_nanos() as u64 }
+    }
+}
+
+static PREP: std::sync::Mutex<Option<std::thread::JoinHandle<GpuPrep>>> = std::sync::Mutex::new(None);
+
+/// Start building the GPU's device state on another thread (call at process entry). The next presenter
+/// created takes it (waiting for it if it is not done).
+pub fn prepare_in_background(dims: Option<(usize, usize, usize, u32)>) {
+    let h = std::thread::Builder::new().name("bough-gpu-prep".into()).spawn(move || GpuPrep::new(dims)).expect("gpu prep thread");
+    *PREP.lock().unwrap() = Some(h);
+}
+
+/// Is a background preparation pending (so a presenter should be created after the mount)?
+pub fn prep_pending() -> bool {
+    PREP.lock().unwrap().is_some()
+}
+
+fn take_prep() -> GpuPrep {
+    match PREP.lock().unwrap().take() {
+        Some(h) => h.join().expect("gpu prep thread"),
+        None => GpuPrep::new(None),
+    }
+}
+
+/// The region a presenter draws from: a fresh shared buffer, or memory the caller already carved (wrapped
+/// without a copy: page-aligned, a whole number of pages; kept alive by `keep` as long as the buffer).
+pub enum PoolSrc {
+    Alloc(usize),
+    Wrap { ptr: *mut u8, len: usize, keep: Box<dyn std::any::Any> },
+}
+
+impl Fused {
+    /// A presenter for a `w` x `h` px window whose region is a `region_len`-byte shared buffer.
+    pub fn new(w: usize, h: usize, scale: f64, region_len: usize, surfaces: usize, bin_cap: u32) -> Fused {
+        Self::with_pool(take_prep(), PoolSrc::Alloc(region_len), w, h, scale, surfaces, bin_cap)
+    }
+
+    /// A presenter over memory already carved and written (the mount ran while the device was built): the
+    /// memory becomes the shared buffer without a copy.
+    ///
+    /// # Safety
+    /// `ptr` is page-aligned, valid for `len` bytes (a multiple of the page size) and stays valid while `keep`
+    /// lives; nothing else frees it.
+    pub unsafe fn new_on(ptr: *mut u8, len: usize, keep: Box<dyn std::any::Any>, w: usize, h: usize, scale: f64, surfaces: usize, bin_cap: u32) -> (Fused, u64, u64) {
+        let prep = take_prep();
+        let (i, ns) = (prep.instructions, prep.nanos);
+        (Self::with_pool(prep, PoolSrc::Wrap { ptr, len, keep }, w, h, scale, surfaces, bin_cap), i, ns)
+    }
+
+    fn with_pool(prep: GpuPrep, src: PoolSrc, w: usize, h: usize, scale: f64, surfaces: usize, bin_cap: u32) -> Fused {
+        let GpuPrep { device, queue, aux, pso_bin, pso_tile, res, .. } = prep;
+        let (pool, region_len, pool_keep) = match src {
+            PoolSrc::Alloc(len) => (device.newBufferWithLength_options(len, MTLResourceOptions::StorageModeShared).expect("region buffer"), len, None),
+            PoolSrc::Wrap { ptr, len, keep } => {
+                // SAFETY: the caller's contract (page-aligned, `len` bytes, alive while `keep` is; no deallocator).
+                let b = unsafe { device.newBufferWithBytesNoCopy_length_options_deallocator(NonNull::new(ptr as *mut _).unwrap(), len, MTLResourceOptions::StorageModeShared, None) }.expect("wrapped region buffer");
+                (b, len, Some(keep))
+            }
+        };
         let pool_ptr = pool.contents().as_ptr() as *mut u8;
-        let atlas = Self::new_atlas(&device, 1024, 512);
-        let ty = h.div_ceil(32);
-        let bins = device.newBufferWithLength_options(ty * bin_cap as usize * 16, MTLResourceOptions::StorageModePrivate).expect("bins");
-        let counts = device.newBufferWithLength_options((ty + 1) * 4, MTLResourceOptions::StorageModeShared).expect("bin counts");
-        let surfs = (0..surfaces.clamp(1, MAX_SURFACES)).map(|_| Self::new_surface(&device, w, h)).collect();
+        let (atlas, bins, counts, surfs) = match res {
+            Some((d, atlas, bins, counts, surfs)) if d == (w, h, surfaces, bin_cap) => (atlas, bins, counts, surfs),
+            _ => {
+                let (atlas, bins, counts) = Self::new_bins(&device, h, bin_cap);
+                (atlas, bins, counts, (0..surfaces.clamp(1, MAX_SURFACES)).map(|_| Self::new_surface(&device, w, h)).collect())
+            }
+        };
         let layer = CALayer::new();
         layer.setContentsScale(scale);
         layer.setOpaque(true);
@@ -278,10 +390,12 @@ impl Fused {
             pso_bin,
             pso_tile,
             pool,
+            _pool_keep: pool_keep,
             pool_ptr,
             pool_len: region_len,
             atlas,
             atlas_dims: (1024, 512),
+            img: None,
             bins,
             counts,
             bin_cap,
@@ -345,6 +459,16 @@ impl Fused {
     fn new_atlas(device: &Dev, w: u32, h: u32) -> Tex {
         let ad = unsafe { MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(MTLPixelFormat::R8Unorm, w as usize, h as usize, false) };
         device.newTextureWithDescriptor(&ad).expect("atlas")
+    }
+
+    /// The atlas, the bins (one row of `bin_cap` per tile row of a `h` px surface) and their counts.
+    #[allow(clippy::type_complexity)]
+    fn new_bins(device: &Dev, h: usize, bin_cap: u32) -> (Retained<ProtocolObject<dyn MTLTexture>>, Retained<ProtocolObject<dyn MTLBuffer>>, Retained<ProtocolObject<dyn MTLBuffer>>) {
+        let atlas = Self::new_atlas(device, 1024, 512);
+        let ty = h.div_ceil(32);
+        let bins = device.newBufferWithLength_options(ty * bin_cap as usize * 16, MTLResourceOptions::StorageModePrivate).expect("bins");
+        let counts = device.newBufferWithLength_options((ty + 1) * 4, MTLResourceOptions::StorageModeShared).expect("bin counts");
+        (atlas, bins, counts)
     }
 
     fn new_surface(device: &Dev, w: usize, h: usize) -> Surface {
@@ -483,6 +607,35 @@ impl Fused {
     }
 
     /// Upload the glyph atlas (R8, `width` x `height`) if it changed since the last upload (`dirty`).
+    /// Upload rows `rows` of the image atlas (`IMG_W` premultiplied RGBA texels per row) from `pixels` (the
+    /// whole atlas). The GPU must be idle (sync()).
+    pub fn sync_images(&mut self, pixels: &[u8], rows: std::ops::Range<u32>) {
+        assert_eq!(pixels.len(), (IMG_W * IMG_H * 4) as usize);
+        if self.img.is_none() {
+            let d = unsafe { MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(MTLPixelFormat::RGBA8Unorm, IMG_W as usize, IMG_H as usize, false) };
+            let t = self.device.newTextureWithDescriptor(&d).expect("image atlas");
+            if let Some(r) = &self.resid {
+                r.addAllocation(ProtocolObject::from_ref(&*t));
+                r.commit();
+            }
+            self.img = Some(t);
+        }
+        if rows.is_empty() {
+            return;
+        }
+        let t = self.img.as_ref().unwrap();
+        let off = (rows.start * IMG_W * 4) as usize;
+        // SAFETY: rows lie inside the atlas (asserted size); the GPU is idle.
+        unsafe {
+            t.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                MTLRegion { origin: MTLOrigin { x: 0, y: rows.start as usize, z: 0 }, size: MTLSize { width: IMG_W as usize, height: (rows.end - rows.start) as usize, depth: 1 } },
+                0,
+                NonNull::new(pixels.as_ptr().add(off) as *mut _).unwrap(),
+                (IMG_W * 4) as usize,
+            );
+        }
+    }
+
     pub fn sync_atlas(&mut self, width: u32, height: u32, pixels: &[u8], dirty: bool) -> bool {
         if !dirty && (width, height) == self.atlas_dims {
             return false;
@@ -577,9 +730,11 @@ impl Fused {
             }
             enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
             enc.setComputePipelineState(&self.pso_tile);
-            let texs: [*const ProtocolObject<dyn MTLTexture>; 5] =
-                [Retained::as_ptr(&self.atlas), Retained::as_ptr(targets[0]), Retained::as_ptr(targets[1]), Retained::as_ptr(targets[2]), Retained::as_ptr(targets[3])];
-            enc.setTextures_withRange(NonNull::new(texs.as_ptr() as *mut _).unwrap(), objc2_foundation::NSRange::new(0, 5));
+            // the image atlas: the glyph atlas stands in until an image exists (no instance reads it then)
+            let img = self.img.as_ref().map_or(Retained::as_ptr(&self.atlas), Retained::as_ptr);
+            let texs: [*const ProtocolObject<dyn MTLTexture>; 6] =
+                [Retained::as_ptr(&self.atlas), Retained::as_ptr(targets[0]), Retained::as_ptr(targets[1]), Retained::as_ptr(targets[2]), Retained::as_ptr(targets[3]), img];
+            enc.setTextures_withRange(NonNull::new(texs.as_ptr() as *mut _).unwrap(), objc2_foundation::NSRange::new(0, 6));
             let tg2 = MTLSize { width: 16, height: 16, depth: 1 };
             if indirect {
                 enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, l.slot[k] as usize + 12, tg2);

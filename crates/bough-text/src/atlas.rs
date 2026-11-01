@@ -9,6 +9,10 @@ use swash::scale::{image::Content, Render, ScaleContext, Source};
 use swash::zeno::Format;
 use swash::FontRef;
 
+/// Rasterising strikes on several cores (`atlas/parallel.rs`).
+mod parallel;
+pub use parallel::{prerender_in_background, prerender_main, prerender_stats};
+
 /// One glyph quad, 48 bytes (the uber-shader instance layout of DESIGN section 3, glyph kind).
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]

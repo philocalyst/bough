@@ -83,6 +83,11 @@ impl Region {
     pub fn base(&self) -> *mut u8 {
         self.inner.base.as_ptr()
     }
+    /// A handle that keeps the region's memory alive (for a view of it made elsewhere, e.g. a GPU buffer
+    /// wrapping it without a copy).
+    pub fn keeper(&self) -> Box<dyn std::any::Any> {
+        Box::new(self.inner.clone())
+    }
     pub fn len(&self) -> usize {
         self.inner.len
     }

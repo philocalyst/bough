@@ -128,9 +128,18 @@ pub trait Doc: View {
     fn turn(app: &mut App<Self>, dt: f32) -> bool;
     fn picked(&self) -> usize;
     fn value(&self) -> String;
+    /// The document's static text (size in px at scale 1, text) in the order the mount meets it: what
+    /// `bough::app::prepare` rasterises from process entry.
+    fn strikes() -> Vec<(f32, &'static str)>;
 }
+
+/// Every printable ASCII character: the label path readies the whole alphabet of a strike it meets.
+const ASCII: &str = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
 impl Doc for Gallery {
     const LAID_OUT: bool = false;
+    fn strikes() -> Vec<(f32, &'static str)> {
+        GALLERY.iter().filter(|n| !n.text.is_empty()).map(|n| (n.font, ASCII)).collect()
+    }
     fn fresh() -> Self {
         Gallery::new()
     }
@@ -171,6 +180,63 @@ pub fn cold_start<D: Doc>(gpu: bool) {
     );
     println!("MEASURE\tcold-start\t{name}\tms\t{:.4}\t-", dt.as_secs_f64() * 1e3);
     println!("INSTR\tcold-start\t{name}\tp50={}\tn=1", i1 - i0);
+}
+
+/// Process entry to the first presented pixel (the GPU has completed the first frame), with the work that
+/// does not depend on the document started at entry on other threads (`overlap`: Metal device, queues and
+/// pipelines on one; the document's strikes rasterised on `raster` more) or all of it on the main thread.
+/// Instructions per thread: main (xnu's per-thread counter), the GPU preparation thread, each raster
+/// worker, and the rest of the process (Metal's and the runtime's own threads: process total minus those).
+pub fn first_pixel<D: Doc>(entry: std::time::Instant, proc0: u64, main0: u64, overlap: bool, raster: usize) {
+    let cfg = config(WIDTH, HEIGHT);
+    if overlap {
+        bough::app::prepare(&cfg, &D::strikes(), raster);
+    }
+    let mut app = App::new(D::fresh(), cfg, true);
+    let mounted = entry.elapsed();
+    assert!(app.frame(), "the first frame painted");
+    let submitted = entry.elapsed();
+    app.wait_presented();
+    let wall = entry.elapsed();
+    let exec = bough_metal::perf::since_exec_ns();
+    let main = bough_metal::fused::thread_instructions() - main0;
+    let proc = bough_metal::perf::snap().instrs - proc0;
+    let st = app.startup;
+    let raster_stats = bough::app::raster_stats();
+    let rast: u64 = raster_stats.iter().map(|r| r[2]).sum();
+    let mode = if overlap { "overlapped" } else { "serial" };
+    let tag = if D::LAID_OUT { "" } else { "_dump_geometry" };
+    println!(
+        "SCENARIO first-pixel gallery s13 ({mode}{}), process entry to the GPU's completion of the first frame; {} records, {} tiles",
+        if D::LAID_OUT { ", laid out" } else { ", dumped geometry" },
+        app.rt.bough.len(),
+        app.repaired_tiles
+    );
+    println!(
+        "PHASES\tmount_done_ms={:.3}\tmain_mount_ms={:.3}\tmain_mount_instr={}\tgpu_prep_ms={:.3}\tgpu_wait_ms={:.3}\tframe_submitted_ms={:.3}\tpresented_ms={:.3}\texec_to_presented_ms={:.3}",
+        mounted.as_secs_f64() * 1e3 - st.gpu_wait_ns as f64 / 1e6,
+        st.mount_ns as f64 / 1e6,
+        st.mount_instr,
+        st.gpu_prep_ns as f64 / 1e6,
+        st.gpu_wait_ns as f64 / 1e6,
+        submitted.as_secs_f64() * 1e3,
+        wall.as_secs_f64() * 1e3,
+        exec as f64 / 1e6
+    );
+    let rm = bough::app::raster_main();
+    println!("THREAD\tmain\t{main}\tstrikes_rasterised_here={}\tstrikes_waited={}\twaited_ms={:.3}", rm[0], rm[1], rm[2] as f64 / 1e6);
+    if overlap {
+        println!("THREAD\tgpu-prep\t{}", st.gpu_prep_instr);
+        for (i, r) in raster_stats.iter().enumerate() {
+            println!("THREAD\traster-{i}\t{}\tstrikes={}\tglyphs={}\tms={:.3}", r[2], r[0], r[1], r[3] as f64 / 1e6);
+        }
+    }
+    let named = main + if overlap { st.gpu_prep_instr + rast } else { 0 };
+    println!("GLYPHS\trasterised_on_main={}\traster_ms_on_main={:.3}\ttext_nodes={}", app.rt.text.cache.rasterized, app.rt.text.cache.raster_ns as f64 / 1e6, D::strikes().len());
+    println!("THREAD\tother\t{}", proc.saturating_sub(named));
+    println!("THREAD\tprocess\t{proc}");
+    println!("MEASURE\tfirst-pixel\tcold.first_pixel_{mode}{tag}\tms\t{:.4}\t-", wall.as_secs_f64() * 1e3);
+    println!("INSTR\tfirst-pixel\tcold.first_pixel_{mode}{tag}\tp50={proc}\tn=1");
 }
 
 /// zgui `scenario/kitchen.rs`: tab traversal to the first text field, 32 keystrokes (8 backspaces after
@@ -381,6 +447,9 @@ pub fn turn_l(app: &mut App<GalleryL>, dt: f32) -> bool {
 
 impl Doc for GalleryL {
     const LAID_OUT: bool = true;
+    fn strikes() -> Vec<(f32, &'static str)> {
+        GALLERY_L.iter().filter(|n| !n.text.is_empty()).map(|n| (n.font, n.text)).collect()
+    }
     fn fresh() -> Self {
         GalleryL::new()
     }

@@ -74,6 +74,8 @@ impl TextSys {
             return s;
         }
         let s = self.cache.strike(size_px);
+        // Glyphs rasterised from process entry (`bough::app::prepare`), if this size was named there.
+        self.cache.absorb_prerendered(s);
         self.strikes.push((key, s));
         s
     }
