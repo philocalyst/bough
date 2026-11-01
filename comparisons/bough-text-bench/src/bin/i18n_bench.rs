@@ -8,10 +8,10 @@ use bough_text_bench::{env, font_bytes, instrs};
 use std::time::Instant;
 
 fn main() {
-    let template = std::env::args().nth(1).as_deref() == Some("template");
+    let tpl = std::env::args().nth(1).as_deref() == Some("template");
     let (rows, frames): (usize, u32) = (env("ROWS", 1000usize).min(MAX_ROWS), env("FRAMES", 600));
     let render = env("RENDER", 0) != 0;
-    let view = Inbox { counts: std::array::from_fn(|i| Signal::new(i as u32)), rows, template };
+    let view = Inbox { counts: std::array::from_fn(|i| Signal::new(i as u32)), rows, template: tpl };
     let cfg = Config::new(1200.0, 900.0, 2.0, font_bytes());
     let mut app = App::new(view, cfg, render);
     app.frame();
@@ -29,7 +29,7 @@ fn main() {
     let (t1, i1) = (Instant::now(), instrs());
     for locale in [1u8, 0] {
         app.turn(|v| {
-            if !template {
+            if !tpl {
                 LOCALE.with(|l| l.set(locale));
                 for c in v.counts[..rows].iter_mut() {
                     let _ = &mut **c; // the messages read the locale: re-render them
@@ -41,7 +41,7 @@ fn main() {
     let (switch, si) = (t1.elapsed(), instrs() - i1);
     println!(
         "{}: {:.1} us per frame, {:.1} us a locale switch ({:.0} instructions a frame, {:.0} a switch, render={render})",
-        if template { "template" } else { "i18n" },
+        if tpl { "template" } else { "i18n" },
         updates.as_secs_f64() * 1e6 / f64::from(frames),
         switch.as_secs_f64() * 1e6 / 2.,
         ui as f64 / f64::from(frames),

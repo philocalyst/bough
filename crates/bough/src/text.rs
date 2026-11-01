@@ -262,6 +262,17 @@ pub struct TextNode {
     pub num: Option<bough_text::numeric::NumFmt>,
 }
 
+impl TextNode {
+    /// The node's current text. A label holds its own bytes (its patch compares against them), so its `text`
+    /// string is not kept current on the label path (text round 3); read the text through this.
+    pub fn bytes(&self) -> &[u8] {
+        match &self.shape {
+            TShape::Label(lb) => lb.text(),
+            _ => self.text.as_bytes(),
+        }
+    }
+}
+
 /// Release a text node's pool resources (its record is removed by the caller's scope).
 pub(crate) fn release(rt: &mut Rt, t: TextNode) {
     match t.shape {

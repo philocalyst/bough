@@ -29,7 +29,7 @@ pub fn script_message(n: u32) -> String {
         (_, false) => format!("{n} courriels"),
     }
 }
-pub fn template(n: u32) -> String {
+pub fn template_text(n: u32) -> String {
     if n == 1 { format!("{n} message") } else { format!("{n} messages") }
 }
 
@@ -49,7 +49,7 @@ impl View for Inbox {
             let w = unsafe {
                 Wired::proven(&self.counts[i], core::mem::offset_of!(Inbox, counts) + i * size_of::<Signal<u32>>(), |v: &Inbox| &v.counts[0])
             };
-            let f: fn(&u32) -> String = if tpl { |n| template(*n) } else { |n| message(*n) };
+            let f: fn(&u32) -> String = if tpl { |n| template_text(*n) } else { |n| message(*n) };
             text(w.map(f)).at(0.0, i as f32 * LINE).size(14.0).line_height(LINE).color(rgb(0xe5edf7))
         }))
     }

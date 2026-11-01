@@ -43,8 +43,8 @@ fn churn_labels_are_zgui_strings() {
     assert!((0..200_000).step_by(997).all(|z| churn::label(z, 3).parse::<f64>().is_ok()));
 }
 
-fn inbox(counts: &[u32], template: bool) -> Inbox {
-    Inbox { counts: std::array::from_fn(|i| Signal::new(counts.get(i).copied().unwrap_or(0))), rows: counts.len(), template }
+fn inbox(counts: &[u32], tpl: bool) -> Inbox {
+    Inbox { counts: std::array::from_fn(|i| Signal::new(counts.get(i).copied().unwrap_or(0))), rows: counts.len(), template: tpl }
 }
 
 #[test]
