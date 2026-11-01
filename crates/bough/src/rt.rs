@@ -28,6 +28,8 @@ pub const KIND_BORDER: u16 = 2;
 
 pub const REC_QUAD: u8 = 1;
 pub const REC_TEXT: u8 = 2;
+/// Node kinds (see `Node::kind`): 1 quad, 2 text, 3 bordered quad, 4 bars, 5 layout-owned text (see layout.rs).
+pub const NK_LTEXT: u8 = 5;
 
 /// The shared pool: header | spaces | clips | stencil rects | instances | draw list. Either a
 /// `storageModeShared` MTLBuffer (the Metal backend) or heap memory (headless, no GPU).
@@ -87,6 +89,8 @@ pub struct Node {
     /// Multi-line text: the previous lines' shaped instances (a streaming log scrolls by one line
     /// per update, so every unchanged line is re-used at a new baseline instead of re-shaped).
     pub lines: Vec<(String, f32, Vec<Instance>)>,
+    /// Layout node (index into `Rt::lay`) of an element laid out by cephal, else `u32::MAX`.
+    pub lnode: u32,
 }
 
 impl Node {
@@ -115,6 +119,7 @@ impl Node {
             series_key: 0,
             series_ok: false,
             lines: Vec::new(),
+            lnode: u32::MAX,
         }
     }
 }
@@ -139,6 +144,8 @@ pub struct Scope {
     pub nodes: Vec<u32>,
     pub wires: Vec<u32>,
     pub runs: Vec<u32>,
+    /// Layout roots (groups) created while mounting; removed from the layout engine on release.
+    pub lroots: Vec<u32>,
 }
 
 pub struct RowInfo {
@@ -200,6 +207,9 @@ pub struct Rt {
     pub ctr: Counters,
     /// Atlas contents changed since the backend last uploaded it.
     pub atlas_gen: (u32, u64),
+    /// The layout bridge (cephal over the mounted records) and the measured lists.
+    pub lay: crate::layout::Lay,
+    pub mregions: Vec<crate::mlist::MRegion>,
 }
 
 impl Rt {
@@ -229,6 +239,8 @@ impl Rt {
             cull_out: Vec::with_capacity(4096),
             ctr: Counters::default(),
             atlas_gen: (0, 0),
+            lay: crate::layout::Lay::new(scale),
+            mregions: Vec::new(),
         };
         let h = Hdr {
             viewport: [win_w as f32, win_h as f32],
@@ -330,7 +342,7 @@ impl Rt {
         }
     }
     /// Grow a run in place of its id: new block, same id (the record's payload never changes).
-    fn regrow_run(&mut self, i: u32, n: usize) {
+    pub(crate) fn regrow_run(&mut self, i: u32, n: usize) {
         let r = self.runs[i as usize];
         self.free_blocks[r.class as usize].push(r.first);
         let class = (n.next_power_of_two().trailing_zeros()) as u8;
@@ -518,7 +530,12 @@ impl Rt {
             let node = &mut self.nodes[n as usize];
             if node.dirty && node.live {
                 node.dirty = false;
-                self.apply_text(n);
+                if node.kind == NK_LTEXT {
+                    // wrapped / laid-out text: re-measured and re-placed by the layout flush
+                    self.lay_text_changed(n);
+                } else {
+                    self.apply_text(n);
+                }
             }
         }
         d.clear();
@@ -535,6 +552,9 @@ impl Rt {
         }
         for r in s.runs {
             self.free_run(r);
+        }
+        for r in s.lroots {
+            self.lay_remove_root(r);
         }
     }
 
