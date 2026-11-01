@@ -236,3 +236,47 @@ impl Tup for NR {
         [self.x0, self.y0, self.x1, self.y1]
     }
 }
+
+#[test]
+fn group_kernels_match_scalar() {
+    use bough_core::nrect::{Thresh, lt8, lt8_scalar, union8, union_all_scalar};
+    let mut rng = bough_core::rng::Rng::new(77);
+    for _ in 0..scale_n(200_000, 20_000) {
+        let mut rs = [NRect::EMPTY; 8];
+        for r in rs.iter_mut() {
+            if !rng.chance(1, 5) {
+                let (x, y) = (rng.range(-300, 300), rng.range(-300, 300));
+                *r = NRect::new(x, y, x + rng.range(-5, 200), y + rng.range(-5, 200));
+            }
+        }
+        let (x, y) = (rng.range(-300, 300), rng.range(-300, 300));
+        let q = NRect::new(x, y, x + rng.range(1, 200), y + rng.range(1, 200));
+        if q.is_empty() {
+            continue;
+        }
+        let t = Thresh::of_rect(q);
+        unsafe {
+            assert_eq!(lt8(rs.as_ptr(), t), lt8_scalar(rs.as_ptr(), t));
+            assert_eq!(union8(rs.as_ptr()), union_all_scalar(&rs));
+        }
+        if let Some(tp) = Thresh::of_point(x, y) {
+            unsafe { assert_eq!(lt8(rs.as_ptr(), tp), lt8_scalar(rs.as_ptr(), tp)) };
+        }
+    }
+}
+
+#[test]
+fn compact8_exhaustive() {
+    let src: [u32; 8] = core::array::from_fn(|i| 0x1000_0000 + i as u32 * 0x0101_0101);
+    for m in 0..256u32 {
+        let mut out = [0u32; 16];
+        let end = unsafe { bough_core::emit::compact8(src.as_ptr(), m, out.as_mut_ptr()) };
+        let n = unsafe { end.offset_from(out.as_ptr()) } as usize;
+        let want: Vec<u32> = (0..8).filter(|i| m & (1 << i) != 0).map(|i| src[i]).collect();
+        assert_eq!(&out[..n], &want[..], "mask {m:08b}");
+    }
+}
+
+fn scale_n(release: usize, debug: usize) -> usize {
+    if cfg!(debug_assertions) { debug } else { release }
+}

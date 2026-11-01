@@ -61,6 +61,29 @@ impl Thresh {
         }
         Some(Thresh([(x + 1) as i16, (y + 1) as i16, (-x) as i16, (-y) as i16]))
     }
+    /// The threshold for inks stored relative to an offset `(dx, dy)` (absolute = stored + offset):
+    /// `stored + off < t  <=>  stored < t - off`, lanes `(dx, dy, -dx, -dy)`, saturating (a saturated
+    /// lane is "always" / "never", which is what the unsaturated value meant for in-domain inks).
+    #[inline(always)]
+    pub fn shift(self, dx: i32, dy: i32) -> Thresh {
+        let t = self.0;
+        let c = |v: i32| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        Thresh([c(t[0] as i32 - dx), c(t[1] as i32 - dy), c(t[2] as i32 + dx), c(t[3] as i32 + dy)])
+    }
+    /// `shift` with the offset given as lanes `(dx, dy, -dx, -dy)`: one saturating lane subtract.
+    #[inline(always)]
+    pub fn shift_lanes(self, o: [i16; 4]) -> Thresh {
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            let r = vqsub_s16(vld1_s16(self.0.as_ptr()), vld1_s16(o.as_ptr()));
+            Thresh(core::mem::transmute::<int16x4_t, [i16; 4]>(r))
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let t = self.0;
+            Thresh([t[0].saturating_sub(o[0]), t[1].saturating_sub(o[1]), t[2].saturating_sub(o[2]), t[3].saturating_sub(o[3])])
+        }
+    }
     #[inline(always)]
     pub fn matches(self, r: NRect) -> bool {
         let (a, b) = (r.0, self.0);
@@ -121,6 +144,27 @@ impl NRect {
     pub fn contains_point(self, x: i32, y: i32) -> bool {
         let [a, b, c, d] = self.0;
         (a as i32 <= x) & (y >= b as i32) & (x < -(c as i32)) & (y < -(d as i32))
+    }
+    /// Lane-wise wrapping add of `dl = (dx, dy, -dx, -dy)` (as i16): the translation of a
+    /// NON-EMPTY rect whose result is known to lie in the domain (wrapping makes an offset outside
+    /// i16 still exact, since only the in-domain sum is ever formed).
+    #[inline(always)]
+    pub fn add_lanes(self, dl: [i16; 4]) -> NRect {
+        let a = self.0;
+        NRect([a[0].wrapping_add(dl[0]), a[1].wrapping_add(dl[1]), a[2].wrapping_add(dl[2]), a[3].wrapping_add(dl[3])])
+    }
+    /// Translate, or `None` if a coordinate would leave the domain (EMPTY stays EMPTY).
+    #[inline(always)]
+    pub fn translate_checked(self, dx: i32, dy: i32) -> Option<NRect> {
+        if self.0[0] == MAXC {
+            return Some(NRect::EMPTY);
+        }
+        let [x0, y0, x1, y1] = self.to_xyxy();
+        let d = (COORD_MIN..=COORD_MAX).contains(&(x0 + dx))
+            & (COORD_MIN..=COORD_MAX).contains(&(x1 + dx))
+            & (COORD_MIN..=COORD_MAX).contains(&(y0 + dy))
+            & (COORD_MIN..=COORD_MAX).contains(&(y1 + dy));
+        d.then(|| NRect([(x0 + dx) as i16, (y0 + dy) as i16, (-(x1 + dx)) as i16, (-(y1 + dy)) as i16]))
     }
     /// Translate; the canonical empty rect stays canonical. Coordinates must stay in the domain.
     #[inline(always)]
@@ -366,4 +410,67 @@ pub unsafe fn translate_union(p: *mut NRect, n: usize, dx: i32, dy: i32) -> (NRe
 #[inline(always)]
 pub unsafe fn translate_union(p: *mut NRect, n: usize, dx: i32, dy: i32) -> (NRect, NRect) {
     unsafe { translate_union_scalar(p, n, dx, dy) }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 8-rect group kernels (one record group, or the 8 group summaries of a page).
+// ---------------------------------------------------------------------------------------------
+
+/// Bit `i` (0..8) set iff `t.matches(p[i])`. Scalar reference.
+///
+/// # Safety
+/// `p` valid for reads of 8 rects.
+#[inline(always)]
+pub unsafe fn lt8_scalar(p: *const NRect, t: Thresh) -> u32 {
+    let mut m = 0u32;
+    for i in 0..8 {
+        m |= (t.matches(unsafe { *p.add(i) }) as u32) << i;
+    }
+    m
+}
+
+/// `lt8` with NEON: 4 loads, 4 compares (2 rects per register, all four edge conditions at once),
+/// 3 pairwise-min folds to one lane per rect, then a byte-narrow + weighted horizontal add.
+///
+/// # Safety
+/// `p` valid for reads of 8 rects.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub unsafe fn lt8(p: *const NRect, t: Thresh) -> u32 {
+    unsafe {
+        let tv = vreinterpretq_s16_u64(vdupq_n_u64(t.bits()));
+        let q = p as *const i16;
+        let l0 = vcltq_s16(vld1q_s16(q), tv);
+        let l1 = vcltq_s16(vld1q_s16(q.add(8)), tv);
+        let l2 = vcltq_s16(vld1q_s16(q.add(16)), tv);
+        let l3 = vcltq_s16(vld1q_s16(q.add(24)), tv);
+        let all = vpminq_u16(vpminq_u16(l0, l1), vpminq_u16(l2, l3));
+        const W: [u8; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
+        vaddv_u8(vand_u8(vmovn_u16(all), vld1_u8(W.as_ptr()))) as u32
+    }
+}
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+pub unsafe fn lt8(p: *const NRect, t: Thresh) -> u32 {
+    unsafe { lt8_scalar(p, t) }
+}
+
+/// Union (lane-wise min) of 8 canonical rects.
+///
+/// # Safety
+/// `p` valid for reads of 8 rects.
+#[inline(always)]
+pub unsafe fn union8(p: *const NRect) -> NRect {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let q = p as *const i16;
+        let a = vminq_s16(vld1q_s16(q), vld1q_s16(q.add(8)));
+        let b = vminq_s16(vld1q_s16(q.add(16)), vld1q_s16(q.add(24)));
+        let c = vminq_s16(a, b);
+        NRect(core::mem::transmute::<int16x4_t, [i16; 4]>(vmin_s16(vget_low_s16(c), vget_high_s16(c))))
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    unsafe {
+        union_all_scalar(core::slice::from_raw_parts(p, 8))
+    }
 }

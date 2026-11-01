@@ -192,8 +192,8 @@ fn main() {
                     let h = handles[k & 255];
                     k += 1;
                     b.touch_handle(h);
-                    b.repair_into(1, pl);
-                    b.cull(pl.bbox, None, o);
+                    let bb = b.repair_into(1, pl);
+                    b.cull_tiles(pl, bb, o);
                     b.next_epoch();
                     black_box(o.len());
                 },
@@ -215,8 +215,8 @@ fn main() {
             let m_pos = sub(measure(|| {
                 b.touch(pos[k & 255]);
                 k += 1;
-                b.repair_into(1, pl);
-                b.cull(pl.bbox, None, o);
+                let bb = b.repair_into(1, pl);
+                b.cull_tiles(pl, bb, o);
                 b.next_epoch();
                 black_box(o.len());
             }));
@@ -224,9 +224,8 @@ fn main() {
             let m_tiles = sub(measure(|| {
                 b.touch_handle(handles[k & 255]);
                 k += 1;
-                b.repair_into(1, pl);
-                let pc = pl.clone();
-                b.cull(pc.bbox, Some(&pc), o);
+                let bb = b.repair_into(1, pl);
+                b.cull(bb, None, o);
                 b.next_epoch();
                 black_box(o.len());
             }));
@@ -235,8 +234,15 @@ fn main() {
                 k += 1;
                 b.next_epoch();
             }));
+            let m_write_repair = sub(measure(|| {
+                b.touch_handle(handles[k & 255]);
+                k += 1;
+                black_box(b.repair_into(1, pl));
+                b.next_epoch();
+            }));
+            rows.last_mut().unwrap().extra.push(("write+repair_into (no cull)", m_write_repair));
             rows.last_mut().unwrap().extra.push(("touch(pos) instead of handle", m_pos));
-            rows.last_mut().unwrap().extra.push(("tile-plane cull", m_tiles));
+            rows.last_mut().unwrap().extra.push(("bbox-only cull (superset)", m_tiles));
             rows.last_mut().unwrap().extra.push(("write only (touch_handle+next_epoch)", m_write_only));
         }
         if want(&filter, "write1") {
@@ -263,8 +269,8 @@ fn main() {
                         b.touch_handle(handles[(k + j * 3) & 255]);
                     }
                     k += 80;
-                    b.repair_into(1, pl);
-                    b.cull(pl.bbox, None, o);
+                    let bb = b.repair_into(1, pl);
+                    b.cull_tiles(pl, bb, o);
                     b.next_epoch();
                     black_box(o.len());
                 },
@@ -287,13 +293,12 @@ fn main() {
                         b.touch_handle(handles[(k + j * 3) & 255]);
                     }
                     k += 80;
-                    b.repair_into(1, pl);
-                    let pc = pl.clone();
-                    b.cull(pc.bbox, Some(&pc), o);
+                    let bb = b.repair_into(1, pl);
+                    b.cull(bb, None, o);
                     b.next_epoch();
                     black_box(o.len());
                 }));
-                rows.last_mut().unwrap().extra.push(("tile-plane cull", m_tiles));
+                rows.last_mut().unwrap().extra.push(("bbox-only cull (superset)", m_tiles));
             }
         }
 
@@ -309,8 +314,8 @@ fn main() {
                 || {
                     k ^= 1;
                     b.translate_run(start, len, if k == 1 { 4 } else { -4 }, 0);
-                    b.repair_into(1, pl);
-                    b.cull(pl.bbox, None, o);
+                    let bb = b.repair_into(1, pl);
+                    b.cull_tiles(pl, bb, o);
                     b.next_epoch();
                     black_box(o.len());
                 },
@@ -349,7 +354,9 @@ fn main() {
             let container_id = c.ids[info.container];
             // Row payloads/specs are built once, outside the measured closures.
             let rows_b: Vec<[bough_core::bough::RecordInit; 8]> =
-                (0..20).map(|k| { let sp = list_row(48 + k * 32); std::array::from_fn(|i| sp[i].init(7_000_000 + i as u32)) }).collect();
+                (0..20).map(|k| { let sp = list_row(48 + k * 32); std::array::from_fn(|i| sp[i].init(7_000_000 + i as u32).with_clip(1)) }).collect();
+            let area = info.area;
+            let viewport = NRect::new(area[0], area[1], area[0] + area[2], area[1] + area[3]);
             let rows_a: Vec<Vec<Spec>> = (0..20).map(|k| list_row(48 + k * 32)).collect();
             let add_row = |a: &mut ArenaTree, spec: &[Spec], stack: &mut Vec<NodeId>| {
                 stack.clear();
@@ -371,14 +378,15 @@ fn main() {
                     name,
                     || {
                         if translate {
-                            b.translate_run(first_row, rows_n * row_len, 0, row_h);
+                            // the rows scroll inside the container's viewport (page offsets + clipped damage)
+                            b.scroll_run(first_row, rows_n * row_len, 0, row_h, viewport);
                         }
                         let row = if translate { &rows_b[0] } else { &rows_b[k % 20] };
                         b.insert_run(first_row, row);
                         b.remove_run(first_row + rows_n * row_len, row_len);
                         k += 1;
-                        b.repair_into(1, pl);
-                        b.cull(pl.bbox, None, o);
+                        let bb = b.repair_into(1, pl);
+                        b.cull_tiles(pl, bb, o);
                         b.next_epoch();
                         black_box(o.len());
                     },
@@ -419,6 +427,57 @@ fn main() {
                 }));
                 rows.push(Row { name: "insert row at top + remove last (structure+damage only, no cull)".into(), shape: sname, bough: m, arena: ma, extra: vec![] });
             }
+        }
+
+        // ---------------------------------------------------------------- layout pass: 200 ink writes
+        if want(&filter, "layout200") {
+            let n = c.shape.specs.len();
+            let mut rng = Rng::new(9);
+            let churn = c.shape.list.as_ref().map(|l| l.first_row..l.first_row + l.rows * l.row_len);
+            let mut pos: Vec<usize> = (0..200)
+                .map(|_| loop {
+                    let p = 1 + rng.usize_below(n - 1);
+                    if !churn.as_ref().is_some_and(|c| c.contains(&p)) {
+                        break p;
+                    }
+                })
+                .collect();
+            pos.sort_unstable();
+            let inks: Vec<NRect> = pos.iter().map(|&p| c.b.ink_at(p)).collect();
+            let alt: Vec<NRect> = inks.iter().map(|r| if r.is_empty() { *r } else { r.translate(1, 0) }).collect();
+            let mut ws: Vec<(usize, NRect)> = Vec::with_capacity(200);
+            let (b, a) = (&mut c.b, &mut c.a);
+            let mut k = 0usize;
+            let m_one = sub(measure(|| {
+                k ^= 1;
+                let src = if k == 1 { &alt } else { &inks };
+                for (i, &p) in pos.iter().enumerate() {
+                    b.set_ink(p, src[i]);
+                }
+                b.next_epoch();
+            }));
+            let m_batch = sub(measure(|| {
+                k ^= 1;
+                let src = if k == 1 { &alt } else { &inks };
+                ws.clear();
+                ws.extend(pos.iter().zip(src.iter()).map(|(&p, &r)| (p, r)));
+                b.set_inks(&ws, true);
+                b.next_epoch();
+            }));
+            let ids = &c.ids;
+            let rects: Vec<Rect> = pos.iter().map(|&p| { let s = &c.shape.specs[p]; Rect::new(s.b[0] as f32, s.b[1] as f32, s.b[2] as f32, s.b[3] as f32) }).collect();
+            let mut k2 = 0usize;
+            let ma = sub(measure(|| {
+                k2 ^= 1;
+                for (i, &p) in pos.iter().enumerate() {
+                    let r = rects[i];
+                    a.set_bounds(ids[p], if k2 == 1 { r.translated(1.0, 0.0) } else { r });
+                }
+                a.end_frame();
+            }));
+            rows.push(Row { name: "layout200: set_ink x200 (one call each), sorted positions".into(), shape: sname, bough: m_one, arena: ma, extra: vec![("set_inks batch (one call)", m_batch)] });
+            eprintln!("  {sname:10} layout200                    bough {:8.0} instr {:9.0} ns | arena {:9.0} instr {:9.0} ns", m_one.instr, m_one.ns, ma.instr, ma.ns);
+            eprintln!("  {sname:10} VAR layout200 batch          {:8.0} instr", m_batch.instr);
         }
 
         // ---------------------------------------------------------------- front splice (prefix pressure)
@@ -492,8 +551,7 @@ fn main() {
             op!(
                 "repair3",
                 || {
-                    b.repair_into(3, pl);
-                    black_box(pl.bbox);
+                    black_box(b.repair_into(3, pl));
                 },
                 || {
                     black_box(a.repair(3).len());
@@ -503,8 +561,8 @@ fn main() {
             op!(
                 "repair3+cull",
                 || {
-                    b.repair_into(3, pl);
-                    b.cull(pl.bbox, None, o);
+                    let bb = b.repair_into(3, pl);
+                    b.cull_tiles(pl, bb, o);
                     black_box(o.len());
                 },
                 || {
@@ -571,6 +629,104 @@ fn main() {
                     k2 += 1;
                 }
             );
+        }
+        // ---------------------------------------------------------------- attempt 6: one-pass structure queries
+        {
+            let (mut k, mut k2) = (0usize, 0usize);
+            let (b, a) = (&c.b, &c.a);
+            let (qpos, ids) = (&c.qpos, &c.ids);
+            let mut v: Vec<usize> = Vec::with_capacity(64);
+            op!(
+                "ancestors(pos) (event bubbling path)",
+                || {
+                    b.ancestors(qpos[k & 63], &mut v);
+                    black_box(v.len());
+                    k += 1;
+                },
+                || {
+                    let mut id = ids[qpos[k2 & 63]];
+                    let mut n = 0;
+                    while let Some(p) = a.parent(id) {
+                        n += 1;
+                        id = p;
+                    }
+                    black_box(n);
+                    k2 += 1;
+                }
+            );
+            let mut k3 = 0usize;
+            let m = sub(measure(|| {
+                b.children_into(qpos[k3 & 63], &mut v);
+                black_box(v.len());
+                k3 += 1;
+            }));
+            eprintln!("  {sname:10} VAR children_into(count)      {:8.0} instr", m.instr);
+            if let Some(r) = rows.iter_mut().find(|r| r.shape == sname && r.name.starts_with("children")) {
+                r.extra.push(("children_into (one forward depth scan)", m));
+            }
+        }
+
+        // ---------------------------------------------------------------- attempt 8: epoch snapshot
+        if want(&filter, "freeze") {
+            let mut snap = Bough::new(c.shape.window.0, c.shape.window.1);
+            c.b.freeze_into(&mut snap);
+            let (b, handles) = (&mut c.b, &c.handles);
+            let mut k = 0usize;
+            let mut copied = 0usize;
+            let mut frames = 0usize;
+            let m_touch = sub(measure(|| {
+                b.touch_handle(handles[k & 255]);
+                k += 1;
+                copied += b.freeze_into(&mut snap);
+                frames += 1;
+                b.next_epoch();
+            }));
+            let c_touch = copied as f64 / frames as f64;
+            let n = c.shape.specs.len();
+            let mut rng = Rng::new(17);
+            let pos: Vec<usize> = c.targets.iter().map(|&t| t.min(n - 1)).collect();
+            let inks: Vec<NRect> = pos.iter().map(|&p| b.ink_at(p)).collect();
+            let (mut copied, mut frames) = (0usize, 0usize);
+            let mut ws: Vec<(usize, NRect)> = Vec::with_capacity(80);
+            let m_ink80 = sub(measure(|| {
+                ws.clear();
+                for j in 0..80 {
+                    let i = (k + j * 3) & 255;
+                    let r = inks[i];
+                    ws.push((pos[i], if r.is_empty() { r } else { r.translate((k & 1) as i32, 0) }));
+                }
+                ws.sort_unstable_by_key(|w| w.0);
+                ws.dedup_by_key(|w| w.0);
+                k += 1;
+                b.set_inks(&ws, true);
+                copied += b.freeze_into(&mut snap);
+                frames += 1;
+                b.next_epoch();
+            }));
+            let c_ink80 = copied as f64 / frames as f64;
+            let m_ink80_nofreeze = sub(measure(|| {
+                ws.clear();
+                for j in 0..80 {
+                    let i = (k + j * 3) & 255;
+                    let r = inks[i];
+                    ws.push((pos[i], if r.is_empty() { r } else { r.translate((k & 1) as i32, 0) }));
+                }
+                ws.sort_unstable_by_key(|w| w.0);
+                ws.dedup_by_key(|w| w.0);
+                k += 1;
+                b.set_inks(&ws, true);
+                b.next_epoch();
+            }));
+            let _ = rng.next_u64();
+            eprintln!("  {sname:10} VAR freeze after write1         {:8.0} instr ({c_touch:.1} pages copied)", m_touch.instr);
+            eprintln!("  {sname:10} VAR set_inks80+freeze           {:8.0} instr ({c_ink80:.1} pages copied), without freeze {:8.0}", m_ink80.instr, m_ink80_nofreeze.instr);
+            rows.push(Row {
+                name: "epoch snapshot: touch_handle + freeze_into (UI turn handing a frozen replica to a render thread)".into(),
+                shape: sname,
+                bough: m_touch,
+                arena: M::default(),
+                extra: vec![("80 scattered set_inks + freeze_into", m_ink80), ("80 scattered set_inks, no freeze", m_ink80_nofreeze)],
+            });
         }
         let _ = (&c.points, &c.qpos);
         let _ = NRect::EMPTY;

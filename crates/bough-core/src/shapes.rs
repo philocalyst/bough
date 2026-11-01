@@ -207,7 +207,21 @@ pub fn all() -> Vec<Shape> {
 
 pub fn build_bough(shape: &Shape) -> Bough {
     let mut b = Bough::new(shape.window.0, shape.window.1);
-    let recs: Vec<RecordInit> = shape.specs.iter().enumerate().map(|(i, s)| s.init(i as u32)).collect();
+    let mut recs: Vec<RecordInit> = shape.specs.iter().enumerate().map(|(i, s)| s.init(i as u32)).collect();
+    // A clipping container (the list's scroll container) clips its descendants: one clip id each.
+    let mut stack: Vec<(u16, u16)> = Vec::new(); // (depth of clipping container, clip id)
+    for (i, s) in shape.specs.iter().enumerate() {
+        while stack.last().is_some_and(|&(d, _)| d >= s.depth) {
+            stack.pop();
+        }
+        if let Some(&(_, id)) = stack.last() {
+            recs[i].clip = id;
+        }
+        if s.clips {
+            let id = b.new_clip(NRect::new(s.b[0], s.b[1], s.b[0] + s.b[2], s.b[1] + s.b[3]));
+            stack.push((s.depth, id));
+        }
+    }
     // mount in 4096-record chunks, like a view tree streaming in
     let mut at = 0;
     for chunk in recs.chunks(4096) {

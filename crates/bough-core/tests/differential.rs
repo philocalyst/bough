@@ -17,26 +17,54 @@ struct H {
     old: Vec<Handle>,
     profile: u64,
     max_n: usize,
+    ww: i32,
+    wh: i32,
+    /// Largest translation step (page offsets grow with it).
+    tmax: i32,
+    /// Replica kept by `freeze_into` (epoch snapshots).
+    snap: Bough,
 }
 
 fn rand_ink(rng: &mut Rng) -> NRect {
-    let x0 = rng.range(-40, 300);
-    let y0 = rng.range(-40, 240);
-    let (w, h) = (rng.range(-4, 100), rng.range(-4, 100));
+    rand_ink_in(rng, 256, 192)
+}
+
+/// Mostly small rects scattered over (and a little past) a `ww` x `wh` window, some large ones.
+fn rand_ink_in(rng: &mut Rng, ww: i32, wh: i32) -> NRect {
+    let x0 = rng.range(-40, ww + 40);
+    let y0 = rng.range(-40, wh + 40);
+    let (w, h) = if rng.chance(1, 5) { (rng.range(-4, ww / 2), rng.range(-4, wh / 2)) } else { (rng.range(-4, 100), rng.range(-4, 100)) };
     NRect::new(x0, y0, x0 + w, y0 + h)
 }
 
 impl H {
     fn new(seed: u64, w: i32, h: i32) -> H {
+        let mut b = Bough::new(w, h);
+        let mut o = Oracle::new(w, h);
+        // kinds 0 and 2 are uniform content (xor damage), 1, 3, 4 are not
+        for k in [0u8, 2] {
+            b.set_kind_uniform(k, true);
+            o.set_kind_uniform(k, true);
+        }
+        // three clips (ids 1..=3) that records may reference
+        let mut crng = Rng::new(seed ^ 0xC11F);
+        for _ in 0..3 {
+            let r = rand_ink_in(&mut crng, w, h);
+            assert_eq!(b.new_clip(r), o.new_clip(r));
+        }
         H {
-            b: Bough::new(w, h),
-            o: Oracle::new(w, h),
+            b,
+            o,
             rng: Rng::new(seed),
             payload: 1,
             latest: HashMap::new(),
             old: Vec::new(),
             profile: seed % 4,
             max_n: 700,
+            ww: w,
+            wh: h,
+            tmax: 12,
+            snap: Bough::new(w, h),
         }
     }
 
@@ -49,8 +77,11 @@ impl H {
                 let prev = v[i - 1].depth;
                 if self.rng.chance(1, 2) { prev + 1 } else { self.rng.range(root_depth as i32 + 1, prev as i32 + 1) as u16 }
             };
-            let ink = if self.rng.chance(1, 6) { NRect::EMPTY } else { rand_ink(&mut self.rng) };
+            let ink = if self.rng.chance(1, 6) { NRect::EMPTY } else { rand_ink_in(&mut self.rng, self.ww, self.wh) };
             let mut r = RecordInit::new(depth, ink, self.rng.below(5) as u8, self.payload);
+            if self.rng.chance(1, 4) {
+                r = r.with_clip(self.rng.range(1, 3) as u16);
+            }
             self.payload += 1;
             if self.rng.chance(1, 7) {
                 let h = self.b.new_handle();
@@ -187,7 +218,7 @@ impl H {
             let i = self.rng.usize_below(n);
             (i, self.rng.usize_below(n - i + 1))
         };
-        let (dx, dy) = (self.rng.range(-12, 12), self.rng.range(-12, 12));
+        let (dx, dy) = (self.rng.range(-self.tmax, self.tmax), self.rng.range(-self.tmax, self.tmax));
         let ok = self.o.recs[start..start + len].iter().all(|r| {
             r.ink.is_empty() || {
                 let q = NR::from_nrect(r.ink);
@@ -197,9 +228,30 @@ impl H {
         if !ok {
             return;
         }
-        let ps = self.b.page_starts();
-        self.o.translate_run(start, len, dx, dy, &ps);
+        self.o.translate_run(start, len, dx, dy);
         self.b.translate_run(start, len, dx, dy);
+    }
+
+    fn do_scroll(&mut self) {
+        let n = self.o.recs.len();
+        if n == 0 {
+            return;
+        }
+        let i = self.rng.usize_below(n);
+        let len = self.o.subtree_end(i) - i;
+        let dy = self.rng.range(-self.tmax, self.tmax);
+        let ok = self.o.recs[i..i + len].iter().all(|r| {
+            r.ink.is_empty() || {
+                let q = NR::from_nrect(r.ink);
+                q.y0 + dy > -20000 && q.y1 + dy < 20000
+            }
+        });
+        if !ok {
+            return;
+        }
+        let clip = rand_ink_in(&mut self.rng, self.ww, self.wh);
+        self.o.scroll_run(i, len, 0, dy, clip);
+        self.b.scroll_run(i, len, 0, dy, clip);
     }
 
     fn do_set_ink(&mut self) {
@@ -208,7 +260,7 @@ impl H {
             return;
         }
         let p = self.rng.usize_below(n);
-        let ink = if self.rng.chance(1, 6) { NRect::EMPTY } else { rand_ink(&mut self.rng) };
+        let ink = if self.rng.chance(1, 6) { NRect::EMPTY } else { rand_ink_in(&mut self.rng, self.ww, self.wh) };
         if self.rng.chance(1, 4) {
             self.o.set_ink(p, ink);
             self.b.set_ink(p, ink);
@@ -218,6 +270,49 @@ impl H {
         } else {
             self.o.set_ink(p, ink);
             self.b.set_ink(p, ink);
+        }
+    }
+
+    /// Batched ink writes (sorted positions, unsorted positions, or handles) vs sequential oracle writes.
+    fn do_set_inks(&mut self) {
+        let n = self.o.recs.len();
+        if n == 0 {
+            return;
+        }
+        let k = self.rng.usize_below(24) + 1;
+        let mut ws: Vec<(usize, NRect)> = (0..k)
+            .map(|_| {
+                let p = self.rng.usize_below(n);
+                let ink = if self.rng.chance(1, 6) { NRect::EMPTY } else { rand_ink_in(&mut self.rng, self.ww, self.wh) };
+                (p, ink)
+            })
+            .collect();
+        let damage = !self.rng.chance(1, 4);
+        match self.rng.below(3) {
+            0 => ws.sort_by_key(|w| w.0),
+            1 => {}
+            _ => {
+                let hs: Vec<(Handle, NRect)> = ws.iter().filter_map(|&(p, ink)| self.handle_at(p).map(|h| (h, ink))).collect();
+                for &(h, ink) in &hs {
+                    let p = self.b.pos_of(h).unwrap();
+                    self.o_set_ink(p, ink, damage);
+                }
+                self.b.set_inks_handles(&hs, damage);
+                return;
+            }
+        }
+        for &(p, ink) in &ws {
+            self.o_set_ink(p, ink, damage);
+        }
+        self.b.set_inks(&ws, damage);
+    }
+
+    fn o_set_ink(&mut self, p: usize, ink: NRect, damage: bool) {
+        if damage {
+            self.o.set_ink(p, ink);
+        } else {
+            let n = NR::from_nrect(ink);
+            self.o.recs[p].ink = if n.empty() { NRect::EMPTY } else { ink };
         }
     }
 
@@ -242,34 +337,69 @@ impl H {
     fn step(&mut self) {
         let big = self.o.recs.len() > self.max_n;
         let r = self.rng.below(100);
+        if std::env::var("DIFF_TRACE").is_ok() {
+            eprintln!("op {r} n={}", self.o.recs.len());
+        }
         match r {
             0..=22 if !big => self.do_insert(),
             0..=22 => self.do_remove(),
             23..=36 => self.do_remove(),
             37..=47 => self.do_move(),
-            48..=60 => self.do_translate(),
-            61..=70 => self.do_set_ink(),
+            48..=56 => self.do_translate(),
+            57 => {
+                let id = self.rng.range(1, 3) as u16;
+                let r = rand_ink_in(&mut self.rng, self.ww, self.wh);
+                self.o.set_clip_rect(id, r);
+                self.b.set_clip_rect(id, r);
+            }
+            58 => {
+                if let Some((i, len)) = self.pick_subtree() {
+                    let id = self.rng.range(0, 3) as u16;
+                    self.o.set_clip_run(i, len, id);
+                    self.b.set_clip_run(i, len, id);
+                }
+            }
+            59..=60 => self.do_scroll(),
+            61..=66 => self.do_set_ink(),
+            67..=70 => self.do_set_inks(),
             71..=84 => self.do_touch(),
             85..=94 => {
                 self.o.next_epoch();
                 self.b.next_epoch();
             }
             _ => {
-                // stale-handle probe: release a handle through remove of its record happens above
+                // burst: more marks in one epoch than the pending buffer holds (forces mid-epoch flushes)
+                for _ in 0..300 {
+                    self.do_touch();
+                }
             }
         }
     }
 
     fn check_plane(&self, p: &Plane, o: &OPlane, what: &str) {
-        let ob = o.bbox;
-        if ob.empty() {
-            assert!(p.bbox.is_empty(), "{what}: bbox should be empty, got {:?}", p.bbox);
-        } else {
-            assert_eq!(NR::from_nrect(p.bbox), ob, "{what}: bbox");
-        }
-        for ty in 0..96 {
+        for ty in 0..128 {
             assert_eq!(p.rows[ty], o.row(ty), "{what}: row {ty}");
         }
+    }
+
+    /// Pixel bbox of the oracle plane's set tiles, clipped to the window.
+    fn obbox(&self, o: &OPlane) -> NRect {
+        let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for ty in 0..o.th {
+            for tx in 0..o.tw {
+                if o.get(tx, ty) {
+                    x0 = x0.min(tx as i32 * 32);
+                    y0 = y0.min(ty as i32 * 32);
+                    x1 = x1.max(tx as i32 * 32 + 32);
+                    y1 = y1.max(ty as i32 * 32 + 32);
+                }
+            }
+        }
+        if x0 == i32::MAX {
+            return NRect::EMPTY;
+        }
+        let w = self.o.window;
+        NRect::new(x0, y0, x1.min(w.x1), y1.min(w.y1))
     }
 
     fn verify(&mut self) {
@@ -278,9 +408,15 @@ impl H {
         assert_eq!(self.b.len(), self.o.recs.len());
         assert_eq!(self.b.epoch(), self.o.epoch);
         for age in 1..=RING as u32 {
-            let p = self.b.repair(age);
+            let mut p = Plane::EMPTY;
+            let bb = self.b.repair_into(age, &mut p);
             let o = self.o.repair(age);
             self.check_plane(&p, &o, &format!("repair({age})"));
+            assert_eq!(bb, self.obbox(&o), "repair({age}) bbox");
+            // the frame cull: every record touching a damaged tile, paint order
+            let mut out = Vec::new();
+            self.b.cull_tiles(&p, bb, &mut out);
+            assert_eq!(out, self.o.cull_tiles(&o), "cull_tiles age {age}");
         }
         // handles
         for (&idx, &h) in &self.latest {
@@ -309,33 +445,58 @@ impl H {
             assert_eq!(self.b.subtree_end(p), self.o.subtree_end(p), "subtree_end({p})");
             assert_eq!(self.b.parent(p), self.o.parent(p), "parent({p})");
             assert_eq!(self.b.children(p).collect::<Vec<_>>(), self.o.children(p), "children({p})");
+            let mut v = Vec::new();
+            self.b.children_into(p, &mut v);
+            assert_eq!(v, self.o.children(p), "children_into({p})");
+            self.b.ancestors(p, &mut v);
+            let mut want = Vec::new();
+            let mut q = p;
+            while let Some(a) = self.o.parent(q) {
+                want.push(a);
+                q = a;
+            }
+            assert_eq!(v, want, "ancestors({p})");
         }
         for _ in 0..8 {
             let (x, y) = if self.rng.chance(1, 2) {
                 let q = NR::from_nrect(self.o.recs[self.rng.usize_below(n)].ink);
                 if q.empty() { (0, 0) } else { (q.x0 + self.rng.range(-1, 1), q.y0 + self.rng.range(-1, 1)) }
             } else {
-                (self.rng.range(-50, 320), self.rng.range(-50, 260))
+                (self.rng.range(-50, self.ww + 50), self.rng.range(-50, self.wh + 50))
             };
             assert_eq!(self.b.hit(x, y), self.o.hit(x, y), "hit({x},{y})");
         }
         let mut out = Vec::new();
         for _ in 0..3 {
-            let bbox = rand_ink(&mut self.rng);
+            let bbox = rand_ink_in(&mut self.rng, self.ww, self.wh);
             self.b.cull(bbox, None, &mut out);
             assert_eq!(out, self.o.cull(bbox, None), "cull {bbox:?}");
-            let age = self.rng.range(1, 8) as u32;
+            let age = self.rng.range(1, RING as i32) as u32;
             let (bp, op) = (self.b.repair(age), self.o.repair(age));
             self.b.cull(bbox, Some(&bp), &mut out);
             assert_eq!(out, self.o.cull(bbox, Some(&op)), "cull tiles {bbox:?} age {age}");
-            // cull against the repair region's own bbox
-            if !bp.bbox.is_empty() {
-                self.b.cull(bp.bbox, Some(&bp), &mut out);
-                assert_eq!(out, self.o.cull(bp.bbox, Some(&op)));
+        }
+        // epoch snapshot: the replica answers like the live structure
+        if self.rng.chance(1, 3) {
+            self.b.freeze_into(&mut self.snap);
+            assert_eq!(self.snap.records(), self.b.records(), "snapshot records");
+            assert_eq!(self.snap.len(), self.b.len());
+            for age in 1..=RING as u32 {
+                let (mut p1, mut p2) = (Plane::EMPTY, Plane::EMPTY);
+                let (b1, b2) = (self.b.repair_into(age, &mut p1), self.snap.repair_into(age, &mut p2));
+                assert_eq!(b1, b2);
+                let (mut o1, mut o2) = (Vec::new(), Vec::new());
+                self.b.cull_tiles(&p1, b1, &mut o1);
+                self.snap.cull_tiles(&p2, b2, &mut o2);
+                assert_eq!(o1, o2, "snapshot cull age {age}");
+            }
+            for _ in 0..4 {
+                let (x, y) = (self.rng.range(-50, self.ww + 50), self.rng.range(-50, self.wh + 50));
+                assert_eq!(self.snap.hit(x, y), self.b.hit(x, y));
             }
         }
         for _ in 0..2 {
-            let e = self.rng.range(0, self.o.epoch as i32) as u32;
+            let e = self.rng.range(self.o.epoch as i32 - 6, self.o.epoch as i32).max(0) as u32;
             self.b.changed_since(e, &mut out);
             assert_eq!(out, self.o.changed_since(e), "changed_since({e})");
         }
@@ -371,17 +532,31 @@ fn differential_long_sequences() {
 
 #[test]
 fn differential_wide_window() {
-    // Window whose tile row needs the high half of the u128 (tx >= 64): 1400 x 800.
+    // Window whose tile row needs the high half of the u128 (tx >= 64): 2600 x 800, spans straddling word 64.
     for seed in 0..scale(150, 20) as u64 {
-        run_seq(50_000 + seed, 60, 1400, 800);
+        run_seq(50_000 + seed, 60, 2600, 800);
     }
 }
 
 #[test]
 fn differential_full_window() {
-    // The maximum 2048 x 1536 window (128 x 96 tiles): phantom-free row words.
+    // The maximum 4096 x 4096 window (128 x 128 tiles): phantom-free row words.
     for seed in 0..scale(12, 2) as u64 {
-        run_seq(90_000 + seed, 60, 2048, 1536);
+        run_seq(90_000 + seed, 60, 4096, 4096);
+    }
+}
+
+#[test]
+fn differential_far_translates() {
+    // Big translation steps: page offsets reach thousands of px, so relative storage and the
+    // checked conversions (normalise on overflow) are exercised.
+    for seed in 0..scale(400, 40) as u64 {
+        let mut t = H::new(70_000 + seed, 256, 192);
+        t.tmax = 9000;
+        for _ in 0..60 {
+            t.step();
+            t.verify();
+        }
     }
 }
 

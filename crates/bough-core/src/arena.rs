@@ -267,6 +267,18 @@ impl ArenaTree {
         self.invalidate(id, PAINT);
     }
 
+    /// A layout write of one node's bounds (zgx: old visible bounds damaged now, the node queued
+    /// so `flush` damages the new ones; ancestor ink caches invalidated).
+    pub fn set_bounds(&mut self, id: NodeId, r: Rect) {
+        if self.node(id).paints {
+            self.damage_node(id);
+        }
+        let n = self.node_mut(id);
+        n.bounds = r;
+        n.bounds_valid.set(0);
+        self.invalidate(id, PAINT);
+    }
+
     /// Visible bounds: own bounds clipped by every clipping ancestor (zgx `visible_bounds` walk).
     fn visible(&self, id: NodeId) -> Option<Rect> {
         let n = self.node(id);

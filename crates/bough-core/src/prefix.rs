@@ -143,6 +143,10 @@ impl FlatPrefix {
     pub fn heap_bytes(&self) -> usize {
         self.v().capacity() * 4
     }
+    pub fn copy_from(&mut self, o: &FlatPrefix) {
+        self.v().clone_from(o.v());
+        self.valid.set(o.valid.get());
+    }
     pub fn snapshot(&self, lens: &[u32]) -> Vec<u32> {
         self.ensure(lens);
         self.v().clone()
@@ -264,6 +268,11 @@ impl BlockedPrefix {
     }
     pub fn heap_bytes(&self) -> usize {
         (self.local.capacity() + self.blk.capacity()) * 4
+    }
+    pub fn copy_from(&mut self, o: &BlockedPrefix) {
+        self.local.clone_from(&o.local);
+        self.blk.clone_from(&o.blk);
+        self.n = o.n;
     }
     pub fn snapshot(&self, lens: &[u32]) -> Vec<u32> {
         (0..=lens.len()).map(|d| self.get(d, lens) as u32).collect()

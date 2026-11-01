@@ -1,18 +1,43 @@
 //! bough-core: the Bough, one integrated display tree (see DESIGN.md sections 1, 2, 9).
 //!
-//! Records live in paint preorder inside 64-slot SoA pages drawn from a type-stable pool;
-//! a flat directory with SoA page summaries sits on top (two levels total).
+//! Records live in paint preorder inside 64-slot SoA pages drawn from a type-stable pool; each page
+//! keeps 8 group summaries, a flat directory keeps SoA page summaries, and a chunk level summarises 64
+//! pages: every spatial query is a chunk -> page -> group -> record SIMD filter. Damage is the damage
+//! lab's 32 px tile plane (see RESULTS.md for the measured reformulations).
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
+#[macro_use]
+mod macros {
+    #[cfg(feature = "stats")]
+    macro_rules! stat { ($i:expr, $v:expr) => { crate::stats::add($i, $v as u64) }; }
+    #[cfg(not(feature = "stats"))]
+    macro_rules! stat { ($i:expr, $v:expr) => {}; }
+}
 pub mod arena;
 pub mod bough;
 pub mod damage;
+pub mod emit;
 pub mod nrect;
 pub mod oracle;
 pub mod page;
 pub mod prefix;
 pub mod rng;
 pub mod shapes;
+
+/// Cull work counters (feature `stats`): pages, groups, group none/all/partial, refined records.
+#[cfg(feature = "stats")]
+pub mod stats {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    pub static C: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+    pub const NAMES: [&str; 8] = ["pages", "groups", "g_none", "g_all", "g_partial", "refined", "rows_g", "rows_r"];
+    #[inline(always)]
+    pub fn add(i: usize, v: u64) {
+        C[i].fetch_add(v, Ordering::Relaxed);
+    }
+    pub fn take() -> [u64; 8] {
+        core::array::from_fn(|i| C[i].swap(0, Ordering::Relaxed))
+    }
+}
 
 pub use bough::{Bough, Handle, RecordInit};
 pub use damage::Plane;
@@ -48,6 +73,18 @@ pub mod probe {
         b.cull(r, None, out)
     }
     #[inline(never)]
+    pub fn cull_tiles(b: &Bough, p: &Plane, bb: NRect, out: &mut Vec<u32>) {
+        b.cull_tiles(p, bb, out)
+    }
+    #[inline(never)]
+    pub fn lt8(p: &[NRect; 8], t: Thresh) -> u32 {
+        unsafe { crate::nrect::lt8(p.as_ptr(), t) }
+    }
+    #[inline(never)]
+    pub fn compact8(src: &[u32; 8], m: u32, out: &mut [u32; 8]) -> usize {
+        unsafe { crate::emit::compact8(src.as_ptr(), m, out.as_mut_ptr()).offset_from(out.as_ptr()) as usize }
+    }
+    #[inline(never)]
     pub fn touch_handle(b: &mut Bough, h: Handle) -> bool {
         b.touch_handle(h)
     }
@@ -56,11 +93,19 @@ pub mod probe {
         b.translate_run(s, n, dx, dy)
     }
     #[inline(never)]
+    pub fn next_epoch(b: &mut Bough) {
+        b.next_epoch()
+    }
+    #[inline(never)]
+    pub fn damage_rect(b: &mut Bough, r: NRect) {
+        b.damage_rect(r)
+    }
+    #[inline(never)]
     pub fn plane_add(p: &mut Plane, r: NRect, w: NRect) {
         p.add(r, w)
     }
     #[inline(never)]
-    pub fn repair_into(b: &Bough, age: u32, p: &mut Plane) {
+    pub fn repair_into(b: &Bough, age: u32, p: &mut Plane) -> NRect {
         b.repair_into(age, p)
     }
 }
