@@ -38,6 +38,9 @@ pub(crate) struct ShapeContext {
     fast: crate::bough::fast::FastShaper,
     #[cfg(feature = "std")]
     fast_vars: Vec<harfrust::Variation>,
+    /// bough graft 2: the item's font segments (byte range in the item, font).
+    #[cfg(feature = "std")]
+    fast_runs: Vec<(usize, usize, SelectedFont)>,
 }
 
 impl Default for ShapeContext {
@@ -54,6 +57,8 @@ impl Default for ShapeContext {
             fast: Default::default(),
             #[cfg(feature = "std")]
             fast_vars: Vec::new(),
+            #[cfg(feature = "std")]
+            fast_runs: Vec::new(),
         }
     }
 }
@@ -317,12 +322,35 @@ fn shape_item<'a, B: Brush>(
     let mut font_selector =
         FontSelector::new(fq, rcx, styles, first_style_index, fb_script, item.locale);
 
+    // bough graft 2: one font selection per style run instead of one per grapheme cluster, when the font chosen
+    // for the run's first character was the query's first candidate and bough's table covers the whole run.
+    #[cfg(feature = "std")]
+    if fast_eligible(rcx, item)
+        && fast_item(
+            &mut font_selector,
+            rcx,
+            item,
+            scx,
+            item_text,
+            item_infos,
+            text_range,
+            char_range,
+            fb_script,
+            layout,
+            analysis_data_sources,
+        )
+    {
+        return;
+    }
+
     let grapheme_cluster_boundaries = analysis_data_sources
         .grapheme_segmenter()
         .segment_str(item_text);
     let mut item_infos_iter = item_infos.iter();
     let mut code_unit_offset_in_string = text_range.start;
-    let char_cluster = &mut scx.char_cluster;
+    // Owned for the loop so `scx` can be passed to `shape_segment` (bough refactor for graft 2); restored after.
+    let mut char_cluster_owned = mem::take(&mut scx.char_cluster);
+    let char_cluster = &mut char_cluster_owned;
 
     // Build an iterator of boundaries and consume the first segment to seed the loop
     let mut boundaries_iter = grapheme_cluster_boundaries.skip(1);
@@ -373,184 +401,298 @@ fn shape_item<'a, B: Brush>(
             }
         }
 
-        // Shape this font segment with harfrust
-        let segment_text = &item_text[segment_start_offset..segment_end_offset];
-        // Shape the entire segment text including newlines
-        // The line breaking algorithm will handle newlines automatically
-
-        // bough graft 1: a left-to-right Latin segment with the default features and no language is shaped by
-        // bough's table when it accepts the text (the same glyph stream harfrust would produce).
-        #[cfg(feature = "std")]
-        if item.level & 1 == 0
-            && item.locale.is_none()
-            && item.script == Script::Latin
-            && rcx.features(item.features).is_none_or(|f| f.is_empty())
-        {
-            scx.fast_vars.clear();
-            scx.fast_vars.extend(variations_iter(&font.font.synthesis, rcx.variations(item.variations)));
-            if scx.fast.shape(
-                font.font.blob.id(),
-                font.font.index,
-                font.font.blob.as_ref(),
-                &scx.fast_vars,
-                segment_text,
-                item.size,
-            ) {
-                let char_start = char_range.start + item_text[..segment_start_offset].chars().count();
-                let segment_char_start = char_start - char_range.start;
-                let segment_char_count = segment_text.chars().count();
-                let segment_infos =
-                    &item_infos[segment_char_start..(segment_char_start + segment_char_count)];
-                layout.data.push_shaped_run(
-                    FontData::new(font.font.blob.clone(), font.font.index),
-                    item.size,
-                    font.attrs,
-                    font.font.synthesis,
-                    scx.fast.glyphs(segment_text),
-                    item.level,
-                    item.style_index,
-                    item.word_spacing,
-                    item.letter_spacing,
-                    segment_text,
-                    segment_infos,
-                    (text_range.start + segment_start_offset)..(text_range.start + segment_end_offset),
-                    scx.fast.coords(),
-                );
-                crate::bough::count_segment(true);
-                continue;
-            }
-        }
-
-        #[cfg(feature = "std")]
-        crate::bough::count_segment(false);
-        // TODO: How do we want to handle errors like this?
-        let font_ref =
-            harfrust::FontRef::from_index(font.font.blob.as_ref(), font.font.index).unwrap();
-
-        // Create harfrust shaper
-        let shaper_data = scx.shape_data_cache.entry(
-            cache::ShapeDataKey::new(font.font.blob.id(), font.font.index),
-            || harfrust::ShaperData::new(&font_ref),
+        shape_segment(
+            rcx,
+            item,
+            scx,
+            &font,
+            item_text,
+            item_infos,
+            text_range,
+            char_range,
+            segment_start_offset,
+            segment_end_offset,
+            fb_script,
+            layout,
         );
-        let instance = scx.shape_instance_cache.entry(
-            cache::ShapeInstanceKey::new(
-                font.font.blob.id(),
-                font.font.index,
-                &font.font.synthesis,
-                rcx.variations(item.variations),
-            ),
-            || {
-                harfrust::ShaperInstance::from_variations(
-                    &font_ref,
-                    variations_iter(&font.font.synthesis, rcx.variations(item.variations)),
-                )
-            },
-        );
-
-        let direction = if item.level & 1 != 0 {
-            harfrust::Direction::RightToLeft
-        } else {
-            harfrust::Direction::LeftToRight
-        };
-        let hb_script = script_to_harfrust(fb_script);
-        let language = item
-            .locale
-            .as_ref()
-            .and_then(|lang| lang.language().parse::<harfrust::Language>().ok());
-        scx.features.clear();
-        for feature in rcx.features(item.features).unwrap_or(&[]) {
-            scx.features.push(harfrust::Feature::new(
-                harfrust::Tag::new(&feature.tag.to_bytes()),
-                feature.value as u32,
-                ..,
-            ));
-        }
-        let harf_shaper = shaper_data
-            .shaper(&font_ref)
-            .instance(Some(instance))
-            .build();
-        let shaper_plan = scx.shape_plan_cache.entry(
-            cache::ShapePlanKey::new(
-                font.font.blob.id(),
-                font.font.index,
-                &font.font.synthesis,
-                direction,
-                hb_script,
-                language.clone(),
-                &scx.features,
-                rcx.variations(item.variations),
-            ),
-            || {
-                harfrust::ShapePlan::new(
-                    &harf_shaper,
-                    direction,
-                    Some(hb_script),
-                    language.as_ref(),
-                    &scx.features,
-                )
-            },
-        );
-
-        // Prepare harfrust buffer
-        let mut buffer = mem::take(&mut scx.unicode_buffer).unwrap();
-        buffer.clear();
-
-        // Use the entire segment text including newlines
-        buffer.reserve(segment_text.len());
-        for (i, ch) in segment_text.chars().enumerate() {
-            // Ensure that each cluster's index matches the index into `infos`. This is required
-            // for efficient cluster lookup within `data.rs`.
-            //
-            // In other words, instead of using `buffer.push_str`, which iterates `segment_text`
-            // with `char_indices`, push each char individually via `.chars` with a cluster index
-            // that matches its `infos` counterpart. This allows us to lookup `infos` via cluster
-            // index in `data.rs`.
-            buffer.add(ch, i as u32);
-        }
-
-        buffer.set_direction(direction);
-
-        buffer.set_script(hb_script);
-
-        if let Some(lang) = language {
-            buffer.set_language(lang);
-        }
-
-        let glyph_buffer = harf_shaper.shape(
-            buffer,
-            ShapeOptions::new()
-                .plan(Some(shaper_plan))
-                .features(&scx.features)
-                .point_size(Some(item.size)),
-        );
-
-        // Extract relevant CharInfo slice for this segment
-        let char_start = char_range.start + item_text[..segment_start_offset].chars().count();
-        let segment_char_start = char_start - char_range.start;
-        let segment_char_count = segment_text.chars().count();
-        let segment_infos =
-            &item_infos[segment_char_start..(segment_char_start + segment_char_count)];
-
-        // Push harfrust-shaped run for the entire segment
-        layout.data.push_run(
-            FontData::new(font.font.blob.clone(), font.font.index),
-            item.size,
-            font.attrs,
-            font.font.synthesis,
-            &glyph_buffer,
-            item.level,
-            item.style_index,
-            item.word_spacing,
-            item.letter_spacing,
-            segment_text,
-            segment_infos,
-            (text_range.start + segment_start_offset)..(text_range.start + segment_end_offset),
-            harf_shaper.coords(),
-        );
-
-        // Replace buffer to reuse allocation in next iteration.
-        scx.unicode_buffer = Some(glyph_buffer.clear());
     }
+    scx.char_cluster = char_cluster_owned;
+}
+
+/// Shapes one font segment of an item (`item_text[segment_start_offset..segment_end_offset]`, every cluster on
+/// `font`) and pushes its run: bough's table first (graft 1), harfrust otherwise. Upstream's loop body, unchanged.
+#[allow(clippy::too_many_arguments)]
+fn shape_segment<B: Brush>(
+    rcx: &ResolveContext,
+    item: &Item,
+    scx: &mut ShapeContext,
+    font: &SelectedFont,
+    item_text: &str,
+    item_infos: &[(CharInfo, u16)],
+    text_range: &core::ops::Range<usize>,
+    char_range: &core::ops::Range<usize>,
+    segment_start_offset: usize,
+    segment_end_offset: usize,
+    fb_script: fontique::Script,
+    layout: &mut Layout<B>,
+) {
+    // Shape this font segment with harfrust
+    let segment_text = &item_text[segment_start_offset..segment_end_offset];
+    // Shape the entire segment text including newlines
+    // The line breaking algorithm will handle newlines automatically
+
+    // bough graft 1: a left-to-right Latin segment with the default features and no language is shaped by
+    // bough's table when it accepts the text (the same glyph stream harfrust would produce).
+    #[cfg(feature = "std")]
+    if fast_eligible(rcx, item) {
+        scx.fast_vars.clear();
+        scx.fast_vars.extend(variations_iter(&font.font.synthesis, rcx.variations(item.variations)));
+        if scx.fast.shape(
+            font.font.blob.id(),
+            font.font.index,
+            font.font.blob.as_ref(),
+            &scx.fast_vars,
+            segment_text,
+            item.size,
+        ) {
+            let char_start = char_range.start + item_text[..segment_start_offset].chars().count();
+            let segment_char_start = char_start - char_range.start;
+            let segment_char_count = segment_text.chars().count();
+            let segment_infos =
+                &item_infos[segment_char_start..(segment_char_start + segment_char_count)];
+            layout.data.push_shaped_run(
+                FontData::new(font.font.blob.clone(), font.font.index),
+                item.size,
+                font.attrs,
+                font.font.synthesis,
+                scx.fast.glyphs(segment_text),
+                item.level,
+                item.style_index,
+                item.word_spacing,
+                item.letter_spacing,
+                segment_text,
+                segment_infos,
+                (text_range.start + segment_start_offset)..(text_range.start + segment_end_offset),
+                scx.fast.coords(),
+            );
+            crate::bough::count_segment(true);
+            return;
+        }
+    }
+
+    #[cfg(feature = "std")]
+    crate::bough::count_segment(false);
+    // TODO: How do we want to handle errors like this?
+    let font_ref =
+        harfrust::FontRef::from_index(font.font.blob.as_ref(), font.font.index).unwrap();
+
+    // Create harfrust shaper
+    let shaper_data = scx.shape_data_cache.entry(
+        cache::ShapeDataKey::new(font.font.blob.id(), font.font.index),
+        || harfrust::ShaperData::new(&font_ref),
+    );
+    let instance = scx.shape_instance_cache.entry(
+        cache::ShapeInstanceKey::new(
+            font.font.blob.id(),
+            font.font.index,
+            &font.font.synthesis,
+            rcx.variations(item.variations),
+        ),
+        || {
+            harfrust::ShaperInstance::from_variations(
+                &font_ref,
+                variations_iter(&font.font.synthesis, rcx.variations(item.variations)),
+            )
+        },
+    );
+
+    let direction = if item.level & 1 != 0 {
+        harfrust::Direction::RightToLeft
+    } else {
+        harfrust::Direction::LeftToRight
+    };
+    let hb_script = script_to_harfrust(fb_script);
+    let language = item
+        .locale
+        .as_ref()
+        .and_then(|lang| lang.language().parse::<harfrust::Language>().ok());
+    scx.features.clear();
+    for feature in rcx.features(item.features).unwrap_or(&[]) {
+        scx.features.push(harfrust::Feature::new(
+            harfrust::Tag::new(&feature.tag.to_bytes()),
+            feature.value as u32,
+            ..,
+        ));
+    }
+    let harf_shaper = shaper_data
+        .shaper(&font_ref)
+        .instance(Some(instance))
+        .build();
+    let shaper_plan = scx.shape_plan_cache.entry(
+        cache::ShapePlanKey::new(
+            font.font.blob.id(),
+            font.font.index,
+            &font.font.synthesis,
+            direction,
+            hb_script,
+            language.clone(),
+            &scx.features,
+            rcx.variations(item.variations),
+        ),
+        || {
+            harfrust::ShapePlan::new(
+                &harf_shaper,
+                direction,
+                Some(hb_script),
+                language.as_ref(),
+                &scx.features,
+            )
+        },
+    );
+
+    // Prepare harfrust buffer
+    let mut buffer = mem::take(&mut scx.unicode_buffer).unwrap();
+    buffer.clear();
+
+    // Use the entire segment text including newlines
+    buffer.reserve(segment_text.len());
+    for (i, ch) in segment_text.chars().enumerate() {
+        // Ensure that each cluster's index matches the index into `infos`. This is required
+        // for efficient cluster lookup within `data.rs`.
+        //
+        // In other words, instead of using `buffer.push_str`, which iterates `segment_text`
+        // with `char_indices`, push each char individually via `.chars` with a cluster index
+        // that matches its `infos` counterpart. This allows us to lookup `infos` via cluster
+        // index in `data.rs`.
+        buffer.add(ch, i as u32);
+    }
+
+    buffer.set_direction(direction);
+
+    buffer.set_script(hb_script);
+
+    if let Some(lang) = language {
+        buffer.set_language(lang);
+    }
+
+    let glyph_buffer = harf_shaper.shape(
+        buffer,
+        ShapeOptions::new()
+            .plan(Some(shaper_plan))
+            .features(&scx.features)
+            .point_size(Some(item.size)),
+    );
+
+    // Extract relevant CharInfo slice for this segment
+    let char_start = char_range.start + item_text[..segment_start_offset].chars().count();
+    let segment_char_start = char_start - char_range.start;
+    let segment_char_count = segment_text.chars().count();
+    let segment_infos =
+        &item_infos[segment_char_start..(segment_char_start + segment_char_count)];
+
+    // Push harfrust-shaped run for the entire segment
+    layout.data.push_run(
+        FontData::new(font.font.blob.clone(), font.font.index),
+        item.size,
+        font.attrs,
+        font.font.synthesis,
+        &glyph_buffer,
+        item.level,
+        item.style_index,
+        item.word_spacing,
+        item.letter_spacing,
+        segment_text,
+        segment_infos,
+        (text_range.start + segment_start_offset)..(text_range.start + segment_end_offset),
+        harf_shaper.coords(),
+    );
+
+    // Replace buffer to reuse allocation in next iteration.
+    scx.unicode_buffer = Some(glyph_buffer.clear());
+}
+
+/// bough grafts 1-2: an item bough's table can model (left to right, Latin, default features, no language).
+#[cfg(feature = "std")]
+#[inline]
+fn fast_eligible(rcx: &ResolveContext, item: &Item) -> bool {
+    item.level & 1 == 0
+        && item.locale.is_none()
+        && item.script == Script::Latin
+        && rcx.features(item.features).is_none_or(|f| f.is_empty())
+}
+
+/// bough graft 2: the item's font segments without the per-cluster selection loop. For each run of one style
+/// index, the font is selected for its first character only; when that font was the query's first candidate
+/// (complete) and its table covers every character of the run, every cluster of the run would select it too
+/// (a covered single-character cluster maps completely in any font that has the character, and nothing precedes
+/// the first candidate). Adjacent runs on equal fonts merge into one segment, as upstream's loop merges them.
+/// `false` (nothing pushed) sends the item to upstream's loop.
+#[cfg(feature = "std")]
+#[allow(clippy::too_many_arguments)]
+fn fast_item<'a, B: Brush>(
+    font_selector: &mut FontSelector<'a, '_, B>,
+    rcx: &'a ResolveContext,
+    item: &Item,
+    scx: &mut ShapeContext,
+    item_text: &str,
+    item_infos: &[(CharInfo, u16)],
+    text_range: &core::ops::Range<usize>,
+    char_range: &core::ops::Range<usize>,
+    fb_script: fontique::Script,
+    layout: &mut Layout<B>,
+    analysis_data_sources: &AnalysisDataSources,
+) -> bool {
+    if !crate::bough::fast::maybe_covered(item_text.as_bytes()) {
+        return false;
+    }
+    let mut runs = mem::take(&mut scx.fast_runs);
+    runs.clear();
+    let mut char_cluster = mem::take(&mut scx.char_cluster);
+    let mut ok = true;
+    let mut iter = item_text.char_indices().zip(item_infos.iter()).peekable();
+    while let Some(((start, ch), (_, style_index))) = iter.next() {
+        let mut end = start + ch.len_utf8();
+        while let Some(&((b, c), (_, si))) = iter.peek() {
+            if si != style_index {
+                break;
+            }
+            end = b + c.len_utf8();
+            iter.next();
+        }
+        // The run's first character as its own cluster (a covered character is its own grapheme).
+        let first = &item_text[start..start + ch.len_utf8()];
+        let first_char = char_range.start + item_text[..start].chars().count();
+        let mut infos = item_infos[first_char - char_range.start..].iter();
+        let mut offset = text_range.start + start;
+        fill_cluster_in_place(first, &mut infos, &mut offset, &mut char_cluster);
+        let Some(font) = font_selector.select_font(&mut char_cluster, analysis_data_sources) else {
+            ok = false;
+            break;
+        };
+        if !font_selector.first_complete {
+            ok = false;
+            break;
+        }
+        scx.fast_vars.clear();
+        scx.fast_vars.extend(variations_iter(&font.font.synthesis, rcx.variations(item.variations)));
+        if !scx.fast.covers(font.font.blob.id(), font.font.index, font.font.blob.as_ref(), &scx.fast_vars, &item_text[start..end]) {
+            ok = false;
+            break;
+        }
+        match runs.last_mut() {
+            Some(last) if last.2 == font => last.1 = end,
+            _ => runs.push((start, end, font)),
+        }
+    }
+    scx.char_cluster = char_cluster;
+    if ok {
+        for (start, end, font) in &runs {
+            shape_segment(rcx, item, scx, font, item_text, item_infos, text_range, char_range, *start, *end, fb_script, layout);
+        }
+    }
+    runs.clear();
+    scx.fast_runs = runs;
+    ok
 }
 
 fn real_script(script: Script) -> bool {
@@ -587,6 +729,9 @@ struct FontSelector<'a, 'b, B: Brush> {
     attrs: fontique::Attributes,
     variations: &'a [FontVariation],
     features: &'a [FontFeature],
+    /// bough graft 2: whether the last `select_font` chose the first candidate the query offered, with the
+    /// cluster completely mapped (then nothing earlier in the query order can be chosen for a covered cluster).
+    first_complete: bool,
 }
 
 impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
@@ -622,6 +767,7 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
             attrs,
             variations,
             features,
+            first_complete: false,
         }
     }
 
@@ -662,7 +808,9 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
             self.features = self.rcx.features(style.font_features).unwrap_or(&[]);
         }
         let mut selected_font = None;
+        let (mut first, mut first_complete) = (true, false);
         self.query.matches_with(|font| {
+            let is_first = mem::replace(&mut first, false);
             let Some(charmap) = font.charmap() else {
                 return fontique::QueryStatus::Continue;
             };
@@ -686,6 +834,7 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
 
             match map_status {
                 Status::Complete => {
+                    first_complete = is_first;
                     selected_font = Some(SelectedFont {
                         font: font.clone(),
                         attrs: self.attrs,
@@ -710,6 +859,7 @@ impl<'a, 'b, B: Brush> FontSelector<'a, 'b, B> {
                 }
             }
         });
+        self.first_complete = first_complete;
         selected_font
     }
 }

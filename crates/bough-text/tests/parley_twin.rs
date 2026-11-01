@@ -164,7 +164,9 @@ fn rng(seed: &mut u64) -> u64 {
 /// combining marks, controls, newlines, tabs, soft hyphens) mixed with covered text, with system fallback fonts.
 #[test]
 fn random_mixed() {
-    let mut t = Twin::new(&dejavu(), true);
+    // System fonts only: DejaVu is installed system-wide, and registering a second copy of the same family lets the
+    // two collections pick different duplicates (hash order), which is not a graft difference.
+    let mut t = Twin::new(&[], true);
     let pool: Vec<&str> = vec![
         "a", "b", "f", "i", "l", "fi", "ffl", " ", " ", "  ", "\t", "\n", "\r\n", "\u{AD}", "é", "ß", "Ä", "ñ", "1", "2", ",", ".", "-",
         "/", "(", ")", "'", "\"", "%", "$", "日本", "語", "中文", "שלום", "עברית", "مرحبا", "سلام", "😀", "👍🏽", "e\u{301}", "\u{300}",
@@ -237,4 +239,66 @@ fn variable_font() {
     }
     let [h, f] = bough_text::parley::bough::segments();
     eprintln!("variable font: {} cases equal; font segments: {f} by the table, {h} by harfrust", t.cases);
+}
+
+/// Font stacks whose first family lacks some covered characters (braille, symbol, dingbat, monospace and
+/// calligraphic fonts first), so upstream's per-cluster selection picks different fonts within a run: graft 2 must
+/// find the same segments (it takes its one-selection-per-run path only when the run's font is the first candidate
+/// and covers the run). The fonts are registered explicitly, without system fallback: with system fonts, upstream
+/// parley itself is not deterministic when a cluster falls through to fontique's fallback with several equal
+/// candidates (`upstream_self_consistency`).
+#[test]
+fn font_stacks() {
+    let mut fonts = dejavu();
+    for f in [
+        "/System/Library/Fonts/Apple Braille.ttf",
+        "/System/Library/Fonts/Symbol.ttf",
+        "/System/Library/Fonts/Supplemental/Webdings.ttf",
+        "/System/Library/Fonts/Supplemental/Wingdings.ttf",
+        "/System/Library/Fonts/Supplemental/Courier New.ttf",
+        "/System/Library/Fonts/Supplemental/Zapfino.ttf",
+    ] {
+        fonts.extend(common::twin::read(f));
+    }
+    let mut t = Twin::new(&fonts, false);
+    let latin1: String = (0xA0u32..=0xFF).filter(|&c| c != 0xAD).map(|c| char::from_u32(c).unwrap()).collect();
+    let texts = ["office affinity fly", "12,345 req/s", "The quick brown fox jumps", "Ünïcödé façade", "a-b c/d (e) 'f'", &latin1];
+    let stacks = [
+        "'Apple Braille', 'DejaVu Sans'",
+        "'Symbol', 'DejaVu Sans'",
+        "'Webdings', 'DejaVu Sans'",
+        "'Wingdings', 'DejaVu Sans Mono'",
+        "'Zapfino', 'DejaVu Sans'",
+        "'Courier New', 'DejaVu Sans Mono'",
+        "'DejaVu Sans Mono', 'DejaVu Sans'",
+    ];
+    for stack in stacks {
+        for s in texts {
+            let mut c = Case::plain(s, SANS, 14.0, Some(120.0));
+            c.defaults.push(Prop::Families(stack));
+            t.check(&c);
+            let e = 4.min(s.len());
+            if s.is_char_boundary(1) && s.is_char_boundary(e) {
+                c.spans.push((1..e, Prop::Family(SANS)));
+                t.check(&c);
+            }
+        }
+    }
+    let [h, f] = bough_text::parley::bough::segments();
+    eprintln!("font stacks: {} cases equal; font segments: {f} by the table, {h} by harfrust", t.cases);
+}
+
+/// Probe: is upstream parley deterministic across two font collections with system fonts on this case?
+#[test]
+#[ignore]
+fn upstream_self_consistency() {
+    let mut a = common::twin::upstream::Eng::new(&[], true);
+    let mut b = common::twin::upstream::Eng::new(&[], true);
+    let mut c = Case::plain("office affinity fly", SANS, 14.0, Some(120.0));
+    c.defaults.push(Prop::Families("'Apple Braille', 'DejaVu Sans'"));
+    let (x, y) = (a.dump(&c), b.dump(&c));
+    for l in x.lines().zip(y.lines()).filter(|(p, q)| p != q).take(2) {
+        eprintln!("A {}\nB {}", &l.0[..l.0.len().min(90)], &l.1[..l.1.len().min(90)]);
+    }
+    assert_eq!(x, y, "upstream vs upstream");
 }

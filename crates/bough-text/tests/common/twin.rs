@@ -12,6 +12,8 @@ use std::ops::Range;
 #[derive(Clone, Debug)]
 pub enum Prop {
     Family(&'static str),
+    /// A CSS font-family list (`"'Webdings', 'DejaVu Sans'"`).
+    Families(&'static str),
     Size(f32),
     Weight(f32),
     LetterSpacing(f32),
@@ -68,6 +70,7 @@ macro_rules! engine {
                 fn prop(p: &Prop) -> StyleProperty<'static, ()> {
                     match p {
                         Prop::Family(f) => StyleProperty::FontFamily(FontFamily::named(f)),
+                        Prop::Families(f) => StyleProperty::FontFamily(FontFamily::Source((*f).into())),
                         Prop::Size(s) => StyleProperty::FontSize(*s),
                         Prop::Weight(w) => StyleProperty::FontWeight(parley::FontWeight::new(*w)),
                         Prop::LetterSpacing(v) => StyleProperty::LetterSpacing(*v),
@@ -183,6 +186,9 @@ impl Twin {
             }
             if msg.is_empty() {
                 let _ = writeln!(msg, "dumps differ in length ({} vs {} lines)", g.lines().count(), u.lines().count());
+            }
+            if std::env::var("TWIN_FULL").is_ok() {
+                let _ = writeln!(msg, "--- grafted\n{g}--- upstream\n{u}");
             }
             panic!("grafted parley != upstream on {c:?}\n{msg}");
         }

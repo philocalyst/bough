@@ -38,6 +38,30 @@ pub(crate) struct FastShaper {
     track: i32,
 }
 
+/// Whether every character of a text can be in a table's covered set: ASCII 0x20..=0x7E and two-byte Latin-1
+/// 0xA0..=0xFF (C2 A0..BF without C2 AD, C3 80..BF). Controls, C1 controls and the soft hyphen are never covered.
+#[inline]
+pub(crate) fn maybe_covered(s: &[u8]) -> bool {
+    let mut i = 0;
+    while i < s.len() {
+        let b = s[i];
+        if b < 0x80 {
+            if !(0x20..0x7F).contains(&b) {
+                return false;
+            }
+            i += 1;
+        } else {
+            match (b, s.get(i + 1)) {
+                (0xC2, Some(&c)) if c >= 0xA0 && c != 0xAD => {}
+                (0xC3, Some(_)) => {}
+                _ => return false,
+            }
+            i += 2;
+        }
+    }
+    true
+}
+
 /// Whether a text can be in the table's covered set at all (ASCII and two-byte Latin-1, lead bytes C2/C3): a
 /// cheap filter so fonts that only ever shape other scripts never build a table.
 #[inline]
@@ -67,6 +91,27 @@ impl FastShaper {
             .unwrap_or_default();
         self.tables.push(Entry { blob, index, vars: uvars, shaper: script.map(|s| Box::new(Shaper::new(s))), coords });
         self.tables.len() - 1
+    }
+
+    /// Whether this font instance has a table covering every character of `text` (`maybe_covered` text).
+    pub(crate) fn covers(&mut self, blob: u64, index: u32, data: &[u8], vars: &[harfrust::Variation], text: &str) -> bool {
+        let i = self.entry(blob, index, data, vars);
+        let Some(sh) = self.tables[i].shaper.as_deref() else { return false };
+        let cov = &sh.script.covered;
+        let s = text.as_bytes();
+        let mut k = 0;
+        while k < s.len() {
+            let (cp, n) = match s[k] {
+                b if b < 0x80 => (b, 1),
+                0xC2 => (s[k + 1], 2),
+                _ => (s[k + 1] + 0x40, 2),
+            };
+            if !cov.contains(cp) {
+                return false;
+            }
+            k += n;
+        }
+        true
     }
 
     /// Shapes `text` with the table of this font instance. `false` sends the segment to harfrust.
