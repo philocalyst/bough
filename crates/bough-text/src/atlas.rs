@@ -129,6 +129,9 @@ pub struct GlyphCache {
     ctx: ScaleContext,
     pub atlas: Atlas,
     strikes: Vec<Strike>,
+    /// Token tables per strike (index = strike id); carved from the shared region when the GPU reads
+    /// them ([`GlyphCache::with_tok_column`]).
+    toks: bough_mem::Col<TokStrike>,
     pub rasterized: u64,
     /// Total ns spent in the rasterizer (misses only).
     pub raster_ns: u64,
@@ -138,6 +141,9 @@ pub struct GlyphCache {
 /// the pad/phantom tokens; see `script::TokenTable`): what the glyph pool's `ent` column
 /// refers to. `entry` is the GPU-visible table the vertex shader reads; `ibox` is the same
 /// geometry as an NRect offset for damage; `ready` says whether the token was rasterized.
+/// `repr(C)` with `entry` first: the GPU reads entry `t` of strike `s` at
+/// `column offset + s * size_of::<TokStrike>() + 32 * t` (the strikes live in a carved column).
+#[repr(C)]
 pub struct TokStrike {
     pub entry: [Entry; 256],
     /// `(left, -top, -(left + w), -(-top + h))`: add `(px, oy, -px, -oy)` to get the glyph's
@@ -167,7 +173,6 @@ pub struct LineBounds {
 struct Strike {
     size: f32,
     bounds: Option<LineBounds>,
-    tok: Box<TokStrike>,
     entries: Vec<Entry>,
     /// Entries of the 128 ASCII bytes (indexed by byte, not gid), filled lazily, for the
     /// fused kernel that never materializes a `GlyphRun`.
@@ -183,9 +188,21 @@ impl GlyphCache {
             ctx: ScaleContext::new(),
             atlas: Atlas::new(1024, 512),
             strikes: vec![],
+            toks: bough_mem::Col::owned("tok_strikes"),
             rasterized: 0,
             raster_ns: 0,
         }
+    }
+
+    /// A cache whose strike token tables live in `toks` (an empty carved column, GPU-visible).
+    pub fn with_tok_column(font: &[u8], toks: bough_mem::Col<TokStrike>) -> Self {
+        assert!(toks.is_empty());
+        GlyphCache { toks, ..GlyphCache::new(font) }
+    }
+
+    /// Region offset of strike 0's token table (`None` when not carved).
+    pub fn tok_offset(&self) -> Option<usize> {
+        self.toks.region_offset()
     }
 
     /// The strike (glyph set) for a pixel size; created on first use.
@@ -193,11 +210,12 @@ impl GlyphCache {
         if let Some(i) = self.strikes.iter().position(|s| s.size == size) {
             return i;
         }
-        let mut tok = Box::new(TokStrike { entry: [Entry::default(); 256], ibox: [EMPTY_IBOX; 256], ready: [0; 256] });
+        let mut tok = TokStrike { entry: [Entry::default(); 256], ibox: [EMPTY_IBOX; 256], ready: [0; 256] };
         // Pad and phantom tokens draw nothing and are always ready.
         tok.ready[crate::script::TOK_PAD as usize] = 1;
         tok.ready[crate::script::TOK_PH as usize] = 1;
-        self.strikes.push(Strike { size, bounds: None, tok, entries: vec![], ascii: Box::new([Entry::default(); 128]) });
+        self.toks.push(tok);
+        self.strikes.push(Strike { size, bounds: None, entries: vec![], ascii: Box::new([Entry::default(); 128]) });
         self.strikes.len() - 1
     }
 
@@ -266,7 +284,7 @@ impl GlyphCache {
     /// The token tables of a strike (see [`TokStrike`]).
     #[inline]
     pub fn tok(&self, strike: StrikeId) -> &TokStrike {
-        &self.strikes[strike].tok
+        &self.toks[strike]
     }
 
     /// [`tok`](Self::tok) without the bounds check.
@@ -275,7 +293,7 @@ impl GlyphCache {
     /// `strike` must be a strike id this cache returned.
     #[inline(always)]
     pub unsafe fn tok_unchecked(&self, strike: StrikeId) -> &TokStrike {
-        unsafe { &self.strikes.get_unchecked(strike).tok }
+        unsafe { self.toks.get_unchecked(strike) }
     }
 
     /// Make every token in `toks` ready in `strike` (rasterizing misses). Cold path of the
@@ -285,11 +303,11 @@ impl GlyphCache {
     pub fn prepare_tokens(&mut self, strike: StrikeId, tok_gid: &[u16; 256], toks: impl Iterator<Item = u16>) {
         for t in toks {
             let t = t as usize;
-            if self.strikes[strike].tok.ready[t] != 0 {
+            if self.toks[strike].ready[t] != 0 {
                 continue;
             }
             let e = self.entry(strike, tok_gid[t]);
-            let ts = &mut self.strikes[strike].tok;
+            let ts = &mut self.toks[strike];
             ts.entry[t] = e;
             ts.ibox[t] = if e.uv[2] == 0 {
                 EMPTY_IBOX

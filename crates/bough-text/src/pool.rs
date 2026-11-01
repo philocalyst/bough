@@ -41,6 +41,7 @@
 //!   line's rows, from the strike's conservative [`LineBounds`].
 
 use crate::atlas::{GlyphCache, Instance, LineBounds, StrikeId, TokStrike, KIND_GLYPH};
+use bough_mem::Col;
 use crate::shape::{tokenize, Shaper};
 
 /// `(x0, y0, -x1, -y1)` in pixels; union is lane-wise `min`.
@@ -71,38 +72,79 @@ pub fn col_mask(x0: i32, x1: i32) -> u128 {
     (2u128 << t1).wrapping_sub(1u128 << t0)
 }
 
+/// Where tile marks go: one `u128` per 32 px tile row (bit `t` = device pixels `32t..32t+32`).
+/// `[u128]` is the plain plane; bough-core's `Plane` (through the façade) also keeps its row band.
+pub trait Marks {
+    /// Tile rows in the plane.
+    fn rows(&self) -> i32;
+    /// `plane[r] |= m` for `r` in `r0..=r1` (`r0 >= 0`; `r1` clamped to the plane).
+    fn or_rows(&mut self, r0: i32, r1: i32, m: u128);
+}
+
+impl Marks for [u128] {
+    #[inline(always)]
+    fn rows(&self) -> i32 {
+        self.len() as i32
+    }
+    /// Straight-line for the usual one or two rows (a text line under 32 px spans at most two).
+    #[inline(always)]
+    fn or_rows(&mut self, r0: i32, r1: i32, m: u128) {
+        let r1 = r1.min(self.len() as i32 - 1);
+        if r1 < r0 || r0 < 0 {
+            return;
+        }
+        // SAFETY: 0 <= r0 <= r1 < self.len().
+        unsafe {
+            let p = self.as_mut_ptr();
+            *p.add(r0 as usize) |= m;
+            if r1 > r0 {
+                *p.add(r0 as usize + 1) |= m;
+                if r1 > r0 + 1 {
+                    more_rows(p, r0 + 2, r1, m);
+                }
+            }
+        }
+    }
+}
+
+impl Marks for Vec<u128> {
+    #[inline(always)]
+    fn rows(&self) -> i32 {
+        self.as_slice().rows()
+    }
+    #[inline(always)]
+    fn or_rows(&mut self, r0: i32, r1: i32, m: u128) {
+        self.as_mut_slice().or_rows(r0, r1, m)
+    }
+}
+impl<const N: usize> Marks for [u128; N] {
+    #[inline(always)]
+    fn rows(&self) -> i32 {
+        N as i32
+    }
+    #[inline(always)]
+    fn or_rows(&mut self, r0: i32, r1: i32, m: u128) {
+        self.as_mut_slice().or_rows(r0, r1, m)
+    }
+}
+
 /// OR the tiles of the half-open pixel box `[x0, x1) x [y0, y1)` into a damage plane.
 /// Straight-line for the usual one or two rows.
 #[inline(always)]
-pub fn mark(plane: &mut [u128], x0: i32, y0: i32, x1: i32, y1: i32) {
+pub fn mark<P: Marks + ?Sized>(plane: &mut P, x0: i32, y0: i32, x1: i32, y1: i32) {
     let r0 = (y0 >> 5).max(0);
-    let r1 = ((y1 - 1) >> 5).min(plane.len() as i32 - 1);
+    let r1 = ((y1 - 1) >> 5).min(plane.rows() - 1);
     let m = col_mask(x0, x1);
     if m == 0 || y1 <= y0 {
         return;
     }
-    or_rows(plane, r0, r1, m);
+    plane.or_rows(r0, r1, m);
 }
 
-/// `plane[r] |= m` for `r` in `r0..=r1` (clamped to the plane; `r0 >= 0`). Straight-line for
-/// the usual one or two rows (a text line under 32 px spans at most two).
+/// `plane[r] |= m` for `r` in `r0..=r1` (clamped to the plane; `r0 >= 0`).
 #[inline(always)]
-pub fn or_rows(plane: &mut [u128], r0: i32, r1: i32, m: u128) {
-    let r1 = r1.min(plane.len() as i32 - 1);
-    if r1 < r0 || r0 < 0 {
-        return;
-    }
-    // SAFETY: 0 <= r0 <= r1 < plane.len().
-    unsafe {
-        let p = plane.as_mut_ptr();
-        *p.add(r0 as usize) |= m;
-        if r1 > r0 {
-            *p.add(r0 as usize + 1) |= m;
-            if r1 > r0 + 1 {
-                more_rows(p, r0 + 2, r1, m);
-            }
-        }
-    }
+pub fn or_rows<P: Marks + ?Sized>(plane: &mut P, r0: i32, r1: i32, m: u128) {
+    plane.or_rows(r0, r1, m);
 }
 
 #[cold]
@@ -115,7 +157,7 @@ unsafe fn more_rows(p: *mut u128, r0: i32, r1: i32, m: u128) {
 }
 
 #[inline(always)]
-pub fn mark_rect(plane: &mut [u128], r: &NRect) {
+pub fn mark_rect<P: Marks + ?Sized>(plane: &mut P, r: &NRect) {
     mark(plane, r[0], r[1], -r[2], -r[3]);
 }
 
@@ -198,13 +240,24 @@ impl Label {
     }
 }
 
+/// The GPU-visible columns of a [`GlyphPool`] (carved from the shared region by the façade, so the
+/// GPU reads the slots, run headers and space translations where the shaper writes them).
+pub struct PoolColumns {
+    pub x: Col<i32>,
+    pub ent: Col<u16>,
+    pub runs: Col<RunHeader>,
+    pub spaces: Col<[i32; 2]>,
+}
+
 #[derive(Default)]
 pub struct GlyphPool {
-    pub x: Vec<i32>,
-    pub ent: Vec<u16>,
-    pub runs: Vec<RunHeader>,
-    /// Integral device-pixel translation of each space (the vertex shader adds it).
-    pub spaces: Vec<[i32; 2]>,
+    pub x: Col<i32>,
+    pub ent: Col<u16>,
+    pub runs: Col<RunHeader>,
+    /// Integral device-pixel translation of each space (the GPU adds it to runs and instances).
+    pub spaces: Col<[i32; 2]>,
+    /// Run headers released by `free_label` / `free_run`, reused before the column grows.
+    free_runs: Vec<u32>,
     /// How many updates took each path: equal-length class patch, window, window stopped at
     /// an unchanged suffix, full replacement.
     pub stats: [u64; 4],
@@ -266,7 +319,37 @@ unsafe fn load16(p: *const u8, n: usize) -> core::arch::aarch64::uint8x16_t {
 
 impl GlyphPool {
     pub fn new() -> Self {
-        GlyphPool { spaces: vec![[0, 0]], ..Self::default() }
+        let mut p = GlyphPool::default();
+        p.spaces.push([0, 0]);
+        p
+    }
+
+    /// A pool on carved (GPU-visible) columns.
+    pub fn with_columns(c: PoolColumns) -> Self {
+        let mut p = GlyphPool { x: c.x, ent: c.ent, runs: c.runs, spaces: c.spaces, ..Self::default() };
+        p.spaces.clear();
+        p.spaces.push([0, 0]);
+        p
+    }
+
+    /// A run header (reusing a released one).
+    pub(crate) fn new_run(&mut self, h: RunHeader) -> u32 {
+        match self.free_runs.pop() {
+            Some(r) => {
+                self.runs[r as usize] = h;
+                r
+            }
+            None => {
+                self.runs.push(h);
+                (self.runs.len() - 1) as u32
+            }
+        }
+    }
+
+    /// Release a run header (its id may be returned by the next allocation). Draws nothing.
+    pub fn free_run(&mut self, run: u32) {
+        self.runs[run as usize].len = 0;
+        self.free_runs.push(run);
     }
 
     pub fn set_space(&mut self, space: u16, t: [i32; 2]) {
@@ -324,10 +407,9 @@ impl GlyphPool {
         if self.spaces.len() <= space as usize {
             self.spaces.resize(space as usize + 1, [0, 0]);
         }
-        let run = self.runs.len() as u32;
-        let base = self.alloc_block(16, run);
+        let base = self.alloc_block(16, u32::MAX);
         let scale = font_size / sh.script.upem as f32;
-        self.runs.push(RunHeader { origin, scale, color, space, strike: strike as u16, base, len: 0, x0: 0 });
+        let run = self.new_run(RunHeader { origin, scale, color, space, strike: strike as u16, base, len: 0, x0: 0 });
         Label {
             head: [0; 16],
             base,
@@ -354,13 +436,13 @@ impl GlyphPool {
     }
 
     /// Release a label's block, marking the whole line (O(1)).
-    pub fn free_label(&mut self, lb: Label, plane: &mut [u128]) {
+    pub fn free_label<P: Marks + ?Sized>(&mut self, lb: Label, plane: &mut P) {
         let h = self.runs[lb.run as usize];
         if h.len > 0 {
             self.mark_line(&lb, 0, lb.width, plane);
         }
         self.free_block(h.base, lb.cap);
-        self.runs[lb.run as usize].len = 0;
+        self.free_run(lb.run);
     }
 
     /// Set a retained label's text: writes only what changed into the pool and ORs the damage
@@ -368,38 +450,38 @@ impl GlyphPool {
     /// (a codepoint outside the covered set; the label is unchanged). Rasterizes glyphs the
     /// strike has not seen (cold path).
     #[inline]
-    pub fn set_text(&mut self, sh: &Shaper, cache: &mut GlyphCache, lb: &mut Label, new: &str, plane: &mut [u128]) -> bool {
-        self.set_text_d::<true>(sh, cache, lb, new, plane)
+    pub fn set_text<P: Marks + ?Sized>(&mut self, sh: &Shaper, cache: &mut GlyphCache, lb: &mut Label, new: &str, plane: &mut P) -> bool {
+        self.set_text_d::<true, P>(sh, cache, lb, new, plane)
     }
 
     /// `set_text` with the damage output switchable at compile time (`DAMAGE = false` writes
     /// no marks), to measure the instance rewrite and the damage separately.
     #[inline(always)]
-    pub fn set_text_d<const DAMAGE: bool>(
+    pub fn set_text_d<const DAMAGE: bool, P: Marks + ?Sized>(
         &mut self,
         sh: &Shaper,
         cache: &mut GlyphCache,
         lb: &mut Label,
         new: &str,
-        plane: &mut [u128],
+        plane: &mut P,
     ) -> bool {
         let s = new.as_bytes();
         let n = s.len();
         #[cfg(target_arch = "aarch64")]
         if lb.flags == IDENTITY && n == lb.nbytes as usize && n.wrapping_sub(1) < 16 {
             // SAFETY: n <= 16 bytes of `s`; the strike id was validated at allocation.
-            if unsafe { self.patch16::<DAMAGE>(sh, cache.tok_unchecked(lb.strike as StrikeId), lb, s, plane) } {
+            if unsafe { self.patch16::<DAMAGE, P>(sh, cache.tok_unchecked(lb.strike as StrikeId), lb, s, plane) } {
                 return true;
             }
         }
-        self.slow::<DAMAGE>(sh, cache, lb, new, plane)
+        self.slow::<DAMAGE, P>(sh, cache, lb, new, plane)
     }
 
     /// Equal-length update of an identity label of at most 16 bytes. `false` = not applicable
     /// (non-ASCII, or a changed byte left its position class); nothing was written then.
     #[cfg(target_arch = "aarch64")]
     #[inline(always)]
-    unsafe fn patch16<const D: bool>(&mut self, sh: &Shaper, ts: &TokStrike, lb: &mut Label, s: &[u8], plane: &mut [u128]) -> bool {
+    unsafe fn patch16<const D: bool, P: Marks + ?Sized>(&mut self, sh: &Shaper, ts: &TokStrike, lb: &mut Label, s: &[u8], plane: &mut P) -> bool {
         use core::arch::aarch64::*;
         unsafe {
             let n = s.len();
@@ -476,7 +558,7 @@ impl GlyphPool {
 
     #[cold]
     #[inline(never)]
-    fn slow<const D: bool>(&mut self, sh: &Shaper, cache: &mut GlyphCache, lb: &mut Label, new: &str, plane: &mut [u128]) -> bool {
+    fn slow<const D: bool, P: Marks + ?Sized>(&mut self, sh: &Shaper, cache: &mut GlyphCache, lb: &mut Label, new: &str, plane: &mut P) -> bool {
         let strike = lb.strike as StrikeId;
         loop {
             let ts = cache.tok(strike);
@@ -489,14 +571,14 @@ impl GlyphPool {
                 if p == n && n == n_old {
                     return true;
                 }
-                match self.window::<D>(sh, lb, s, p, plane) {
+                match self.window::<D, P>(sh, lb, s, p, plane) {
                     Some(o) => o,
-                    None => self.replace::<D>(sh, ts, lb, new, plane),
+                    None => self.replace::<D, P>(sh, ts, lb, new, plane),
                 }
             } else if lb.flags != IDENTITY && lb.text() == s {
                 Outcome::Done
             } else {
-                self.replace::<D>(sh, ts, lb, new, plane)
+                self.replace::<D, P>(sh, ts, lb, new, plane)
             };
             match o {
                 Outcome::Done => return true,
@@ -523,7 +605,7 @@ impl GlyphPool {
 
     /// Mark the line's tiles over pens `[pen0, pen1]` (font units, run-relative), O(1).
     #[inline]
-    fn mark_line(&self, lb: &Label, pen0: i32, pen1: i32, plane: &mut [u128]) {
+    fn mark_line<P: Marks + ?Sized>(&self, lb: &Label, pen0: i32, pen1: i32, plane: &mut P) {
         let sp = self.spaces[lb.space as usize];
         let oy = lb.oy + sp[1];
         let b = lb.bounds;
@@ -542,7 +624,7 @@ impl GlyphPool {
     /// pen there comes out unchanged (the suffix keeps its slots); anything longer runs the
     /// NEON slot kernel to the end. Damage is O(1). `None` if the new text has a trigger (the
     /// pool is restored first).
-    fn window<const D: bool>(&mut self, sh: &Shaper, lb: &mut Label, s: &[u8], p: usize, plane: &mut [u128]) -> Option<Outcome> {
+    fn window<const D: bool, P: Marks + ?Sized>(&mut self, sh: &Shaper, lb: &mut Label, s: &[u8], p: usize, plane: &mut P) -> Option<Outcome> {
         let n = s.len();
         let n_old = lb.nbytes as usize;
         // Equal lengths: bytes from `stop` on are unchanged.
@@ -644,7 +726,7 @@ impl GlyphPool {
     /// path into scratch. Damage: old line ∪ new line, O(1). A refused text leaves the label
     /// exactly as it was.
     #[inline(never)]
-    fn replace<const D: bool>(&mut self, sh: &Shaper, ts: &TokStrike, lb: &mut Label, new: &str, plane: &mut [u128]) -> Outcome {
+    fn replace<const D: bool, P: Marks + ?Sized>(&mut self, sh: &Shaper, ts: &TokStrike, lb: &mut Label, new: &str, plane: &mut P) -> Outcome {
         let s = new.as_bytes();
         let n = s.len();
         let h = self.runs[lb.run as usize];

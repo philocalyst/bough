@@ -45,14 +45,14 @@ fn make_labels(sh: &Shaper, cache: &mut GlyphCache, init: &[(String, f32)]) -> L
 #[inline(never)]
 fn update_tick<const D: bool>(sh: &Shaper, cache: &mut GlyphCache, l: &mut Labels, tick: &[(String, f32)], plane: &mut [u128]) {
     for (lb, (s, _)) in l.labels.iter_mut().zip(tick) {
-        black_box(l.pool.set_text_d::<D>(sh, cache, lb, black_box(s), plane));
+        black_box(l.pool.set_text_d::<D, _>(sh, cache, lb, black_box(s), plane));
     }
 }
 
 /// One update, not inlined, so its code can be read with objdump.
 #[inline(never)]
 pub fn one_update<const D: bool>(pool: &mut GlyphPool, sh: &Shaper, cache: &mut GlyphCache, lb: &mut Label, s: &str, plane: &mut [u128]) -> bool {
-    pool.set_text_d::<D>(sh, cache, lb, s, plane)
+    pool.set_text_d::<D, _>(sh, cache, lb, s, plane)
 }
 
 /// A heavy label's value and format (what the view code has before it formats).
@@ -307,10 +307,10 @@ fn main() {
                     for ((lb, v), f) in l.labels.iter_mut().zip(vs).zip(&fmts) {
                         if use_render {
                             let len = render(f, black_box(v), &mut buf);
-                            black_box(l.pool.set_text_d::<true>(&sh, &mut cache, lb, as_str(&buf, len), &mut plane));
+                            black_box(l.pool.set_text_d::<true, _>(&sh, &mut cache, lb, as_str(&buf, len), &mut plane));
                         } else {
                             std_format(black_box(v), &mut sbuf);
-                            black_box(l.pool.set_text_d::<true>(&sh, &mut cache, lb, &sbuf, &mut plane));
+                            black_box(l.pool.set_text_d::<true, _>(&sh, &mut cache, lb, &sbuf, &mut plane));
                         }
                     }
                 }

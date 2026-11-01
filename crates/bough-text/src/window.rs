@@ -14,7 +14,7 @@
 //! conservative [`LineBounds`].
 
 use crate::atlas::LineBounds;
-use crate::pool::{mark, pen_px, GlyphPool, RunHeader};
+use crate::pool::{mark, pen_px, GlyphPool, Marks, RunHeader};
 use crate::shape::Shaper;
 
 /// A text shaped into a pool block with no header of its own (ASCII through the dense table).
@@ -30,8 +30,7 @@ pub struct Shaped {
 impl GlyphPool {
     /// A run header with no glyphs yet.
     pub fn alloc_run(&mut self, origin: [f32; 2], scale: f32, color: u32, space: u16, strike: u16) -> u32 {
-        self.runs.push(RunHeader { origin, scale, color, space, strike, base: 0, len: 0, x0: 0 });
-        (self.runs.len() - 1) as u32
+        self.new_run(RunHeader { origin, scale, color, space, strike, base: 0, len: 0, x0: 0 })
     }
 
     /// Shape ASCII `text` into a fresh block. `false` if it needs the token path (trigger,
@@ -70,7 +69,7 @@ impl GlyphPool {
 
     /// Mark a line's tiles over the window pens `[0, w]` (font units) of `run`, O(1).
     #[inline]
-    pub fn mark_window(&self, run: u32, w: i32, b: &LineBounds, plane: &mut [u128]) {
+    pub fn mark_window<P: Marks + ?Sized>(&self, run: u32, w: i32, b: &LineBounds, plane: &mut P) {
         let h = &self.runs[run as usize];
         let sp = self.spaces[h.space as usize];
         let oxh = h.origin[0] + 0.5;
