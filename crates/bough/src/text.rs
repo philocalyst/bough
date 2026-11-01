@@ -5,8 +5,12 @@
 //!   rewrite their `u16` entry ids and OR a cached tile span into the damage plane (the numeric operand
 //!   renders the value straight into the label's 16-byte vector, no `String`); other edits re-step from the
 //!   first changed byte with O(1) line marks; ligatures and Latin-1 go through the token table.
-//! * **several lines** (`\n`, or wrapped by layout): the text is shaped once into a block; each line is one
-//!   32-byte run header, a *window* onto the block. The record draws the whole range of headers.
+//! * **several lines** (`\n`): a ring of lines (`bough_text::lines::LineSet`, round 3). Every line is shaped
+//!   alone into its own pool block (byte slots: ligatures and Latin-1 included) and drawn by one run header; a
+//!   new value is matched line by line first (common prefix, a shift of lines scrolled off the top, common
+//!   suffix), so a log tick shapes one line and slides the headers, and an edit shapes the changed line only.
+//! * **wrapped by layout**: the text is shaped once into a block (byte slots); each line is one 32-byte run
+//!   header, a *window* onto the block. The record draws the whole range of headers.
 //! * **beyond Latin-1** (and per-glyph colour, `glyph_alpha`): 48-byte glyph instances in an instance run,
 //!   shaped by the table kernel per ASCII segment and by rustybuzz per non-Latin-1 chunk (cached). This is the
 //!   only rustybuzz use left; everything the token table covers goes through the pool.
@@ -18,6 +22,7 @@ use bough_metal::fused::{pay_irun, pay_runs};
 use bough_metal::instance::Instance;
 use bough_text::atlas::{GlyphCache, Instance as TInstance, LineBounds, StrikeId, TokStrike};
 use bough_text::pool::{pen_px, Label};
+use bough_text::lines::{LineSet, LineStyle};
 use bough_text::window::Shaped;
 use bough_text::{GlyphRun, Shaper, SimpleScript};
 
@@ -45,7 +50,7 @@ pub struct TextSys {
 impl TextSys {
     /// `toks`: the (carved, GPU-visible) column of strike token tables.
     pub fn new(font: &[u8], toks: bough_mem::Col<TokStrike>) -> TextSys {
-        let script = SimpleScript::build(font, 0).expect("font has no simple-script table");
+        let script = SimpleScript::build_cached(font, 0).expect("font has no simple-script table");
         let leaked: &'static [u8] = Box::leak(font.to_vec().into_boxed_slice());
         let tf = ttf_parser::Face::parse(leaked, 0).expect("font");
         let (ascent, descent, upem) = (tf.ascender() as f32, -(tf.descender() as f32), tf.units_per_em() as f32);
@@ -74,8 +79,23 @@ impl TextSys {
             return s;
         }
         let s = self.cache.strike(size_px);
+        // ASCII-complete from the start (every path may draw any printable byte without a readiness check)
+        let tt = self.shaper.script.tokens.as_ref().expect("token model");
+        self.cache.prepare_tokens(s, &tt.gid, 0x20..0x7F);
         self.strikes.push((key, s));
         s
+    }
+
+    /// Make every token of `ents` drawable in `strike` (a Latin-1 glyph or a ligature seen for the first time:
+    /// rasterized once). Cold: called only when the shaper reports tokens beyond ASCII.
+    #[cold]
+    pub fn ready(&mut self, strike: StrikeId, ents: &[u16]) {
+        let tt = self.shaper.script.tokens.as_ref().expect("token model");
+        let ts = self.cache.tok(strike);
+        if ents.iter().all(|&t| ts.ready[t as usize] != 0) {
+            return;
+        }
+        self.cache.prepare_tokens(strike, &tt.gid, ents.iter().copied());
     }
 
     /// Baseline offset below the top of a line box of height `lh` (CSS half-leading), px.
@@ -213,7 +233,9 @@ pub enum TShape {
     #[default]
     None,
     Label(Box<Label>),
-    /// Run headers `[first, first + cap)`, `n` in use, windows onto `block`.
+    /// Explicit lines (`\n`): a ring of lines, one block and one run header per line.
+    Set(Box<LineSet>),
+    /// Run headers `[first, first + cap)`, `n` in use, windows onto `block` (layout's wrapped leaves).
     Lines { block: Option<Shaped>, owned: bool, first: u32, cap: u32, n: u32, widths: Vec<i32>, spans: Vec<(u32, u32)> },
     /// An instance run of glyph instances (`Rt::runs` index).
     Glyphs { run: u32 },
@@ -240,6 +262,17 @@ pub struct TextNode {
     pub num: Option<bough_text::numeric::NumFmt>,
 }
 
+impl TextNode {
+    /// The node's current text. A label holds its own bytes (its patch compares against them), so its `text`
+    /// string is not kept current on the label path (text round 3); read the text through this.
+    pub fn bytes(&self) -> &[u8] {
+        match &self.shape {
+            TShape::Label(lb) => lb.text(),
+            _ => self.text.as_bytes(),
+        }
+    }
+}
+
 /// Release a text node's pool resources (its record is removed by the caller's scope).
 pub(crate) fn release(rt: &mut Rt, t: TextNode) {
     match t.shape {
@@ -255,6 +288,7 @@ pub(crate) fn release(rt: &mut Rt, t: TextNode) {
                 rt.glyphs.free_shaped(b);
             }
         }
+        TShape::Set(mut set) => set.free(&mut rt.glyphs),
         TShape::Glyphs { run } => rt.free_run(run),
     }
 }
@@ -293,12 +327,66 @@ impl Rt {
             if let Some(p) = self.build_label(ti) {
                 return p;
             }
-        } else if covered && self.texts[ti as usize].text.is_ascii() {
-            if let Some(p) = self.build_lines(ti) {
+        } else if covered {
+            if let Some(p) = self.build_set(ti) {
                 return p;
             }
         }
         self.build_glyphs(ti)
+    }
+
+    /// The draw style of text node `ti`'s line set.
+    fn set_style(&self, ti: u32) -> LineStyle {
+        let t = &self.texts[ti as usize];
+        LineStyle { ox: t.ox, oy: t.oy, lh: t.line_h, scale: self.tscale(t), color: t.color, space: t.space, strike: t.strike as u16 }
+    }
+
+    /// Ink of a line set: the union of its lines' extents.
+    fn set_ink(&mut self, ti: u32) -> NRect {
+        let strike = self.texts[ti as usize].strike as StrikeId;
+        let b = self.text.bounds(strike);
+        let TShape::Set(set) = &self.texts[ti as usize].shape else { unreachable!() };
+        let st = set.style;
+        let sp = self.glyphs.spaces[st.space as usize];
+        let mut ink = NRect::EMPTY;
+        for (i, l) in set.lines.iter().enumerate() {
+            ink = ink.union(line_ink(&b, st.scale, st.ox, (st.oy + i as f32 * st.lh).round() as i32, l.width, sp));
+        }
+        ink
+    }
+
+    /// Ready the tokens beyond ASCII a set's lines use (cold).
+    #[cold]
+    fn ready_set(&mut self, ti: u32) {
+        let strike = self.texts[ti as usize].strike as StrikeId;
+        let TShape::Set(set) = &self.texts[ti as usize].shape else { return };
+        let mut ents = Vec::new();
+        for l in &set.lines {
+            if l.base != u32::MAX {
+                ents.extend_from_slice(&self.glyphs.ent[l.base as usize..(l.base + l.len) as usize]);
+            }
+        }
+        self.text.ready(strike, &ents);
+    }
+
+    /// Several lines (`\n`): a ring of lines.
+    fn build_set(&mut self, ti: u32) -> Option<u32> {
+        let style = self.set_style(ti);
+        let strike = self.texts[ti as usize].strike as StrikeId;
+        let b = self.text.bounds(strike);
+        let mut set = Box::new(LineSet::new(style));
+        let text = std::mem::take(&mut self.texts[ti as usize].text);
+        let r = set.set_text::<[u128]>(&mut self.glyphs, &self.text.shaper, &text, &b, None);
+        self.texts[ti as usize].text = text;
+        let st = r.ok()?;
+        let (first, cap) = (set.first, set.cap);
+        self.texts[ti as usize].shape = TShape::Set(set);
+        if st.exotic {
+            self.ready_set(ti);
+        }
+        let ink = self.set_ink(ti);
+        self.texts[ti as usize].ink = ink;
+        Some(pay_runs(first, cap))
     }
 
     fn build_label(&mut self, ti: u32) -> Option<u32> {
@@ -322,33 +410,6 @@ impl Rt {
         t.ink = ink;
         t.shape = TShape::Label(Box::new(lb));
         Some(pay_runs(run, 1))
-    }
-
-    /// Several lines (`\n`): shape the text once into a block, one window per line.
-    fn build_lines(&mut self, ti: u32) -> Option<u32> {
-        let mut bytes = std::mem::take(&mut self.text.bytes);
-        bytes.clear();
-        bytes.extend(self.texts[ti as usize].text.bytes().map(|b| if b == b'\n' { b' ' } else { b }));
-        let mut spans = Vec::new();
-        let mut a = 0u32;
-        for (i, &b) in self.texts[ti as usize].text.as_bytes().iter().enumerate() {
-            if b == b'\n' {
-                spans.push((a, i as u32));
-                a = i as u32 + 1;
-            }
-        }
-        spans.push((a, bytes.len() as u32));
-        let mut block = Shaped::default();
-        let ok = self.glyphs.shape_block(&self.text.shaper, &bytes, &mut block);
-        self.text.bytes = bytes;
-        if !ok {
-            return None;
-        }
-        let n = spans.len();
-        let (first, cap) = self.glyphs.alloc_run_range(n);
-        self.texts[ti as usize].shape = TShape::Lines { block: Some(block), owned: true, first, cap, n: 0, widths: Vec::new(), spans: Vec::new() };
-        self.lines_point(ti, block, &spans, false);
-        Some(pay_runs(first, cap))
     }
 
     /// Point text node `ti`'s line windows at `spans` of `block` (lines `i` at baseline `oy + i * line_h`);
@@ -476,67 +537,63 @@ impl Rt {
     /// A text node's value changed. Labels patch (exact tile marks at update time); line windows re-point
     /// with per-line marks; glyph instances are rebuilt (old and new ink damaged).
     pub(crate) fn text_set(&mut self, ti: u32, new: &str) {
-        if self.texts[ti as usize].text == new {
-            return;
+        // A label holds its own text (its 16-byte head and its bytes) and its patch starts with the comparison
+        // of old and new: the node's `String` is neither compared nor copied on this path (the value was there
+        // all along); it is refreshed only on a change of representation. A `\n` or an uncovered codepoint makes
+        // the label refuse (a control byte never tokenizes), which is that change.
+        {
+            let Rt { glyphs, text: ts, bough, texts, ctr, .. } = self;
+            let t = &mut texts[ti as usize];
+            if let TShape::Label(lb) = &mut t.shape {
+                ctr.text_set += 1;
+                let old_w = lb.width();
+                if glyphs.set_text(&ts.shaper, &mut ts.cache, lb, new, &mut CoreMarks(bough.plane_mut())) {
+                    let w = lb.width();
+                    if w != old_w {
+                        let scale = t.size_px / ts.shaper.script.upem as f32;
+                        let ink = line_ink(&lb.bounds, scale, t.ox, t.oy as i32, w, glyphs.spaces[t.space as usize]);
+                        t.ink = ink;
+                        bough.set_ink_handle_nodamage(t.handle, ink);
+                    }
+                    return;
+                }
+            } else if t.text == new {
+                return;
+            } else {
+                ctr.text_set += 1;
+            }
         }
-        self.ctr.text_set += 1;
         let h = self.texts[ti as usize].handle;
         let shape = std::mem::take(&mut self.texts[ti as usize].shape);
         match shape {
-            TShape::Label(mut lb) if !new.contains('\n') => {
-                let old_w = lb.width();
-                let ok = {
+            TShape::Set(mut set) => {
+                let strike = self.texts[ti as usize].strike as StrikeId;
+                let b = self.text.bounds(strike);
+                let r = {
                     let Rt { glyphs, text: ts, bough, .. } = self;
-                    glyphs.set_text(&ts.shaper, &mut ts.cache, &mut lb, new, &mut CoreMarks(bough.plane_mut()))
+                    set.set_text(glyphs, &ts.shaper, new, &b, Some(&mut CoreMarks(bough.plane_mut())))
                 };
-                if ok {
-                    let w = lb.width();
+                let (first, cap) = (set.first, set.cap);
+                self.texts[ti as usize].shape = TShape::Set(set);
+                if let Ok(st) = r {
+                    self.ctr.lines_shaped += st.shaped as u64;
+                    self.ctr.lines_kept += st.kept as u64;
+                    if st.exotic {
+                        self.ready_set(ti);
+                    }
+                    if st.moved {
+                        self.bough.set_payload_handle(h, pay_runs(first, cap));
+                    }
                     let t = &mut self.texts[ti as usize];
                     t.text.clear();
                     t.text.push_str(new);
-                    if w != old_w {
-                        let (space, ox, oy) = (t.space, t.ox, t.oy);
-                        let scale = t.size_px / self.text.shaper.script.upem as f32;
-                        let ink = line_ink(&lb.bounds, scale, ox, oy as i32, w, self.glyphs.spaces[space as usize]);
+                    let ink = self.set_ink(ti);
+                    if ink != self.texts[ti as usize].ink {
                         self.texts[ti as usize].ink = ink;
                         self.bough.set_ink_handle_nodamage(h, ink);
                     }
-                    self.texts[ti as usize].shape = TShape::Label(lb);
                     return;
                 }
-                self.texts[ti as usize].shape = TShape::Label(lb);
-            }
-            TShape::Lines { block: Some(old), owned: true, first, cap, n, widths, spans } if new.is_ascii() => {
-                let mut bytes = std::mem::take(&mut self.text.bytes);
-                bytes.clear();
-                bytes.extend(new.bytes().map(|b| if b == b'\n' { b' ' } else { b }));
-                let mut block = Shaped::default();
-                let ok = self.glyphs.shape_block(&self.text.shaper, &bytes, &mut block);
-                self.text.bytes = bytes;
-                if ok {
-                    let mut ns = Vec::new();
-                    let mut a = 0u32;
-                    for (i, &b) in new.as_bytes().iter().enumerate() {
-                        if b == b'\n' {
-                            ns.push((a, i as u32));
-                            a = i as u32 + 1;
-                        }
-                    }
-                    ns.push((a, new.len() as u32));
-                    self.texts[ti as usize].shape = TShape::Lines { block: Some(old), owned: true, first, cap, n, widths, spans };
-                    // every line's window moves to the new block: mark the lines whose bytes changed
-                    let oldtext = std::mem::take(&mut self.texts[ti as usize].text);
-                    self.lines_point_diff(ti, block, &ns, &oldtext, new);
-                    self.glyphs.free_shaped(old);
-                    let t = &mut self.texts[ti as usize];
-                    t.text = oldtext;
-                    t.text.clear();
-                    t.text.push_str(new);
-                    let ink = t.ink;
-                    self.bough.set_ink_handle_nodamage(h, ink);
-                    return;
-                }
-                self.texts[ti as usize].shape = TShape::Lines { block: Some(old), owned: true, first, cap, n, widths, spans };
             }
             other => self.texts[ti as usize].shape = other,
         }
@@ -554,33 +611,5 @@ impl Rt {
         let new_ink = self.texts[ti as usize].ink;
         self.bough.damage_rect(old_ink);
         self.bough.set_ink_handle(h, new_ink);
-    }
-
-    /// `lines_point` for a new block whose line `i` holds `new`'s line `i`: a line is damaged only if its
-    /// bytes changed (the windows all move to the new block; unchanged bytes draw the same pixels).
-    fn lines_point_diff(&mut self, ti: u32, block: Shaped, spans: &[(u32, u32)], old: &str, new: &str) {
-        let strike = self.texts[ti as usize].strike as StrikeId;
-        let b = self.text.bounds(strike);
-        let old_lines: Vec<&str> = old.split('\n').collect();
-        let changed: Vec<bool> = new.split('\n').enumerate().map(|(i, l)| old_lines.get(i) != Some(&l)).collect();
-        let old_n = old_lines.len();
-        let TShape::Lines { first, widths, .. } = &self.texts[ti as usize].shape else { unreachable!() };
-        let first = *first;
-        for i in 0..old_n {
-            if i >= changed.len() || changed[i] {
-                let w = widths[i];
-                let Rt { glyphs, bough, .. } = self;
-                glyphs.mark_window(first + i as u32, w, &b, &mut CoreMarks(bough.plane_mut()));
-            }
-        }
-        self.lines_point(ti, block, spans, false);
-        let TShape::Lines { first, widths, .. } = &self.texts[ti as usize].shape else { unreachable!() };
-        let (first, widths) = (*first, widths.clone());
-        for (i, &c) in changed.iter().enumerate() {
-            if c {
-                let Rt { glyphs, bough, .. } = self;
-                glyphs.mark_window(first + i as u32, widths[i], &b, &mut CoreMarks(bough.plane_mut()));
-            }
-        }
     }
 }

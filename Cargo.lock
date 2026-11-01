@@ -110,6 +110,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-text-bench"
+version = "0.0.0"
+dependencies = [
+ "bough",
+ "bough-mem",
+ "bough-metal",
+ "bough-text",
+ "rustybuzz",
+ "zgx-workload",
+]
+
+[[package]]
 name = "bough-vlist"
 version = "0.0.0"
 dependencies = [

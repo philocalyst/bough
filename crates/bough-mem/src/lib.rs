@@ -250,6 +250,23 @@ impl<T: Copy> Col<T> {
         self.len += count;
     }
     /// Resize to `n`, filling new elements with `v`.
+    /// Grow to `n` elements, the new ones all-zero bytes: one `memset`, not an element loop (text round 3: a
+    /// glyph block of 512 slots was ~1,500 instructions of element writes).
+    ///
+    /// # Safety
+    /// The all-zero bit pattern must be a valid `T`.
+    pub unsafe fn grow_zeroed(&mut self, n: usize) {
+        if n <= self.len {
+            return;
+        }
+        if n > self.cap {
+            self.grow_to(n);
+        }
+        // SAFETY: len..n lies inside the capacity; the caller vouches for zero being a valid T.
+        unsafe { std::ptr::write_bytes(self.ptr.as_ptr().add(self.len), 0, n - self.len) };
+        self.len = n;
+    }
+
     pub fn resize(&mut self, n: usize, v: T) {
         if n > self.len {
             if n > self.cap {

@@ -749,7 +749,7 @@ fn place_caret(rt: &mut Rt, f: u32) {
         let fl = &rt.input.fields[f as usize];
         (fl.ti, fl.caret_node, fl.caret, fl.caret_color, fl.focused)
     };
-    let len = rt.texts[ti as usize].text.len();
+    let len = rt.texts[ti as usize].bytes().len();
     let caret = caret.min(len);
     rt.input.fields[f as usize].caret = caret;
     let (ox, size_px) = (rt.texts[ti as usize].ox, rt.texts[ti as usize].size_px);
@@ -824,7 +824,7 @@ impl<V: 'static> Element<V> for TextField<'_, V> {
         text(self.sig).at(self.pad, ty).size(self.size).line_height(lh).color(self.color).mount(m);
         let tnode = m.scope.nodes[tn_before..].iter().copied().find(|&n| m.rt.nodes[n as usize].text != NONE).expect("label node");
         m.rt.input.fields[f as usize].ti = m.rt.nodes[tnode as usize].text;
-        let len = m.rt.texts[m.rt.input.fields[f as usize].ti as usize].text.len();
+        let len = m.rt.texts[m.rt.input.fields[f as usize].ti as usize].bytes().len();
         m.rt.input.fields[f as usize].caret = len;
         (m.ox, m.oy, m.depth, m.clip) = (ox, oy, depth, clip);
         // the caret sits at the start, transparent, until the field is focused (`place_caret`)

@@ -398,8 +398,11 @@ impl GlyphPool {
             None => {
                 let b = self.x.len() as u32;
                 let size = 16usize << c;
-                self.x.resize(self.x.len() + size, 0);
-                self.ent.resize(self.ent.len() + size, 0);
+                // SAFETY: zero is a valid i32 / u16.
+                unsafe {
+                    self.x.grow_zeroed(self.x.len() + size);
+                    self.ent.grow_zeroed(self.ent.len() + size);
+                }
                 b
             }
         }
