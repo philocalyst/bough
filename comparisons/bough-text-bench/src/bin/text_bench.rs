@@ -66,7 +66,7 @@ fn size(p: &mut Para, width: Option<f32>, upem: f32) -> (f32, f32) {
 fn main() {
     let t_fonts = Instant::now();
     let (body, bold, code) = (dejavu("DejaVuSans.ttf"), dejavu("DejaVuSans-Bold.ttf"), dejavu("DejaVuSansMono.ttf"));
-    let shapers = [body, bold, code].map(|b| Shaper::new(SimpleScript::build(&b, 0).expect("font")));
+    let shapers = [body, bold, code].map(|b| Shaper::new(SimpleScript::build_cached(&b, 0).expect("font")));
     let fonts: Vec<&Shaper> = shapers.iter().collect();
     let upem = shapers[0].script.upem as f32;
     assert!(shapers.iter().all(|s| s.script.upem as f32 == upem));

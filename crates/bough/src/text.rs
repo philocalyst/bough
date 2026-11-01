@@ -50,7 +50,7 @@ pub struct TextSys {
 impl TextSys {
     /// `toks`: the (carved, GPU-visible) column of strike token tables.
     pub fn new(font: &[u8], toks: bough_mem::Col<TokStrike>) -> TextSys {
-        let script = SimpleScript::build(font, 0).expect("font has no simple-script table");
+        let script = SimpleScript::build_cached(font, 0).expect("font has no simple-script table");
         let leaked: &'static [u8] = Box::leak(font.to_vec().into_boxed_slice());
         let tf = ttf_parser::Face::parse(leaked, 0).expect("font");
         let (ascent, descent, upem) = (tf.ascender() as f32, -(tf.descender() as f32), tf.units_per_em() as f32);
