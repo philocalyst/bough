@@ -507,6 +507,10 @@ pub struct Fused {
     publisher: Option<Publisher>,
     /// A layer frame to commit with the next publication (set by `resize`).
     pending_frame: Option<objc2_core_foundation::CGRect>,
+    /// A clock-driven frame drawn but not yet committed (published at the next `sync`).
+    pending: Option<usize>,
+    /// The surface the last calling-thread commit put on screen.
+    last_main: usize,
 }
 
 /// Byte offset of the bind table in the region header (`FBind` in shader.metal).
@@ -593,6 +597,8 @@ impl Fused {
             released: 0,
             publisher: None,
             pending_frame: None,
+            pending: None,
+            last_main: NONE_SURF,
         };
         // the residency set is what makes the bind table's resources reachable (encoders bind nothing else)
         {
@@ -708,6 +714,10 @@ impl Fused {
             panic!("GPU frame {} did not finish within 5 s (stream batches: {err:?})", self.released);
         }
         self.check_bins();
+        if let Some(i) = self.pending.take() {
+            // a clock-driven frame, drawn (and repaired if a bin overflowed): on screen now
+            self.commit_now(i);
+        }
     }
 
     /// After a GPU frame completed: if a row bin overflowed, grow the bins to the recorded need and redraw
@@ -773,7 +783,7 @@ impl Fused {
 
     /// In use by the compositor, or held by the publisher (queued, being committed, or committed last).
     pub fn is_in_use(&self, i: usize) -> bool {
-        self.publisher.as_ref().is_some_and(|p| p.holds(i)) || self.surfs[i].io.is_in_use()
+        self.publisher.as_ref().is_some_and(|p| p.holds(i)) || self.last_main == i || self.pending == Some(i) || self.surfs[i].io.is_in_use()
     }
 
     /// The window is now `w` x `h` px: fresh surfaces of that size (unbacked until first drawn), row bins
@@ -806,6 +816,7 @@ impl Fused {
         self.residency_changed();
         self.stats.resident_surfaces = 0;
         self.last_frame = None;
+        self.last_main = NONE_SURF;
         self.scratch = None; // the reference render's surface follows too
         if let Some(p) = &self.publisher {
             p.sh.last.store(NONE_SURF, Relaxed); // the old surfaces are gone; none of the new ones is on screen
@@ -930,7 +941,9 @@ impl Fused {
 
     /// Repair surface `target` from the damaged tile rows (`full`: everything) with `n_dir` directory
     /// entries, commit, and (windowed) publish it once the GPU is done. Returns the tile count.
-    pub fn draw(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32) -> u32 {
+    /// `PACED`: a clock-driven turn: published at the next `sync` on the calling thread (one refresh later,
+    /// no thread wake, no completion wait); otherwise the publisher thread commits it in this refresh.
+    pub fn draw<const PACED: bool>(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32) -> u32 {
         self.sync();
         // a bindless frame reaches its target only through the residency set
         if !self.surfs[target].touched.get() {
@@ -943,12 +956,34 @@ impl Fused {
         let (nt, _) = self.write_slot(k, target as u32, rows, full);
         self.release(k, nt);
         if self.publish {
-            // the publisher thread waits for the frame and commits it: no GPU wait and no Core Animation
-            // transaction on this (input) thread
-            let wait = 2 * self.released;
-            self.post(target, wait);
+            if PACED {
+                self.pending = Some(target);
+            } else {
+                // the publisher thread waits for the frame and commits it: no GPU wait and no Core Animation
+                // transaction on this (input) thread
+                let wait = 2 * self.released;
+                self.post(target, wait);
+            }
         }
         nt
+    }
+
+    /// Commit surface `i` now, on the calling thread, in its own transaction (after anything the publisher
+    /// still holds, so commits stay in frame order).
+    fn commit_now(&mut self, i: usize) {
+        self.publisher_idle();
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        if let Some(f) = self.pending_frame.take() {
+            self.layer.setFrame(f);
+        }
+        // SAFETY: an IOSurfaceRef is a valid CALayer `contents` object.
+        unsafe { self.layer.setContents(Some(&*(&*self.surfs[i].io as *const IOSurfaceRef as *const AnyObject))) };
+        CATransaction::commit();
+        self.last_main = i;
+        if let Some(p) = &self.publisher {
+            p.sh.last.store(i, Relaxed);
+        }
     }
 
     /// Hand surface `i` to the publisher thread, to be put on screen once `ev >= wait` (0: now).
@@ -977,13 +1012,18 @@ impl Fused {
     }
 
     /// Put surface `i` on screen without any GPU work (it already holds the current state).
-    pub fn show_held(&mut self, i: usize) {
+    pub fn show_held<const PACED: bool>(&mut self, i: usize) {
         self.stats.ca_only += 1;
         if let Some(w) = &self.warm {
             w.cancelled.store(true, Relaxed);
         }
         if self.publish {
-            self.post(i, 0);
+            self.pending = None;
+            if PACED {
+                self.commit_now(i);
+            } else {
+                self.post(i, 0);
+            }
         }
     }
 

@@ -14,11 +14,11 @@ fn main() {
         println!("{what}: in use {u:?}");
     };
     report(&f, "fresh");
-    f.draw(0, &rows, true, 0);
+    f.draw::<false>(0, &rows, true, 0);
     f.sync();
     report(&f, "after a plain frame (synced)");
     report(&f, "with the pre-armed stream waiting (every frame streams)");
-    f.draw(1, &rows, false, 0);
+    f.draw::<false>(1, &rows, false, 0);
     std::thread::sleep(std::time::Duration::from_millis(50));
     println!("released frame done: {}", f.released_done());
     report(&f, "after releasing 1 frame (done)");
