@@ -7,6 +7,7 @@ pub mod color;
 pub mod deco;
 pub mod elem;
 pub mod input;
+pub mod inspect;
 pub mod lay_deep;
 pub mod layout;
 pub mod ltemplate;

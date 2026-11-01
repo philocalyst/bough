@@ -10,6 +10,7 @@ use bough::prelude::*;
 use std::ops::Range;
 
 pub mod gallery;
+pub mod inspector;
 pub mod shell;
 pub mod thread;
 

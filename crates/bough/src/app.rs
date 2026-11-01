@@ -151,6 +151,8 @@ pub struct App<V: View> {
     trim_mark: u64,
     /// How the mount overlapped the GPU's preparation (see [`prepare`]).
     pub startup: Startup,
+    /// The last drawn frame repainted the whole window (a surface with nothing reusable).
+    last_full: bool,
 }
 
 /// Per raster worker started by [`prepare`]: (strikes, glyphs, instructions, ns), for those finished.
@@ -310,6 +312,7 @@ impl<V: View> App<V> {
             last_use: vec![0; ring],
             trim_mark: 0,
             startup,
+            last_full: true,
         }
     }
 
@@ -365,6 +368,11 @@ impl<V: View> App<V> {
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
         self.prof.mark(PH_TEXT);
+    }
+
+    /// The tile rows the last drawn frame repaired (bitmask of tile columns per row; inspect.rs).
+    pub(crate) fn repaired_rows(&self) -> (&[u128], bool) {
+        (&self.rows, self.last_full)
     }
 
     /// Wait until the GPU has finished every frame submitted so far (the last one is presented).
@@ -576,6 +584,7 @@ impl<V: View> App<V> {
         }
         let age = self.held[i].map(|l| epoch - l);
         let full = !matches!(age, Some(a) if a as usize <= RING);
+        self.last_full = full;
         if !full {
             self.repair_rows(age.unwrap());
         }
