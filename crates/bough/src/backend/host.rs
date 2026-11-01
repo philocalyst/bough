@@ -294,8 +294,10 @@ pub fn run_interactive<V: View>(
                     let ev = unsafe { e.as_ref() };
                     if let Ok(mut a) = app.try_borrow_mut() {
                         if dispatch_event(&mut a, ev, h) {
-                            let drew = a.frame();
-                            after_frame(&app, &trim, &mut a, drew);
+                            if std::env::var_os("BOUGH_NOFRAME").is_none() {
+                                let drew = a.frame();
+                                after_frame(&app, &trim, &mut a, drew);
+                            }
                             if a.animating() {
                                 host2.link.setPaused(false);
                             }

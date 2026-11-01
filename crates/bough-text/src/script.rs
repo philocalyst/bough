@@ -95,6 +95,8 @@ pub struct BuildReport {
 
 /// The built table. All arrays are indexed by codepoint (`0..=255`); non-covered codepoints
 /// hold zeros / the trigger classes.
+mod pairfast;
+
 pub struct SimpleScript {
     pub upem: u16,
     pub gid: [u16; 256],
@@ -848,10 +850,14 @@ impl SimpleScript {
         let mut trig = vec![vec![false; 257]; 256];
         let mut script_dep = 0;
         let mut max_pos_kern = 0i32;
-        for &a in &cps {
-            for &c in &cps {
-                let kl = b.pair_value(&latn_l, a, c);
-                let kd = b.pair_value(&dflt_l, a, c);
+        // every pair at once, by table (`script/pairfast.rs`), not by one GPOS walk per pair
+        let cgids: Vec<u16> = cps.iter().map(|&c| b.gid_of[c as usize]).collect();
+        let (tl, td) = (pairfast::PairTable::new(b.face, &latn_l, &cgids), pairfast::PairTable::new(b.face, &dflt_l, &cgids));
+        for (ia, &a) in cps.iter().enumerate() {
+            for (ic, &c) in cps.iter().enumerate() {
+                let kl = tl.get(ia, ic);
+                let kd = td.get(ia, ic);
+                debug_assert_eq!((kl, kd), (b.pair_value(&latn_l, a, c), b.pair_value(&dflt_l, a, c)), "pair table != probe for {a} {c}");
                 let common = !is_latin_letter(a) && !is_latin_letter(c);
                 let v = if common {
                     match (kl, kd) {

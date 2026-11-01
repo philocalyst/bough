@@ -100,7 +100,11 @@ fn main() {
         cfg,
         probe,
         11.5,
-        move |host, _app| {
+        move |host, app| {
+            if std::env::var_os("BOUGH_STREAM").is_some() {
+                // throughput mode: frames pre-encoded, released by a shared event (+1 frame to screen)
+                app.borrow_mut().stream(4);
+            }
             let window = host.window.clone();
             let mut script: Vec<(u64, Act)> = vec![(300, Act::Move(60.0, 24.0))];
             for _ in 0..3 {

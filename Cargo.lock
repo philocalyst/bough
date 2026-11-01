@@ -130,10 +130,12 @@ dependencies = [
  "bough",
  "bough-core",
  "bough-metal",
+ "bough-text",
  "libc",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "rustybuzz",
  "zgx-workload",
 ]
 
