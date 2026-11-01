@@ -8,7 +8,8 @@ mirrored.
 
 | column | owner (Rust type) | GPU read |
 |---|---|---|
-| header `FHdr` @0 (256 B reserved) | presenter | `viewport f32x2, tiles_x, tiles_y, inst_off, spaces_off, clips_off, dir_id_off, dir_ink_off, n_dir, pages_off, gx_off, gent_off, runs_off, toks_off, tok_stride, bin_cap, debug` (u32) |
+| header `FHdr` @0 (256 B reserved) | presenter | `viewport f32x2, tiles_x, tiles_y, inst_off, spaces_off, clips_off, dir_id_off, dir_ink_off, n_dir, pages_off, gx_off, gent_off, runs_off, toks_off, tok_stride, bin_cap, debug` (u32), then the capacity masks `m_inst, m_page, m_glyph, m_run, m_space, m_clip, m_strike` (capacity − 1; every capacity a power of two) |
+| bind table `FBind` @128 | presenter (`write_binds`) | `t[4]` target surfaces and `atlas` (Metal 3 resource ids), `bins`, `counts` (GPU addresses): encoders bind only the region (buffer 0) and the slot offset (buffer 1) |
 | 3 frame slots | presenter (`write_slot`) | `FSlot {bin_tg[3], tile_tg[3], target, nrows}` + `FRow {ty, span = x0 \| x1 << 8, prefix, pad, bits: u32x4}` per damaged tile row |
 | quad instances | façade `Col<Instance>` (48 B, section 4 layout; `ext` unused) | payload instance index / instance run |
 | pages | bough-core `PagePool` arena = `Col<Page>` (**1472 B**) | `ink` @128 (**page-relative**: absolute = ink + `offl`), `gink` @640, `payload` @768, `clip` (u16) @1280, `offl` (i16x4 = dx, dy, -dx, -dy) @1436 |
@@ -30,6 +31,12 @@ mirrored.
 * **Bins:** `tiles_y × bin_cap × 16 B` (private), entries `(payload or instance, ink.xy, ink.zw, clip << 20 | slot)`;
   `counts[tiles_y]` records the largest overflowing row; the CPU grows the bins and redraws that frame before it is
   published.
+* **Bounds by construction (round 3):** every index the kernels read from region data is ANDed with its column's
+  mask and every loop bound read from it is min-ed with a capacity; a corrupted region renders garbage, in bounded
+  time, inside its columns.
+* **Submission (round 3):** every frame is a pre-armed, event-released frame of the stream (RESULTS Part IV); the
+  slot's `target` names the surface. Anything added to the residency set (a surface's first use, a resize, bin or
+  atlas growth) drains the pending frames and re-arms, because a submitted batch does not see later additions.
 * **Write rule:** the CPU writes the region only after `Fused::sync()` (one frame in flight; in the pre-armed stream,
   before the frame's event release).
 

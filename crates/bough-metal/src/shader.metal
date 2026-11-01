@@ -925,7 +925,23 @@ struct FHdr {
     uint inst_off, spaces_off, clips_off, dir_id_off, dir_ink_off, n_dir, pages_off;
     uint gx_off, gent_off, runs_off, toks_off, tok_stride;
     uint bin_cap, debug;
+    // capacity - 1 of each column (all capacities are powers of two): every index read from region data is
+    // ANDed with its column's mask, every loop bound read from it is min-ed with a capacity, so no value in
+    // the region can make a kernel read outside its column or loop unboundedly. No branch, ~1 ALU op each.
+    uint m_inst, m_page, m_glyph, m_run, m_space, m_clip, m_strike;
 };
+// The bind table (header + FBIND_OFF): every resource the kernels touch besides the region itself, as Metal 3
+// resource ids / GPU addresses written by the CPU. Nothing is bound per encoder but the region and the frame
+// slot offset, so a pre-encoded frame never names a surface (no per-segment surface tracking in the driver, no
+// IOSurface use counts held by pending frames) and growing the bins is a header write. Everything here is in
+// the queue's residency set.
+struct FBind {
+    texture2d<float, access::write> t[4];
+    texture2d<float> atlas;
+    device uint4* bins;
+    device atomic_uint* counts;
+};
+constant uint FBIND_OFF = 128;
 typedef Instance FInst;
 constant uint F_RUN = 0x80000000u;
 constant uint F_IRUN = 0x40000000u;
@@ -937,19 +953,19 @@ constant uint FPG_CLIP = 1280;
 constant uint FPG_OFFL = 1436;
 
 static float4 f_clip(device const uchar* pool, device const FHdr& h, uint c) {
-    short4 r = ((device const short4*)(pool + h.clips_off))[c];
+    short4 r = ((device const short4*)(pool + h.clips_off))[c & h.m_clip];
     return float4(float(r.x), float(r.y), -float(r.z), -float(r.w));
 }
 static float2 f_space(device const uchar* pool, device const FHdr& h, uint s) {
-    return float2(((device const int2*)(pool + h.spaces_off))[s]);
+    return float2(((device const int2*)(pool + h.spaces_off))[s & h.m_space]);
 }
 // bough-text's pen formula, verified bit-exact there: px = floor(fma(float(x - x0), scale, origin.x + 0.5)) + geo.x
 static bool f_glyph(device const uchar* pool, device const FHdr& h, uint run, uint slot,
                     thread float2& p0, thread float2& size, thread uint& color, thread ushort2& uv) {
-    device const RunHeader& rh = ((device const RunHeader*)(pool + h.runs_off))[run];
-    int x = ((device const int*)(pool + h.gx_off))[slot];
-    uint e = ((device const ushort*)(pool + h.gent_off))[slot];
-    device const GEntry& en = *(device const GEntry*)(pool + h.toks_off + uint(rh.strike) * h.tok_stride + e * 32u);
+    device const RunHeader& rh = ((device const RunHeader*)(pool + h.runs_off))[run & h.m_run];
+    int x = ((device const int*)(pool + h.gx_off))[slot & h.m_glyph];
+    uint e = ((device const ushort*)(pool + h.gent_off))[slot & h.m_glyph] & 255u;
+    device const GEntry& en = *(device const GEntry*)(pool + h.toks_off + (uint(rh.strike) & h.m_strike) * h.tok_stride + e * 32u);
     if (en.uv.z == 0) return false;
     int dx = as_type<int>(as_type<uint>(x) - as_type<uint>(rh.x0));
     float px = floor(fma(float(dx), rh.scale, rh.origin.x + 0.5)) + en.geo.x;
@@ -968,10 +984,10 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                    uint lane [[thread_index_in_simdgroup]],
                    uint sg [[simdgroup_index_in_threadgroup]],
                    device const uchar* pool [[buffer(0)]],
-                   constant uint2& slot [[buffer(1)]],
-                   device uint4* bins [[buffer(2)]],
-                   device uint* counts [[buffer(3)]]) {
+                   constant uint2& slot [[buffer(1)]]) {
     device const FHdr& h = *(device const FHdr*)pool;
+    device const FBind& fb = *(device const FBind*)(pool + FBIND_OFF);
+    device uint4* bins = fb.bins;
     device const FRow* frows = (device const FRow*)(pool + slot.x + 32);
     device const uint* dpage = (device const uint*)(pool + h.dir_id_off);
     device const short4* dink = (device const short4*)(pool + h.dir_ink_off);
@@ -989,13 +1005,14 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
     uint nb = 0;
     uint cap = h.bin_cap;
     device uint4* bin = bins + ty * cap;
-    for (uint d0 = 0; d0 < h.n_dir; d0 += 256) {
+    uint ndir = min(h.n_dir, h.m_page + 1u);
+    for (uint d0 = 0; d0 < ndir; d0 += 256) {
         uint di = d0 + li;
-        bool dh = di < h.n_dir && all(dink[di] < th);
+        bool dh = di < ndir && all(dink[di] < th);
         threadgroup_barrier(mem_flags::mem_threadgroup);
         uint nd;
         uint ds = compact(dh, lane, sg, sgc, nd);
-        if (dh) dl[ds] = dpage[di];
+        if (dh) dl[ds] = dpage[di] & h.m_page;
         threadgroup_barrier(mem_flags::mem_threadgroup);
         for (uint p0 = 0; p0 < nd; p0 += 32) {
             uint pk = p0 + (li >> 3), g = li & 7u;
@@ -1027,7 +1044,7 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                     rh = all(rel < subsat(th, offl));
                     ink = rel + offl;                                                // absolute (in domain when hit)
                     ii = ((device const uint*)(pg + FPG_PAYLOAD))[sl];
-                    cid = ((device const ushort*)(pg + FPG_CLIP))[sl];
+                    cid = ((device const ushort*)(pg + FPG_CLIP))[sl] & h.m_clip;
                 }
                 threadgroup_barrier(mem_flags::mem_threadgroup);
                 uint nr;
@@ -1041,7 +1058,7 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                     while (j < nr && (hl[j] & (F_RUN | F_IRUN)) == 0u) j++;
                     if (li < j - k && nb + li < cap) {
                         uint idx = k + li;
-                        bin[nb + li] = uint4(hl[idx], hk[idx].x, hk[idx].y, hc[idx] << 20);
+                        bin[nb + li] = uint4(hl[idx] & h.m_inst, hk[idx].x, hk[idx].y, hc[idx] << 20);
                     }
                     nb += j - k;
                     if (j < nr) {
@@ -1050,9 +1067,10 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                         float4 cl = f_clip(pool, h, cid2);
                         if ((p & F_RUN) != 0u) {
                             uint r0 = p & 0xFFFFFu, rn = ((p >> 20) & 0x7FFu) + 1u;
-                            for (uint run = r0; run < r0 + rn; run++) {
+                            for (uint run0 = r0; run0 < r0 + rn; run0++) {
+                                uint run = run0 & h.m_run;
                                 device const RunHeader& rhd = ((device const RunHeader*)(pool + h.runs_off))[run];
-                                uint rlen = rhd.len, rbase = rhd.base;
+                                uint rlen = min(rhd.len, h.m_glyph + 1u), rbase = rhd.base;
                                 for (uint g0 = 0; g0 < rlen; g0 += 256) {
                                     uint gk2 = g0 + li;
                                     bool gh2 = false;
@@ -1073,7 +1091,7 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                                     threadgroup_barrier(mem_flags::mem_threadgroup);
                                     uint ng2;
                                     uint gs2 = compact(gh2, lane, sg, sgc, ng2);
-                                    if (gh2 && nb + gs2 < cap) bin[nb + gs2] = uint4(run | F_RUN, as_type<uint>(gi.xy), as_type<uint>(gi.zw), (cid2 << 20) | (rbase + gk2));
+                                    if (gh2 && nb + gs2 < cap) bin[nb + gs2] = uint4(run | F_RUN, as_type<uint>(gi.xy), as_type<uint>(gi.zw), (cid2 << 20) | ((rbase + gk2) & h.m_glyph));
                                     nb += ng2;
                                 }
                             }
@@ -1084,7 +1102,7 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                                 bool gh2 = false;
                                 short4 gi = short4(0);
                                 if (gk2 < in_) {
-                                    device const FInst& q = inst[i0 + gk2];
+                                    device const FInst& q = inst[(i0 + gk2) & h.m_inst];
                                     float2 q0 = q.pos + f_space(pool, h, q.space);
                                     float m = q.kind == 0 ? 0.0 : 1.0;
                                     float2 qa = clamp(q0 - m, cl.xy, cl.zw);
@@ -1097,7 +1115,7 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                                 threadgroup_barrier(mem_flags::mem_threadgroup);
                                 uint ng2;
                                 uint gs2 = compact(gh2, lane, sg, sgc, ng2);
-                                if (gh2 && nb + gs2 < cap) bin[nb + gs2] = uint4(i0 + gk2, as_type<uint>(gi.xy), as_type<uint>(gi.zw), cid2 << 20);
+                                if (gh2 && nb + gs2 < cap) bin[nb + gs2] = uint4((i0 + gk2) & h.m_inst, as_type<uint>(gi.xy), as_type<uint>(gi.zw), cid2 << 20);
                                 nb += ng2;
                             }
                         }
@@ -1109,21 +1127,69 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
         }
     }
     if (li == 0) {
-        counts[ty] = min(nb, cap);
+        atomic_store_explicit(fb.counts + ty, min(nb, cap), memory_order_relaxed);
         // overflow: the largest row count the CPU must grow the bins to (it redraws the frame then)
-        if (nb > cap) atomic_fetch_max_explicit((device atomic_uint*)(counts + h.tiles_y), nb, memory_order_relaxed);
+        if (nb > cap) atomic_fetch_max_explicit(fb.counts + h.tiles_y, nb, memory_order_relaxed);
+    }
+}
+
+// Staged record, EDGE FORM: the geometry is kept as its four edges `b` (x0, y0, x1, y1), never as centre and
+// half size, and every distance is taken to an edge directly (`max(c - b1, b0 - c)`). With the façade's
+// geometry on a 1/256-px grid every one of these differences is exact in f32, so a pixel's value depends
+// bit for bit only on the edges within its influence band: an edge that did not move leaves every pixel
+// outside the moved edges' bands unchanged, which is what lets the CPU damage only those bands
+// (bough-core `damage_edges`, RESULTS Part IV).
+struct FRec {
+    float4 q;          // clip-clamped coverage window incl. AA margin (pixel-centre test)
+    float4 core;       // pixel centres inside `core` take `cv` with no per-pixel work (coverage provably 1)
+    float4 b;          // geometry edges x0, y0, x1, y1 (unclamped)
+    half4 cv;
+    half4 pm;          // premultiplied colour, unpacked once per record (not per pixel)
+    half4 pm2;
+    float radius, bw;
+    ushort2 uv;
+    ushort kind, pad;
+};
+
+// Rounded-box SDF in edge form (== sd_rbox(c - centre, half, r) mathematically).
+static float f_sd(float2 c, float4 b, float r) {
+    float2 q = max(c - b.zw, b.xy - c) + r;
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+
+static half4 f_shade(threadgroup const FRec& r, float2 c, texture2d<float> atlas) {
+    if (!(c.x >= r.q.x && c.x < r.q.z && c.y >= r.q.y && c.y < r.q.w)) return half4(0.0h);
+    switch (r.kind) {
+    case 0:
+        return r.pm;
+    case 1: {
+        float d = f_sd(c, r.b, r.radius);
+        return r.pm * half(clamp(0.5 - d, 0.0, 1.0)); }
+    case 2: {
+        float d = f_sd(c, r.b, r.radius);
+        float outer = clamp(0.5 - d, 0.0, 1.0);
+        float inner = clamp(0.5 - (d + r.bw), 0.0, 1.0);
+        return r.pm * half(max(outer - inner, 0.0)) + r.pm2 * half(inner); }
+    default: {
+        float2 t = c - r.b.xy;
+        half cov = 0.0h;
+        if (all(t >= 0.0) && all(t < r.b.zw - r.b.xy)) {
+            uint2 lim = uint2(atlas.get_width() - 1u, atlas.get_height() - 1u);
+            cov = half(atlas.read(min(uint2(float2(r.uv)) + uint2(t), lim)).r);
+        }
+        return r.pm * cov; }
     }
 }
 
 // Solid quads are pixel-exact (no AA margin); the others carry a 1 px margin for their SDF edge.
-static bool f_stage_rec(device const FInst& in, float2 off, float4 cl, uint2 o, thread TgRec& r, thread bool& cover) {
+static bool f_stage_rec(device const FInst& in, float2 off, float4 cl, uint2 o, thread FRec& r, thread bool& cover) {
     float2 p0 = in.pos + off;
+    float2 p1 = p0 + in.size;
     float m = in.kind == 0 ? 0.0 : 1.0;
     float2 qa = clamp(p0 - m, cl.xy, cl.zw);
-    float2 qb = clamp(p0 + in.size + m, cl.xy, cl.zw);
+    float2 qb = clamp(p1 + m, cl.xy, cl.zw);
     r.q = float4(qa, qb);
-    r.half_ = in.size * 0.5;
-    r.centre = p0 + r.half_;
+    r.b = float4(p0, p1);
     half4 c1 = half4(unpack(in.color)), c2 = half4(unpack(in.color2));
     r.pm = half4(c1.rgb * c1.a, c1.a);
     r.pm2 = half4(c2.rgb * c2.a, c2.a);
@@ -1132,7 +1198,7 @@ static bool f_stage_rec(device const FInst& in, float2 off, float4 cl, uint2 o, 
     r.uv = in.uv.xy;
     r.kind = in.kind;
     float k = in.kind == 1 ? max(in.radius, 0.5) + 1.0 : max(in.radius, 0.5 + in.bw) + 1.0;
-    float4 cb = float4(r.centre - (r.half_ - k), r.centre + (r.half_ - k));
+    float4 cb = float4(p0 + k, p1 - k);
     cb = float4(max(cb.xy, qa), min(cb.zw, qb));
     r.core = in.kind == 0 ? float4(qa, qb) : (in.kind == 3 ? float4(0.0) : cb);
     r.cv = in.kind == 2 ? r.pm2 : r.pm;
@@ -1141,7 +1207,7 @@ static bool f_stage_rec(device const FInst& in, float2 off, float4 cl, uint2 o, 
     return qa.x < qb.x && qa.y < qb.y;
 }
 
-static bool f_stage_glyph(device const uchar* pool, device const FHdr& h, uint run, uint slot, float4 cl, thread TgRec& r) {
+static bool f_stage_glyph(device const uchar* pool, device const FHdr& h, uint run, uint slot, float4 cl, thread FRec& r) {
     float2 p0, size;
     uint color;
     ushort2 uv;
@@ -1149,8 +1215,7 @@ static bool f_stage_glyph(device const uchar* pool, device const FHdr& h, uint r
     float2 qa = clamp(p0 - 1.0, cl.xy, cl.zw);
     float2 qb = clamp(p0 - 1.0 + (size + 2.0), cl.xy, cl.zw);
     r.q = float4(qa, qb);
-    r.half_ = size * 0.5;
-    r.centre = p0 + r.half_;
+    r.b = float4(p0, p0 + size);
     half4 c1 = half4(unpack(color));
     r.pm = half4(c1.rgb * c1.a, c1.a);
     r.pm2 = half4(0.0h);
@@ -1169,15 +1234,12 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
                     uint lane [[thread_index_in_simdgroup]],
                     uint sg [[simdgroup_index_in_threadgroup]],
                     device const uchar* pool [[buffer(0)]],
-                    constant uint2& slot [[buffer(1)]],
-                    device const uint4* bins [[buffer(2)]],
-                    device const uint* counts [[buffer(3)]],
-                    texture2d<float> atlas [[texture(0)]],
-                    texture2d<float, access::write> t0 [[texture(1)]],
-                    texture2d<float, access::write> t1 [[texture(2)]],
-                    texture2d<float, access::write> t2 [[texture(3)]],
-                    texture2d<float, access::write> t3 [[texture(4)]]) {
+                    constant uint2& slot [[buffer(1)]]) {
     device const FHdr& h = *(device const FHdr*)pool;
+    if (h.debug == 2u) return;   // debug 2: the bin pass alone
+    device const FBind& fb = *(device const FBind*)(pool + FBIND_OFF);
+    device const uint4* bins = fb.bins;
+    texture2d<float> atlas = fb.atlas;
     device const FSlot& fs = *(device const FSlot*)(pool + slot.x);
     device const FRow* frows = (device const FRow*)(pool + slot.x + 32);
     device const FInst* inst = (device const FInst*)(pool + h.inst_off);
@@ -1205,13 +1267,13 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
     float4 blk = float4(c00, c00 + 1.0);
     threadgroup uint sgc[8];
     threadgroup uint flo[8];
-    threadgroup TgRec rec[128];
+    threadgroup FRec rec[128];
     half4 acc[4] = { half4(0.0h), half4(0.0h), half4(0.0h), half4(0.0h) };
     device const uint4* bin = bins + tile.y * h.bin_cap;
-    uint nb = counts[tile.y];
+    uint nb = atomic_load_explicit(fb.counts + tile.y, memory_order_relaxed);
     for (uint b0 = 0; b0 < nb; b0 += 128) {
         bool rh = false, cover = false;
-        TgRec r;
+        FRec r;
         uint bi = b0 + li;
         if (li < 128 && bi < nb) {
             uint4 en = bin[bi];
@@ -1219,9 +1281,9 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
             if (all(ink < th)) {
                 float4 cl = f_clip(pool, h, en.w >> 20);
                 if ((en.x & F_RUN) != 0u) {
-                    rh = f_stage_glyph(pool, h, en.x & ~F_RUN, en.w & 0xFFFFFu, cl, r);
+                    rh = f_stage_glyph(pool, h, en.x & h.m_run, en.w & h.m_glyph, cl, r);
                 } else {
-                    device const FInst& in = inst[en.x];
+                    device const FInst& in = inst[en.x & h.m_inst];
                     rh = f_stage_rec(in, f_space(pool, h, in.space), cl, o, r, cover);
                 }
             }
@@ -1236,8 +1298,9 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
         uint k0 = 0;
         for (uint s2 = 0; s2 < 8; s2++) k0 = max(k0, flo[s2]);
         k0 = k0 > 0 ? k0 - 1u : 0u;
-        for (uint k = k0; k < nr; k++) {
-            threadgroup const TgRec& rr = rec[k];
+        uint kend = h.debug == 1u ? k0 : nr;   // debug 1: cull and stage only (no shading)
+        for (uint k = k0; k < kend; k++) {
+            threadgroup const FRec& rr = rec[k];
             if (rr.q.x > blk.z || rr.q.z <= blk.x || rr.q.y > blk.w || rr.q.w <= blk.y) continue;
             if (blk.x >= rr.core.x && blk.z < rr.core.z && blk.y >= rr.core.y && blk.w < rr.core.w) {
                 half4 cv = rr.cv;
@@ -1245,7 +1308,7 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
                 continue;
             }
             for (uint j = 0; j < 4; j++) {
-                half4 sh = shade_h(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas);
+                half4 sh = f_shade(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas);
                 acc[j] = sh + acc[j] * (1.0h - sh.a);
             }
         }
@@ -1253,12 +1316,12 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
     for (uint j = 0; j < 4; j++) {
         uint2 px = o + 2u * lt + uint2(j & 1u, j >> 1);
         if (px.x >= uint(h.viewport.x) || px.y >= uint(h.viewport.y)) continue;
-        float4 v = float4(acc[j]);
-        switch (fs.target) {
-        case 0: t0.write(v, px); break;
-        case 1: t1.write(v, px); break;
-        case 2: t2.write(v, px); break;
-        default: t3.write(v, px); break;
-        }
+        fb.t[fs.target & 3u].write(float4(acc[j]), px);
     }
+}
+
+// ============================================================================ FLOOR PROBE (examples/fprobe.rs)
+// The smallest real GPU work: one thread bumps a counter. Used to price kicks, encoders and events alone.
+kernel void fl_nop(device atomic_uint* b [[buffer(0)]], uint i [[thread_position_in_grid]]) {
+    if (i == 0) atomic_fetch_add_explicit(b, 1u, memory_order_relaxed);
 }

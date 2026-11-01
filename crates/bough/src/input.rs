@@ -772,14 +772,18 @@ fn place_caret(rt: &mut Rt, f: u32) {
     if !moved && !recolor {
         return;
     }
-    let (inst, h, old) = (rt.runs[n.run as usize].first, n.handle, n.color);
-    n.x = x;
+    let (inst, h, old, (y, w, hh)) = (rt.runs[n.run as usize].first, n.handle, n.color, (n.y, n.w, n.h));
     n.color = want;
-    let p = rt.inst_mut(inst);
-    p.pos[0] = x;
-    p.color = want;
+    rt.inst_mut(inst).color = want;
     if moved {
-        rt.quad_ink(cn);
+        // a recoloured caret changes everywhere it is: old and new ink; a moved one only near its edges
+        if recolor {
+            rt.bough.touch_handle(h);
+        }
+        rt.quad_geom(cn, x, y, w, hh);
+        if recolor {
+            rt.bough.touch_handle(h);
+        }
     } else {
         rt.paint_write(h, old as u64, want as u64);
     }

@@ -22,12 +22,21 @@
 //!   whenever the GPU has idled 0.8 s keeps it out of its power-down state (RESULTS 13.3); a frame served
 //!   from a surface without the GPU (content-addressed) cancels it, and nothing is kept warm after a single
 //!   isolated frame (mount): idle stays zero and the driver returns its memory.
-//! * **Publish:** on the calling (main) thread once the GPU is done (`setContents` joins the run loop turn's
-//!   implicit transaction): no thread hop, one commit per turn, and the CPU never writes the region while the
-//!   GPU reads it.
-//! * **Throughput mode:** `arm(k)` pre-encodes K frames into one command buffer, each waiting on a shared
-//!   event; `release` writes the slot and signals (RESULTS 12.8). For non-input-driven animation.
-use crate::gpu::{Cmd, Dev, Tex, METALLIB};
+//! * **Submission: one pre-armed stream for every frame** (RESULTS Part IV). K frames are encoded ahead into
+//!   one command buffer, each `wait(ev >= 2f-1) -> bin, tile -> signal(ev = 2f)`, and committed long before
+//!   they run. A frame is: write its slot, `ev.signaledValue = 2f-1` (the GPU starts at once: no encoder,
+//!   no commit, no submission on the critical path). Encoders are **bindless**: they bind only the region
+//!   and the slot offset; surfaces, atlas, bins and counts are Metal 3 resource ids / GPU addresses in the
+//!   header's bind table (`FBIND_OFF`), all in the queue's residency set. So a pending frame names no
+//!   surface (IOSurfaceIsInUse reports only the compositor) and growing the bins is a header write.
+//! * **Publish (windowed): the publisher thread.** The input thread only writes the slot, signals the event
+//!   and posts the surface; the publisher waits for `ev >= 2f`, commits the surface in its own explicit
+//!   Core Animation transaction, and keeps the stream armed (`Kern`). No GPU wait, CA transaction, encode or
+//!   commit on the input thread, and no added latency. The CPU never writes the region while the GPU reads
+//!   it (`sync` is a 72-instruction read of the event when the GPU is done).
+//! * **Resize:** fresh surfaces, bins and counts at the new size; the layer's new frame is committed with the
+//!   first frame drawn at that size.
+use crate::gpu::{Dev, Tex, METALLIB};
 use crate::instance::Instance;
 use dispatch2::DispatchData;
 use objc2::rc::Retained;
@@ -77,6 +86,22 @@ pub struct Layout {
     pub tok_stride: u32,
     /// Three frame slots (two in flight, one for the reference render): header + damaged-row records.
     pub slot: [u32; 3],
+    /// Capacity masks (capacity - 1, every column's capacity a power of two): the kernels AND every index
+    /// they read from region data with its column's mask, so no value in the region can make the GPU read
+    /// outside the column (bough-metal RESULTS Part IV). `Layout::default()` (probes: empty scene) masks to 0.
+    pub masks: Masks,
+}
+
+/// Power-of-two capacity minus one, per GPU-read column.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Masks {
+    pub inst: u32,
+    pub page: u32,
+    pub glyph: u32,
+    pub run: u32,
+    pub space: u32,
+    pub clip: u32,
+    pub strike: u32,
 }
 
 impl Layout {
@@ -113,6 +138,7 @@ struct FHdr {
     tok_stride: u32,
     bin_cap: u32,
     debug: u32,
+    masks: [u32; 7],
 }
 /// Bytes reserved for the header at the start of the region.
 pub const HDR_BYTES: usize = 256;
@@ -195,6 +221,241 @@ impl Warm {
     }
 }
 
+// ------------------------------------------------------------------ the frame stream's encoder
+
+/// What encoding a frame needs, shared by the main thread and the publisher thread (which keeps the stream
+/// armed, so no encode or commit runs on the input thread): the stream queue and event, the region, both
+/// pipelines, the slot offsets, and the arming state behind one lock (two threads never arm overlapping
+/// frames).
+struct Kern {
+    queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    ev: Retained<ProtocolObject<dyn MTLSharedEvent>>,
+    pool: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pso_bin: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pso_tile: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    slots: [std::sync::atomic::AtomicU32; 3],
+    batch: std::sync::atomic::AtomicUsize,
+    /// Mirror of `arm.armed_upto` for a lock-free "already armed?" test.
+    armed: AtomicU64,
+    arm: std::sync::Mutex<ArmState>,
+}
+struct ArmState {
+    armed_upto: u64,
+    /// The last two pre-armed command buffers (diagnostics if a frame never finishes).
+    batches: std::collections::VecDeque<Retained<ProtocolObject<dyn MTLCommandBuffer>>>,
+}
+// SAFETY: Metal queues, events, buffers, pipelines and command buffers are thread-safe objects; the arming
+// state is behind a mutex.
+unsafe impl Send for Kern {}
+unsafe impl Sync for Kern {}
+
+impl Kern {
+    /// One frame: the bin pass then the tile pass over slot `k`, in one compute encoder that binds only the
+    /// region and the slot offset (everything else is in the bind table). `indirect`: the dispatch sizes come
+    /// from the slot (pre-armed frames); otherwise `nrows` / `ntiles`.
+    fn encode(&self, cmd: &ProtocolObject<dyn MTLCommandBuffer>, k: usize, nrows: u32, ntiles: u32, indirect: bool) {
+        let slot = self.slots[k].load(Relaxed);
+        let enc = cmd.computeCommandEncoder().expect("compute encoder");
+        let offs = [slot, 0];
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(&self.pool), 0, 0);
+            enc.setBytes_length_atIndex(NonNull::new(offs.as_ptr() as *mut _).unwrap(), 8, 1);
+            enc.setComputePipelineState(&self.pso_bin);
+            let tg = MTLSize { width: 256, height: 1, depth: 1 };
+            if indirect {
+                enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, slot as usize, tg);
+            } else {
+                enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: nrows as usize, height: 1, depth: 1 }, tg);
+            }
+            enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+            enc.setComputePipelineState(&self.pso_tile);
+            let tg2 = MTLSize { width: 16, height: 16, depth: 1 };
+            if indirect {
+                enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, slot as usize + 12, tg2);
+            } else {
+                enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: ntiles as usize, height: 1, depth: 1 }, tg2);
+            }
+        }
+        enc.endEncoding();
+    }
+
+    /// Encode and commit the next `batch` frames: each waits for its release (`ev >= 2f-1`), runs the bin and
+    /// tile passes over slot `f % 2` with sizes read from the slot, and signals `ev = 2f`.
+    fn arm_locked(&self, st: &mut ArmState) {
+        let batch = self.batch.load(Relaxed) as u64;
+        let cmd = self.queue.commandBufferWithUnretainedReferences().expect("command buffer");
+        for f in st.armed_upto + 1..=st.armed_upto + batch {
+            cmd.encodeWaitForEvent_value(ProtocolObject::from_ref(&*self.ev), 2 * f - 1);
+            self.encode(&cmd, (f % 2) as usize, 0, 0, true);
+            cmd.encodeSignalEvent_value(ProtocolObject::from_ref(&*self.ev), 2 * f);
+        }
+        cmd.commit();
+        if st.batches.len() == 2 {
+            st.batches.pop_front();
+        }
+        st.batches.push_back(cmd);
+        st.armed_upto += batch;
+        self.armed.store(st.armed_upto, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Make sure frames up to `upto` are armed (a lock-free read when they are).
+    fn ensure(&self, upto: u64) {
+        if self.armed.load(std::sync::atomic::Ordering::Acquire) >= upto {
+            return;
+        }
+        let mut st = self.arm.lock().unwrap();
+        while st.armed_upto < upto {
+            self.arm_locked(&mut st);
+        }
+    }
+}
+
+// ------------------------------------------------------------------ the publisher thread
+
+const NONE_SURF: usize = usize::MAX;
+
+struct SendIo(CFRetained<IOSurfaceRef>);
+// SAFETY: IOSurface objects are thread-safe (reference counted, used across processes).
+unsafe impl Send for SendIo {}
+
+struct PubJob {
+    surf: usize,
+    io: SendIo,
+    /// Shared-event value that says the frame is drawn (0: already drawn, a held surface).
+    wait: u64,
+    /// A new layer frame (window resize), committed in the same transaction as the new contents.
+    frame: Option<objc2_core_foundation::CGRect>,
+    /// Address of the bin-overflow word (shared storage): a frame that overflowed is not published; the
+    /// main thread's next `sync` redraws it and posts it again.
+    overflow: usize,
+    /// After the commit, keep the stream armed up to this frame (encode and commit off the input thread).
+    ahead: u64,
+}
+
+struct PubShared {
+    m: std::sync::Mutex<PubState>,
+    cv: std::sync::Condvar,
+    idle: std::sync::Condvar,
+    /// The surface being committed now, and the surface the last commit put on screen: both count as in use
+    /// (the compositor's own in-use flag lags a commit by up to one server turn).
+    in_flight: std::sync::atomic::AtomicUsize,
+    last: std::sync::atomic::AtomicUsize,
+    queued: std::sync::atomic::AtomicUsize,
+    commits: AtomicU64,
+    held_back: AtomicU64,
+}
+struct PubState {
+    job: Option<PubJob>,
+    quit: bool,
+}
+
+/// Owns what the thread touches: the event it waits on and the layer it commits to.
+struct PubObjs {
+    kern: Arc<Kern>,
+    layer: Retained<CALayer>,
+}
+// SAFETY: MTLSharedEvent is thread-safe; a CALayer may be modified from any thread inside an explicit
+// CATransaction, and only this thread modifies this layer after the first publication.
+unsafe impl Send for PubObjs {}
+
+/// The publisher (RESULTS Part IV): a thread that waits for a released frame on the shared event and puts
+/// its surface on the layer in its own explicit Core Animation transaction. The input (main) thread only
+/// writes the slot, signals the event and posts the job: no GPU wait, no transaction. One job slot: a job
+/// posted while another is queued supersedes it (frames are in order; the newer one shows everything).
+struct Publisher {
+    sh: Arc<PubShared>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Publisher {
+    fn spawn(kern: Arc<Kern>, layer: Retained<CALayer>) -> Publisher {
+        use std::sync::atomic::AtomicUsize;
+        let sh = Arc::new(PubShared {
+            m: std::sync::Mutex::new(PubState { job: None, quit: false }),
+            cv: std::sync::Condvar::new(),
+            idle: std::sync::Condvar::new(),
+            in_flight: AtomicUsize::new(NONE_SURF),
+            last: AtomicUsize::new(NONE_SURF),
+            queued: AtomicUsize::new(NONE_SURF),
+            commits: AtomicU64::new(0),
+            held_back: AtomicU64::new(0),
+        });
+        let (s2, objs) = (sh.clone(), PubObjs { kern, layer });
+        let thread = std::thread::Builder::new()
+            .name("bough-publish".into())
+            .spawn(move || {
+                let objs = objs;
+                Publisher::run(&s2, &objs)
+            })
+            .expect("publisher thread");
+        Publisher { sh, thread: Some(thread) }
+    }
+
+    fn run(sh: &PubShared, o: &PubObjs) {
+        loop {
+            let job = {
+                let mut g = sh.m.lock().unwrap();
+                loop {
+                    if g.quit {
+                        return;
+                    }
+                    if let Some(j) = g.job.take() {
+                        sh.in_flight.store(j.surf, Relaxed);
+                        sh.queued.store(NONE_SURF, Relaxed);
+                        break j;
+                    }
+                    sh.idle.notify_all();
+                    g = sh.cv.wait(g).unwrap();
+                }
+            };
+            let ev = &o.kern.ev;
+            let drawn = job.wait == 0 || ev.signaledValue() >= job.wait || ev.waitUntilSignaledValue_timeoutMS(job.wait, 5000);
+            // SAFETY: the overflow word lies in the live counts buffer (the main thread replaces it only after
+            // `publisher_idle`); shared storage, written by the GPU before it signalled the event.
+            let overflowed = unsafe { std::ptr::read_volatile(job.overflow as *const u32) } != 0;
+            if drawn && !overflowed {
+                CATransaction::begin();
+                CATransaction::setDisableActions(true);
+                if let Some(f) = job.frame {
+                    o.layer.setFrame(f);
+                }
+                // SAFETY: an IOSurfaceRef is a valid CALayer `contents` object.
+                unsafe { o.layer.setContents(Some(&*(&*job.io.0 as *const IOSurfaceRef as *const AnyObject))) };
+                CATransaction::commit();
+                sh.last.store(job.surf, Relaxed);
+                sh.commits.fetch_add(1, Relaxed);
+            } else {
+                sh.held_back.fetch_add(1, Relaxed);
+            }
+            sh.in_flight.store(NONE_SURF, Relaxed);
+            // the next batch is encoded and committed here, between frames: never on the input thread
+            o.kern.ensure(job.ahead);
+        }
+    }
+
+    fn post(&self, job: PubJob) {
+        let mut g = self.sh.m.lock().unwrap();
+        self.sh.queued.store(job.surf, Relaxed);
+        g.job = Some(job);
+        self.sh.cv.notify_one();
+    }
+
+    /// Queued, being committed, or the last commit: the publisher (or a lagging compositor flag) holds it.
+    fn holds(&self, i: usize) -> bool {
+        self.sh.in_flight.load(Relaxed) == i || self.sh.last.load(Relaxed) == i || self.sh.queued.load(Relaxed) == i
+    }
+}
+
+impl Drop for Publisher {
+    fn drop(&mut self) {
+        self.sh.m.lock().unwrap().quit = true;
+        self.sh.cv.notify_one();
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
 /// Counters.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Stats {
@@ -203,15 +464,16 @@ pub struct Stats {
     pub ca_only: u64,
     pub warm_blits: u64,
     pub resident_surfaces: usize,
+    /// Pre-armed batches drained because the residency set grew.
+    pub drains: u64,
 }
 
 pub struct Fused {
     pub device: Dev,
+    /// The frame stream's queue: always holds a pre-armed batch waiting on `ev`.
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
-    /// Reference renders (tests/checks): never queued behind a pre-armed batch waiting on its event.
+    /// Reference renders, bin-overflow redraws and keep-warm blits: never queued behind the waiting stream.
     aux: Retained<ProtocolObject<dyn MTLCommandQueue>>,
-    pso_bin: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    pso_tile: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pool: Retained<ProtocolObject<dyn MTLBuffer>>,
     pool_ptr: *mut u8,
     pool_len: usize,
@@ -224,9 +486,9 @@ pub struct Fused {
     pub layer: Retained<CALayer>,
     pub w: usize,
     pub h: usize,
+    scale: f64,
     /// Publish drawn surfaces to `layer` (windowed); off headless.
     pub publish: bool,
-    last: Option<Cmd>,
     lay: Layout,
     resid: Option<Retained<ProtocolObject<dyn MTLResidencySet>>>,
     warm: Option<Arc<Warm>>,
@@ -236,12 +498,33 @@ pub struct Fused {
     /// The last GPU frame: (slot, target, rows, tiles), redrawn if its bins overflowed.
     last_frame: Option<(usize, usize, u32, u32)>,
     pub bin_growths: u32,
-    // throughput mode (pre-armed command stream)
-    ev: Option<Retained<ProtocolObject<dyn MTLSharedEvent>>>,
-    armed_upto: u64,
+    // the frame stream (pre-armed command buffers released by `ev`)
+    ev: Retained<ProtocolObject<dyn MTLSharedEvent>>,
+    /// Encoder objects and arming state, shared with the publisher thread.
+    kern: Arc<Kern>,
     released: u64,
-    batch: usize,
+    /// The publisher thread (windowed: spawned at the first publication).
+    publisher: Option<Publisher>,
+    /// A layer frame to commit with the next publication (set by `resize`).
+    pending_frame: Option<objc2_core_foundation::CGRect>,
+    /// A clock-driven frame drawn but not yet committed (published at the next `sync`).
+    pending: Option<usize>,
+    /// The surface the last calling-thread commit put on screen.
+    last_main: usize,
 }
+
+/// Byte offset of the bind table in the region header (`FBind` in shader.metal).
+pub const FBIND_OFF: usize = 128;
+/// The bind table: 4 target surfaces, the atlas (resource ids), bins and counts (GPU addresses).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct FBind {
+    t: [u64; 4],
+    atlas: u64,
+    bins: u64,
+    counts: u64,
+}
+const _: () = assert!(size_of::<FHdr>() <= FBIND_OFF && FBIND_OFF + size_of::<FBind>() <= HDR_BYTES);
 
 impl Fused {
     /// A presenter for a `w` x `h` px window whose region is a `region_len`-byte shared buffer.
@@ -264,6 +547,18 @@ impl Fused {
         let bins = device.newBufferWithLength_options(ty * bin_cap as usize * 16, MTLResourceOptions::StorageModePrivate).expect("bins");
         let counts = device.newBufferWithLength_options((ty + 1) * 4, MTLResourceOptions::StorageModeShared).expect("bin counts");
         let surfs = (0..surfaces.clamp(1, MAX_SURFACES)).map(|_| Self::new_surface(&device, w, h)).collect();
+        let device_ev = device.newSharedEvent().expect("shared event");
+        let kern = Arc::new(Kern {
+            queue: queue.clone(),
+            ev: device_ev.clone(),
+            pool: pool.clone(),
+            pso_bin: pso_bin.clone(),
+            pso_tile: pso_tile.clone(),
+            slots: Default::default(),
+            batch: std::sync::atomic::AtomicUsize::new(16),
+            armed: AtomicU64::new(0),
+            arm: std::sync::Mutex::new(ArmState { armed_upto: 0, batches: std::collections::VecDeque::with_capacity(3) }),
+        });
         let layer = CALayer::new();
         layer.setContentsScale(scale);
         layer.setOpaque(true);
@@ -275,8 +570,6 @@ impl Fused {
             device,
             queue,
             aux,
-            pso_bin,
-            pso_tile,
             pool,
             pool_ptr,
             pool_len: region_len,
@@ -289,8 +582,8 @@ impl Fused {
             layer,
             w,
             h,
+            scale,
             publish: false,
-            last: None,
             lay: Layout::default(),
             resid: None,
             warm: None,
@@ -299,24 +592,28 @@ impl Fused {
             stats: Stats::default(),
             last_frame: None,
             bin_growths: 0,
-            ev: None,
-            armed_upto: 0,
+            kern: kern.clone(),
+            ev: device_ev,
             released: 0,
-            batch: 0,
+            publisher: None,
+            pending_frame: None,
+            pending: None,
+            last_main: NONE_SURF,
         };
-        if std::env::var_os("BOUGH_NORESIDENCY").is_none() {
+        // the residency set is what makes the bind table's resources reachable (encoders bind nothing else)
+        {
             let d = MTLResidencySetDescriptor::new();
             unsafe { d.setInitialCapacity(8) };
-            if let Ok(set) = f.device.newResidencySetWithDescriptor_error(&d) {
-                set.addAllocation(ProtocolObject::from_ref(&*f.pool));
-                set.addAllocation(ProtocolObject::from_ref(&*f.atlas));
-                set.addAllocation(ProtocolObject::from_ref(&*f.bins));
-                set.addAllocation(ProtocolObject::from_ref(&*f.counts));
-                set.commit();
-                set.requestResidency();
-                f.queue.addResidencySet(&set);
-                f.resid = Some(set);
-            }
+            let set = f.device.newResidencySetWithDescriptor_error(&d).expect("residency set");
+            set.addAllocation(ProtocolObject::from_ref(&*f.pool));
+            set.addAllocation(ProtocolObject::from_ref(&*f.atlas));
+            set.addAllocation(ProtocolObject::from_ref(&*f.bins));
+            set.addAllocation(ProtocolObject::from_ref(&*f.counts));
+            set.commit();
+            set.requestResidency();
+            f.queue.addResidencySet(&set);
+            f.aux.addResidencySet(&set);
+            f.resid = Some(set);
         }
         let warm = std::env::var("BOUGH_KEEPWARM").ok().map_or(Some((0.8, 10.0)), |s| {
             let mut it = s.split(',').map(|x| x.parse::<f64>().ok());
@@ -328,7 +625,7 @@ impl Fused {
         if let Some((period, window)) = warm {
             let tiny = f.device.newBufferWithLength_options(16, MTLResourceOptions::StorageModePrivate).expect("keep-warm buffer");
             f.warm = Some(Arc::new(Warm {
-                queue: f.queue.clone(),
+                queue: f.aux.clone(),
                 tiny,
                 period,
                 window,
@@ -382,25 +679,45 @@ impl Fused {
             tok_stride: l.tok_stride,
             bin_cap: self.bin_cap,
             debug: 0,
+            masks: [l.masks.inst, l.masks.page, l.masks.glyph, l.masks.run, l.masks.space, l.masks.clip, l.masks.strike],
         };
         // SAFETY: the region starts with HDR_BYTES reserved for the header; no GPU work reads it now.
         unsafe { (self.pool_ptr as *mut FHdr).write(h) };
+        for (k, &o) in l.slot.iter().enumerate() {
+            self.kern.slots[k].store(o, Relaxed);
+        }
+        self.write_binds();
+        self.kern.ensure(self.released + 1);
+    }
+
+    /// Write the bind table (resource ids of the surfaces and the atlas, GPU addresses of bins and counts).
+    /// Only while the GPU is idle (`sync`), like every other header write.
+    fn write_binds(&mut self) {
+        let n = self.surfs.len();
+        let b = FBind {
+            t: [rid(&self.surfs[0].tex), rid(&self.surfs[1 % n].tex), rid(&self.surfs[2 % n].tex), rid(&self.surfs[3 % n].tex)],
+            atlas: rid(&self.atlas),
+            bins: self.bins.gpuAddress(),
+            counts: self.counts.gpuAddress(),
+        };
+        // SAFETY: the bind table lies inside the reserved header (const-asserted); the GPU is idle.
+        unsafe { (self.pool_ptr.add(FBIND_OFF) as *mut FBind).write(b) };
     }
 
     /// Wait for the GPU's last frame (the CPU is about to write the region); redraw it if a bin overflowed.
+    /// When the GPU is done (the common case) this is one read of the event's shared value.
     #[inline]
     pub fn sync(&mut self) {
-        if let Some(c) = &self.last {
-            if c.status() != MTLCommandBufferStatus::Completed {
-                c.waitUntilCompleted();
-            }
-        }
-        if let Some(ev) = &self.ev {
-            if self.released > 0 && ev.signaledValue() < 2 * self.released {
-                ev.waitUntilSignaledValue_timeoutMS(2 * self.released, 5000);
-            }
+        let want = 2 * self.released;
+        if self.ev.signaledValue() < want && !self.ev.waitUntilSignaledValue_timeoutMS(want, 5000) {
+            let err = self.kern.arm.lock().unwrap().batches.iter().map(|c| format!("{:?} {:?}", c.status(), c.error())).collect::<Vec<_>>();
+            panic!("GPU frame {} did not finish within 5 s (stream batches: {err:?})", self.released);
         }
         self.check_bins();
+        if let Some(i) = self.pending.take() {
+            // a clock-driven frame, drawn (and repaired if a bin overflowed): on screen now
+            self.commit_now(i);
+        }
     }
 
     /// After a GPU frame completed: if a row bin overflowed, grow the bins to the recorded need and redraw
@@ -412,69 +729,107 @@ impl Fused {
         if need == 0 {
             return;
         }
-        let Some((k, target, nr, nt)) = self.last_frame else { return };
+        let Some((k, _target, nr, nt)) = self.last_frame else { return };
+        // the publisher must have read the overflow word (and held the frame back) before it is cleared
+        self.publisher_idle();
+        // SAFETY: `counts` holds ty + 1 u32s in shared storage; the GPU is idle.
         unsafe { *(self.counts.contents().as_ptr() as *mut u32).add(ty) = 0 };
-        let streaming = self.ev.is_some();
-        if streaming {
-            // draining reuses both slots: keep the overflowed frame's
-            let sb = Layout::slot_bytes(self.lay.w, self.lay.h);
-            let mut keep = vec![0u8; sb];
-            // SAFETY: slot k lies inside the region (reserved with `slot_bytes`); the GPU is idle.
-            unsafe { std::ptr::copy_nonoverlapping(self.pool_ptr.add(self.lay.slot[k] as usize), keep.as_mut_ptr(), sb) };
-            self.drain_stream();
-            unsafe { std::ptr::copy_nonoverlapping(keep.as_ptr(), self.pool_ptr.add(self.lay.slot[k] as usize), sb) };
-        }
+        // The bins are named only by the bind table: growing them is a new buffer and a header write, and the
+        // pre-armed frames read the new address when they run. The overflowed frame is redrawn from its slot
+        // (which names the target) on the aux queue before anyone sees it.
         let cap = need.next_power_of_two().max(self.bin_cap * 2);
-        self.bins = self.device.newBufferWithLength_options(ty * cap as usize * 16, MTLResourceOptions::StorageModePrivate).expect("bins");
+        // growing the bins drains the pre-armed frames (`residency_changed`), which reuses both slots: keep
+        // the overflowed frame's
+        let sb = Layout::slot_bytes(self.lay.w, self.lay.h);
+        let mut keep = vec![0u8; sb];
+        // SAFETY: slot k lies inside the region (reserved for at least `sb` bytes); the GPU is idle.
+        unsafe { std::ptr::copy_nonoverlapping(self.pool_ptr.add(self.lay.slot[k] as usize), keep.as_mut_ptr(), sb) };
+        self.replace_bins(cap);
+        // SAFETY: as above.
+        unsafe { std::ptr::copy_nonoverlapping(keep.as_ptr(), self.pool_ptr.add(self.lay.slot[k] as usize), sb) };
+        self.bin_growths += 1;
+        let cmd = self.aux.commandBuffer().expect("command buffer");
+        self.encode(&cmd, k, nr, nt, false);
+        cmd.commit();
+        cmd.waitUntilCompleted();
+        self.check_bins();
+        if self.publish {
+            // the publisher held the overflowed frame back: it is whole now
+            self.post(_target, 0);
+        }
+    }
+
+    /// New row bins of `cap` entries per row, named in the bind table (the GPU is idle).
+    fn replace_bins(&mut self, cap: u32) {
+        let ty = self.lay.tiles_y() as usize;
+        let old = std::mem::replace(&mut self.bins, self.device.newBufferWithLength_options(ty * cap as usize * 16, MTLResourceOptions::StorageModePrivate).expect("bins"));
         if let Some(r) = &self.resid {
+            r.removeAllocation(ProtocolObject::from_ref(&*old));
             r.addAllocation(ProtocolObject::from_ref(&*self.bins));
             r.commit();
         }
         self.bin_cap = cap;
-        self.bin_growths += 1;
         // SAFETY: header field `bin_cap`; the GPU is idle.
         unsafe { (*(self.pool_ptr as *mut FHdr)).bin_cap = cap };
-        let cmd = self.aux.commandBuffer().expect("command buffer");
-        if streaming {
-            self.encode(&cmd, k, self.targets(), nr, nt, false);
-        } else {
-            let t = &self.surfs[target].tex;
-            self.encode(&cmd, k, [t, t, t, t], nr, nt, false);
-        }
-        cmd.commit();
-        cmd.waitUntilCompleted();
-        if streaming {
-            self.arm_batch();
-        }
-        self.check_bins();
+        self.write_binds();
+        self.residency_changed();
     }
 
-    /// Replace the row bins by ones of `cap` entries per row (tests; not while streaming).
+    /// Replace the row bins by ones of `cap` entries per row (tests: forces the grow-and-redraw path).
     pub fn reset_bins(&mut self, cap: u32) {
-        assert!(self.ev.is_none());
-        let ty = self.lay.tiles_y() as usize;
-        self.bins = self.device.newBufferWithLength_options(ty * cap as usize * 16, MTLResourceOptions::StorageModePrivate).expect("bins");
-        self.bin_cap = cap;
-        // SAFETY: header field `bin_cap`; the GPU is idle (the caller synced).
-        unsafe { (*(self.pool_ptr as *mut FHdr)).bin_cap = cap };
+        self.sync();
+        self.replace_bins(cap);
     }
 
-    /// Release every pre-armed frame with an empty slot (no tiles) and wait: the stream is idle and can be
-    /// re-armed (with new bins).
-    fn drain_stream(&mut self) {
-        let ev = self.ev.clone().unwrap();
-        let empty = [0u128; 0];
-        for f in self.released + 1..=self.armed_upto {
-            // SAFETY: the region and its slots; the frame `f - 1` finished (waited below each time).
-            unsafe { write_slot(self.pool_ptr, &self.lay, (f % 2) as usize, 0, &empty, false) };
-            ev.setSignaledValue(2 * f - 1);
-            ev.waitUntilSignaledValue_timeoutMS(2 * f, 5000);
-        }
-        self.released = self.armed_upto;
-    }
-
+    /// In use by the compositor, or held by the publisher (queued, being committed, or committed last).
     pub fn is_in_use(&self, i: usize) -> bool {
-        self.surfs[i].io.is_in_use()
+        self.publisher.as_ref().is_some_and(|p| p.holds(i)) || self.last_main == i || self.pending == Some(i) || self.surfs[i].io.is_in_use()
+    }
+
+    /// The window is now `w` x `h` px: fresh surfaces of that size (unbacked until first drawn), row bins
+    /// and counts for its tile rows, and the layer's new frame committed with the next publication, so the
+    /// first frame at the new size and the new size reach the screen in one transaction (no frame dropped,
+    /// none shown stretched). The caller then writes the new layout (`set_layout`) and draws a full frame.
+    /// The surface on screen stays alive in the layer until it is replaced.
+    pub fn resize(&mut self, w: usize, h: usize) {
+        self.sync();
+        self.publisher_idle();
+        if (w, h) == (self.w, self.h) {
+            return;
+        }
+        let n = self.surfs.len();
+        let old = std::mem::replace(&mut self.surfs, (0..n).map(|_| Self::new_surface(&self.device, w, h)).collect());
+        let ty = h.div_ceil(32);
+        let bins = self.device.newBufferWithLength_options(ty * self.bin_cap as usize * 16, MTLResourceOptions::StorageModePrivate).expect("bins");
+        let counts = self.device.newBufferWithLength_options((ty + 1) * 4, MTLResourceOptions::StorageModeShared).expect("bin counts");
+        let (old_bins, old_counts) = (std::mem::replace(&mut self.bins, bins), std::mem::replace(&mut self.counts, counts));
+        if let Some(r) = &self.resid {
+            for s in old.iter().filter(|s| s.touched.get()) {
+                r.removeAllocation(ProtocolObject::from_ref(&*s.tex));
+            }
+            r.removeAllocation(ProtocolObject::from_ref(&*old_bins));
+            r.removeAllocation(ProtocolObject::from_ref(&*old_counts));
+            r.addAllocation(ProtocolObject::from_ref(&*self.bins));
+            r.addAllocation(ProtocolObject::from_ref(&*self.counts));
+            r.commit();
+        }
+        self.residency_changed();
+        self.stats.resident_surfaces = 0;
+        self.last_frame = None;
+        self.last_main = NONE_SURF;
+        self.scratch = None; // the reference render's surface follows too
+        if let Some(p) = &self.publisher {
+            p.sh.last.store(NONE_SURF, Relaxed); // the old surfaces are gone; none of the new ones is on screen
+        }
+        (self.w, self.h) = (w, h);
+        self.pending_frame = Some(objc2_core_foundation::CGRect::new(
+            objc2_core_foundation::CGPoint::new(0.0, 0.0),
+            objc2_core_foundation::CGSize::new(w as f64 / self.scale, h as f64 / self.scale),
+        ));
+        if !self.publish {
+            self.layer.setFrame(self.pending_frame.take().unwrap());
+        }
+        self.write_binds();
     }
 
     /// Upload the glyph atlas (R8, `width` x `height`) if it changed since the last upload (`dirty`).
@@ -491,6 +846,8 @@ impl Fused {
                 r.addAllocation(ProtocolObject::from_ref(&*self.atlas));
                 r.commit();
             }
+            self.write_binds();
+            self.residency_changed();
         }
         // SAFETY: `pixels` holds width * height bytes (asserted); the GPU is idle (sync()).
         unsafe {
@@ -522,8 +879,32 @@ impl Fused {
                 r.commit();
                 self.stats.resident_surfaces += 1;
             }
+            self.residency_changed();
         }
         purged
+    }
+
+    /// An allocation joined the residency set: frames already submitted were made resident without it (the
+    /// set is resolved when a command buffer is submitted, and the pre-armed batch is submitted long before
+    /// its frames run), so the pending frames are drained (released with empty slots) and a new batch is
+    /// armed. Rare: a surface's first use, a resize, a bin or atlas growth.
+    fn residency_changed(&mut self) {
+        let want = 2 * self.released;
+        if self.ev.signaledValue() < want {
+            self.ev.waitUntilSignaledValue_timeoutMS(want, 5000);
+        }
+        // the arming lock is held throughout: the publisher cannot arm frames in between
+        let kern = self.kern.clone();
+        let mut st = kern.arm.lock().unwrap();
+        for f in self.released + 1..=st.armed_upto {
+            // SAFETY: slot f % 2 lies in the region; frame f - 1 (the other slot) is done or waited below.
+            unsafe { write_slot(self.pool_ptr, &self.lay, (f % 2) as usize, 0, &[], false) };
+            self.ev.setSignaledValue(2 * f - 1);
+            self.ev.waitUntilSignaledValue_timeoutMS(2 * f, 5000);
+        }
+        self.released = st.armed_upto;
+        self.stats.drains += 1;
+        kern.arm_locked(&mut st);
     }
 
     /// Make every surface `want(i)` selects purgeable-volatile (unless the compositor holds it); count.
@@ -554,69 +935,64 @@ impl Fused {
         unsafe { write_slot(self.pool_ptr, &self.lay, k, target, rows, full) }
     }
 
-    fn encode(&self, cmd: &ProtocolObject<dyn MTLCommandBuffer>, k: usize, targets: [&Tex; 4], nrows: u32, ntiles: u32, indirect: bool) {
-        let l = &self.lay;
-        let enc = cmd.computeCommandEncoder().expect("compute encoder");
-        let offs = [l.slot[k], 0];
-        unsafe {
-            enc.setBuffer_offset_atIndex(Some(&self.pool), 0, 0);
-            enc.setBytes_length_atIndex(NonNull::new(offs.as_ptr() as *mut _).unwrap(), 8, 1);
-            enc.setBuffer_offset_atIndex(Some(&self.bins), 0, 2);
-            enc.setBuffer_offset_atIndex(Some(&self.counts), 0, 3);
-            enc.setComputePipelineState(&self.pso_bin);
-            let tg = MTLSize { width: 256, height: 1, depth: 1 };
-            if indirect {
-                enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, l.slot[k] as usize, tg);
-            } else {
-                enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: nrows as usize, height: 1, depth: 1 }, tg);
-            }
-            enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
-            enc.setComputePipelineState(&self.pso_tile);
-            let texs: [*const ProtocolObject<dyn MTLTexture>; 5] =
-                [Retained::as_ptr(&self.atlas), Retained::as_ptr(targets[0]), Retained::as_ptr(targets[1]), Retained::as_ptr(targets[2]), Retained::as_ptr(targets[3])];
-            enc.setTextures_withRange(NonNull::new(texs.as_ptr() as *mut _).unwrap(), objc2_foundation::NSRange::new(0, 5));
-            let tg2 = MTLSize { width: 16, height: 16, depth: 1 };
-            if indirect {
-                enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, l.slot[k] as usize + 12, tg2);
-            } else {
-                enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: ntiles as usize, height: 1, depth: 1 }, tg2);
-            }
-        }
-        enc.endEncoding();
-    }
-
-    fn targets(&self) -> [&Tex; 4] {
-        let n = self.surfs.len();
-        [&self.surfs[0].tex, &self.surfs[1 % n].tex, &self.surfs[2 % n].tex, &self.surfs[3 % n].tex]
+    fn encode(&self, cmd: &ProtocolObject<dyn MTLCommandBuffer>, k: usize, nrows: u32, ntiles: u32, indirect: bool) {
+        self.kern.encode(cmd, k, nrows, ntiles, indirect);
     }
 
     /// Repair surface `target` from the damaged tile rows (`full`: everything) with `n_dir` directory
     /// entries, commit, and (windowed) publish it once the GPU is done. Returns the tile count.
-    pub fn draw(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32) -> u32 {
+    /// `PACED`: a clock-driven turn: published at the next `sync` on the calling thread (one refresh later,
+    /// no thread wake, no completion wait); otherwise the publisher thread commits it in this refresh.
+    pub fn draw<const PACED: bool>(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32) -> u32 {
         self.sync();
-        let k = if self.ev.is_some() { ((self.released + 1) % 2) as usize } else { (self.stats.gpu_frames % 2) as usize };
+        // a bindless frame reaches its target only through the residency set
+        if !self.surfs[target].touched.get() {
+            self.prepare_target(target);
+        }
+        let k = ((self.released + 1) % 2) as usize;
         // SAFETY: header field `n_dir` (u32) of the region's header; the GPU is idle (sync()).
         unsafe { (*(self.pool_ptr as *mut FHdr)).n_dir = n_dir };
-        if self.ev.is_some() {
-            // the pre-encoded stream binds every surface; the slot names the target
-            let (nt, _) = self.write_slot(k, target as u32, rows, full);
-            return self.release(k, nt);
-        }
-        // only the target is bound (at every slot): binding a surface makes all its pages resident, so a
-        // surface the ring never draws must never be bound
-        let (nt, nr) = self.write_slot(k, 0, rows, full);
-        let cmd = self.queue.commandBuffer().expect("command buffer");
-        let t = &self.surfs[target].tex;
-        self.encode(&cmd, k, [t, t, t, t], nr, nt, false);
-        cmd.commit();
-        self.after_gpu_frame(nt);
-        self.last_frame = Some((k, target, nr, nt));
-        self.last = Some(cmd);
+        // the slot names the target; the pre-encoded frame names none
+        let (nt, _) = self.write_slot(k, target as u32, rows, full);
+        self.release(k, nt);
         if self.publish {
-            self.sync();
-            self.publish_surface(target);
+            if PACED {
+                self.pending = Some(target);
+            } else {
+                // the publisher thread waits for the frame and commits it: no GPU wait and no Core Animation
+                // transaction on this (input) thread
+                let wait = 2 * self.released;
+                self.post(target, wait);
+            }
         }
         nt
+    }
+
+    /// Commit surface `i` now, on the calling thread, in its own transaction (after anything the publisher
+    /// still holds, so commits stay in frame order).
+    fn commit_now(&mut self, i: usize) {
+        self.publisher_idle();
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        if let Some(f) = self.pending_frame.take() {
+            self.layer.setFrame(f);
+        }
+        // SAFETY: an IOSurfaceRef is a valid CALayer `contents` object.
+        unsafe { self.layer.setContents(Some(&*(&*self.surfs[i].io as *const IOSurfaceRef as *const AnyObject))) };
+        CATransaction::commit();
+        self.last_main = i;
+        if let Some(p) = &self.publisher {
+            p.sh.last.store(i, Relaxed);
+        }
+    }
+
+    /// Hand surface `i` to the publisher thread, to be put on screen once `ev >= wait` (0: now).
+    fn post(&mut self, i: usize, wait: u64) {
+        let frame = self.pending_frame.take();
+        let overflow = self.counts.contents().as_ptr() as usize + 4 * self.lay.tiles_y() as usize;
+        let ahead = self.released + self.kern.batch.load(Relaxed) as u64 / 2;
+        let job = PubJob { surf: i, io: SendIo(self.surfs[i].io.clone()), wait, frame, overflow, ahead };
+        self.publisher.get_or_insert_with(|| Publisher::spawn(self.kern.clone(), self.layer.clone())).post(job);
     }
 
     fn after_gpu_frame(&mut self, nt: u32) {
@@ -636,74 +1012,68 @@ impl Fused {
     }
 
     /// Put surface `i` on screen without any GPU work (it already holds the current state).
-    pub fn show_held(&mut self, i: usize) {
+    pub fn show_held<const PACED: bool>(&mut self, i: usize) {
         self.stats.ca_only += 1;
         if let Some(w) = &self.warm {
             w.cancelled.store(true, Relaxed);
         }
         if self.publish {
-            self.publish_surface(i);
+            self.pending = None;
+            if PACED {
+                self.commit_now(i);
+            } else {
+                self.post(i, 0);
+            }
         }
     }
 
-    fn publish_surface(&self, i: usize) {
-        CATransaction::setDisableActions(true);
-        // SAFETY: an IOSurfaceRef is a valid CALayer `contents` object.
-        unsafe { self.layer.setContents(Some(&*(&*self.surfs[i].io as *const IOSurfaceRef as *const AnyObject))) };
+    /// Publisher counters: (transactions committed, frames held back by a bin overflow).
+    pub fn publish_stats(&self) -> (u64, u64) {
+        self.publisher.as_ref().map_or((0, 0), |p| (p.sh.commits.load(Relaxed), p.sh.held_back.load(Relaxed)))
     }
 
-    // ------------------------------------------------------------------ throughput mode
-
-    /// Switch to the pre-armed command stream: `k` frames per batch, each waiting on a shared event.
-    pub fn arm_stream(&mut self, k: usize) {
-        self.ev = Some(self.device.newSharedEvent().expect("shared event"));
-        self.batch = k.max(2);
-        self.arm_batch();
-    }
-
-    fn arm_batch(&mut self) {
-        let ev = self.ev.clone().unwrap();
-        let cmd = self.queue.commandBuffer().expect("command buffer");
-        for f in self.armed_upto + 1..=self.armed_upto + self.batch as u64 {
-            cmd.encodeWaitForEvent_value(ProtocolObject::from_ref(&*ev), 2 * f - 1);
-            self.encode(&cmd, (f % 2) as usize, self.targets(), 0, 0, true);
-            cmd.encodeSignalEvent_value(ProtocolObject::from_ref(&*ev), 2 * f);
+    /// Wait until the publisher has nothing queued or in flight (resize, tests).
+    pub fn publisher_idle(&self) {
+        if let Some(p) = &self.publisher {
+            let mut g = p.sh.m.lock().unwrap();
+            while g.job.is_some() || p.sh.in_flight.load(Relaxed) != NONE_SURF {
+                g = p.sh.idle.wait(g).unwrap();
+            }
         }
-        cmd.commit();
-        self.armed_upto += self.batch as u64;
     }
 
-    fn release(&mut self, k: usize, nt: u32) -> u32 {
+    // ------------------------------------------------------------------ the frame stream
+
+    /// Frames per pre-armed command buffer (default 16); takes effect at the next batch.
+    pub fn set_batch(&mut self, k: usize) {
+        self.kern.batch.store(k.max(2), Relaxed);
+    }
+
+    fn release(&mut self, k: usize, nt: u32) {
         let f = self.released + 1;
-        // the slot names the target; a redraw after a bin overflow reads it back from there
-        let target = unsafe { *(self.pool_ptr.add(self.lay.slot[k] as usize) as *const u32).add(6) } as usize;
-        let nr = unsafe { *(self.pool_ptr.add(self.lay.slot[k] as usize) as *const u32).add(7) };
+        // SAFETY: slot k's header (u32 x 8) lies inside the region, just written; the GPU is idle.
+        let (target, nr) = unsafe {
+            let s = self.pool_ptr.add(self.lay.slot[k] as usize) as *const u32;
+            (*s.add(6) as usize, *s.add(7))
+        };
+        // a redraw after a bin overflow re-encodes this frame from its slot
         self.last_frame = Some((k, target, nr, nt));
         debug_assert_eq!((f % 2) as usize, k);
+        // normally armed long ago (one atomic read); only a stream that outran its arming arms here
+        self.kern.ensure(f);
         self.released = f;
-        let ev = self.ev.clone().unwrap();
-        ev.setSignaledValue(2 * f - 1);
+        self.ev.setSignaledValue(2 * f - 1);
         self.after_gpu_frame(nt);
-        if self.armed_upto < f + self.batch as u64 / 2 {
-            self.arm_batch();
+        if self.publisher.is_none() {
+            // headless: the next batch is encoded and committed here, after the release (off the frame's
+            // critical path); windowed, the publisher thread does it between frames
+            self.kern.ensure(f + self.kern.batch.load(Relaxed) as u64 / 2);
         }
-        nt
     }
 
-    /// Throughput mode: has the last released frame finished on the GPU?
+    /// Has the last released frame finished on the GPU? (one read of the event's shared value)
     pub fn released_done(&self) -> bool {
-        self.ev.as_ref().is_none_or(|e| e.signaledValue() >= 2 * self.released)
-    }
-
-    /// Throughput mode: publish surface `i` (its frame finished; called from the next tick).
-    pub fn publish_later(&self, i: usize) {
-        if self.publish {
-            self.publish_surface(i);
-        }
-    }
-
-    pub fn streaming(&self) -> bool {
-        self.ev.is_some()
+        self.ev.signaledValue() >= 2 * self.released
     }
 
     // ------------------------------------------------------------------ readback (tests, checks)
@@ -721,13 +1091,49 @@ impl Fused {
             self.scratch = Some(Self::new_surface(&self.device, self.w, self.h));
         }
         unsafe { (*(self.pool_ptr as *mut FHdr)).n_dir = n_dir };
+        // the scratch surface takes the bind table's target 0 for this one render (the GPU is idle)
+        let s = self.scratch.as_ref().unwrap().tex.clone();
+        if let Some(r) = &self.resid {
+            r.addAllocation(ProtocolObject::from_ref(&*s));
+            r.commit();
+        }
+        // SAFETY: the bind table lies inside the reserved header; the GPU is idle (synced above).
+        unsafe { (*(self.pool_ptr.add(FBIND_OFF) as *mut FBind)).t[0] = rid(&s) };
         let (nt, nr) = self.write_slot(2, 0, &[], true);
-        let s = &self.scratch.as_ref().unwrap().tex;
         let cmd = self.aux.commandBuffer().expect("command buffer");
-        self.encode(&cmd, 2, [s, s, s, s], nr, nt, false);
+        self.encode(&cmd, 2, nr, nt, false);
         cmd.commit();
         cmd.waitUntilCompleted();
+        self.write_binds();
+        if let Some(r) = &self.resid {
+            r.removeAllocation(ProtocolObject::from_ref(&*s));
+            r.commit();
+        }
         read_io(&self.scratch.as_ref().unwrap().io, self.w, self.h)
+    }
+
+    /// GPU time of one frame's repair (`rows` / `full` into surface `target`), measured as one command
+    /// buffer of `reps` back-to-back copies on the aux queue: (GPUEndTime - GPUStartTime) / reps, in ms.
+    /// The GPU is saturated, so its clock is high and steady (kernel A/B, not a frame cost). `debug` goes to
+    /// the header's debug word for the run (kernel variants), then back to 0.
+    pub fn bench_frames(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32, reps: usize, debug: u32) -> f64 {
+        self.sync();
+        self.prepare_target(target);
+        // SAFETY: header fields `n_dir`, `debug`; the GPU is idle (synced above).
+        unsafe {
+            (*(self.pool_ptr as *mut FHdr)).n_dir = n_dir;
+            (*(self.pool_ptr as *mut FHdr)).debug = debug;
+        }
+        let (nt, nr) = self.write_slot(2, target as u32, rows, full);
+        let cmd = self.aux.commandBuffer().expect("command buffer");
+        for _ in 0..reps {
+            self.encode(&cmd, 2, nr, nt, false);
+        }
+        cmd.commit();
+        cmd.waitUntilCompleted();
+        // SAFETY: as above; the GPU is idle again.
+        unsafe { (*(self.pool_ptr as *mut FHdr)).debug = 0 };
+        (cmd.GPUEndTime() - cmd.GPUStartTime()) * 1e3 / reps as f64
     }
 
     /// Did a row bin overflow in the last frame and stay unrepaired? (tests: always false after a sync, since
@@ -781,6 +1187,12 @@ pub unsafe fn write_slot(region: *mut u8, l: &Layout, k: usize, target: u32, row
         *s.add(7) = nr;
         (nt, nr)
     }
+}
+
+/// A texture's Metal 3 resource id, as the shader's bind table holds it.
+fn rid(t: &Tex) -> u64 {
+    // SAFETY: MTLResourceID is a 64-bit handle (`{ _impl: u64 }`, repr(C)).
+    unsafe { std::mem::transmute::<MTLResourceID, u64>(t.gpuResourceID()) }
 }
 
 fn read_io(io: &IOSurfaceRef, w: usize, h: usize) -> Vec<u8> {

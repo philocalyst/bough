@@ -893,3 +893,363 @@ BOUGH_KEEPWARM=800,10 $X/lab --strategy cb:h:z:4 --pause --direct
 BOUGH_HEAVYTEXT=1 BOUGH_RUNS=1 $X/lab --strategy cb:h:z:4 --pause --direct --scn text,one-colour,full
 $X/opcost                                                 # scene write costs (prototype scene)
 ```
+
+---
+
+# Part IV: the per-frame floor, GPU time and the unmeasured columns (round 3, branch `floor`)
+
+Same M3 Pro (macOS 15.7.4), `dist` binaries, load average 15–70 from three other agents' builds throughout:
+instruction counts are the figures to read, CPU % and GPU time are context. "Before" is `canonical` 9c61b75 (the
+fused system of STATUS.md) built in this worktree; zgx is 06debe9d's `dist`, as in STATUS. Raw output:
+`bench/results/floor/`.
+
+```
+export RUSTC_WRAPPER= PATH=~/.local/share/cargo/bin:$PATH CARGO_TARGET_DIR=/Users/mileswirht/projects/bough/target/floor
+export ZGX_FONT_FILE=/Users/mileswirht/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf
+cargo test --workspace --release                       # every gate, incl. present.rs, gpu_bounds.rs, edges.rs
+cargo build --profile dist -p bough-heavy -p bough-scenes -p bough-vlist -p bough-zgui
+bench/floor/build.sh                                   # gputime.dylib (headless GPU time), macsample (zgx's sampler)
+bench/results/floor/run_slopes_bough.sh                # instructions per frame, R0/R1, every scene
+bench/results/floor/run_gpu_slopes.sh                  # GPU ms and Kcycles per frame, headless, bough + zgx
+AFTER=<dist dir> BEFORE=<dist dir> bench/results/floor/run_windowed_gpu.sh   # 10 s windows + GPU column (takes the lock)
+target/floor/dist/drag_probe                           # zgx's SAME_WINDOW drag probe (take the lock)
+target/floor/release/examples/fprobe 3000 <modes>      # the submission floor, per thread
+ZGX_MODE=stream target/floor/release/kernel_bench      # kernel A/B at a saturated GPU clock (DEBUG=0,1,2)
+```
+
+## 14.1 GPU time for both frameworks, without Screen Recording or sudo (item 1)
+
+* **What zgx's runner uses.** `bench/windowed/macsample.swift` (zgx's own sampler) reads the GPU time of a process
+  from the I/O Registry: every `IOUserClient` of the accelerator has an `AppUsage` array whose
+  `accumulatedGPUTime` (ns) is what Activity Monitor shows, keyed by `IOUserClientCreator` = "pid N". The GPU's
+  mean active clock comes from IOReport ("GPU Stats", GPUPH residency × pmgr `voltage-states9` frequencies), and
+  Mcycles/s = GPU seconds × MHz / wall. **None of it needs root or Screen Recording**: only zgx's frame-pacing
+  capture (ScreenCaptureKit) and its preflight (System Events) do. Built with `swiftc -lIOReport`, it runs here.
+* `task_info(TASK_POWER_INFO_V2).gpu_energy.task_gpu_utilisation` is **0 on Apple silicon** (checked), so it is
+  not an option. `proc_pid_rusage` has no GPU field.
+* **Headless:** `bench/floor/gputime.c` is a dylib injected with `DYLD_INSERT_LIBRARIES` into any Metal process
+  (bough's or zgx's unmodified binaries): a thread polls the accelerator's children for the process's clients every
+  2 ms (a client's accounting vanishes when the process releases its device, which wgpu does before exit, so the
+  last value per client is kept) and prints GPU seconds and the run's mean GPU MHz at exit. `gpu_slope.py` turns it
+  into GPU ms and Kcycles per frame by the slope method. The poller costs CPU, so instruction counts are never read
+  from these runs.
+* **Windowed:** `bench/floor/windowed_gpu.py` runs a window under the lock and samples it with macsample from 1.5 to
+  9 s: CPU %, instructions, footprint, GPU ms/s, MHz, Mcycles/s, window server CPU/GPU %.
+* **Caveat, measured:** GPU time is dominated by the clock. Back-to-back headless frames ran at 338–1,140 MHz here
+  (other agents' GPU load moves it), so the same binary's GPU ms per frame moved 2× between repetitions; Kcycles
+  normalise this only roughly (the MHz is the whole GPU's). At a saturated clock (`kernel_bench`) the same
+  repairs cost a quarter of their cadence time.
+
+GPU column, windowed (10 s, macsample; one repetition per cell, interleaved; `windowed_gpu.txt`), and headless
+(slope, median of 3; `gpu_slopes_*.txt`):
+
+| scene / mode | headless GPU Kcycles/frame zgx / **bough** | headless GPU ms/frame zgx / bough before / **bough after** | windowed GPU Mcycles/s zgx / before / **after** | windowed GPU ms/s zgx / before / **after** |
+|---|---|---|---|---|
+| heavy stream | 446 / **359** | 0.989 / 0.715 / **0.412** | 20.5 / 19.9 / **16.7** | 27.4 / 17.6 / **34.0** |
+| heavy scroll | 268 / **303** | 0.783 / 0.648 / **0.351** | 12.9 / 30.4 / **21.0** | 32.6 / 31.9 / **30.5** |
+| heavy both | 627 / **502** | 1.459 / 0.505 / **0.850** | 40.4 / 38.6 / **32.9** | 60.3 / 53.9 / **41.1** |
+| lab stream | 63 / **110** | 0.289 / 0.334 / **0.451** | 17.5 / 21.2 / **23.3** | 32.7 / 31.4 / **34.3** |
+| lab scroll | 123 / **128** | 0.352 / 0.376 / **0.354** | 22.2 / 25.9 / **25.8** | 38.7 / 48.8 / **41.2** |
+| lab both | 134 / **223** | 0.398 / 0.476 / **0.365** | 22.7 / 30.2 / **26.1** | 36.4 / 51.9 / **75.6** |
+| animate - | 97 / **72** | 0.272 / 0.253 / **0.217** | 14.5 / 26.4 / **26.3** | 37.9 / 69.4 / **36.8** |
+| vlist scroll | 203 / **316** | 0.600 / 0.715 / **0.419** | 22.7 / 28.4 / **27.5** | 40.5 / 45.0 / **44.1** |
+| vlist fling | 208 / **329** | 0.615 / 0.523 / **0.407** | 23.4 / 27.8 / **18.5** | 34.6 / 40.7 / **45.2** |
+| vlist jump | 203 / **309** | 0.606 / 0.632 / **0.453** | 16.9 / 20.6 / **29.1** | 38.8 / 56.1 / **52.7** |
+| blink - | – | – | 0.4 / 0.0 / **0.0** | 1.0 / 0.0 / **0.0** |
+
+Reading (the first GPU column for either framework):
+* **bough wins** heavy stream and both (359 vs 446 and 502 vs 627 Kcycles a frame headless; 16.7 vs 20.5 and 32.9
+  vs 40.4 Mcycles/s windowed: zgx repaints 2.67 Mpx a tick, bough ~1.1 M) and animate headless (72 vs 97 Kcycles).
+* **bough loses** glyph-dense and scroll-dense cells: lab stream 110 vs 63 Kcycles (1.7×), lab both 223 vs 134,
+  vlist 309–329 vs 203–208 (1.5×); heavy scroll and lab scroll tie. Windowed, animate is 26.3 vs 14.5 Mcycles/s.
+* Run-to-run spread under the external GPU load is ±30 % (the clock moved 338–1,143 MHz between runs of one binary),
+  so only the ~1.5× gaps are clear. Where the time goes is 14.6: the tile pass's bin scan in text rows, the regime
+  RESULTS 13.2 already recorded as losing.
+
+## 14.2 The per-frame floor: one pre-armed, bindless stream for every frame, published off the input thread (item 2)
+
+### What a frame cost, per thread (`fprobe`, headless, one damaged tile, empty scene; `threads::instr_snapshot`)
+
+Per-thread instructions come from `proc_pidinfo(PROC_PIDTHREADCOUNTS)` (also from outside: `bench/floor/threads.py`).
+
+| mechanism (per frame) | process | main | driver threads |
+|---|---:|---:|---|
+| command buffer + encoder + commit, wait next frame (before: every RENDER=1 frame) | 196 K | 60 K | 69 K + 68 K (submission thread in `IOGPUCommandQueueSubmitCommandBuffers`, completion thread) |
+| pre-armed batch of 8, event-released, surfaces bound (before: animate's throughput mode) | 134 K | 56 K | 73 K |
+| **pre-armed batch of 16, bindless encoders** | **101 K** | 45 K | 52 K |
+| (nop kernel) batch of 8 encoders, no events | 26 K | 10 K | 16 K |
+| (nop kernel) event-released, signal + wait per frame | 103–107 K | 42–45 K | 54 K |
+| (nop kernel) event-released, no per-frame signal, no wait | 71–75 K | 30–33 K | 33 K |
+| `setSignaledValue` with no waiter / `signaledValue` read / wait on a reached value | 2.8 K / 72 / 69 | | |
+
+Findings (`sample` of the stream): a GPU wait on a CPU-signalled shared event is resolved **in the kernel, on the
+submission thread**: `IOGPUCommandQueueSubmitCommandBuffers` blocks inside the trap until the value arrives and then
+submits the next segment. So every event-released frame still pays one kernel segment submission (~50 K), and per
+command buffer ~180 K. Binding IOSurface textures to the pre-armed encoders cost a further ~20 K a frame in that
+path and made every pending frame hold every surface "in use".
+
+### The mechanism kept
+
+1. **Every frame goes through the pre-armed stream** (`fused.rs`): K = 16 frames encoded ahead into one command
+   buffer, each `wait(ev ≥ 2f−1) → bin, tile → signal(ev = 2f)`. A frame is: write its slot, `ev.signaledValue =
+   2f−1`. The GPU starts at the release: no encoder, commit or submission on the frame's critical path, which is
+   lower latency than encoding.
+2. **Bindless encoders.** A pre-armed frame binds only the region and its slot offset. Surfaces and the atlas are
+   Metal 3 resource ids, bins and counts GPU addresses, in a bind table in the region header (`FBind`), all in the
+   queue's residency set. The tile pass writes `t[target]`. Consequences: −25 % per frame (134 → 101 K), pending
+   frames name no surface (`IOSurfaceIsInUse` now reports only the compositor: `armprobe`), and growing the bins is a
+   header write (the old drain/re-arm on bin growth is gone).
+3. **The publisher thread** (windowed). The input thread writes the slot, signals, and posts (surface, event value)
+   into a one-job mailbox. The publisher waits for the event, checks the frame's bin-overflow word, and commits the
+   surface in its own explicit Core Animation transaction (with the layer's new frame after a resize). It also keeps
+   the stream armed (`Kern`, the encoder objects and the arming state under one lock), so **no encode, commit, GPU
+   wait or CA transaction runs on the input thread**. A job posted while another is queued supersedes it. The
+   surface queued, being committed, or committed last counts as in use for the ring (the compositor's own flag lags a
+   commit by up to one server turn), which keeps RESULTS 12.6's proof intact. An overflowed frame is held back; the
+   next `sync` grows the bins, redraws it and posts it again.
+4. **Residency growth drains the stream.** Found by the resize gate (flaky black frames): **a residency set's new
+   allocations do not reach command buffers already submitted**, and a pre-armed batch is submitted long before its
+   frames run. So when a surface is first used, after a resize, or when the bins or atlas grow, the pending frames
+   are released with empty slots and a new batch is armed (`residency_changed`, at most a few times a window life).
+   The first version of this round had the race latent on a surface's first use.
+
+### Results
+
+Headless, per frame, slope method (`slopes_before.txt` / `slopes_after.txt`, same machine state, bough only; zgx
+from STATUS §1.1):
+
+| scene / mode | zgx R=0 | before R=0 | **after R=0** | zgx R=1 | before R=1 | **after R=1** | Metal floor (R1−R0) before → after | × zgx R=1 |
+|---|---:|---:|---:|---:|---:|---:|---|---:|
+| heavy stream | 2,982,643 | 180,237 | **194,005** | 6,190,927 | 381,678 | **319,232** | 201,441 → 125,227 | 19.4 |
+| heavy scroll | 161,932 | 26,510 | **26,237** | 1,443,768 | 229,956 | **134,454** | 203,446 → 108,217 | 10.7 |
+| heavy both | 3,153,118 | 216,118 | **222,228** | 6,896,602 | 442,964 | **317,691** | 226,846 → 95,463 | 21.7 |
+| lab stream | 754,172 | 26,687 | **27,819** | 1,061,953 | 231,749 | **130,623** | 205,062 → 102,804 | 8.1 |
+| lab scroll | 84,489 | 10,112 | **9,777** | 649,136 | 212,062 | **99,554** | 201,950 → 89,777 | 6.5 |
+| lab both | 813,004 | 35,058 | **33,779** | 1,408,099 | 258,022 | **146,138** | 222,964 → 112,359 | 9.6 |
+| animate - | 226,715 | 13,912 | **13,808** | 816,343 | 154,267 | **124,263** | 140,355 → 110,455 | 6.6 |
+| vlist scroll | 108,843 | 13,009 | **12,989** | 1,140,929 | 214,270 | **134,073** | 201,261 → 121,084 | 8.5 |
+| vlist fling | 178,601 | 19,393 | **19,576** | 1,308,185 | 218,276 | **128,008** | 198,883 → 108,432 | 10.2 |
+| vlist jump | 335,715 | 35,559 | **35,510** | 1,333,209 | 235,855 | **144,893** | 200,296 → 109,383 | 9.2 |
+
+The Metal floor (R1 − R0) fell from ~200 K to **~105 K for every scene**: input-driven and stream scenes are now
+at or below animate's old 142 K (lab stream 131 K, lab scroll 100 K, vlist 128–145 K, animate 124 K).
+
+Windowed (10 s, macsample, one repetition, before/after interleaved; `windowed_gpu.txt`), instructions per second:
+
+| scene / mode | instr/s zgx | before | **after** | CPU % zgx / before / **after** | footprint MB zgx / before / **after** |
+|---|---:|---:|---:|---|---|
+| heavy stream | 329.0 M | 36.3 M | **33.9 M** | 6.14 / 1.55 / **1.65** | 167 / 137 / **139** |
+| heavy scroll | 58.0 M | 27.7 M | **23.6 M** | 3.00 / 1.85 / **1.89** | 163 / 138 / **124** |
+| heavy both | 426.1 M | 38.9 M | **35.0 M** | 7.82 / 2.27 / **2.12** | 168 / 138 / **124** |
+| lab stream | 73.9 M | 27.8 M | **24.3 M** | 2.46 / 1.85 / **1.87** | 148 / 121 / **124** |
+| lab scroll | 44.4 M | 26.4 M | **22.6 M** | 2.80 / 1.88 / **1.48** | 148 / 121 / **125** |
+| lab both | 86.6 M | 27.7 M | **23.5 M** | 3.61 / 2.03 / **2.08** | 149 / 104 / **113** |
+| animate - | 100.4 M | 31.9 M | **35.5 M** | 4.40 / 2.24 / **3.21** | 137 / 120 / **134** |
+| blink - | 1.8 M | 0.6 M | **0.6 M** | 0.13 / 0.04 / **0.04** | 144 / 51 / **53** |
+| vlist scroll | 63.3 M | 26.8 M | **22.2 M** | 3.22 / 1.96 / **1.97** | 150 / 109 / **119** |
+| vlist fling | 69.9 M | 27.5 M | **23.2 M** | 3.19 / 2.02 / **1.95** | 136 / 114 / **120** |
+| vlist jump | 68.4 M | 28.2 M | **23.5 M** | 3.09 / 2.14 / **2.00** | 141 / 105 / **111** |
+| heavy idle | 0.3 M | 0.1 M | **0.1 M** | 0.02 / 0.01 / **0.01** | 53 / 45 / **47** |
+| lab idle | 7.7 M | 0.1 M | **0.1 M** | 0.12 / 0.01 / **0.01** | 43 / 41 / **41** |
+
+**zgx's drag probe** (same-window synthetic drag, main-thread instructions per move, 3 drags × 81 moves; `drag_probe`
+under the lock, the input branch's binary run alongside):
+
+| | per move |
+|---|---:|
+| zgx (INPUT.md) | 182,576 / 211,352 / 219,862 |
+| bough, canonical presenter (input branch binary, this session) | 216,690 – 225,819 |
+| **bough, this branch** | **118,501 – 126,225** |
+| bough, frames off (`BOUGH_NOFRAME`: AppKit dispatch + the turn) | 112,920 – 115,340 |
+
+The frame now costs the input thread 5–12 K above AppKit's own dispatch (was ~105 K): the cell is won outright,
+−35..−43 % against zgx.
+
+Costs and trade-offs measured:
+* **animate (windowed)** rose 31.9 → 35.5 M instr/s against the old throughput mode, which published at the next
+  tick for free but one refresh late. The publisher thread's wake and event wait (~25–30 K a frame) is the price of
+  publishing in the same refresh; the input thread does less (no CA commit).
+* CA commit alternatives were measured in round 1 (12.3: IOSurface swap ≥ ~80 K on the committing thread; CAMetalLayer
+  `nextDrawable` 237–304 K alone; CAMetalDisplayLink +700 K; `setContentsChanged` no cheaper than a swap; hidden flip
+  unsafe). Nothing public avoids a transaction per published frame, so it was moved off the input thread instead.
+
+### Window resize (lead's request)
+
+`Fused::resize`: fresh IOSurfaces at the new size (unbacked until drawn), row bins and counts for the new tile rows,
+the scratch reference surface, and the layer's new frame committed **in the same transaction as the first frame at
+the new size** (no dropped frame, nothing shown stretched); `App::resized` calls it. The interactive host observes
+`NSWindowDidResizeNotification` (synchronously, so live resize draws every step) and the windows are resizable.
+Gates (`comparisons/bough-scenes/tests/present.rs`): every frame after growing past the creation size and shrinking
+again equals a full redraw at ring ages 1–4 and in the windowed, published ring; `bough-zgui`'s resize relayout gate
+now runs on resized surfaces.
+
+## 14.3 Exact geometric damage: the edge-band rule (item 3)
+
+* **The rule** (`Bough::damage_edges`): a box primitive's pixel depends on edge `e` only within the kind's band of
+  it (solid: the pixel-centre test; rounded: radius + 1 px of anti-aliasing; border: radius or border width), so a
+  geometry change damages only the bands around the edges that **moved**, across both inks' perpendicular extent —
+  never old ∪ new. For a solid it is at most the symmetric difference plus slack; for a translation it is the four
+  bands; for a bar that grows, the strip between its old and new top.
+* **Making it exact (representation change):** "moved" must be decided exactly, and an unmoved edge must be bitwise
+  the same edge on the GPU. Two changes do that:
+  1. **Geometry on a 1/256-px grid.** Quad and bar positions, sizes, radii and border widths are snapped; every sum
+     the kernels form (position + integral space offset + size, ± integral margins and clip edges) is then exact in
+     f32 below 2^15 px, whatever the compiler's association, so `x + w` on the CPU is the GPU's edge.
+  2. **Edge-form shading** in the fused tile pass: records are staged with their four edges and the rounded-box SDF
+     is `max(c − b1, b0 − c) + r` per lane (equal to the centre/half form mathematically), so a pixel's value depends
+     bit for bit only on the edges within its band.
+* **Gates.** `bough-core/tests/edges.rs`: 4,000 random boxes (solid, rounded, bordered), random edge subsets moved by
+  ¼ px to 40 px; every pixel whose shaded value changes lies in a damaged tile (band − 2: fails at case 0). The heavy
+  pixel gates at ring ages 1–4 pass; sabotage (no bar damage, or band 0) fails them at tick 7.
+* **Applied to:** `quad_geom` (every quad geometry write: width/span operands, layout placement, the text field
+  caret) and the bars (one rect per sparkline: the bars' columns between the highest and lowest moved top).
+
+| heavy, repaired tiles per frame (ring 2, `heavy_headless`) | stream | both |
+|---|---:|---:|
+| before (old ∪ new) | 1,209 | 2,059 |
+| quads only (progress bars) | 1,133 | 1,982 |
+| **kept: quads + one strip rect per sparkline** | **1,058** | **1,907** |
+| per-column strips (each tile column's own top range) | 846 | 1,689 |
+
+* **Rejected: per-column strips** (−30 % tiles). Every formulation tried cost 32–65 K instructions a tick (780 bars,
+  240 tile columns; per-bar `damage_edges` 230 K, per-column `or_rows` 26 K, row masks 45 K): R0 heavy stream
+  180 → 212–245 K. The kept form folds one min/max per bar in registers and marks one rect per sparkline: +10 K
+  (R0 heavy stream 180 → 190–194 K, +5–8 %; both +3 %) for −12.5 % tiles; R1 still falls 382 → 319 K. Tiles above the top band are text (log pane, digit patches, table rows): the
+  text agent's area.
+
+## 14.4 Bounds safety on the GPU by construction (item 5)
+
+* Every column the kernels read has a **power-of-two capacity** (`Caps::pow2`; the rounding is the phantom padding,
+  zero-filled, and an all-zero instance / page / glyph / run header draws nothing). The header carries `capacity − 1`
+  per column, and **every index read from region data is ANDed with its column's mask** (page ids, instance and run
+  indices, glyph slots, strike and token ids, spaces, clip ids, the bin entries the tile pass re-reads); **every loop
+  bound read from region data is min-ed with a capacity** (directory length, run lengths); atlas reads are clamped.
+  No branch; ~1 ALU op per index.
+* Gate (`comparisons/bough-heavy/tests/gpu_bounds.rs`): random payloads, page ids, clip ids, run headers with
+  lengths > 2^24, glyph entries and spaces → the frame completes in bounded time. Opening the glyph mask (which also
+  bounds the run loops) makes the frame run for > 5 s (ignored test, run alone).
+* Measured limit of the evidence: out-of-column reads inside the GPU's address space **do not fault** on this GPU
+  (opening the index masks rendered garbage without an error), and Metal's shader validation did not flag them, so
+  the masks are a guarantee by construction; what a test can observe is the loop bound.
+
+## 14.5 Visual parity with zgx (item 6)
+
+Heavy on the current kernels (edge-form SDF, grid geometry), `heavy_shot` vs zgx's `render_parity` frames
+(2560×1600, `frame_diff`):
+
+| frame | differ at all | > 16/255 | > 64/255 | max | by region > 16: title / tiles / cards / table / log |
+|---|---:|---:|---:|---:|---|
+| t = 120 | 4.48 % | **2.68 %** | **0.758 %** | 209 | 0.52 / 2.36 / 1.65 / 5.27 / 3.41 % |
+| t = 0 | 4.51 % | 2.70 % | 0.765 % | 209 | 0.52 / 2.42 / 1.66 / 5.29 / 3.43 % |
+
+Identical to the pre-fusion figures (2.69 / 0.77 %, 2.68 / 0.76 %): the difference is glyph anti-aliasing (the table
+and log text), not geometry. **Lab was not re-diffed**: zgx's `render_parity` lab sets no font family (default sans,
+not DejaVu), so a text diff is meaningless; a DejaVu reference needs a patched zgx build, not made (disk at 35 GB
+with four agents building).
+
+## 14.6 Where bough's GPU time goes; the glyph-dense regime (item 4, not solved)
+
+`kernel_bench` (lab, ring 2, saturated clock; `DEBUG` 1 = no shading, 2 = bin pass only):
+
+| | lab stream repair (499 tiles) | full redraw (2,700) | lab scroll repair (1,508) |
+|---|---:|---:|---:|
+| whole frame | 0.079 ms | 0.234 ms | 0.120 ms |
+| bin pass alone | 0.012 | 0.019 | 0.009 |
+| + tile pass cull/stage, no shading | 0.038 | 0.149 | 0.078 |
+| shading | 0.041 | 0.085 | 0.042 |
+
+The tile pass's scan of its row bin and staging is the largest share (47–64 %), most in glyph-dense rows: every
+tile of a text row tests every entry of the row's bin. 2D binning (per row and column chunk, count + prefix +
+scatter) was designed but **not built** this round; the A/B harness (`Fused::bench_frames`, `kernel_bench`) is in
+place for it. 16-px quadrant masks need a finer damage plane in the core and were not attempted.
+
+## 14.7 Residency (item 7, not solved)
+
+The residency set still holds the whole region (~2 MB). One structural fact for whoever does it: **allocations added
+to a residency set do not reach command buffers already submitted** (14.2, item 4), so "residency follows use" in a
+pre-armed stream needs either a drain per change (what surfaces now do) or the region split into separately resident
+heaps whose membership changes only between batches.
+
+## 14.8 Honest gaps
+
+* GPU column: bough loses lab (1.7×) and vlist (1.5×) GPU cycles per frame headless, and animate windowed; it wins
+  heavy. Windowed GPU numbers are one repetition under heavy external GPU load.
+* Heavy R0 stream +5–8 % (180 → 190–194 K) for the edge-band damage of the bars, the one STATUS §1.1 cell that
+  regressed; R1 and windowed heavy improved. Per-column precision (−30 % tiles) rejected on CPU cost.
+* Animate windowed +11 % instructions/s against the old one-frame-late throughput mode.
+* Glyph-dense binning, 16-px quadrants, residency-follows-use: not built. Lab parity: no DejaVu zgx reference.
+
+## 14.9 Round 3b (after merging canonical ca6412f: input, text3, floor)
+
+Raw: `bench/results/floor/{slopes_3b,gpu_slopes_bough_3b,windowed_3b}.txt`. The canonical figures quoted are the
+lead's merged slopes.
+
+**GPU time: headline (headless slope, Kcycles per frame, median of 3)**
+
+| scene | zgx | bough (round 3) | **bough (3b)** |
+|---|---:|---:|---:|
+| heavy stream / scroll / both | 446 / 268 / 627 | 359 / 303 / 502 | **313 / 260 / 451** |
+| lab stream / scroll / both | 63 / 123 / 134 | 110 / 128 / 223 | **141 / 147 / 206** |
+| animate | 97 | 72 | **75** |
+| vlist scroll / fling / jump | 203 / 208 / 203 | 316 / 329 / 309 | **522 / 522 / 495** |
+
+* **Not won.** bough wins heavy (every mode, 3b) and animate; it loses lab and vlist. The kernels did not change
+  between the two bough columns, yet vlist moved 1.6×. The Kcycles figure multiplies the process's GPU seconds by
+  the whole GPU's mean clock, and other agents' GPU work moves that clock (338–1,143 MHz seen). So only gaps of 2× or
+  more are real at this load; lab stream (2.2×) and vlist (2.4×) are.
+* **Tried this round:** tile-pass staging 256 wide instead of 128 (`kernel_bench`, saturated clock): lab stream
+  repair 0.106 → 0.104 ms, scroll 0.171 → 0.173 ms. No effect, so staging width is not the bottleneck; reverted.
+  The measured split stands (14.6): bin scan + staging 47–64 %, shading the rest, worst in text rows.
+* **Not built:** the GPU-driven raster path (compute cull → indirect draw of instances clipped to damaged tiles in
+  one render pass), which is what the TBDR evidence (damage lab, 12.5's vclip: one-colour 0.018 ms vs compute's
+  0.011–0.054) points to for glyph-dense rows; row-pre-binned glyph runs; 2D binning. These are the open item.
+
+**Regressions fixed**
+
+| | canonical (merged) | **3b** |
+|---|---:|---:|
+| heavy stream R0 | 160 K | **153.6 K** |
+| heavy both R0 | 194 K | **188.3 K** |
+| heavy stream / both R1 | 263 K / 300 K | 279 K / 294 K (R1 ranges 265–289 K: noise) |
+| animate R1 (headless) | 135 K | 135.8 K |
+
+* **Edge damage now costs about what the old union damage cost.** The strip union comes from the bars' samples, not
+  from reading instances back: a shift by one keeps every old sample except the first. So the union is two selects
+  per bar on values the write loop already has, plus one rect per sparkline. Control on the same code: old ∪ new
+  147.7 K vs edge rect 152.0 K (+2.9 %). The gain is −7 % tiles against that control (1,133 → 1,058) and −12.5 %
+  against round 2's 1,209.
+* **Publication by the turn's source, at compile time.** `App::frame()` is for input turns: the publisher thread
+  publishes in the same refresh. `App::frame_paced()` is for clock-driven turns: the host's timer and display-link
+  callbacks use it, and the frame is committed at the next turn on the calling thread, one refresh later, with no
+  thread wake and no completion wait. `frame_as::<const PACED: bool>` selects the policy and `Fused::draw::<PACED>`
+  follows it. Commits on the calling thread wait for anything the publisher still holds, so commits stay in frame
+  order. Gate: `present.rs::paced_and_input_frames_publish_exactly_in_order`, mixed frames, exact.
+  Windowed (10 s, macsample, 3b vs round 3 interleaved in one session):
+
+| cell | round 3 (publisher) | **3b (paced)** |
+|---|---:|---:|
+| animate | 29.8 M instr/s, 2.90 % CPU | **26.9 M, 2.19 %** |
+| heavy stream | 30.7 M, 1.95 % | **27.3 M, 1.48 %** |
+| lab stream | 22.7 M, 1.78 % | **20.1 M, 1.29 %** |
+| vlist scroll | 21.4 M, 1.71 % | **19.4 M, 1.23 %** |
+
+  The drag probe keeps its win: 117–125 K per move on the 3b build.
+
+**Residency (item 7): measured, nothing to recover at this scale.** Heavy's footprint is the same whether the region
+is in the queue's residency set (148.5 MB) or only bound to the encoders (148.8 MB); lab: 95.9 vs 96.0 MB. The
+region's untouched capacity does not show in `phys_footprint` either way. So residency that follows use would buy
+nothing here, and the residency set stays, since the bindless surfaces and atlas need it. The structural constraint
+for a larger region stands (14.7: a pre-armed batch never sees later residency additions).
+
+**Lab visual parity (item 6), with DejaVu.** zgx's `render_parity` was built from a scratch clone at 06debe9d with
+`font_family("DejaVu Sans")` added to its lab root (the clone was deleted afterwards). The 1920×1440 frames were
+compared with `scene_shot`, Mode::Both:
+
+| frame | differ at all | > 16/255 | > 64/255 | max |
+|---|---:|---:|---:|---:|
+| t = 120 | 4.04 % | **2.92 %** | **1.05 %** | 219 |
+| t = 0 | 1.67 % | 1.22 % | 0.43 % | 219 |
+
+The difference sits in the text bands (the streamed paragraph at t = 120, the list rows' labels) and in the title/button
+band, where `render_parity`'s lab differs in layout (button alignment, one fewer label; noted in round 2). It is the same
+order as heavy's 2.68 % > 16.

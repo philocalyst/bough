@@ -26,12 +26,34 @@ use bough_core::damage::DamageRing;
 use bough_core::page::Page;
 use bough_core::{Bough, Handle, NRect, RecordInit};
 use bough_mem::{Col, Region};
-use bough_metal::fused::{Layout, HDR_BYTES};
+use bough_metal::fused::{Layout, Masks, HDR_BYTES};
 use bough_metal::instance::Instance;
 use bough_text::atlas::TokStrike;
 use bough_text::pool::{GlyphPool, PoolColumns, RunHeader};
 use std::collections::VecDeque;
 use std::ops::Range;
+
+/// The geometry grid: quad and bar edges are multiples of 1/256 px. Every sum the kernels form from them
+/// (position + integral space offset + size, ± integral margins, clip edges, radii on the grid) is then exact
+/// in f32 for |v| < 2^15 px, whatever the compiler's association: an edge that did not move is bitwise the
+/// same edge on the GPU, which is what makes edge-band damage exact. (1/256 px is far below the colour
+/// accumulation's half precision.)
+#[inline(always)]
+pub fn snap(v: f32) -> f32 {
+    (v * 256.0).round() * (1.0 / 256.0)
+}
+
+/// Damage band of a box primitive's edge (`Bough::damage_edges`): how far from an edge its pixels can
+/// depend on it (solid: the pixel-centre test, 1/2 px; rounded: the radius and the 1 px anti-aliasing;
+/// border: radius or border width), plus the ink's margin and 1 px of rounding slack.
+#[inline]
+pub fn edge_band(kind: u8, radius: f32, bw: f32) -> i16 {
+    match kind {
+        KIND_SOLID => 2,
+        KIND_RRECT => (radius.max(0.5) + 1.0).ceil() as i16 + 2,
+        _ => (radius.max(0.5 + bw) + 1.0).ceil() as i16 + 2,
+    }
+}
 
 pub const KIND_SOLID: u8 = 0;
 pub const KIND_RRECT: u8 = 1;
@@ -78,21 +100,30 @@ impl Caps {
     /// glyphs mounted). Untouched capacity costs no memory until written.
     pub const DEFAULT: Caps = Caps { instances: 8192, pages: 512, glyphs: 1 << 16, runs: 8192, spaces: 2048, clips: 512, strikes: 16 };
 
+    /// Every capacity rounded up to a power of two: the GPU masks indices with `capacity - 1`, and the
+    /// rounding is the phantom padding that keeps a masked index inside its own column (zero-filled: an
+    /// all-zero instance, page, glyph or run header draws nothing).
+    pub fn pow2(&self) -> Caps {
+        let p = |n: usize| n.max(1).next_power_of_two();
+        Caps { instances: p(self.instances), pages: p(self.pages), glyphs: p(self.glyphs), runs: p(self.runs), spaces: p(self.spaces), clips: p(self.clips), strikes: p(self.strikes) }
+    }
+
     pub fn region_bytes(&self, w: u32, h: u32) -> usize {
+        let caps = self.pow2();
         // frame slots sized for the tallest window (resize never moves them; 4.3 KB each)
         let sb = Layout::slot_bytes(w, h.max(MAX_WINDOW));
         let a = |n: usize| n.next_multiple_of(256) + 256;
         HDR_BYTES
             + 3 * a(sb)
-            + a(self.instances * size_of::<Instance>())
-            + a(self.pages * size_of::<Page>())
-            + 2 * a(self.pages * 8)
-            + a(self.clips * 8)
-            + a(self.spaces * 8)
-            + a(self.glyphs * 4)
-            + a(self.glyphs * 2)
-            + a(self.runs * size_of::<RunHeader>())
-            + a(self.strikes * size_of::<TokStrike>())
+            + a(caps.instances * size_of::<Instance>())
+            + a(caps.pages * size_of::<Page>())
+            + 2 * a(caps.pages * 8)
+            + a(caps.clips * 8)
+            + a(caps.spaces * 8)
+            + a(caps.glyphs * 4)
+            + a(caps.glyphs * 2)
+            + a(caps.runs * size_of::<RunHeader>())
+            + a(caps.strikes * size_of::<TokStrike>())
             + 4096
     }
 }
@@ -332,6 +363,7 @@ pub struct Rt {
 impl Rt {
     /// The runtime over `region` (the presenter's shared buffer, or heap memory of the same size).
     pub fn new(win_w: i32, win_h: i32, scale: f32, font: &[u8], mut region: Region, caps: Caps) -> Rt {
+        let caps = caps.pow2();
         let sb = Layout::slot_bytes(win_w as u32, (win_h as u32).max(MAX_WINDOW));
         let hdr = region.reserve(HDR_BYTES, 64);
         assert_eq!(hdr, 0, "the header is at offset 0");
@@ -365,6 +397,15 @@ impl Rt {
             toks_off: text.cache.tok_offset().unwrap() as u32,
             tok_stride: size_of::<TokStrike>() as u32,
             slot,
+            masks: Masks {
+                inst: caps.instances as u32 - 1,
+                page: caps.pages as u32 - 1,
+                glyph: caps.glyphs as u32 - 1,
+                run: caps.runs as u32 - 1,
+                space: caps.spaces as u32 - 1,
+                clip: caps.clips as u32 - 1,
+                strike: caps.strikes as u32 - 1,
+            },
         };
         let (tx, ty) = (layout.tiles_x() as usize, layout.tiles_y() as usize);
         Rt {
@@ -633,15 +674,27 @@ impl Rt {
         NRect::new(x0, y0, x1, y1)
     }
 
-    /// Re-derive a quad node's ink and write it through: the old and the new ink are damaged even when the
-    /// rounded rects are equal (a sub-pixel change of an edge still changes its anti-aliased pixels).
+    /// Move a quad node's box to `(x, y, w, h)` (space-local px; snapped to the geometry grid here): node,
+    /// instance and record ink are written, and the damage is only the bands around the edges that moved
+    /// (`Bough::set_ink_handle_edges`), not old ∪ new. Edges are compared exactly: on the grid `x + w` is
+    /// exact, so an edge that did not move is bitwise the edge the GPU computes (bough-metal RESULTS Part IV).
     #[inline]
-    pub fn quad_ink(&mut self, node: u32) {
+    pub fn quad_geom(&mut self, node: u32, x: f32, y: f32, w: f32, h: f32) {
+        let (x, y, w, h) = (snap(x), snap(y), snap(w), snap(h));
         let n = &self.nodes[node as usize];
-        let ink = self.ink_rect(n.space, n.x, n.y, n.w, n.h, n.margin);
-        let h = n.handle;
-        self.bough.touch_handle(h);
-        self.bough.set_ink_handle(h, ink);
+        let moved = (n.x != x) as u8 | ((n.y != y) as u8) << 1 | ((n.x + n.w != x + w) as u8) << 2 | ((n.y + n.h != y + h) as u8) << 3;
+        if moved == 0 {
+            return;
+        }
+        let (inst, margin, hd, space) = (self.runs[n.run as usize].first, n.margin, n.handle, n.space);
+        let n = &mut self.nodes[node as usize];
+        (n.x, n.y, n.w, n.h) = (x, y, w, h);
+        let p = self.inst_mut(inst);
+        p.pos = [x, y];
+        p.size = [w, h];
+        let band = edge_band(p.kind, p.radius, p.bw);
+        let ink = self.ink_rect(space, x, y, w, h, margin);
+        self.bough.set_ink_handle_edges(hd, ink, moved, band);
     }
 
     /// A paint-only write to `h`'s record (colour, glyph alphas) from state hash `old` to `new`: its visible
