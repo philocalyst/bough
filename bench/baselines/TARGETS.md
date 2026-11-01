@@ -43,3 +43,30 @@ From zgx README (2026-10-25, `282bfc0`) and `docs/performance/floor-plan.md`:
 Frame instructions (macOS, incl. render): heavy both 9.28 M, stream 8.30 M, scroll 0.67 M; one colour write
 121 K (zgx's own ~24 K + Metal). zgx's hand-written floor for heavy stream: 2.72 M (text 1.42 M, submit 0.99 M).
 p99 frame interval 17.6 ms.
+
+## Linux, zgx `scripts/perf/suite.py` non-GPU scenes (least of 3, instructions per whole scene)
+
+| scene | instructions | spread |
+|---|---:|---:|
+| mount | 296.8 M | 0.05% |
+| script-update | 3,843.8 M | 0.01% |
+| anime | 3,733.5 M | 0.00% |
+| script-layout | 2,974.1 M | 0.01% |
+| list-state | 830.8 M | 0.02% |
+| style | 1,332.1 M | 0.00% |
+| widgets | 146.8 M | 0.00% |
+
+## Linux, zgui `cargo xtask perf` (951a0ea, timed headless scenarios; its "REGRESSED" verdicts only mean this
+## Ryzen is slower than the machine its bands were set on)
+
+| measurement | time |
+|---|---:|
+| hover.crossing | 274.09 µs |
+| scroll.translation | 98.78 µs |
+| kitchen.click | 68.87 µs |
+| kitchen.keystroke | 765.03 µs |
+| kitchen.untouched_turn | 130.98 µs |
+| kitchen.glide_tick | 1,451.89 µs |
+| kitchen.tab_traversal | 774.06 µs |
+| shell.tooltip_crossing | 2,234.34 µs |
+| shell.drag_step | 517.15 µs |

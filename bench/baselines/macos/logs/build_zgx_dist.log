@@ -243,3 +243,6 @@
    Compiling tungstenite v0.30.0
    Compiling zgx-mlua v0.12.6 (/Users/mileswirht/projects/_ref/zgx/vendor/mlua)
    Compiling zgx-run v0.1.6 (/Users/mileswirht/projects/_ref/zgx/crates/zgx-run)
+    Finished `dist` profile [optimized] target(s) in 12m 01s
+cargo build --profile dist --locked -p zgx-desktop --example micro_bench       1347.68s user 131.06s system 205% cpu 12:01.28 total
+EXIT 0

@@ -1,0 +1,22 @@
+heavy-idle-t300 rc=0
+workload-idle-t300 rc=0
+heavy-idle-t600 rc=0
+workload-idle-t600 rc=0
+heavy-stream-t300 rc=0
+workload-stream-t300 rc=0
+heavy-stream-t600 rc=0
+workload-stream-t600 rc=0
+heavy-scroll-t300 rc=0
+workload-scroll-t300 rc=0
+heavy-scroll-t600 rc=0
+workload-scroll-t600 rc=0
+heavy-both-t300 rc=0
+workload-both-t300 rc=0
+heavy-both-t600 rc=0
+workload-both-t600 rc=0
+animate-f600 rc=0
+animate-f1200 rc=0
+micro-state rc=0
+micro-vscroll-fixed rc=0
+micro-vscroll-variable rc=0
+ALL_HEADLESS_DONE

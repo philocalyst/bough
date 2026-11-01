@@ -354,3 +354,8 @@
    Compiling gpui-fast-macos v0.1.4
    Compiling gpui-fast-platform v0.1.4
    Compiling zgx-compare-gpui-fast v0.1.0 (/Users/mileswirht/projects/_ref/zgx/comparisons/gpui-fast)
+    Finished `dist` profile [optimized] target(s) in 10m 29s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+cargo build --profile dist --locked --manifest-path   439.77s user 61.24s system 79% cpu 10:29.60 total
+EXIT 0

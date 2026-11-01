@@ -1,0 +1,8 @@
+built /root/work/gui-bench/zgx in 0 s
+/root/work/gui-bench/zgx/target/release/examples/apps_bench failed:
+
+thread 'main' (1377952) panicked at crates/zgx-script/examples/apps_bench.rs:35:84:
+a GPU: GpuError("No suitable graphics adapter found; noop not requested, vulkan not requested, metal not requested, dx12 not requested, gl drivers/libraries could not be loaded, webgpu not requested")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+247412766,,instructions:u,39936270,100.00,,
+

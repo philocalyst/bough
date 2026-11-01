@@ -1,0 +1,2 @@
+{"framework":"gpui-fast","scene":"state","figure":"write","render":false,"clock":"process_cpu","ops":2000,"batch":50,"median_ns":40.0,"p10_ns":20.0,"p90_ns":60.0,"min_ns":20.0,"max_ns":180.0,"batches":40}
+{"framework":"gpui-fast","scene":"state","figure":"frame","render":false,"clock":"process_cpu","ops":2000,"batch":10,"median_ns":952600.0,"p10_ns":841000.0,"p90_ns":1464200.0,"min_ns":816800.0,"max_ns":2430900.0,"batches":200}

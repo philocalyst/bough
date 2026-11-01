@@ -1,0 +1,8 @@
+built /root/work/gui-bench/zgx in 8 s
+/root/work/gui-bench/zgx/target/release/examples/heavy_headless failed:
+
+thread 'main' (1362994) panicked at crates/zgx-desktop/examples/heavy_headless.rs:72:6:
+GPU: GpuError("No suitable graphics adapter found; noop not requested, vulkan not requested, metal not requested, dx12 not requested, gl drivers/libraries could not be loaded, webgpu not requested")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+1621440,,instructions:u,1605551,100.00,,
+

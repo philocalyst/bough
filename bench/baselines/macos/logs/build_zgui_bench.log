@@ -1,0 +1,9 @@
+error: no such command: `+1.99.1`
+
+help: invoke `cargo` through `rustup` to handle `+toolchain` directives
+rustc 1.99.1 (58cf8f9c3 2026-10-13)
+error: no such command: `+1.99.1`
+
+help: invoke `cargo` through `rustup` to handle `+toolchain` directives
+cargo +1.99.1 build --release -p zgui-bench --bin zgui-bench  0.01s user 0.01s system 54% cpu 0.045 total
+EXIT 101

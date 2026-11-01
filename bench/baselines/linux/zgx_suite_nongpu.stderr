@@ -1,0 +1,8 @@
+built /root/work/gui-bench/zgx in 230 s
+/root/work/gui-bench/zgx/target/release/examples/micro_bench failed:
+
+thread 'main' (1375364) panicked at crates/zgx-desktop/examples/support/micro_harness.rs:89:83:
+GPU: GpuError("No suitable graphics adapter found; noop not requested, vulkan not requested, metal not requested, dx12 not requested, gl drivers/libraries could not be loaded, webgpu not requested")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+8522763,,instructions:u,5290052,100.00,,
+
