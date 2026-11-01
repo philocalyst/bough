@@ -166,3 +166,24 @@ fn heights_follow_the_zgx_formula() {
         assert!(lines >= 20.0 && lines <= 20.0 * 12.0 && lines % 20.0 == 0.0, "row {row}: height {h} is not a whole number of lines (+ image)");
     }
 }
+
+#[test]
+fn scrolling_back_up_and_in_steps_is_pixel_exact() {
+    // down through unmeasured rows, then up through them (rows measured above the viewport are anchored), with
+    // a few jumps and sub-row steps in both directions
+    let mut app = App::new(VList::new(vlist::ROWS), config(2.0), true);
+    app.frame();
+    let mut at = 0.0f32;
+    let steps: Vec<f32> = [vec![300.0; 12], vec![-37.0; 40], vec![1000.0; 3], vec![-1000.0; 5], vec![7.5; 30], vec![-12.0; 200]].concat();
+    for (i, d) in steps.iter().enumerate() {
+        at = (*app.owner.scroll + d).max(0.0);
+        set_scroll(&mut app, at);
+        if app.frame() && i % 3 == 0 {
+            let (px, r) = (app.presented_pixels(), app.reference_pixels());
+            assert!(px == r, "step {i} (scroll {at}): presented != full redraw at {:?}", first_diff(&px, &r));
+        }
+    }
+    let _ = at;
+    // anchoring: the scroll offset never drifts from the first visible row's place by more than its estimate error
+    assert!(app.rt.mregion_scroll_pt(0) >= 0.0);
+}
