@@ -34,7 +34,8 @@ fn exhaustive_pairs() {
         }
     }
     let [h, f] = bough_text::parley::bough::segments();
-    eprintln!("exhaustive pairs: {} cases equal; font segments: {f} by the table, {h} by harfrust", t.cases);
+    let [icu, simple] = bough_text::parley::bough::analyses();
+    eprintln!("exhaustive pairs: {} cases equal; font segments: {f} by the table, {h} by harfrust; analyses: {simple} simple, {icu} ICU", t.cases);
     assert!(f > 2 * h, "the table must shape most covered pairs");
 }
 
@@ -149,7 +150,9 @@ fn text_bench_paragraphs() {
         end += 6 * 17;
     }
     let [h, f] = bough_text::parley::bough::segments();
-    eprintln!("text_bench: {} cases equal; font segments: {f} by the table, {h} by harfrust", t.cases);
+    let [icu, simple] = bough_text::parley::bough::analyses();
+    eprintln!("text_bench: {} cases equal; font segments: {f} by the table, {h} by harfrust; analyses: {simple} simple, {icu} ICU", t.cases);
+    assert!(simple > icu, "text_bench paragraphs (words and spaces) take the simple analysis");
     assert!(f > 0 && h < f / 50, "text_bench's segments are all covered");
 }
 

@@ -18,7 +18,12 @@ fn main() {
     let para = "The quick brown fox jumps over the lazy dog while streaming tokens across the wire; \
         every paragraph is measured at two widths, wrapped greedily, and drawn once per frame. "
         .repeat(2);
+    let tb = {
+        let words = ["the", "renderer", "keeps", "every", "glyph", "retained", "while", "streaming", "tokens", "arrive"];
+        (0..64).map(|i| words[(i * 7 + 3) % words.len()]).collect::<Vec<_>>().join(" ")
+    };
     let cases: Vec<(&str, Case)> = vec![
+        ("tb para", Case::plain(&tb, "DejaVu Sans", 14.0, Some(736.0))),
         ("label", Case::plain(&label, "DejaVu Sans", 12.0, None)),
         ("log line", Case::plain(&log, "DejaVu Sans", 12.0, None)),
         ("paragraph", Case::plain(&para, "DejaVu Sans", 14.0, Some(400.0))),

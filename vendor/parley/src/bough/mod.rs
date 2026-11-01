@@ -33,6 +33,7 @@ pub mod slots;
 
 std::thread_local! {
     static SEGMENTS: core::cell::Cell<[u64; 2]> = const { core::cell::Cell::new([0; 2]) };
+    static SIMPLE: core::cell::Cell<[u64; 2]> = const { core::cell::Cell::new([0; 2]) };
 }
 
 /// Counts a shaped font segment (`fast`: by bough's table; else by harfrust). Per thread.
@@ -48,4 +49,19 @@ pub(crate) fn count_segment(fast: bool) {
 /// `[harfrust, table]` font segments shaped on this thread so far (tests assert the fast path is taken).
 pub fn segments() -> [u64; 2] {
     SEGMENTS.with(|c| c.get())
+}
+
+/// Counts a text analysis (`simple`: graft 3's pair rules; else ICU's segmenters). Per thread.
+#[inline]
+pub(crate) fn count_analysis(simple: bool) {
+    SIMPLE.with(|c| {
+        let mut v = c.get();
+        v[simple as usize] += 1;
+        c.set(v);
+    });
+}
+
+/// `[ICU, simple]` text analyses on this thread so far.
+pub fn analyses() -> [u64; 2] {
+    SIMPLE.with(|c| c.get())
 }

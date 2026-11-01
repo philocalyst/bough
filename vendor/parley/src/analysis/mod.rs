@@ -327,6 +327,16 @@ pub(crate) fn analyze_text<B: Brush>(
         text = " ";
     }
 
+    // bough graft 3: text of letters, digits and spaces only (by ICU's own LineBreak / WordBreak properties)
+    // needs no segmenter: its line and word boundaries are pair rules (see `analyze_simple`).
+    #[cfg(feature = "std")]
+    if line_break_override.is_none() && analyze_simple(lcx, text) {
+        crate::bough::count_analysis(true);
+        return;
+    }
+    #[cfg(feature = "std")]
+    crate::bough::count_analysis(false);
+
     // Line boundaries (word break naming refers to the line boundary determination config).
     //
     // This breaks text into sequences with similar line boundary config (part of style
@@ -471,8 +481,6 @@ pub(crate) fn analyze_text<B: Brush>(
         (boundary, ch)
     });
 
-    let properties = |c| lcx.analysis_data_sources.properties(c);
-
     let mut needs_bidi_resolution = false;
 
     lcx.info.reserve(text.len());
@@ -482,56 +490,15 @@ pub(crate) fn analyze_text<B: Brush>(
         // character's index, but we need our iterators to align, and the rest are simply
         // character-indexed.
         .fold(false, |is_mandatory_linebreak, (boundary, ch)| {
-            let properties = properties(ch);
-            let script = properties.script();
-            let grapheme_cluster_break = properties.grapheme_cluster_break();
-            let bidi_class = properties.bidi_class();
-            let general_category = properties.general_category();
-            let is_emoji_or_pictograph = properties.is_emoji_or_pictograph();
-            let is_variation_selector = properties.is_variation_selector();
-            let is_region_indicator = properties.is_region_indicator();
-            let next_mandatory_linebreak = properties.is_mandatory_linebreak();
-
             let boundary = if is_mandatory_linebreak {
                 Boundary::Mandatory
             } else {
                 boundary
             };
-
-            let force_normalize = {
-                // "Extend" break chars should be normalized first, with two exceptions
-                if matches!(grapheme_cluster_break, GraphemeClusterBreak::Extend) &&
-                    ch as u32 != 0x200C && // Is not a Zero Width Non-Joiner &&
-                    !is_variation_selector
-                {
-                    true
-                } else {
-                    // All spacing mark break chars should be normalized first.
-                    matches!(grapheme_cluster_break, GraphemeClusterBreak::SpacingMark)
-                }
-            };
-
-            needs_bidi_resolution |= crate::bidi::needs_bidi_resolution(bidi_class);
-            // TODO: maybe extend Properties to u64 to fit BidiMirroringGlyph
-            let bracket = lcx.analysis_data_sources.brackets().get(ch);
-
-            lcx.info.push((
-                CharInfo::new(
-                    boundary,
-                    script,
-                    grapheme_cluster_break,
-                    bidi_class,
-                    bracket,
-                    is_variation_selector,
-                    is_region_indicator,
-                    general_category == GeneralCategory::Control,
-                    is_emoji_or_pictograph,
-                    contributes_to_shaping(general_category, script),
-                    force_normalize,
-                ),
-                0, // Style index is populated later
-            ));
-
+            let (info, needs_bidi, next_mandatory_linebreak) =
+                char_info(&lcx.analysis_data_sources, ch, boundary);
+            needs_bidi_resolution |= needs_bidi;
+            lcx.info.push((info, 0)); // Style index is populated later
             next_mandatory_linebreak
         });
 
@@ -545,6 +512,158 @@ pub(crate) fn analyze_text<B: Brush>(
             None,
         );
     }
+}
+
+/// One character's analysis: upstream's per-character body (properties, force-normalize, bracket, flags), with its
+/// boundary given. Returns the info, whether the character needs bidi resolution, and whether it is a mandatory
+/// line break (which makes the next character's boundary `Mandatory`).
+#[inline(always)]
+fn char_info(sources: &AnalysisDataSources, ch: char, boundary: Boundary) -> (CharInfo, bool, bool) {
+    let properties = sources.properties(ch);
+    let script = properties.script();
+    let grapheme_cluster_break = properties.grapheme_cluster_break();
+    let bidi_class = properties.bidi_class();
+    let general_category = properties.general_category();
+    let is_emoji_or_pictograph = properties.is_emoji_or_pictograph();
+    let is_variation_selector = properties.is_variation_selector();
+    let is_region_indicator = properties.is_region_indicator();
+    let next_mandatory_linebreak = properties.is_mandatory_linebreak();
+
+    let force_normalize = {
+        // "Extend" break chars should be normalized first, with two exceptions
+        if matches!(grapheme_cluster_break, GraphemeClusterBreak::Extend) &&
+            ch as u32 != 0x200C && // Is not a Zero Width Non-Joiner &&
+            !is_variation_selector
+        {
+            true
+        } else {
+            // All spacing mark break chars should be normalized first.
+            matches!(grapheme_cluster_break, GraphemeClusterBreak::SpacingMark)
+        }
+    };
+
+    let needs_bidi = crate::bidi::needs_bidi_resolution(bidi_class);
+    // TODO: maybe extend Properties to u64 to fit BidiMirroringGlyph
+    let bracket = sources.brackets().get(ch);
+
+    (
+        CharInfo::new(
+            boundary,
+            script,
+            grapheme_cluster_break,
+            bidi_class,
+            bracket,
+            is_variation_selector,
+            is_region_indicator,
+            general_category == GeneralCategory::Control,
+            is_emoji_or_pictograph,
+            contributes_to_shaping(general_category, script),
+            force_normalize,
+        ),
+        needs_bidi,
+        next_mandatory_linebreak,
+    )
+}
+
+/// bough graft 3: the simple analysis. A character is *simple* when it is a space (U+0020), or a covered Latin-1
+/// character whose UAX #14 class is AL or NU and whose UAX #29 class is ALetter or Numeric, needing no bidi
+/// resolution and not ending a line. Over simple characters the segmenters' rules reduce to pairs:
+///
+/// * line (UAX #14, word-break `normal`): LB7 `× SP`, LB18 `SP ÷`, LB23 `AL × NU`, `NU × AL`, LB25 `NU × NU`,
+///   LB28 `AL × AL`; no rule with wider context (LB14-17 need OP/QU/CL/CP/B2, LB25's prefixes PR/PO/OP/HY/IS/SY,
+///   LB30 OP/CP) can match. So a line boundary sits exactly where a non-space follows a space.
+/// * word (UAX #29): WB3d `WSegSpace × WSegSpace`, WB5/8/9/10 between ALetter and Numeric, WB999 elsewhere; the
+///   wider rules (WB6/7/11/12 need MidLetter/MidNum/MidNumLet) cannot match. So a word boundary sits at the
+///   start and wherever space-ness changes.
+///
+/// The per-character info comes from a 256-entry table built by `char_info` itself (exact by construction). The
+/// gate `tests/parley_twin.rs` checks every pair of covered characters and corpora against upstream's segmenters.
+#[cfg(feature = "std")]
+fn analyze_simple<B: Brush>(lcx: &mut LayoutContext<B>, text: &str) -> bool {
+    let t = simple_table(&lcx.analysis_data_sources);
+    let b = text.as_bytes();
+    // Every byte simple (two-byte Latin-1 via its lead byte C2/C3) and one word-break option for the whole text.
+    let mut k = 0;
+    while k < b.len() {
+        let (cp, n) = match b[k] {
+            c if c < 0x80 => (c, 1),
+            0xC2 if k + 1 < b.len() => (b[k + 1], 2),
+            0xC3 if k + 1 < b.len() => (b[k + 1] + 0x40, 2),
+            _ => return false,
+        };
+        if t.class[cp as usize] == 0 {
+            return false;
+        }
+        k += n;
+    }
+    if lcx
+        .style_runs
+        .iter()
+        .any(|r| lcx.style_table[r.style_index as usize].word_break != WordBreak::Normal)
+    {
+        return false;
+    }
+    lcx.info.reserve(text.len());
+    let mut prev_space: Option<bool> = None;
+    let mut k = 0;
+    while k < b.len() {
+        let (cp, n) = match b[k] {
+            c if c < 0x80 => (c, 1),
+            0xC2 => (b[k + 1], 2),
+            _ => (b[k + 1] + 0x40, 2),
+        };
+        let space = t.class[cp as usize] == 2;
+        let boundary = match prev_space {
+            None => Boundary::Word,
+            Some(true) if !space => Boundary::Line,
+            Some(p) if p != space => Boundary::Word,
+            _ => Boundary::None,
+        };
+        let mut info = t.info[cp as usize];
+        info.boundary = boundary;
+        lcx.info.push((info, 0));
+        prev_space = Some(space);
+        k += n;
+    }
+    true
+}
+
+#[cfg(feature = "std")]
+struct SimpleTable {
+    /// 0: not simple; 1: letter or digit (AL/NU, ALetter/Numeric); 2: the space.
+    class: [u8; 256],
+    info: [CharInfo; 256],
+}
+
+#[cfg(feature = "std")]
+fn simple_table(sources: &AnalysisDataSources) -> &'static SimpleTable {
+    use icu_properties::props::{LineBreak, WordBreak as Wb};
+    static TABLE: std::sync::OnceLock<SimpleTable> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let lb = CodePointMapData::<LineBreak>::new();
+        let wb = CodePointMapData::<Wb>::new();
+        let (placeholder, _, _) = char_info(sources, ' ', Boundary::None);
+        let mut t = SimpleTable { class: [0; 256], info: [placeholder; 256] };
+        for cp in 0u32..256 {
+            let ch = char::from_u32(cp).unwrap();
+            let (info, needs_bidi, mandatory) = char_info(sources, ch, Boundary::None);
+            t.info[cp as usize] = info;
+            let covered = (0x20..0x7F).contains(&cp) || (cp >= 0xA0 && cp != 0xAD);
+            if !covered || needs_bidi || mandatory || info.is_control() || info.is_emoji_or_pictograph() {
+                continue;
+            }
+            t.class[cp as usize] = if cp == 0x20 {
+                2
+            } else if matches!(lb.get(ch), LineBreak::Alphabetic | LineBreak::Numeric)
+                && matches!(wb.get(ch), Wb::ALetter | Wb::Numeric)
+            {
+                1
+            } else {
+                0
+            };
+        }
+        t
+    })
 }
 
 /// All characters contribute to shaping except:
