@@ -31,6 +31,9 @@ fn first_diff(a: &[u8], b: &[u8], w: usize) -> Option<(usize, usize, u8, u8)> {
 
 /// The window region of the presented surface vs a full redraw (both cropped to the current window).
 fn assert_exact<V: View>(app: &mut App<V>, full_w: usize, what: &str) {
+    // the surfaces follow the window (bough-metal `Fused::resize`): their width is the stride
+    let _ = full_w;
+    let full_w = app.gpu.as_ref().unwrap().w;
     let (w, h) = (app.rt.win_w as usize, app.rt.win_h as usize);
     let px = crop(&app.presented_pixels(), full_w, w, h);
     let r = crop(&app.reference_pixels(), full_w, w, h);
@@ -51,7 +54,7 @@ fn run<V: View>(name: &str, mut app: App<V>, steps: usize, mut step: impl FnMut(
 }
 
 fn same_as_fresh<V: View>(name: &str, app: &mut App<V>, mut fresh: App<V>) {
-    // the surfaces keep the size they were made at (resize draws a smaller window into them)
+    // the surfaces' width is the stride (they follow the window)
     let w = app.gpu.as_ref().unwrap().w;
     let (cw, ch) = (app.rt.win_w as usize, app.rt.win_h as usize);
     let px = crop(&app.presented_pixels(), w, cw, ch);

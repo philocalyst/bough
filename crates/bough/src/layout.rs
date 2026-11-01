@@ -991,20 +991,10 @@ impl Rt {
     }
 
     fn place_quad(&mut self, lid: u32, x: f32, y: f32, w: f32, h: f32) {
+        // the bands around the edges that moved (exact on the geometry grid), not old ∪ new
         let li = self.lay.info[lid as usize];
-        let n = &mut self.nodes[li.rtn as usize];
-        n.x = x;
-        n.y = y;
-        n.w = w;
-        n.h = h;
-        let (inst, margin, hd) = (self.runs[n.run as usize].first, n.margin, n.handle);
-        let p = self.inst_mut(inst);
-        p.pos = [x, y];
-        p.size = [w, h];
-        // the old position's pixels (a sub-pixel move can keep the rounded ink), then old and new ink
-        self.bough.touch_handle(hd);
-        let ink = self.ink_rect(li.space, x, y, w, h, margin);
-        self.bough.set_ink_handle(hd, ink);
+        debug_assert_eq!(self.nodes[li.rtn as usize].space, li.space);
+        self.quad_geom(li.rtn, x, y, w, h);
     }
 
     /// Place a laid-out text node's lines in its box at (x, y) of width `w`: the fast path points one run
@@ -1184,7 +1174,7 @@ where
         if self.draw {
             let node = m.rt.alloc_node();
             let bg = self.bg.lower::<ApplyBg>(m, node);
-            let (ins, _kind, margin) = quad_instance(bg, self.radius * s, self.border, s, m.space);
+            let (ins, _kind, margin) = quad_instance(bg, snap(self.radius * s), self.border, s, m.space);
             let run = m.rt.alloc_run(1);
             m.rt.runs[run as usize].len = 1;
             let inst = m.rt.runs[run as usize].first;

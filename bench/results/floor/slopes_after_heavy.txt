@@ -1,0 +1,6 @@
+bough heavy RENDER=0 stream        194005 instr/frame  [190435 .. 209755]
+bough heavy RENDER=0 scroll         26237 instr/frame  [24848 .. 28667]
+bough heavy RENDER=0 both          222228 instr/frame  [221685 .. 226537]
+bough heavy RENDER=1 stream        319232 instr/frame  [297208 .. 336833]
+bough heavy RENDER=1 scroll        134454 instr/frame  [112937 .. 149843]
+bough heavy RENDER=1 both          317691 instr/frame  [315698 .. 337762]

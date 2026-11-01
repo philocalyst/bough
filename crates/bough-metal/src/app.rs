@@ -104,7 +104,7 @@ pub fn run_sized(title: &str, w: f64, h: f64, f: impl FnMut(&Host, &CADisplayLin
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
             rect,
-            if std::env::var_os("BOUGH_BORDERLESS").is_some() { NSWindowStyleMask::Borderless } else { NSWindowStyleMask::Titled | NSWindowStyleMask::Closable },
+            if std::env::var_os("BOUGH_BORDERLESS").is_some() { NSWindowStyleMask::Borderless } else { NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable },
             NSBackingStoreType::Buffered,
             false,
         )

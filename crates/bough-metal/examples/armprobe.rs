@@ -1,5 +1,6 @@
-//! Does a pre-armed command stream (frames encoded ahead, each waiting on a shared event) make every bound
-//! IOSurface report `IOSurfaceIsInUse`? (The fused presenter's free-surface test relies on it not doing so.)
+//! Does the pre-armed command stream (frames encoded ahead, each waiting on a shared event) make the surfaces
+//! report `IOSurfaceIsInUse`? (The fused presenter's free-surface test relies on it not doing so; its encoders
+//! are bindless, so pending frames name no surface.)
 use bough_metal::fused::{Fused, Layout};
 
 fn main() {
@@ -16,8 +17,7 @@ fn main() {
     f.draw(0, &rows, true, 0);
     f.sync();
     report(&f, "after a plain frame (synced)");
-    f.arm_stream(8);
-    report(&f, "after arming 8 frames");
+    report(&f, "with the pre-armed stream waiting (every frame streams)");
     f.draw(1, &rows, false, 0);
     std::thread::sleep(std::time::Duration::from_millis(50));
     println!("released frame done: {}", f.released_done());

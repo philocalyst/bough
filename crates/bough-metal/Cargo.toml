@@ -43,3 +43,5 @@ name = "opcost"
 name = "runs_check"
 [[example]]
 name = "wake"
+[[example]]
+name = "fprobe"
