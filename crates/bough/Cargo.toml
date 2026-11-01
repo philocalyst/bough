@@ -28,4 +28,5 @@ block2 = "0.6"
 dispatch2 = "0.3"
 
 [dev-dependencies]
+cephal = { path = "/Users/mileswirht/Downloads/ilo-prod-work/cephal", default-features = false, features = ["flex", "block"] }
 zgx-workload = { path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }

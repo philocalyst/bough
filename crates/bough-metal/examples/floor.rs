@@ -123,7 +123,7 @@ fn main() {
         c.waitUntilCompleted();
     });
     // GPU time of a tiny repair vs full vs blit, measured by GPUStartTime/EndTime
-    let mut gt = |label: &str, f: &dyn Fn(&Cmd)| {
+    let gt = |label: &str, f: &dyn Fn(&Cmd)| {
         let mut v = vec![];
         for _ in 0..300 {
             let c = q.commandBuffer().unwrap();

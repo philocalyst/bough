@@ -1,6 +1,5 @@
-//! Layout engine costs at tree scale, in retired instructions (proc_pid_rusage), for whichever cephal
-//! integration this binary was built with (default: the mirror; `--features deep` / `deep-kids`: cephal
-//! over bough's storage):
+//! Layout engine costs at tree scale, in retired instructions (proc_pid_rusage), for the layout path
+//! (cephal over bough's storage, child ids in the side column):
 //!   * mount: building ~NODES layout nodes (builders -> records / engine nodes), the cold layout and the
 //!     write-back of every node, per node;
 //!   * idle: a turn with nothing changed;
@@ -22,7 +21,7 @@ struct Big {
 }
 
 /// The edited card: a label, a wrapping paragraph (the dynamic text) and a block.
-fn card<'a, S: IntoProp<String> + 'a>(fixed: bool, text: S) -> impl Element<Big> + 'a {
+fn card<'a, S: TextSrc<Big> + 'a>(fixed: bool, text: S) -> impl Element<Big> + 'a {
     let mut r = row((label("ab").font(2.0, 3.0), para(text).font(2.0, 3.0).w(20.0), block(2.0, 2.0).bg(rgb(0x2b3a52)))).gap(1.0);
     if fixed {
         r = r.h(6.0).clip_overflow();
@@ -44,7 +43,7 @@ impl View for Big {
         let mid = cols / 2;
         row((
             each((0..mid).map(move |_| column(each((0..per).map(move |_| quiet(fixed)))).w(30.0))),
-            column((card(fixed, &self.s), each((1..per).map(move |_| quiet(fixed))))).w(30.0),
+            column((card(fixed, sig!(self.s)), each((1..per).map(move |_| quiet(fixed))))).w(30.0),
             each((mid + 1..cols).map(move |_| column(each((0..per).map(move |_| quiet(fixed)))).w(30.0))),
         ))
         .items(Align::Start)
@@ -59,7 +58,8 @@ fn run(nodes: usize, edits: usize, fixed: bool) {
     let per: usize = std::env::var("PER").ok().and_then(|v| v.parse().ok()).unwrap_or(500);
     let cols = (nodes / 4 / per).max(1);
     let total_nodes = cols * per * 4 + cols + 1;
-    let cfg = Config { width_pt: 4000.0, height_pt: 3000.0, scale: 1.0, font: FONT.to_vec(), ring: 3 };
+    let mut cfg = Config::new(4000.0, 3000.0, 1.0, FONT.to_vec());
+    cfg.caps.pages = (total_nodes / 8).max(512);
     let t0 = instrs();
     let mut app = App::new(Big { s: Signal::new("aaaa bbbb".into()), cols, per, fixed }, cfg, false);
     let t1 = instrs();

@@ -1,6 +1,7 @@
-//! Text pipeline costs per paragraph (instructions, proc_pid_rusage) on a vlist paragraph: the word-table
-//! `set_text` vs the table shaper's `shape_run`, the word-table wrap vs `wrap_greedy`, and the fused per-line
-//! emission vs `instances` over rebased line runs.
+//! Text pipeline costs per paragraph (instructions, proc_pid_rusage) on a vlist paragraph: the leaf's
+//! `set_text` (shaped straight into a glyph-pool block + word table) vs the table shaper's `shape_run`, the
+//! word-table wrap vs `wrap_greedy`, and (for reference) 48-byte glyph-instance emission per line, which the
+//! fused system no longer does for covered text (lines are run-header windows onto the block).
 use bough::layout::LeafCtx;
 use bough::text::TextSys;
 use zgx_workload::vlist;
@@ -20,14 +21,15 @@ fn per<F: FnMut()>(name: &str, n: usize, mut f: F) {
 }
 
 fn main() {
-    let mut ts = TextSys::new(zgx_workload::FONT_BYTES);
+    let mut ts = TextSys::new(zgx_workload::FONT_BYTES, bough_mem::Col::owned("toks"));
+    let mut pool = bough_text::pool::GlyphPool::new();
     // a paragraph of about the average vlist length
     let row = (0..200).find(|&r| vlist::lines(r) == 4).unwrap();
     let text = vlist::text(row);
     println!("paragraph: row {row}, {} bytes", text.len());
     let size = 28.0;
     let mut ctx = LeafCtx::new(size, 40.0, true);
-    per("set_text (word table)", 5000, || ctx.set_text(&mut ts, &text));
+    per("set_text (pool block + word table)", 5000, || ctx.set_text(&mut ts, &mut pool, &text));
     let mut run = bough_text::GlyphRun::default();
     per("shape_run (table shaper, GlyphRun)", 5000, || ts.shape_run(&text, size, &mut run));
     let mut n = 0;

@@ -20,7 +20,9 @@ pub fn ring_from_env() -> usize {
 }
 
 fn cfg(w: f32, h: f32, scale: f32) -> Config {
-    Config { width_pt: w, height_pt: h, scale, font: font_bytes(), ring: ring_from_env() }
+    let mut c = Config::new(w, h, scale, font_bytes());
+    c.ring = ring_from_env();
+    c
 }
 
 /// zgx's "normal" line pitch.
@@ -62,7 +64,7 @@ pub fn lab_publish(l: &mut Lab, work: &wl::Workload, mode: wl::Mode) {
     }
 }
 
-fn label(s: impl IntoProp<String>, x: f32, y: f32, size: f32) -> impl Element<Lab> {
+fn label(s: impl TextSrc<Lab>, x: f32, y: f32, size: f32) -> impl Element<Lab> {
     text(s).at(x, y).size(size).line_height(normal(size)).color(FG)
 }
 
@@ -82,10 +84,10 @@ impl View for Lab {
                 0.0,
                 920.0,
                 160.0,
-                text(&self.stream).at(8.0, 8.0).size(14.0).line_height(normal(14.0)).color(FG),
+                text(sig!(self.stream)).at(8.0, 8.0).size(14.0).line_height(normal(14.0)).color(FG),
             )),
             virtual_list(
-                &self.scroll,
+                sig!(self.scroll),
                 wl::ROW_HEIGHT,
                 [20.0, 290.0, 920.0, wl::VIEWPORT_HEIGHT],
                 lab_rows,
@@ -124,14 +126,14 @@ impl View for Anim {
             quad(0.0, 0.0, 960.0, 720.0).bg(rgb(BACKGROUND)),
             each((0..COLUMNS * ROWS).map(|i| {
                 let (x, y) = dot_position(i);
-                quad(x, y, DOT, DOT).rounded(DOT / 2.0).bg(self.clock.map(move |t| dot_color(i, *t)))
+                quad(x, y, DOT, DOT).rounded(DOT / 2.0).bg(sig!(self.clock).map(move |t| dot_color(i, *t)))
             })),
             text(SHIMMER)
                 .at(SHIMMER_ORIGIN.0, SHIMMER_ORIGIN.1)
                 .size(18.0)
                 .line_height(normal(18.0))
                 .color(Color::rgba(255, 255, 255, 255))
-                .glyph_alpha(&self.clock, |i, n, t| shimmer_alpha(i, n, *t)),
+                .glyph_alpha(sig!(self.clock), |i, n, t| shimmer_alpha(i, n, *t)),
         )
     }
 }
@@ -150,7 +152,7 @@ impl View for Blink {
         let off = Color::rgba((c >> 16) as u8, (c >> 8) as u8, c as u8, 0);
         (
             quad(0.0, 0.0, 960.0, 720.0).bg(rgb(BACKGROUND)),
-            quad(CARET.0, CARET.1, CARET.2, CARET.3).bg(self.shown.map(move |s| if *s { on } else { off })),
+            quad(CARET.0, CARET.1, CARET.2, CARET.3).bg(sig!(self.shown).map(move |s| if *s { on } else { off })),
         )
     }
 }
@@ -175,7 +177,7 @@ impl View for MicroState {
         };
         (
             quad(0.0, 0.0, wl::WIDTH, wl::HEIGHT).bg(rgb(wl::vlist::BACKGROUND)),
-            text(self.counter.map(|c| counter_label(*c))).at(8.0, 8.0).size(FONT_SIZE).line_height(normal(FONT_SIZE)).color(ink),
+            text(sig!(self.counter).map(|c| counter_label(*c))).at(8.0, 8.0).size(FONT_SIZE).line_height(normal(FONT_SIZE)).color(ink),
             each((0..STATIC_ROWS * STATIC_COLUMNS).map(cell)),
         )
     }
@@ -200,7 +202,7 @@ impl View for MicroScroll {
         (
             quad(0.0, 0.0, wl::vlist::WIDTH, VIEWPORT).bg(rgb(wl::vlist::BACKGROUND)),
             virtual_list(
-                &self.scroll,
+                sig!(self.scroll),
                 FIXED_ROW,
                 [0.0, 0.0, wl::vlist::WIDTH, VIEWPORT],
                 micro_rows,

@@ -46,12 +46,6 @@ fn main() {
         tree.compute_layout_with_measure(root, avail, measure);
     }
     let edits = 200u32;
-    let a = snap();
-    for e in 0..edits {
-        *tree.context_mut(edited).unwrap() = 1 + (e & 1);
-        tree.invalidate(edited);
-        tree.compute_layout_with_measure(root, avail, measure);
-    }
     // a style edit that only re-places the item inside its (fixed-size) card: align-self toggles
     let a = snap();
     for e in 0..edits {

@@ -10,30 +10,22 @@ use bough::prelude::*;
 const FONT: &[u8] = zgx_workload::FONT_BYTES;
 
 fn cfg(w: f32, h: f32) -> Config {
-    Config { width_pt: w, height_pt: h, scale: 1.0, font: FONT.to_vec(), ring: 3 }
+    Config::new(w, h, 1.0, FONT.to_vec())
 }
 
-/// Every record's (kind, depth, ink) and its instances, in preorder. The atlas position of a glyph depends on
-/// the order glyphs were first rasterized, so `uv`'s x, y are zeroed (its size stays): pixels are compared by
-/// the pixel tests in comparisons/bough-vlist.
-type Dump = Vec<(u8, u16, [i16; 4], Vec<bough_text::atlas::Instance>)>;
+/// Every record's (kind, depth, ink) and what the GPU draws for it (`Rt::expand_payload`: quads, glyphs of
+/// the text runs at their pen-formula positions; atlas positions and pool placement are not compared, pixels
+/// are compared by the pixel tests in comparisons/bough-vlist).
+type Item = (u8, [f32; 4], u32, u32, f32, f32, [u16; 2]);
+type Dump = Vec<(u8, u16, [i16; 4], Vec<Item>)>;
 fn dump(app: &App<impl View>) -> Dump {
     app.rt
         .bough
         .records()
         .iter()
         .map(|r| {
-            let run = app.rt.runs[r.payload as usize];
-            let ins = unsafe { std::slice::from_raw_parts(app.rt.inst_ptr(run.first), run.len as usize) }
-                .iter()
-                .map(|i| {
-                    let mut i = *i;
-                    i.uv[0] = 0;
-                    i.uv[1] = 0;
-                    i
-                })
-                .collect();
-            (r.kind, r.depth, r.ink.0, ins)
+            let items = if r.ink.is_empty() { Vec::new() } else { app.rt.expand_payload(r.payload) };
+            (r.kind, r.depth, r.ink.0, items)
         })
         .collect()
 }
@@ -135,8 +127,8 @@ const A: &str = "the build passed on main after we moved layout into its own pas
 impl View for Wrap {
     fn view(&self) -> impl Element<Self> + '_ {
         column((
-            para(&self.a).font(14.0, 20.0).w(self.w).color(rgb(0xe5edf7)),
-            row((label(&self.b).font(12.0, 16.0).color(rgb(0x5eb1ff)), para(&self.c).font(12.0, 16.0).grow(1.0).color(rgb(0x8b98ab)))).gap(6.0),
+            para(sig!(self.a)).font(14.0, 20.0).w(self.w).color(rgb(0xe5edf7)),
+            row((label(sig!(self.b)).font(12.0, 16.0).color(rgb(0x5eb1ff)), para(sig!(self.c)).font(12.0, 16.0).grow(1.0).color(rgb(0x8b98ab)))).gap(6.0),
             block(40.0, 12.0).bg(rgb(0x2b3a52)),
         ))
         .w(self.w + 20.0)
@@ -213,17 +205,55 @@ fn incremental_edits_equal_cold_layout_and_fresh_mount() {
     }
 }
 
+// ------------------------------------------------------------------ absolute positioning at depth
+
+struct Abs;
+impl View for Abs {
+    fn view(&self) -> impl Element<Self> + '_ {
+        // the absolutely positioned block's containing block is the root (`relative`), two static boxes up
+        column((
+            block(20.0, 20.0).bg(rgb(0x111111)),
+            column((row((block(5.0, 5.0).bg(rgb(0x222222)), column((block(8.0, 8.0).bg(rgb(0x333333)).abs(11.0, 13.0), block(4.0, 4.0).bg(rgb(0x444444)))))),)).p(3.0),
+        ))
+        .w(100.0)
+        .h(100.0)
+        .relative()
+        .bg(rgb(0x050505))
+    }
+}
+
+#[test]
+fn absolute_box_below_static_ancestors_uses_its_containing_block() {
+    let app = App::new(Abs, cfg(200.0, 200.0), false);
+    // find the 8x8 block's layout node: the record with that ink size
+    let rec = app.rt.bough.records().into_iter().find(|r| {
+        let [x0, y0, x1, y1] = r.ink.to_xyxy();
+        !r.ink.is_empty() && x1 - x0 == 8 && y1 - y0 == 8
+    });
+    let rec = rec.expect("the 8x8 block");
+    // positioned against the root's padding box: (11, 13), whatever its parents' offsets are
+    assert_eq!(rec.ink.to_xyxy(), [11, 13, 19, 21], "absolute box placed against the wrong containing block");
+    // and the in-flow sibling is unaffected by it (it follows the 5x5 block's row)
+    let root = app.rt.lay.first_root();
+    let avail = cephal::Size { width: cephal::AvailableSpace::Definite(200.0), height: cephal::AvailableSpace::Definite(200.0) };
+    let cold = app.rt.lay.eng.cold_rects(&app.rt.bough, root, avail);
+    let now = rects(&app, root);
+    assert_eq!(now, cold, "incremental != cold with an absolute box at depth");
+}
+
 // ------------------------------------------------------------------ the word-table text pipeline vs the glyph-run one
 
-/// The fast path (word table over the dense step table; fused kernel per line) must equal the slow path
-/// (shaped `GlyphRun` + `wrap_greedy`; `instances` over rebased line runs): same line starts, widths, longest
-/// word, and the same instances, for random ASCII strings (leading / trailing / repeated spaces, words wider than the
-/// line) at random widths and sizes.
+/// The fast path (the leaf's text shaped straight into a glyph-pool block, word table over its pens, lines
+/// drawn as run-header windows onto the block) must equal the slow path (shaped `GlyphRun` + `wrap_greedy`;
+/// 48-byte `instances` over rebased line runs): same line starts, widths, longest word, and the same glyph
+/// quads (the window expanded with the shader's pen formula), for random ASCII strings (leading / trailing /
+/// repeated spaces, words wider than the line) at random widths and sizes.
 #[test]
 fn word_table_pipeline_equals_glyph_run_pipeline() {
     use bough::layout::LeafCtx;
     use bough::text::TextSys;
-    let mut ts = TextSys::new(FONT);
+    let mut ts = TextSys::new(FONT, bough_mem::Col::owned("toks"));
+    let mut pool = bough_text::pool::GlyphPool::new();
     let mut st = 0x1234_5678_9abc_def1u64;
     let mut rnd = move || {
         st ^= st << 13;
@@ -244,46 +274,63 @@ fn word_table_pipeline_equals_glyph_run_pipeline() {
         }
         let size = [10.0f32, 14.0, 28.0][(rnd() % 3) as usize];
         let mut fast = LeafCtx::new(size, size * 1.4, true);
-        fast.set_text(&mut ts, &text);
+        fast.set_text(&mut ts, &mut pool, &text);
         if !fast.fast {
             continue; // a trigger (f-ligature pair): the slow path is the only path
         }
+        let block = fast.block.unwrap();
         let mut slow = fast.clone();
+        slow.block = None;
         ts.shape_run(&text, size, &mut slow.run);
         slow.fast = false;
         assert_eq!(slow.run.len(), text.len());
         assert_eq!(fast.longest_word_for_test(), slow.longest_word_for_test(), "longest word of {text:?}");
+        let strike = ts.strike(size);
+        let tt = ts.shaper.script.tokens.as_ref().unwrap();
+        ts.cache.prepare_tokens(strike, &tt.gid, 0x20..0x7F);
         for _ in 0..4 {
             let max_units = (rnd() % (60 * size as u64 * 40)) as i32 + 1;
             let (lf, ls) = (fast.wrap_at(max_units), slow.wrap_at(max_units));
             assert_eq!(lf, ls, "line count of {text:?} at {max_units}");
             assert_eq!(fast.starts, slow.starts, "line starts of {text:?} at {max_units}");
             assert_eq!(fast.widest, slow.widest, "widest line of {text:?} at {max_units}");
-            // instances line by line
-            let strike = ts.strike(size);
+            // glyph quads line by line: the window onto the block vs instances of the rebased line run
             let n = text.len();
+            let scale = size / ts.shaper.script.upem as f32;
             for i in 0..lf {
                 let a = fast.starts[i] as usize;
                 let b = if i + 1 < lf { fast.starts[i + 1] as usize } else { n };
                 if b <= a {
                     continue;
                 }
+                let (ox, oy) = (3.0f32, 40.0f32);
+                let x0 = pool.x[block.base as usize + a];
+                let tok = ts.cache.tok(strike);
                 let mut out_fast = Vec::new();
-                ts.cache.shape_instances_ascii(&ts.shaper, strike, &text[a..b], 3.0, 40.0, 0xff00ff00, &mut out_fast).expect("ASCII, no trigger");
+                for k in block.base as usize + a..block.base as usize + b {
+                    let e = tok.entry[pool.ent[k] as usize];
+                    if e.uv[2] == 0 {
+                        continue;
+                    }
+                    let px = (pool.x[k].wrapping_sub(x0) as f32).mul_add(scale, ox + 0.5).floor() + e.geo[0];
+                    out_fast.push(([px, oy + e.geo[1]], [e.geo[2], e.geo[3]], [e.uv[2], e.uv[3]]));
+                }
                 let mut line = bough_text::GlyphRun::default();
-                let x0 = slow.run.x[a];
+                let lx0 = slow.run.x[a];
                 line.gid.extend_from_slice(&slow.run.gid[a..b]);
-                line.x.extend(slow.run.x[a..b].iter().map(|v| v - x0));
+                line.x.extend(slow.run.x[a..b].iter().map(|v| v - lx0));
                 line.upem = slow.run.upem;
                 line.size = slow.run.size;
                 line.identity_clusters = true;
-                line.width = (if b < n { slow.run.x[b] } else { slow.run.width }) - x0;
+                line.width = (if b < n { slow.run.x[b] } else { slow.run.width }) - lx0;
                 let mut out_slow = Vec::new();
-                ts.cache.instances(strike, &line, 3.0, 40.0, 0xff00ff00, &mut out_slow);
-                assert!(out_fast == out_slow, "instances of line {i} of {text:?}");
+                ts.cache.instances(strike, &line, ox, oy, 0xff00ff00, &mut out_slow);
+                let out_slow: Vec<_> = out_slow.iter().map(|g| (g.xy, g.wh, [g.uv[2], g.uv[3]])).collect();
+                assert!(out_fast == out_slow, "glyphs of line {i} of {text:?}");
             }
             checked += 1;
         }
+        fast.release(&mut pool);
     }
     assert!(checked > 5000);
 }

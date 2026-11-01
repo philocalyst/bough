@@ -142,7 +142,7 @@ fn print_results(st: &mut State) {
 }
 
 fn tick(st: &mut State, host: &app::Host, link: &objc2_quartz_core::CADisplayLink) {
-    let t0 = unsafe { CACurrentMediaTime() };
+    let t0 = CACurrentMediaTime();
     let s0 = snap();
     st.tick_no += 1;
     if st.tick_no == 2 {
@@ -240,7 +240,7 @@ fn tick(st: &mut State, host: &app::Host, link: &objc2_quartz_core::CADisplayLin
     s.op_instr.push((c1.instrs - c0.instrs).saturating_sub(ovh) as f64);
     s.present_instr.push((c2.instrs - c1.instrs).saturating_sub(ovh) as f64);
     s.cpu_us.push((c2.cpu_ns - s0.cpu_ns) as f64 / 1e3);
-    s.tick_ms.push((unsafe { CACurrentMediaTime() } - t0) * 1e3);
+    s.tick_ms.push((CACurrentMediaTime() - t0) * 1e3);
     if produced {
         s.frames += 1;
         s.msgs += (st.e.gpu.msgs.get() - m0) as u64;
@@ -262,12 +262,12 @@ fn start_paused_measure(st: &mut State, link: &objc2_quartz_core::CADisplayLink)
     st.phase = Phase::Paused;
     link.setPaused(true);
     let a = snap();
-    let ta = unsafe { CACurrentMediaTime() };
+    let ta = CACurrentMediaTime();
     let cell: Rc<RefCell<*mut State>> = Rc::new(RefCell::new(st as *mut State));
     let link2 = link.retain();
     let blk = RcBlock::new(move |_t: std::ptr::NonNull<NSTimer>| {
         let b = snap();
-        let tb = unsafe { CACurrentMediaTime() };
+        let tb = CACurrentMediaTime();
         let st = unsafe { &mut **cell.borrow() };
         let dt = tb - ta;
         st.paused_result = Some(((b.instrs - a.instrs) as f64 / dt, (b.cpu_ns - a.cpu_ns) as f64 / 1e6 / dt, dt));
@@ -289,7 +289,6 @@ fn finish_mode(st: &mut State, host: &app::Host, _link: &objc2_quartz_core::CADi
         st.mode = st.modes[st.mode_idx];
         st.cur = 0;
         st.phase = Phase::Warm(10);
-        st.paused_result = st.paused_result; // keep
         return;
     }
     let s = snap();

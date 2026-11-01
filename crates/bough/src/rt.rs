@@ -615,6 +615,44 @@ impl Rt {
         CoreMarks(self.bough.plane_mut())
     }
 
+    /// What the GPU draws for a record payload, expanded on the CPU with the shader's arithmetic (tests: a
+    /// retained state compared with a fresh mount; glyph-pool placement and atlas positions differ between
+    /// the two, so this is the comparable form). Each item: `(kind, x, y, w, h, color, color2, radius, bw,
+    /// uv w, uv h)` with positions absolute (space added).
+    pub fn expand_payload(&self, payload: u32) -> Vec<(u8, [f32; 4], u32, u32, f32, f32, [u16; 2])> {
+        use bough_metal::fused::{PAY_IRUN, PAY_RUN};
+        let mut out = Vec::new();
+        let quad = |i: &Instance, out: &mut Vec<_>| {
+            let sp = self.glyphs.spaces[i.space as usize];
+            out.push((i.kind, [i.pos[0] + sp[0] as f32, i.pos[1] + sp[1] as f32, i.size[0], i.size[1]], i.color, i.color2, i.radius, i.bw, [i.uv[2], i.uv[3]]));
+        };
+        if payload & PAY_RUN != 0 {
+            let (r0, rn) = (payload & 0xF_FFFF, ((payload >> 20) & 0x7FF) + 1);
+            for r in r0..r0 + rn {
+                let h = self.glyphs.runs[r as usize];
+                let sp = self.glyphs.spaces[h.space as usize];
+                let tok = self.text.cache.tok(h.strike as usize);
+                for k in h.base..h.base + h.len {
+                    let e = tok.entry[self.glyphs.ent[k as usize] as usize];
+                    if e.uv[2] == 0 {
+                        continue;
+                    }
+                    let px = (self.glyphs.x[k as usize].wrapping_sub(h.x0) as f32).mul_add(h.scale, h.origin[0] + 0.5).floor() + e.geo[0];
+                    let p = [px + sp[0] as f32, h.origin[1] + e.geo[1] + sp[1] as f32, e.geo[2], e.geo[3]];
+                    out.push((KIND_GLYPH, p, h.color, 0, 0.0, 0.0, [e.uv[2], e.uv[3]]));
+                }
+            }
+        } else if payload & PAY_IRUN != 0 {
+            let (i0, n) = (payload & 0x3_FFFF, ((payload >> 18) & 0xFFF) + 1);
+            for i in i0..i0 + n {
+                quad(&self.inst[i as usize], &mut out);
+            }
+        } else {
+            quad(&self.inst[payload as usize], &mut out);
+        }
+        out
+    }
+
     // ------------------------------------------------------------------ release
     pub fn release_scope(&mut self, s: Scope) {
         for w in s.wires {

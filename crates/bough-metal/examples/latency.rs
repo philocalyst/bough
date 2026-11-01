@@ -17,7 +17,7 @@ struct SendRef(CFRetained<IOSurfaceRef>);
 unsafe impl Send for SendRef {}
 
 fn now() -> f64 {
-    unsafe { CACurrentMediaTime() }
+    CACurrentMediaTime()
 }
 
 fn main() {
@@ -76,7 +76,7 @@ fn main() {
             let ids = p.surface_ids();
             let (rel3, stop3) = (rel2.clone(), stop2.clone());
             std::thread::spawn(move || {
-                let refs: Vec<(usize, SendRef)> = ids.iter().filter_map(|&id| unsafe { objc2_io_surface::IOSurfaceRef::lookup(id as u32) }.map(|r| (id, SendRef(r)))).collect();
+                let refs: Vec<(usize, SendRef)> = ids.iter().filter_map(|&id| objc2_io_surface::IOSurfaceRef::lookup(id as u32).map(|r| (id, SendRef(r)))).collect();
                 let mut last: Vec<bool> = refs.iter().map(|r| r.1 .0.is_in_use()).collect();
                 while !stop3.load(std::sync::atomic::Ordering::Relaxed) {
                     for (k, (id, r)) in refs.iter().enumerate() {

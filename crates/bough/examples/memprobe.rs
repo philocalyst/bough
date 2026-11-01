@@ -10,7 +10,7 @@ use objc2_foundation::{ns_string, NSDictionary, NSNumber, NSString};
 use objc2_io_surface::IOSurfaceRef;
 use objc2_metal::*;
 
-static METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.metallib"));
+static METALLIB: &[u8] = bough_metal::gpu::METALLIB;
 fn mb() -> f64 {
     snap().footprint as f64 / 1048576.0
 }

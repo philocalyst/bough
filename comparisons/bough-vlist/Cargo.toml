@@ -9,6 +9,7 @@ description = "zgx's vlist scene (100k wrapped chat rows, measured virtual list)
 bough = { path = "../../crates/bough" }
 bough-metal = { path = "../../crates/bough-metal" }
 bough-text = { path = "../../crates/bough-text" }
+bough-mem = { path = "../../crates/bough-mem" }
 zgx-workload = { path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }
 libc = "0.2"
 cephal = { path = "/Users/mileswirht/Downloads/ilo-prod-work/cephal", default-features = false, features = ["flex", "block"] }

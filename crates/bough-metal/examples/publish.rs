@@ -238,7 +238,7 @@ impl Lab {
 
 fn tick(lab: &mut Lab, host: &app::Host, link: &CADisplayLink) {
     let t0i = tinstr();
-    let now = unsafe { CACurrentMediaTime() };
+    let now = CACurrentMediaTime();
     let v = lab.variants[lab.vi];
     if lab.settle < 12 {
         lab.settle += 1;
@@ -419,7 +419,7 @@ fn main() {
                 .collect();
             let q = dispatch2::DispatchQueue::new("bough.publish", None);
             let first = variants[0];
-            let mut l = Lab {
+            let l = Lab {
                 gpu, big, small, one, flip: (froot, flips), grid: (groot, tiles), implicit, metal, avs, sbufs, q,
                 variants: variants.clone(), vi: 0, k: 0, settle: 0, t_start: 0.0, s_start: snap(), thr_start: Default::default(),
                 cur: Res::default(), out: vec![], secs, ovh: tinstr_overhead(), mdl: None,

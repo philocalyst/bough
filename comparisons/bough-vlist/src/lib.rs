@@ -40,7 +40,7 @@ impl View for VList {
     fn view(&self) -> impl Element<Self> + '_ {
         (
             quad(0.0, 0.0, vlist::WIDTH, vlist::HEIGHT).bg(rgb(vlist::BACKGROUND)),
-            measured_list(&self.scroll, self.rows, ESTIMATE, [0.0, 0.0, vlist::WIDTH, vlist::HEIGHT], OVERSCAN, |_, i, m: &mut Mounter<'_, VList>| m.mount(chat_row(i))),
+            measured_list(sig!(self.scroll), self.rows, ESTIMATE, [0.0, 0.0, vlist::WIDTH, vlist::HEIGHT], OVERSCAN, |_, i, m: &mut Mounter<'_, VList>| m.mount(chat_row(i))),
         )
     }
 }
@@ -50,13 +50,9 @@ pub fn font_bytes() -> Vec<u8> {
 }
 
 pub fn config(scale: f32) -> Config {
-    Config {
-        width_pt: vlist::WIDTH,
-        height_pt: vlist::HEIGHT,
-        scale,
-        font: font_bytes(),
-        ring: std::env::var("BOUGH_RING").ok().and_then(|v| v.parse().ok()).unwrap_or(4),
-    }
+    let mut c = Config::new(vlist::WIDTH, vlist::HEIGHT, scale, font_bytes());
+    c.ring = std::env::var("BOUGH_RING").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    c
 }
 
 /// One tick of the scene's driver (zgx's `vlist_workload` loop body): a jump tick of `Jump` mode puts the

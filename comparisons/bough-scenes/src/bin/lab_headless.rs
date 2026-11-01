@@ -58,7 +58,7 @@ fn main() {
         (t1.instrs - t0.instrs) as f64 / ticks as f64,
         t1.footprint as f64 / 1048576.0,
         app.rt.text.fallbacks,
-        app.rt.ctr.text_shaped,
+        app.rt.ctr.text_set,
         app.rt.ctr.rows_mounted,
     );
 }

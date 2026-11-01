@@ -156,7 +156,7 @@ fn arm_timer(st: &mut St, name: &'static str) {
         if st.done {
             return;
         }
-        let now = unsafe { CACurrentMediaTime() };
+        let now = CACurrentMediaTime();
         let name = st.order[st.cur];
         if (name == "idle" && now - st.t_start >= st.secs * 0.9) || (name != "idle" && now - st.t_start >= st.secs) || (name == "idle" && !st.pause) {
             if let Some(t) = st.timer.take() {
@@ -197,7 +197,7 @@ fn arm_timer(st: &mut St, name: &'static str) {
 }
 
 fn tick(st: &mut St, host: &app::Host, link: &CADisplayLink) {
-    let now = unsafe { CACurrentMediaTime() };
+    let now = CACurrentMediaTime();
     if st.done {
         report(st);
         host.detach_all();
@@ -293,7 +293,7 @@ fn tick(st: &mut St, host: &app::Host, link: &CADisplayLink) {
             st.idle_armed = true;
             st.thr_start = bough_metal::threads::snapshot();
             st.s_start = snap();
-            st.t_start = unsafe { CACurrentMediaTime() };
+            st.t_start = CACurrentMediaTime();
         }
     }
 }

@@ -114,6 +114,7 @@ name = "bough-vlist"
 version = "0.0.0"
 dependencies = [
  "bough",
+ "bough-mem",
  "bough-metal",
  "bough-text",
  "cephal",

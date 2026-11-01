@@ -1,6 +1,7 @@
 //! The vlist scene's correctness gates (needs a Metal device: the ring surfaces are read back):
 //!  1. after every few presented frames the surface the ring drew into equals a from-scratch full redraw
-//!     of the retained state (damage -> repair -> cull -> stencil exact), for scroll, fling and jump;
+//!     of the retained state through the same kernels, for scroll, fling and jump, at every ring age 1..=4
+//!     (round-robin rings of 1..4 surfaces) and with the windowed content-addressed ring;
 //!  2. the retained frame after the run equals a fresh mount of the same list at the same offset with the
 //!     same row heights (the wires / anchoring / mount / unmount / translate paths leave the pixels a
 //!     from-scratch description would);
@@ -17,16 +18,31 @@ fn first_diff(a: &[u8], b: &[u8]) -> Option<(usize, usize, u8, u8)> {
     a.iter().zip(b).position(|(x, y)| x != y).map(|i| ((i / 4) % 1440, (i / 4) / 1440, a[i], b[i]))
 }
 
+const RINGS: [usize; 5] = [1, 2, 3, 4, 0];
+
+fn mk(rows: usize, ring: usize) -> App<VList> {
+    let mut c = config(2.0);
+    c.ring = if ring == 0 { 4 } else { ring };
+    let mut app = App::new(VList::new(rows), c, true);
+    app.windowed = ring == 0;
+    app
+}
+
 fn run(mode: Mode, ticks: u64, every: u64, rows: usize) -> App<VList> {
-    let mut app = App::new(VList::new(rows), config(2.0), true);
+    run_ring(mode, ticks, every, rows, 4)
+}
+
+fn run_ring(mode: Mode, ticks: u64, every: u64, rows: usize, ring: usize) -> App<VList> {
+    let mut app = mk(rows, ring);
     app.frame();
     let mut checked = 0;
     for t in 1..=ticks {
         step(&mut app, mode, t);
         let drew = app.frame();
+        assert!(!app.bins_overflowed(), "row bin overflow at tick {t}");
         if drew && t % every == 0 {
             let (px, reference) = (app.presented_pixels(), app.reference_pixels());
-            assert!(px == reference, "{mode:?} tick {t}: presented != full redraw at {:?}", first_diff(&px, &reference));
+            assert!(px == reference, "{mode:?} ring {ring} tick {t}: presented != full redraw at {:?}", first_diff(&px, &reference));
             checked += 1;
         }
     }
@@ -36,16 +52,22 @@ fn run(mode: Mode, ticks: u64, every: u64, rows: usize) -> App<VList> {
 
 #[test]
 fn scroll_is_pixel_exact() {
-    run(Mode::Scroll, 400, 7, vlist::ROWS);
+    for ring in RINGS {
+        run_ring(Mode::Scroll, 200, 7, vlist::ROWS, ring);
+    }
 }
 #[test]
 fn fling_is_pixel_exact() {
-    run(Mode::Fling, 300, 5, vlist::ROWS);
+    for ring in RINGS {
+        run_ring(Mode::Fling, 150, 5, vlist::ROWS, ring);
+    }
 }
 #[test]
 fn jump_is_pixel_exact() {
     // a jump every 30 ticks; check right after each and in between
-    run(Mode::Jump, 200, 3, vlist::ROWS);
+    for ring in RINGS {
+        run_ring(Mode::Jump, 120, 3, vlist::ROWS, ring);
+    }
 }
 
 fn heights_snapshot(app: &App<VList>) -> bough::mlist::HeightIndex {
