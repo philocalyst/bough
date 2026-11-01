@@ -1,0 +1,10 @@
+metallib: device+queue 36.72 ms, library 0.50 ms, 3 pipelines 1.75 ms, pool+atlas+stencil 0.23 ms | Engine::new total 39.56 ms | ring+first full frame 8.37 ms
+runtime: device+queue 81.99 ms, library 15.61 ms, 3 pipelines 5.57 ms, pool+atlas+stencil 0.21 ms | Engine::new total 103.46 ms | ring+first full frame 17.52 ms
+metallib: device+queue 24.64 ms, library 0.06 ms, 3 pipelines 2.76 ms, pool+atlas+stencil 0.26 ms | Engine::new total 27.93 ms | ring+first full frame 10.88 ms
+runtime: device+queue 27.33 ms, library 2.65 ms, 3 pipelines 3.22 ms, pool+atlas+stencil 0.32 ms | Engine::new total 33.70 ms | ring+first full frame 10.89 ms
+metallib: device+queue 28.33 ms, library 0.05 ms, 3 pipelines 1.41 ms, pool+atlas+stencil 0.13 ms | Engine::new total 29.99 ms | ring+first full frame 9.39 ms
+runtime: device+queue 26.13 ms, library 1.94 ms, 3 pipelines 2.58 ms, pool+atlas+stencil 0.34 ms | Engine::new total 31.15 ms | ring+first full frame 11.05 ms
+metallib: device+queue 134.15 ms, library 0.03 ms, 3 pipelines 1.39 ms, pool+atlas+stencil 0.12 ms | Engine::new total 135.76 ms | ring+first full frame 11.36 ms
+runtime: device+queue 32.56 ms, library 1.87 ms, 3 pipelines 4.23 ms, pool+atlas+stencil 0.32 ms | Engine::new total 39.14 ms | ring+first full frame 9.76 ms
+metallib: device+queue 28.09 ms, library 0.03 ms, 3 pipelines 1.42 ms, pool+atlas+stencil 0.14 ms | Engine::new total 29.75 ms | ring+first full frame 40.95 ms
+runtime: device+queue 28.69 ms, library 1.79 ms, 3 pipelines 1.42 ms, pool+atlas+stencil 0.19 ms | Engine::new total 32.17 ms | ring+first full frame 8.33 ms

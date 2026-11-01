@@ -1,0 +1,16 @@
+framebufferOnly=false stride=1 maxDrawables=3: frames 240
+distinct IOSurface ids: 3 ; distinct MTLTexture object pointers: 3 ; per-id pointer counts: [1, 1, 1]
+first acquisitions (iosurface ids): 7 21 27 7 21 27 7 21 27 7 21 27
+reacquisition checks: 237; contents preserved exactly: 237; entirely lost: 0; partial: 0
+framebufferOnly=true stride=1 maxDrawables=3: frames 240
+distinct IOSurface ids: 3 ; distinct MTLTexture object pointers: 3 ; per-id pointer counts: [1, 1, 1]
+first acquisitions (iosurface ids): 7 21 27 7 21 27 7 21 27 7 21 27
+reacquisition checks: 0; contents preserved exactly: 0; entirely lost: 0; partial: 0
+framebufferOnly=false stride=30 maxDrawables=3: frames 120
+distinct IOSurface ids: 2 ; distinct MTLTexture object pointers: 2 ; per-id pointer counts: [1, 1]
+first acquisitions (iosurface ids): 7 21 7 21 7 21 7 21 7 21 7 21
+reacquisition checks: 118; contents preserved exactly: 118; entirely lost: 0; partial: 0
+framebufferOnly=false stride=1 maxDrawables=2: frames 200
+distinct IOSurface ids: 2 ; distinct MTLTexture object pointers: 2 ; per-id pointer counts: [1, 1]
+first acquisitions (iosurface ids): 7 21 7 21 7 21 7 21 7 21 7 21
+reacquisition checks: 198; contents preserved exactly: 198; entirely lost: 0; partial: 0

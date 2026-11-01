@@ -1,0 +1,22 @@
+snap overhead 7275 instr; window scale factor 2, display link 8.333333333333336
+
+### strategy bh (refresh 8.33 ms, setup 6.6 ms)
+
+damage mode `stencil`
+
+| scenario | frames/ticks | update instr | present instr | proc instr/tick (all threads) | CPU us/tick | GPU ms med / p99 | tick->GPU-done ms | tick interval ms med / p99 | draws | ObjC msgs | repair px |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| idle | 0/229 | 0 | 0 | 59542 | 9.3 | NaN / NaN | NaN | 8.33 / 9.06 | 0.0 | 0 | 0 |
+| one-colour | 230/230 | 0 | 83312 | 418883 | 67.7 | 0.216 / 1.052 | 0.44 | 8.33 / 8.36 | 2.0 | 15 | 6567 |
+| scatter-80 | 230/230 | 13733 | 139836 | 491393 | 86.4 | 0.442 / 1.550 | 0.68 | 8.33 / 8.35 | 2.0 | 15 | 492367 |
+| scroll-400 | 230/230 | 48846 | 74072 | 459596 | 69.5 | 0.317 / 1.745 | 0.58 | 8.33 / 8.37 | 1.0 | 11 | 608000 |
+| full | 231/231 | 0 | 57539 | 392881 | 61.2 | 0.864 / 1.846 | 1.07 | 8.33 / 8.36 | 1.0 | 11 | 2764800 |
+
+threads [idle]: main#259 53.5us, ?#5635 2.6us, ?#10243 0.8us, com.apple.NSEventThread#39459 0.3us
+threads [one-colour]: main#259 111.2us, ?#27395 87.8us, ?#10243 13.8us, ?#17939 10.1us
+threads [scatter-80]: main#259 129.9us, ?#27395 97.7us, ?#17939 93.2us
+threads [scroll-400]: main#259 113.9us, ?#17939 95.7us, ?#10243 47.1us
+threads [full]: main#259 100.8us, ?#10243 94.6us, ?#17939 93.2us, ?#27491 0.2us
+idle with display link PAUSED (1 s): 426865 instr/s, 0.25 ms CPU/s
+memory: RSS 26.9 MB, phys_footprint 159.5 MB, MTLDevice.currentAllocatedSize 35.5 MB, strategy surface bytes 33.2 MB
+IOSurfaceIsInUse before each present, histogram by bit pattern (bit0 = surface about to be drawn, bit1 = next, bit2 = the one presented last frame): [1, 0, 0, 0, 39, 27, 910, 8]; skips 0

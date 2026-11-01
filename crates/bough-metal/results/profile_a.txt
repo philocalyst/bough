@@ -1,0 +1,23 @@
+snap overhead 7156 instr; window scale factor 2, display link 8.333333333333336
+
+### strategy a (refresh 8.33 ms, setup 3.3 ms)
+
+damage mode `stencil`
+
+| scenario | frames/ticks | update instr | present instr | proc instr/tick (all threads) | CPU us/tick | GPU ms med / p99 | tick->GPU-done ms | tick interval ms med / p99 | draws | ObjC msgs | repair px |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| idle | 0/170 | 0 | 0 | 59874 | 8.2 | NaN / NaN | NaN | 8.33 / 8.35 | 0.0 | 0 | 0 |
+| one-colour | 153/153 | 0 | 463089 | 928070 | 240.0 | 0.258 / 1.251 | 1.54 | 8.33 / 22.03 | 1.0 | 16 | 1777 |
+| scatter-80 | 170/170 | 14356 | 516953 | 997679 | 330.2 | 0.457 / 1.921 | 2.08 | 8.33 / 8.63 | 2.0 | 20 | 192154 |
+| scroll-400 | 167/167 | 64098 | 531506 | 1006472 | 406.3 | 0.489 / 1.682 | 8.89 | 8.34 / 15.39 | 1.0 | 16 | 608000 |
+| full | 170/170 | 4836 | 541870 | 949500 | 406.6 | 1.038 / 2.144 | 9.42 | 8.34 / 8.53 | 1.0 | 16 | 2764800 |
+phase profile, mean instr/frame: region-build | cull | encode | commit(+present) | wait | publish | handler-blk | nextDrawable | blit-encode
+  idle               0 |       0 |       0 |       0 |       0 |       0 |       0 |       0 |       0
+  one-colour      2150 |   31943 |   48104 |   23347 |       0 |       0 |       0 |  237410 |   29037
+  scatter-80     38514 |   45076 |   47144 |   22948 |       0 |       0 |       0 |  246188 |   26318
+  scroll-400      9711 |   40399 |   40590 |   22395 |       0 |       0 |       0 |  281321 |   24989
+  full            3609 |   21476 |   45609 |   21965 |       0 |       0 |       0 |  303788 |   25060
+
+idle with display link PAUSED (1 s): 403899 instr/s, 0.24 ms CPU/s
+memory: RSS 29.2 MB, phys_footprint 242.6 MB, MTLDevice.currentAllocatedSize 58.0 MB, strategy surface bytes 11.1 MB
+

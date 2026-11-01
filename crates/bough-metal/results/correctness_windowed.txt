@@ -1,0 +1,13 @@
+WINDOWED (visible window, display-link paced) presentation
+strategy damage-mode    presented  mismatch full-repair     secs
+a        bbox                 246         0           4      2.5
+a        stencil              249         0           8      2.5
+b        bbox                 246         0          12      2.5
+b        stencil              249         0          22      2.5
+bs       bbox                 246         0          12      2.5
+bs       stencil              249         0          22      2.5
+bh       bbox                 246         0          12      2.5
+bh       stencil              249         0          22      2.5
+c        bbox                 246         0          12      2.5
+c        stencil              249         0          22      2.5
+OK: all presented frames byte-identical to a full redraw

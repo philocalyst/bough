@@ -3,5 +3,27 @@ name = "bough-metal"
 version = "0.0.0"
 edition.workspace = true
 license.workspace = true
+description = "Direct-Metal presenter prototype: uber-shader, buffer-age repair, IOSurface ring"
 
 [dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3" }
+objc2-metal = { version = "0.3", features = ["objc2-io-surface", "dispatch2", "block2", "objc2-core-foundation"] }
+objc2-quartz-core = { version = "0.3", features = ["objc2-metal", "objc2-core-foundation", "block2"] }
+objc2-app-kit = { version = "0.3", features = ["objc2-quartz-core", "objc2-core-foundation", "block2"] }
+objc2-io-surface = { version = "0.3", features = ["objc2-core-foundation"] }
+objc2-core-foundation = { version = "0.3" }
+block2 = "0.6"
+libc = "0.2"
+dispatch2 = "0.3"
+
+[[example]]
+name = "bench"
+[[example]]
+name = "correctness"
+[[example]]
+name = "floor"
+[[example]]
+name = "probe"
+[[example]]
+name = "latency"

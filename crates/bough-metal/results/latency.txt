@@ -1,0 +1,12 @@
+(c) CAMetalLayer: tick-start -> presentedTime: median 33.30 ms, p99 33.31 ms, min 24.93, max 33.32  (n=300)
+    presentedTime - displayLink.targetTimestamp: median 25.00 ms, p99 25.01 ms
+(c) CAMetalLayer: tick-start -> presentedTime: median 16.65 ms, p99 24.99 ms, min 16.58, max 37.47  (n=300)
+    presentedTime - displayLink.targetTimestamp: median 8.35 ms, p99 16.68 ms
+(c) CAMetalLayer: tick-start -> presentedTime: median 49.97 ms, p99 58.32 ms, min 41.60, max 58.32  (n=299)
+    presentedTime - displayLink.targetTimestamp: median 41.67 ms, p99 50.01 ms
+(c) CAMetalLayer: tick-start -> presentedTime: median 16.65 ms, p99 24.99 ms, min 16.58, max 24.99  (n=300)
+    presentedTime - displayLink.targetTimestamp: median 8.35 ms, p99 16.69 ms
+(bh) IOSurface ring: 256 compositor releases over 280 publishes; phase of each release within the vsync period (8 bins, 0 = on a vsync target): [54, 22, 26, 66, 53, 16, 8, 11]
+    displayLink.targetTimestamp - tick start (time to next vsync deadline): median 8.30 ms
+(b) IOSurface ring: 242 compositor releases over 280 publishes; phase of each release within the vsync period (8 bins, 0 = on a vsync target): [38, 28, 18, 71, 44, 20, 9, 14]
+    displayLink.targetTimestamp - tick start (time to next vsync deadline): median 8.30 ms

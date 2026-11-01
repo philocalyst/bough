@@ -1,0 +1,23 @@
+headless (detached layers) presentation
+strategy damage-mode    presented  mismatch full-repair     secs
+a        bbox                 335         0           7      4.1
+a        multi-shared         333         0           8      4.1
+a        multi-culled         308         0           8      4.4
+a        stencil              329         0          10      5.1
+b        bbox                 335         0          21      4.7
+b        multi-shared         333         0          24      4.3
+b        multi-culled         308         0          24      3.9
+b        stencil              329         0          28      4.2
+bs       bbox                 335         0          21      4.3
+bs       multi-shared         333         0          24      4.2
+bs       multi-culled         308         0          24      3.8
+bs       stencil              329         0          28      4.1
+bh       bbox                 335         0          21      4.7
+bh       multi-shared         333         0          24      4.7
+bh       multi-culled         308         0          24      3.6
+bh       stencil              329         0          28      4.0
+c        bbox                 335         0          14      5.9
+c        multi-shared         333         0          16      5.6
+c        multi-culled         308         0          16      5.4
+c        stencil              329         0          19      4.5
+OK: all presented frames byte-identical to a full redraw
