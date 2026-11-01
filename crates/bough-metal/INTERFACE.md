@@ -1,5 +1,40 @@
 # bough-metal GPU input contract
 
+**Fused layout (what the façade runs, `src/fused.rs`, kernels `fs_bin` + `fs_tile`).** Sections 1-8 below are the
+round-2 prototype contract (1920x1440 compiled in, a mirror of bough-core pages); the fused presenter reads the real
+structures, at a runtime window size, in ONE `storageModeShared` buffer whose contents ARE the façade's `Region`
+(`bough_mem`): every column below is carved once at a fixed offset and written in place by its owner. Nothing is
+mirrored.
+
+| column | owner (Rust type) | GPU read |
+|---|---|---|
+| header `FHdr` @0 (256 B reserved) | presenter | `viewport f32x2, tiles_x, tiles_y, inst_off, spaces_off, clips_off, dir_id_off, dir_ink_off, n_dir, pages_off, gx_off, gent_off, runs_off, toks_off, tok_stride, bin_cap, debug` (u32) |
+| 3 frame slots | presenter (`write_slot`) | `FSlot {bin_tg[3], tile_tg[3], target, nrows}` + `FRow {ty, span = x0 \| x1 << 8, prefix, pad, bits: u32x4}` per damaged tile row |
+| quad instances | façade `Col<Instance>` (48 B, section 4 layout; `ext` unused) | payload instance index / instance run |
+| pages | bough-core `PagePool` arena = `Col<Page>` (**1472 B**) | `ink` @128 (**page-relative**: absolute = ink + `offl`), `gink` @640, `payload` @768, `clip` (u16) @1280, `offl` (i16x4 = dx, dy, -dx, -dy) @1436 |
+| directory | bough-core `Col<u32>` page ids, `Col<NRect>` absolute page unions | L1 cull |
+| clips | bough-core `Col<NRect>` (id 0 = whole domain) | every record is clamped to `clips[page.clip[slot]]` |
+| spaces | bough-text `GlyphPool::spaces`, `Col<[i32; 2]>` (integral px) | added to instances and runs |
+| glyph slots | bough-text `GlyphPool::{x: Col<i32>, ent: Col<u16>}` | pens and token ids |
+| run headers | bough-text `GlyphPool::runs: Col<RunHeader>` (32 B, section 5) | windows onto slots |
+| strike token tables | bough-text `GlyphCache` `Col<TokStrike>` (stride `size_of::<TokStrike>()`, `entry[256]` first) | glyph geometry, atlas rect |
+
+* **Payload** (record → what is drawn): bit 31 set = text, runs `[p & 0xFFFFF, + ((p >> 20) & 0x7FF) + 1)` (a
+  multi-line text is one record over consecutive run headers); bit 30 set = an instance run
+  `[p & 0x3FFFF, + ((p >> 18) & 0xFFF) + 1)` (bars, glyph-instance text); otherwise one instance index.
+* **Cull:** directory union (absolute) → `gink` against `subsat(th, offl)` → record `ink` against the same page-relative
+  threshold; a hit's absolute ink = `ink + offl`. Clip-free: unclipped inks are a superset, the clamp is exact.
+* **The damage is the dispatch:** the CPU copies the OR-ed tile rows into `FRow` records (O(damaged rows)); the bin
+  pass runs one threadgroup per record (indirect args `bin_tg`), the tile pass one per damaged tile (`tile_tg`), each
+  finding its tile by a binary search over `prefix` and a select of the k-th set bit of `bits`.
+* **Bins:** `tiles_y × bin_cap × 16 B` (private), entries `(payload or instance, ink.xy, ink.zw, clip << 20 | slot)`;
+  `counts[tiles_y]` records the largest overflowing row; the CPU grows the bins and redraws that frame before it is
+  published.
+* **Write rule:** the CPU writes the region only after `Fused::sync()` (one frame in flight; in the pre-armed stream,
+  before the frame's event release).
+
+---
+
 This is what the presenter's GPU passes read, byte for byte. bough-core (pages, directory, damage) and bough-text
 (glyph pool, run windows) write these structures **in place**: no translation pass, no copy.
 

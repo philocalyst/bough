@@ -5,6 +5,16 @@ number below (fat LTO, cgu 1). zgx = the 06debe9d `dist` binaries (`micro_bench`
 driver built from the *same* tree/profile (see 5). The machine was loaded by other builds (load average 30-80), so
 **instruction counts lead and CPU times are context**; nothing is taken from zgx's published tables.
 
+> **Fusion (branch `fusion`, 2026-11-01).** Variant B with the child-id side column (`deep-kids`) is now the ONE layout
+> path (`lay_deep.rs`, no cargo features); the mirror (Variant A, `lay_mirror.rs`) is deleted. What the mirror had and B
+> lacked, absolute positioning below static ancestors, is implemented: each container's `AbsoluteContext` is kept in a
+> side map (`set/clear/take_absolute_context`; cephal keeps no placements here, every out-of-flow pass re-places), and
+> `tests/layout.rs::absolute_box_below_static_ancestors_uses_its_containing_block` checks it against a cold layout
+> (it fails with the contexts disabled). Measured text is shaped once, straight into a bough-text glyph-pool block in
+> the GPU-shared region; the word table reads the pool's pens, and each wrapped line is a 32-byte run header (a window
+> onto the block) instead of rebased glyph instances. Numbers below are the layout branch's; the fused ones are in
+> `STATUS.md` at the repo root.
+
 ```
 export CARGO_TARGET_DIR=$PWD/target RUSTC_WRAPPER= PATH=~/.local/share/cargo/bin:$PATH
 export ZGX_FONT_FILE=/Users/mileswirht/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf

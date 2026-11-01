@@ -18,7 +18,9 @@ libc = "0.2"
 dispatch2 = "0.3"
 
 [[example]]
-name = "bench"
+# not "bench": bough-text has an example of that name (cargo output collision in one target dir)
+name = "metal_bench"
+path = "examples/bench.rs"
 [[example]]
 name = "correctness"
 [[example]]

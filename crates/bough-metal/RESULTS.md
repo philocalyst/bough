@@ -343,8 +343,8 @@ X=$CARGO_TARGET_DIR/release/examples
 $X/correctness 400 a,b,bs,bh,c                 # headless byte-exact check, 20 combos
 $X/correctness 300 a,b,bs,bh,c stencil,bbox --window
 BOUGH_SABOTAGE=1 $X/correctness 100 b bbox    # must FAIL
-$X/bench --strategy bh --secs 2 --threads     # a | b | bs | bh | c ; add --profile for phase instr, --sweep for damage modes
-$X/bench --startup metallib|runtime
+$X/metal_bench --strategy bh --secs 2 --threads     # a | b | bs | bh | c ; add --profile for phase instr, --sweep for damage modes
+$X/metal_bench --startup metallib|runtime
 $X/probe 240 0 1 3                            # (c) preservation: frames, framebufferOnly, stride, maxDrawables
 $X/latency c 300 3 1                          # presentedTime latency: kind frames maxDrawables maxOutstanding
 $X/floor                                      # bare Metal submission floor

@@ -56,6 +56,14 @@ macro) expands to `Wired::new(&self.count, core::mem::offset_of!(Self, count))`;
 location or type for the owner's life, so the patch's `owner + offset` read is sound. A plain borrow
 (`text(&self.count)`) is a constant of this description, refreshed when the owner re-describes.
 
+As built (`crates/bough/src/signal.rs`): `sig!(self.a.b)` inside a `View` impl, `sig!(v: Type => a.b)` where the owner is
+a value (a list's row function). The expansion keeps the field access *outside* its `unsafe` block, so a union field
+or a packed field needs the caller's own `unsafe` and a path through `Box`/`Deref` fails `offset_of!` (compile-fail
+doctests); `Wired<'_, T, V>` carries the owner type and only a `Mounter<'_, V>` of the same `V` lowers it. Operands:
+`sig!(..)` (a `Signal<T>` property), `sig!(..).map(f)`, and for text `sig!(..).num(f, NumFmt)` (the value rendered into
+the label's 16-byte vector, no `String`). `Signal::head`, the wire arena and `Rt::add_wire` are crate-private (a copied
+head would run wires of another type).
+
 Rejected (review of the integration prototype, 2026-11-01): inferring the offset at runtime from
 `addr(field) − addr(owner)` and accepting it when it lies inside `size_of::<V>()`. That proves the signal is
 inside the owner's bytes, not that it stays there: a signal inside an enum variant or `Option` field has its bytes
