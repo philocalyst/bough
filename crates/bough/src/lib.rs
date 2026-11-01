@@ -11,6 +11,6 @@ pub mod text;
 pub mod prelude {
     pub use crate::app::{App, Config, View};
     pub use crate::color::{rgb, Color};
-    pub use crate::elem::{at, clip, each, quad, text, virtual_list, Element, IntoProp, Mounter, Quad};
+    pub use crate::elem::{at, clip, bars, each, quad, text, virtual_list, Element, IntoProp, Mounter, Quad};
     pub use crate::signal::Signal;
 }

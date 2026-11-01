@@ -80,6 +80,10 @@ pub struct Node {
     pub size_px: f32,
     pub line_h: f32,
     pub text: String,
+    /// Series node (`bars`): bar count, memoised samples and the key they were computed for.
+    pub series: Vec<f32>,
+    pub series_key: u64,
+    pub series_ok: bool,
 }
 
 impl Node {
@@ -104,6 +108,9 @@ impl Node {
             size_px: 0.0,
             line_h: 0.0,
             text: String::new(),
+            series: Vec::new(),
+            series_key: 0,
+            series_ok: false,
         }
     }
 }
@@ -335,6 +342,7 @@ impl Rt {
             let old = std::mem::take(&mut self.nodes[i as usize].text);
             n.text = old;
             n.text.clear();
+            n.series = std::mem::take(&mut self.nodes[i as usize].series);
             self.nodes[i as usize] = n;
             i
         } else {
@@ -472,8 +480,11 @@ impl Rt {
     pub fn flush_text(&mut self) {
         let mut d = std::mem::take(&mut self.text_dirty);
         for &n in &d {
-            self.nodes[n as usize].dirty = false;
-            if self.nodes[n as usize].live {
+            // a node freed and reallocated this turn leaves a stale entry behind: only a live node
+            // that is still marked dirty is shaped (`alloc_node` resets the flag)
+            let node = &mut self.nodes[n as usize];
+            if node.dirty && node.live {
+                node.dirty = false;
                 self.apply_text(n);
             }
         }

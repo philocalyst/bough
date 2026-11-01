@@ -63,12 +63,8 @@ fn card<'a>(i: usize, live: &'a Signal<u64>) -> impl Element<Dash> + 'a {
             text(live.map(move |l| card_value(i, *l))).at(CARD_VALUE.0, CARD_VALUE.1).size(16.0).line_height(20.0).color(rgb(TEXT)),
             quad(PROGRESS.0, PROGRESS.1, PROGRESS.2, PROGRESS.3).rounded(2.0).bg(rgb(TRACK)),
             quad(PROGRESS.0, PROGRESS.1, 0.0, PROGRESS.3).rounded(2.0).bg(rgb(ACCENT)).width(live.map(move |l| card_progress(i, *l))),
-            each((0..BARS).map(move |bar| {
-                quad(bar_x(bar), 0.0, BAR_WIDTH, 0.0).bg(rgb(ACCENT)).span(live.map(move |l| {
-                    let h = bar_height(i, bar, *l);
-                    (SPARK_BASE - h, h)
-                }))
-            })),
+            // the 26-bar sparkline: one run record, bar `i` = `bar_height(card, i, live)`
+            bars(BAR_X, BAR_STEP, BAR_WIDTH, BARS, SPARK_BASE, SPARK_HEIGHT, 2.0, live, move |t| sample(i, t)).color(rgb(ACCENT)),
         ),
     )
 }

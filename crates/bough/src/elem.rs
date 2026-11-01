@@ -557,3 +557,138 @@ impl<'a, V: 'static> Element<V> for VirtualList<'a, V> {
         unsafe { m.rt.region_initial(reg, m.owner as *const u8, **self.scroll, m.recs) };
     }
 }
+
+// =============================================================================== bars (series run)
+
+/// A sliding-window bar series: one record owning a run of `count` solid quads. Bar `i` has height
+/// `max(max_h * sample(key + i), min_h)` points growing up from `base`. When `key` advances by one
+/// the window shifts and only the new rightmost sample is computed (the memoised samples are the
+/// value that was there all along); any other jump recomputes every sample. One wire, one ink write
+/// (old and new union) per update however many bars there are.
+pub struct Bars<'a, F> {
+    key: &'a Signal<u64>,
+    sample: F,
+    x: f32,
+    step: f32,
+    width: f32,
+    count: usize,
+    base: f32,
+    max_h: f32,
+    min_h: f32,
+    color: Color,
+}
+
+pub fn bars<'a, F: Fn(u64) -> f32 + Copy + 'static>(
+    x: f32,
+    step: f32,
+    width: f32,
+    count: usize,
+    base: f32,
+    max_h: f32,
+    min_h: f32,
+    key: &'a Signal<u64>,
+    sample: F,
+) -> Bars<'a, F> {
+    Bars { key, sample, x, step, width, count, base, max_h, min_h, color: Color::rgba(255, 255, 255, 255) }
+}
+
+impl<F> Bars<'_, F> {
+    pub fn color(mut self, c: Color) -> Self {
+        self.color = c;
+        self
+    }
+}
+
+/// Recompute the node's samples for `key` (shifting when the key advanced by one) and write the
+/// bar instances; returns the union ink.
+fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F) -> bough_core::NRect {
+    let n = &mut rt.nodes[node as usize];
+    let count = n.series.len();
+    if n.series_ok && key == n.series_key.wrapping_add(1) {
+        n.series.copy_within(1.., 0);
+        n.series[count - 1] = f(key + count as u64 - 1);
+    } else if !n.series_ok || key != n.series_key {
+        for (i, s) in n.series.iter_mut().enumerate() {
+            *s = f(key + i as u64);
+        }
+    }
+    n.series_ok = true;
+    n.series_key = key;
+    // geometry: n.x = x of bar 0 (px), n.w = bar width px, n.h = step px, n.radius = base px (space-local),
+    // n.margin = max_h pt, n.line_h = min_h pt, n.size_px = scale
+    let (x0, wpx, step, base_pt, max_h, min_h, scale, y0) = (n.x, n.w, n.h, n.y, n.margin, n.line_h, n.size_px, n.y0);
+    let first = rt.runs[n.run as usize].first;
+    let mut top = f32::MAX;
+    for i in 0..count {
+        let h = (max_h * rt.nodes[node as usize].series[i]).max(min_h);
+        let y = y0 + (base_pt - h) * scale;
+        let p = rt.inst_ptr(first + i as u32);
+        unsafe {
+            (*p).xy = [x0 + i as f32 * step, y];
+            (*p).wh = [wpx, h * scale];
+        }
+        top = top.min(y);
+    }
+    let space = rt.nodes[node as usize].space;
+    let bottom = y0 + base_pt * scale;
+    rt.ink_rect(space, x0, top, (count as f32 - 1.0) * step + wpx, bottom - top, 0.0)
+}
+
+unsafe fn patch_bars<F: Fn(u64) -> f32 + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    let key = **unsafe { &*(sig as *const Signal<u64>) };
+    let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
+    let ink = write_bars(rt, w.node, key, f);
+    let h = rt.nodes[w.node as usize].handle;
+    rt.bough.set_ink_handle(h, ink);
+}
+
+impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a, F> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        const { assert!(std::mem::size_of::<F>() <= 16 && std::mem::align_of::<F>() <= 8) };
+        let s = m.rt.scale;
+        let node = m.rt.alloc_node();
+        let run = m.rt.alloc_run(self.count);
+        m.rt.runs[run as usize].len = self.count as u32;
+        let first = m.rt.runs[run as usize].first;
+        for i in 0..self.count {
+            let ins = Instance { xy: [0.0; 2], wh: [0.0; 2], uv: [0; 4], color: self.color.0, kind: KIND_SOLID, space: m.space, aux: [0, 0, 0, m.clip as u32] };
+            unsafe { m.rt.inst_ptr(first + i as u32).write(ins) };
+        }
+        {
+            let n = &mut m.rt.nodes[node as usize];
+            n.run = run;
+            n.space = m.space;
+            n.clip = m.clip;
+            n.kind = 4;
+            n.x = (m.ox + self.x) * s;
+            n.w = self.width * s;
+            n.h = self.step * s;
+            n.y = self.base;
+            n.y0 = m.oy * s;
+            n.margin = self.max_h;
+            n.line_h = self.min_h;
+            n.size_px = s;
+            n.series.clear();
+            n.series.resize(self.count, 0.0);
+            n.series_ok = false;
+        }
+        let ink = write_bars(m.rt, node, **self.key, self.sample);
+        let mut recipe = [0u8; 16];
+        unsafe { std::ptr::write_unaligned(recipe.as_mut_ptr() as *mut F, self.sample) };
+        let before = m.scope.wires.len();
+        if let Some(off) = m.offset_of(self.key) {
+            m.wire(self.key.head(), off, patch_bars::<F>, node, recipe);
+        }
+        let mut handle_idx = 0;
+        if m.scope.wires.len() > before {
+            let hd = m.rt.bough.new_handle();
+            handle_idx = hd.idx;
+            m.rt.nodes[node as usize].handle = hd;
+            m.scope.nodes.push(node);
+        } else {
+            m.rt.free_node(node);
+        }
+        m.scope.runs.push(run);
+        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: run, handle: handle_idx });
+    }
+}
