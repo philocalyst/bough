@@ -247,6 +247,8 @@ pub struct Input {
     pub(crate) mounting_view: Option<u32>,
     /// Wired clips (`template::clip_by`): (clip id, space, parent clip).
     pub(crate) wclips: Vec<(u16, u16, u16)>,
+    /// Offset groups (`template::offset`).
+    pub(crate) offsets: Vec<crate::template::OffsetState>,
     /// Handles of the hover chain (dispatch chain under the pointer), nearest first.
     hover: Vec<Handle>,
     cell: NRect,
@@ -284,6 +286,7 @@ impl Default for Input {
             views: Vec::new(),
             mounting_view: None,
             wclips: Vec::new(),
+            offsets: Vec::new(),
             hover: Vec::new(),
             cell: NRect::EMPTY,
             cell_epoch: 0,
@@ -1122,6 +1125,32 @@ impl<V: View> App<V> {
             if to != heading || s.glide.is_some() {
                 s.glide = Some(Tween { from: at, to, elapsed: 0.0 });
             }
+            break;
+        }
+        self.settle_input();
+    }
+
+    /// Precise (trackpad) scroll at (x, y) by `dy` points: the nearest scroller moves at once (the device's
+    /// own deltas are already smooth; no glide).
+    pub fn wheel_points(&mut self, x: f32, y: f32, dy: f32) {
+        self.sync_pub();
+        let (px, py) = self.dev(x, y);
+        self.rt.input.pointer = Some((px, py));
+        self.update_hover(px, py, x, y);
+        let chain = self.rt.input.hover.clone();
+        for h in chain {
+            let a = self.rt.input.act_of(h);
+            let sc = self.rt.input.acts[a as usize].scroll;
+            if sc == NONE {
+                continue;
+            }
+            let o = self.owner_mut();
+            let s = &mut self.rt.input.scrollers[sc as usize];
+            s.glide = None;
+            // SAFETY: as in `wheel`.
+            let sig = unsafe { &mut *(o.add(s.off as usize) as *mut Signal<f32>) };
+            let to = (**sig + dy).clamp(0.0, s.max);
+            sig.set(to);
             break;
         }
         self.settle_input();

@@ -21,7 +21,7 @@ pub mod prelude {
     pub use crate::color::{rgb, Color};
     pub use crate::elem::{at, bars, clip, each, quad, text, virtual_list, Element, IntoProp, Mounter, Quad, TextSrc};
     pub use crate::input::{no_hit, text_field, tooltip, Button, Ev, Interact, Key, Mods, TipStyle};
-    pub use crate::template::{clip_by, port_list, scroll_y, template, wired_clip, Hooked, TNode, T_CLIP, T_FOCUS, T_HOOK};
+    pub use crate::template::{clip_by, offset, port_list, scroll_y, template, wired_clip, Hooked, TNode, T_CLIP, T_FOCUS, T_HOOK};
     pub use crate::mlist::measured_list;
     pub use crate::rt::Caps;
     pub use crate::sig;

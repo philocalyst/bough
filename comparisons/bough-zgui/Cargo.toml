@@ -21,3 +21,12 @@ path = "src/bin/label_churn.rs"
 [[bin]]
 name = "resize_slope"
 path = "src/bin/resize_slope.rs"
+[[bin]]
+name = "drag_probe"
+path = "src/bin/drag_probe.rs"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["block2"] }
+objc2-app-kit = { version = "0.3", features = ["objc2-quartz-core", "objc2-core-foundation", "block2"] }
+block2 = "0.6"

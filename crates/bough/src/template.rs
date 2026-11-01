@@ -441,3 +441,62 @@ impl<'a, V: 'static> Element<V> for PortList<'a, V> {
         unsafe { m.rt.region_initial(reg, m.owner as *const u8, *self.scroll.get(), m.recs) };
     }
 }
+
+// =============================================================================== offsets (drag previews, popovers)
+
+/// Children translated by a signal's (dx, dy) points: they live in a space of their own (the GPU adds its
+/// translation to their instances and glyph runs), under a paint-less record whose subtree they are; a new
+/// value is one space write plus one `translate_run` over the subtree's records (damage: their old and new
+/// bounds). A drag preview following the pointer is one such write per move.
+pub struct Offset<'a, V, C> {
+    sig: Wired<'a, (f32, f32), V>,
+    ch: C,
+}
+pub fn offset<V, C>(sig: Wired<'_, (f32, f32), V>, ch: C) -> Offset<'_, V, C> {
+    Offset { sig, ch }
+}
+
+/// (record handle, space, base origin x, y in device px, current offset in device px).
+pub(crate) type OffsetState = (bough_core::Handle, u16, f32, f32, [i32; 2]);
+
+/// # Safety
+/// Wire contract: `sig` is a `Signal<(f32, f32)>`; `w.node` indexes `Input::offsets`.
+unsafe fn patch_offset(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    // SAFETY: see the function contract.
+    let v = **unsafe { &*(sig as *const Signal<(f32, f32)>) };
+    let (h, space, bx, by, cur) = rt.input.offsets[w.node as usize];
+    let s = rt.scale;
+    let new = [(v.0 * s).round() as i32, (v.1 * s).round() as i32];
+    if new == cur {
+        return;
+    }
+    rt.input.offsets[w.node as usize].4 = new;
+    rt.set_space(space, [bx + new[0] as f32, by + new[1] as f32]);
+    let Some(pos) = rt.bough.pos_of(h) else { return };
+    let end = rt.bough.subtree_end(pos);
+    rt.bough.translate_run(pos + 1, end - pos - 1, new[0] - cur[0], new[1] - cur[1]);
+}
+
+impl<V: 'static, C: Element<V>> Element<V> for Offset<'_, V, C> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        let s = m.rt.scale;
+        let o = m.rt.space(m.space);
+        let (bx, by) = (o[0] + m.ox * s, o[1] + m.oy * s);
+        let v = *self.sig.get();
+        let cur = [(v.0 * s).round() as i32, (v.1 * s).round() as i32];
+        let space = m.rt.alloc_space();
+        m.rt.set_space(space, [bx + cur[0] as f32, by + cur[1] as f32]);
+        let h = m.rt.bough.new_handle();
+        m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: h.idx, clip: m.clip });
+        let k = m.rt.input.offsets.len() as u32;
+        m.rt.input.offsets.push((h, space, bx, by, cur));
+        m.wire(&self.sig, patch_offset, k, [0; 16]);
+        let saved = (m.space, m.ox, m.oy, m.depth);
+        m.space = space;
+        m.ox = 0.0;
+        m.oy = 0.0;
+        m.depth += 1;
+        self.ch.mount(m);
+        (m.space, m.ox, m.oy, m.depth) = saved;
+    }
+}

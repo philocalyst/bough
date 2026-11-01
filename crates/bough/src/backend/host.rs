@@ -196,3 +196,161 @@ pub fn run_window_linked<V: View>(
         }
     })
 }
+
+// =============================================================================== interactive windows
+
+use crate::input::{Button, Key, Mods};
+use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType};
+
+/// Points one precise (trackpad) scroll pixel moves: AppKit's deltas are already in points.
+fn key_of(e: &NSEvent) -> Vec<Key> {
+    match e.keyCode() {
+        48 => vec![Key::Tab],
+        51 => vec![Key::Backspace],
+        117 => vec![Key::Delete],
+        36 | 76 => vec![Key::Enter],
+        53 => vec![Key::Escape],
+        123 => vec![Key::Left],
+        124 => vec![Key::Right],
+        125 => vec![Key::Down],
+        126 => vec![Key::Up],
+        115 => vec![Key::Home],
+        119 => vec![Key::End],
+        116 => vec![Key::PageUp],
+        121 => vec![Key::PageDown],
+        _ => e.characters().map(|s| s.to_string().chars().filter(|c| !c.is_control()).map(Key::Char).collect()).unwrap_or_default(),
+    }
+}
+
+fn mods_of(e: &NSEvent) -> Mods {
+    let f = e.modifierFlags();
+    Mods {
+        shift: f.contains(NSEventModifierFlags::Shift),
+        ctrl: f.contains(NSEventModifierFlags::Control),
+        alt: f.contains(NSEventModifierFlags::Option),
+        cmd: f.contains(NSEventModifierFlags::Command),
+    }
+}
+
+/// Deliver one AppKit event to the app (window coordinates, top-left origin). Returns whether it was input.
+pub fn dispatch_event<V: View>(a: &mut App<V>, e: &NSEvent, content_h: f64) -> bool {
+    let loc = e.locationInWindow();
+    let (x, y) = (loc.x as f32, (content_h - loc.y) as f32);
+    match e.r#type() {
+        NSEventType::MouseMoved | NSEventType::LeftMouseDragged | NSEventType::RightMouseDragged | NSEventType::OtherMouseDragged => a.pointer_move(x, y),
+        NSEventType::LeftMouseDown => a.pointer_down(x, y, Button::Primary),
+        NSEventType::LeftMouseUp => a.pointer_up(x, y, Button::Primary),
+        NSEventType::RightMouseDown => a.pointer_down(x, y, Button::Secondary),
+        NSEventType::RightMouseUp => a.pointer_up(x, y, Button::Secondary),
+        NSEventType::MouseExited => a.pointer_leave(),
+        NSEventType::ScrollWheel => {
+            let dy = e.scrollingDeltaY() as f32;
+            if e.hasPreciseScrollingDeltas() {
+                a.wheel_points(x, y, -dy);
+            } else {
+                a.wheel(x, y, 0.0, -dy);
+            }
+        }
+        NSEventType::KeyDown => {
+            let m = mods_of(e);
+            for k in key_of(e) {
+                a.key_down(k, m);
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// An interactive window: AppKit's mouse, wheel and key events go to the app's input turns (a local event
+/// monitor; the window accepts mouse-moved events), each followed by a frame; while an input animation runs
+/// (a glide, a tooltip fade) the display link ticks it and draws, and it pauses when nothing animates.
+/// `start(host, app)` runs once the first frame is up (a probe installs its timers there). After `seconds`
+/// (if > 0) `report` runs and the process exits.
+pub fn run_interactive<V: View>(
+    title: &str,
+    make_cfg: fn(f32) -> Config,
+    view: V,
+    seconds: f64,
+    start: impl FnOnce(&bough_metal::app::Host, Rc<RefCell<App<V>>>) + 'static,
+    report: impl FnOnce(&mut App<V>) + 'static,
+) -> ! {
+    let probe = make_cfg(2.0);
+    let (w, h) = (probe.width_pt as f64, probe.height_pt as f64);
+    drop(probe);
+    let mut init = Some((view, start, report));
+    let mut state: Option<(Rc<RefCell<App<V>>>, Option<std::time::Instant>)> = None;
+    let trim = Rc::new(Trim::default());
+    bough_metal::app::run_sized(title, w, h, move |host, link| {
+        if let Some((view, start, report)) = init.take() {
+            let mut app = new_app(host, make_cfg, view);
+            app.frame();
+            let app = Rc::new(RefCell::new(app));
+            host.window.setAcceptsMouseMovedEvents(true);
+            {
+                let (app, trim, host2) = (app.clone(), trim.clone(), host.clone());
+                let blk = RcBlock::new(move |e: NonNull<NSEvent>| -> *mut NSEvent {
+                    // SAFETY: AppKit hands the monitor a live event for the duration of the call.
+                    let ev = unsafe { e.as_ref() };
+                    if let Ok(mut a) = app.try_borrow_mut() {
+                        if dispatch_event(&mut a, ev, h) {
+                            let drew = a.frame();
+                            after_frame(&app, &trim, &mut a, drew);
+                            if a.animating() {
+                                host2.link.setPaused(false);
+                            }
+                        }
+                    }
+                    e.as_ptr()
+                });
+                let mask = NSEventMask::MouseMoved
+                    | NSEventMask::LeftMouseDown
+                    | NSEventMask::LeftMouseUp
+                    | NSEventMask::LeftMouseDragged
+                    | NSEventMask::RightMouseDown
+                    | NSEventMask::RightMouseUp
+                    | NSEventMask::RightMouseDragged
+                    | NSEventMask::MouseExited
+                    | NSEventMask::ScrollWheel
+                    | NSEventMask::KeyDown;
+                // SAFETY: the block returns the event it was given (dispatch continues).
+                let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &blk) };
+                std::mem::forget(monitor);
+                std::mem::forget(blk);
+            }
+            if seconds > 0.0 {
+                let host = host.clone();
+                let app = app.clone();
+                let report = Rc::new(RefCell::new(Some(report)));
+                let blk = RcBlock::new(move |_t: NonNull<NSTimer>| {
+                    if let Some(r) = report.borrow_mut().take() {
+                        r(&mut app.borrow_mut());
+                    }
+                    report_exit(&mut app.borrow_mut());
+                    host.close();
+                    std::process::exit(0);
+                });
+                let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(seconds, false, &blk) };
+                unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&t, objc2_foundation::NSRunLoopCommonModes) };
+                std::mem::forget(t);
+            }
+            start(host, app.clone());
+            link.setPaused(true);
+            state = Some((app, None));
+            return;
+        }
+        if let Some((app, last)) = &mut state {
+            let Ok(mut a) = app.try_borrow_mut() else { return };
+            let now = std::time::Instant::now();
+            let dt = last.map_or(1.0 / 120.0, |l| now.duration_since(l).as_secs_f32().min(0.05));
+            *last = Some(now);
+            if !a.tick(dt) {
+                link.setPaused(true);
+                *last = None;
+                return;
+            }
+            let drew = a.frame();
+            after_frame(app, &trim, &mut a, drew);
+        }
+    })
+}
