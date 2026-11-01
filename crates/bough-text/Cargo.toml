@@ -5,3 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+ttf-parser = { version = "0.25", default-features = false, features = ["std", "opentype-layout", "variable-fonts"] }
+swash = "0.2"
+
+[dev-dependencies]
+rustybuzz = "0.20"
+libc = "0.2"
+zgx-workload = { package = "zgx-workload", path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }
+cosmic-text = { package = "zgx-cosmic-text", path = "/Users/mileswirht/projects/_ref/zgx/vendor/cosmic-text", default-features = false, features = ["std", "swash", "shape-run-cache"] }
+
