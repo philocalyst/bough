@@ -33,6 +33,8 @@ pub(crate) struct ShapeContext {
     unicode_buffer: Option<harfrust::UnicodeBuffer>,
     features: Vec<harfrust::Feature>,
     char_cluster: CharCluster,
+    /// bough graft: run metrics per (font, size, coordinates).
+    metrics: crate::layout::data::MetricsCache,
     /// bough graft 1: the table shaper for covered font segments, and its variation scratch.
     #[cfg(feature = "std")]
     fast: crate::bough::fast::FastShaper,
@@ -53,6 +55,7 @@ impl Default for ShapeContext {
             unicode_buffer: Some(harfrust::UnicodeBuffer::new()),
             features: Vec::new(),
             char_cluster: CharCluster::default(),
+            metrics: Default::default(),
             #[cfg(feature = "std")]
             fast: Default::default(),
             #[cfg(feature = "std")]
@@ -474,6 +477,7 @@ fn shape_segment<B: Brush>(
                 segment_infos,
                 (text_range.start + segment_start_offset)..(text_range.start + segment_end_offset),
                 scx.fast.coords(),
+                &mut scx.metrics,
             );
             crate::bough::count_segment(true);
             return;
@@ -605,6 +609,7 @@ fn shape_segment<B: Brush>(
         segment_infos,
         (text_range.start + segment_start_offset)..(text_range.start + segment_end_offset),
         harf_shaper.coords(),
+        &mut scx.metrics,
     );
 
     // Replace buffer to reuse allocation in next iteration.

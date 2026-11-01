@@ -393,6 +393,7 @@ impl<B: Brush> LayoutData<B> {
         char_infos: &[(CharInfo, u16)], // From text analysis
         text_range: Range<usize>,       // The text range this run covers
         coords: &[harfrust::NormalizedCoord],
+        metrics_cache: &mut MetricsCache,
     ) {
         let infos = glyph_buffer.glyph_infos();
         let positions = glyph_buffer.glyph_positions();
@@ -405,7 +406,7 @@ impl<B: Brush> LayoutData<B> {
         });
         self.push_shaped_run(
             font, font_size, font_attrs, synthesis, glyphs, bidi_level, style_index, word_spacing,
-            letter_spacing, source_text, char_infos, text_range, coords,
+            letter_spacing, source_text, char_infos, text_range, coords, metrics_cache,
         );
     }
 
@@ -427,6 +428,7 @@ impl<B: Brush> LayoutData<B> {
         char_infos: &[(CharInfo, u16)], // From text analysis
         text_range: Range<usize>,       // The text range this run covers
         coords: &[harfrust::NormalizedCoord],
+        metrics_cache: &mut MetricsCache,
     ) {
         let coords_start = self.coords.len();
         self.coords.extend(coords.iter().map(|c| c.to_bits()));
@@ -442,11 +444,7 @@ impl<B: Brush> LayoutData<B> {
                 index
             });
 
-        let metrics = {
-            let font = &self.fonts[font_index];
-            let font_ref = skrifa::FontRef::from_index(font.data.as_ref(), font.index).unwrap();
-            skrifa::metrics::Metrics::new(&font_ref, skrifa::prelude::Size::new(font_size), coords)
-        };
+        let metrics = metrics_cache.get(&self.fonts[font_index], font_size, coords);
         let units_per_em = metrics.units_per_em as f32;
 
         let metrics = {
@@ -679,6 +677,35 @@ impl<B: Brush> LayoutData<B> {
 /// * `char_infos` - Character information from text analysis, indexed by cluster ID.
 /// * `char_indices_iter` - Iterator over (`byte_offset`, `char`) pairs from the source text.
 ///   Should be in logical order (forward for LTR, reverse for RTL).
+/// bough graft: a run's font metrics are a pure function of (font, size, normalized coordinates); upstream reads
+/// them from the font's tables for every run. Kept in the shape context, so they are read once per instance.
+#[derive(Default)]
+pub(crate) struct MetricsCache {
+    entries: Vec<(u64, u32, u32, Vec<harfrust::NormalizedCoord>, skrifa::metrics::Metrics)>,
+    next: usize,
+}
+
+impl MetricsCache {
+    const CAP: usize = 32;
+
+    pub(crate) fn get(&mut self, font: &FontData, size: f32, coords: &[harfrust::NormalizedCoord]) -> skrifa::metrics::Metrics {
+        let (id, index, bits) = (font.data.id(), font.index, size.to_bits());
+        if let Some(e) = self.entries.iter().find(|e| e.0 == id && e.1 == index && e.2 == bits && e.3 == coords) {
+            return e.4;
+        }
+        let font_ref = skrifa::FontRef::from_index(font.data.as_ref(), font.index).unwrap();
+        let m = skrifa::metrics::Metrics::new(&font_ref, skrifa::prelude::Size::new(size), coords);
+        let e = (id, index, bits, coords.to_vec(), m);
+        if self.entries.len() < Self::CAP {
+            self.entries.push(e);
+        } else {
+            self.entries[self.next] = e;
+            self.next = (self.next + 1) % Self::CAP;
+        }
+        m
+    }
+}
+
 /// One shaped glyph as `process_clusters` reads it: harfrust's `GlyphInfo` + `GlyphPosition` fields (font units,
 /// `cluster` = the logical char index). bough graft 1 produces these from its table for covered text.
 #[derive(Clone, Copy, Debug)]

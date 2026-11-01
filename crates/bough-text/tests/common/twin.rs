@@ -81,6 +81,18 @@ macro_rules! engine {
                     }
                 }
 
+                /// Builder + `build` only (analysis, styles, shaping), no line breaking.
+                pub fn build(&mut self, c: &Case) -> Layout<()> {
+                    let mut b = self.lcx.ranged_builder(&mut self.fcx, c.text, 1.0, true);
+                    for p in &c.defaults {
+                        b.push_default(Self::prop(p));
+                    }
+                    for (r, p) in &c.spans {
+                        b.push(Self::prop(p), r.clone());
+                    }
+                    b.build(c.text)
+                }
+
                 pub fn layout(&mut self, c: &Case) -> Layout<()> {
                     let mut b = self.lcx.ranged_builder(&mut self.fcx, c.text, 1.0, true);
                     for p in &c.defaults {

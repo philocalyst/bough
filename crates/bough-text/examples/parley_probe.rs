@@ -38,7 +38,7 @@ fn main() {
         let c = &cases.iter().find(|c| c.0.starts_with(which.as_str())).expect("case").1;
         let up = std::env::var("UPSTREAM").is_ok();
         let t = std::time::Instant::now();
-        while t.elapsed().as_secs() < 6 {
+        while t.elapsed().as_secs() < 14 {
             for _ in 0..100 {
                 if up {
                     std::hint::black_box(u.layout(c));
@@ -59,6 +59,22 @@ fn main() {
             std::hint::black_box(g.layout(c));
         });
         let n = c.text.len() as f64;
+        if std::env::var("PHASES").is_ok() {
+            let b = meter::count(30, || {
+                std::hint::black_box(g.build(c));
+            });
+            let mut l = g.build(c);
+            let br = meter::count(30, || {
+                l.break_all_lines(c.width);
+            });
+            let al = meter::count(30, || {
+                l.align(parley::Alignment::Start, parley::AlignmentOptions::default());
+            });
+            let bu = meter::count(30, || {
+                std::hint::black_box(u.build(c));
+            });
+            println!("  {name}: grafted build {:.0} (upstream {:.0}), break {:.0}, align {:.0}", b.instr, bu.instr, br.instr, al.instr);
+        }
         println!(
             "{name:10} {:5}  {:10.0} {:10.0} {:7.2}  {:8.1} {:8.1}",
             c.text.len(),
