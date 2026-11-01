@@ -18,6 +18,7 @@ objc2-io-surface = { version = "0.3", features = ["objc2-core-foundation"] }
 objc2-core-foundation = { version = "0.3" }
 objc2-quartz-core = { version = "0.3", features = ["objc2-metal", "objc2-core-foundation", "block2"] }
 dispatch2 = "0.3"
+libc = "0.2"
 bough-metal = { path = "../bough-metal" }
 
 [build-dependencies]

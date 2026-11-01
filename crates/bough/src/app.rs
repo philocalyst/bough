@@ -110,6 +110,13 @@ pub struct SurfStats {
     pub trims: u64,
 }
 
+/// The presenter, chosen at compile time (never per frame): the vendored-wgpu-hal port (`bough_gpu::fused`,
+/// feature `wgpu`, ROUND4 §8) or the direct-Metal one (`bough_metal::fused`). Same API, same region layout.
+#[cfg(all(target_os = "macos", feature = "wgpu"))]
+pub use bough_gpu::fused as presenter;
+#[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+pub use bough_metal::fused as presenter;
+
 enum Pick {
     /// The surface on screen already shows the state.
     OnScreen,
@@ -122,7 +129,7 @@ pub struct App<V: View> {
     pub owner: Box<V>,
     pub rt: Rt,
     #[cfg(target_os = "macos")]
-    pub gpu: Option<bough_metal::fused::Fused>,
+    pub gpu: Option<presenter::Fused>,
     /// Per surface: the epoch whose state it holds (`None`: nothing valid).
     held: Vec<Option<u32>>,
     shown: Option<usize>,
@@ -152,8 +159,17 @@ impl<V: View> App<V> {
         let (win_w, win_h) = ((cfg.width_pt * cfg.scale).round() as i32, (cfg.height_pt * cfg.scale).round() as i32);
         let ring = if cfg.ring == 0 { 4 } else { cfg.ring.min(4) };
         let bytes = cfg.caps.region_bytes(win_w as u32, win_h as u32);
-        #[cfg(target_os = "macos")]
-        let metal = gpu.then(|| bough_metal::fused::Fused::new(win_w as usize, win_h as usize, cfg.scale as f64, bytes, ring, 1024));
+        // wgpu: the device boots on another thread (the OS's driver load, ~22 ms cold) while this thread mounts,
+        // lays out and shapes into region memory the presenter then adopts without a copy (bough-gpu RESULTS)
+        #[cfg(all(target_os = "macos", feature = "wgpu"))]
+        let boot = gpu.then(bough_gpu::fused::Boot::spawn);
+        #[cfg(all(target_os = "macos", feature = "wgpu"))]
+        let mem = gpu.then(|| std::sync::Arc::new(bough_gpu::fused::RegionMem::new(bytes)));
+        #[cfg(all(target_os = "macos", feature = "wgpu"))]
+        #[allow(unused_mut)]
+        let metal: Option<presenter::Fused> = None;
+        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+        let metal = gpu.then(|| presenter::Fused::new(win_w as usize, win_h as usize, cfg.scale as f64, bytes, ring, 1024));
         #[cfg(not(target_os = "macos"))]
         let _ = gpu;
         #[cfg(target_os = "macos")]
@@ -164,6 +180,13 @@ impl<V: View> App<V> {
                 // `keep` (the MTLBuffer) is; written only through the region's columns and by the presenter's
                 // header/slot writers while the GPU is idle.
                 unsafe { bough_mem::Region::external(p, len, Box::new(keep)) }
+            }
+            #[cfg(feature = "wgpu")]
+            None if mem.is_some() => {
+                let m = mem.clone().unwrap();
+                // SAFETY: `m` is page-aligned, zero-filled and lives as long as this keep-alive (and the presenter's
+                // clone); written only through the region's columns and the presenter's header/slot writers.
+                unsafe { bough_mem::Region::external(m.ptr, m.len, Box::new(m)) }
             }
             None => bough_mem::Region::heap(bytes),
         };
@@ -192,6 +215,12 @@ impl<V: View> App<V> {
         // SAFETY: `ptr` is the owner just mounted (boxed: it never moves).
         unsafe { rt.mregions_init(ptr as *const u8) };
         drop(scope); // the root scope lives as long as the app: nothing of it is ever released
+        #[cfg(all(target_os = "macos", feature = "wgpu"))]
+        if let (Some(b), Some(m)) = (boot, mem) {
+            let mut f = presenter::Fused::adopt(b.join().expect("device boot"), win_w as usize, win_h as usize, cfg.scale as f64, m, ring, 1024);
+            f.set_layout(rt.layout);
+            metal = Some(f);
+        }
         let ty = rt.tiles_y;
         App {
             owner,

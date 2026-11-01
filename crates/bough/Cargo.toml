@@ -17,6 +17,7 @@ libc = "0.2"
 cephal = { path = "/Users/mileswirht/Downloads/ilo-prod-work/cephal", default-features = false, features = ["flex", "block"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+bough-gpu = { path = "../bough-gpu", optional = true }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["block2"] }
 objc2-metal = { version = "0.3", features = ["objc2-io-surface", "dispatch2", "block2", "objc2-core-foundation"] }
@@ -28,6 +29,8 @@ block2 = "0.6"
 dispatch2 = "0.3"
 
 [features]
+# The presenter on the vendored wgpu-hal with wgsl-rs kernels (crates/bough-gpu) instead of direct Metal.
+wgpu = ["dep:bough-gpu"]
 # Gate sabotage (RESULTS §15): the scroll copy reads one pixel off; every scroll pixel gate must fail with it.
 sabotage_copy = []
 

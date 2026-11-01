@@ -530,6 +530,66 @@ pub struct Fused {
     pending: Option<usize>,
     /// The surface the last calling-thread commit put on screen.
     last_main: usize,
+    /// The region's memory when it was adopted (`Fused::adopt`): the LAST field, so it is freed after the
+    /// buffer over it and everything that encodes into it.
+    _mem: Option<Arc<RegionMem>>,
+}
+
+/// Page-aligned, zero-filled memory for the region, allocated before the device exists (`Fused::adopt`).
+pub struct RegionMem {
+    pub ptr: *mut u8,
+    pub len: usize,
+}
+// SAFETY: plain memory; access is governed by the region's write rule.
+unsafe impl Send for RegionMem {}
+unsafe impl Sync for RegionMem {}
+impl RegionMem {
+    pub fn new(len: usize) -> RegionMem {
+        let len = len.next_multiple_of(16384).max(16384);
+        // SAFETY: anonymous private mapping; zero-filled by the kernel and lazily backed.
+        let p = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANON, -1, 0) };
+        assert!(p != libc::MAP_FAILED, "region mmap");
+        RegionMem { ptr: p as *mut u8, len }
+    }
+}
+impl Drop for RegionMem {
+    fn drop(&mut self) {
+        // SAFETY: mapped in `new` with this length; the buffer over it was released before (field order).
+        unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len) };
+    }
+}
+
+enum Pool {
+    New(usize),
+    Adopt(Arc<RegionMem>),
+}
+
+/// What a presenter needs that does not depend on the window or the region: the device (the OS's driver load,
+/// ~22 ms cold, RESULTS.md), the queues and the pipelines. `Boot::spawn` makes it on another thread at the top of
+/// `App::new`, so it overlaps mounting, layout and shaping.
+pub struct Boot {
+    device: Dev,
+    queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    aux: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    hdev: hal::metal::Device,
+    pipes: Pipes,
+}
+// SAFETY: Metal devices, queues, pipelines and wgpu-hal's Metal objects are thread-safe; a `Boot` is moved once.
+unsafe impl Send for Boot {}
+
+impl Boot {
+    pub fn new() -> Boot {
+        let device = MTLCreateSystemDefaultDevice().expect("no Metal device");
+        let queue = device.newCommandQueue().expect("queue");
+        let aux = device.newCommandQueue().expect("aux queue");
+        // SAFETY: a live MTLDevice (no instance, no adapter enumeration, no validation layer).
+        let hdev = unsafe { hal::metal::Device::device_from_raw(device.clone(), wgt::Features::empty()) };
+        let pipes = make_pipes(&hdev);
+        Boot { device, queue, aux, hdev, pipes }
+    }
+    pub fn spawn() -> std::thread::JoinHandle<Boot> {
+        std::thread::Builder::new().name("bough-boot".into()).spawn(Boot::new).expect("boot thread")
+    }
 }
 
 /// Byte offset of the bind table in the region header (`FBind` in shader.metal).
@@ -550,13 +610,30 @@ const _: () = assert!(size_of::<FHdr>() <= FBIND_OFF && FBIND_OFF + size_of::<FB
 impl Fused {
     /// A presenter for a `w` x `h` px window whose region is a `region_len`-byte shared buffer.
     pub fn new(w: usize, h: usize, scale: f64, region_len: usize, surfaces: usize, bin_cap: u32) -> Fused {
-        let device = MTLCreateSystemDefaultDevice().expect("no Metal device");
-        let queue = device.newCommandQueue().expect("queue");
-        let aux = device.newCommandQueue().expect("aux queue");
-        // SAFETY: a live MTLDevice (no instance, no adapter enumeration, no validation layer).
-        let hdev = unsafe { hal::metal::Device::device_from_raw(device.clone(), wgt::Features::empty()) };
-        let pipes = make_pipes(&hdev);
-        let pool = device.newBufferWithLength_options(region_len, MTLResourceOptions::StorageModeShared).expect("region buffer");
+        Self::from_boot(Boot::new(), w, h, scale, Pool::New(region_len), surfaces, bin_cap)
+    }
+
+    /// The presenter over memory the CPU already filled (`Boot` + `RegionMem`): the region becomes a no-copy
+    /// shared MTLBuffer over `mem`, so the view can be mounted, laid out and shaped into the region while the
+    /// device boots on another thread (`Boot::spawn`), and nothing is copied when they meet.
+    pub fn adopt(boot: Boot, w: usize, h: usize, scale: f64, mem: Arc<RegionMem>, surfaces: usize, bin_cap: u32) -> Fused {
+        Self::from_boot(boot, w, h, scale, Pool::Adopt(mem), surfaces, bin_cap)
+    }
+
+    fn from_boot(boot: Boot, w: usize, h: usize, scale: f64, region: Pool, surfaces: usize, bin_cap: u32) -> Fused {
+        let Boot { device, queue, aux, hdev, pipes } = boot;
+        let (pool, region_len, mem) = match region {
+            Pool::New(len) => (device.newBufferWithLength_options(len, MTLResourceOptions::StorageModeShared).expect("region buffer"), len, None),
+            Pool::Adopt(m) => {
+                // SAFETY: `m` is page-aligned, page-multiple, zero-initialised memory that outlives the buffer
+                // (the presenter keeps `m`); no deallocator: `RegionMem` frees it.
+                let b = unsafe {
+                    device.newBufferWithBytesNoCopy_length_options_deallocator(NonNull::new(m.ptr as *mut std::ffi::c_void).unwrap(), m.len, MTLResourceOptions::StorageModeShared, None)
+                }
+                .expect("no-copy region buffer");
+                (b, m.len, Some(m))
+            }
+        };
         let pool_ptr = pool.contents().as_ptr() as *mut u8;
         let atlas = Self::new_atlas(&device, 1024, 512);
         let ty = h.div_ceil(32);
@@ -653,6 +730,7 @@ impl Fused {
             pending_frame: None,
             pending: None,
             last_main: NONE_SURF,
+            _mem: mem,
         };
         // the residency set is what makes the bind table's resources reachable (encoders bind nothing else)
         {
