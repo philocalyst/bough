@@ -146,6 +146,42 @@ fn gradient(s: &str) -> Option<String> {
     Some(format!("Some(Grad {{ radial: {radial}, angle_deg: {angle:?}, at: [{:?}, {:?}], stops: &[{}] }})", at[0], at[1], st.join(", ")))
 }
 
+/// A computed `transform` (one function: rotate, scale, translate[XY]) as an `Xf` literal; `None` for none
+/// or an identity.
+fn transform(s: &str) -> String {
+    let Some((f, args)) = s.split_once('(') else { return "None".into() };
+    let a: Vec<&str> = args.trim_end_matches(')').split(',').map(|t| t.trim()).collect();
+    let num = |t: &str| -> (f32, bool) {
+        if let Some(p) = t.strip_suffix('%') { (p.parse::<f32>().unwrap_or(0.0) / 100.0, true) } else { (px(t), false) }
+    };
+    let (mut m, mut t, mut pct) = ([1.0f32, 0.0, 0.0, 1.0], [0.0f32; 2], [false; 2]);
+    match f {
+        "rotate" => {
+            let d = a[0].trim_end_matches("deg").parse::<f32>().unwrap_or(0.0).to_radians();
+            m = [d.cos(), -d.sin(), d.sin(), d.cos()];
+        }
+        "scale" => {
+            let sx: f32 = a[0].parse().unwrap_or(1.0);
+            let sy: f32 = a.get(1).and_then(|v| v.parse().ok()).unwrap_or(sx);
+            m = [sx, 0.0, 0.0, sy];
+        }
+        "translateX" => (t[0], pct[0]) = num(a[0]),
+        "translateY" => (t[1], pct[1]) = num(a[0]),
+        "translate" => {
+            (t[0], pct[0]) = num(a[0]);
+            if let Some(y) = a.get(1) {
+                (t[1], pct[1]) = num(y);
+            }
+        }
+        _ => return "None".into(),
+    }
+    let ident = (m[0] - 1.0).abs() < 1e-6 && m[1].abs() < 1e-6 && m[2].abs() < 1e-6 && (m[3] - 1.0).abs() < 1e-6 && t == [0.0, 0.0];
+    if ident {
+        return "None".into();
+    }
+    format!("Some(Xf {{ m: [{:?}, {:?}, {:?}, {:?}], t: [{:?}, {:?}], pct: [{}, {}] }})", m[0], m[1], m[2], m[3], t[0], t[1], pct[0], pct[1])
+}
+
 /// `box-shadow` as `Shadow` literals (visible, outer shadows).
 fn shadows(s: &str) -> Vec<String> {
     if s.is_empty() || s == "none" {
@@ -491,7 +527,8 @@ fn generate_layout(file: &str, name: &str, tagger: Tagger, fixed_root: bool) -> 
             }
             bg = scale_alpha(color(&g(r, "bg_color")).unwrap_or(0), opacity);
             // decorations: a gradient fill, box shadows, a vector icon
-            let grad = gradient(&g(r, "bg_image"));
+            // a text element's gradient fills its glyphs in zgui (gradient text: not drawn here), not a box
+            let grad = if g(r, "tag") == "text" { None } else { gradient(&g(r, "bg_image")) };
             let sh = shadows(&g(r, "box_shadow"));
             let icon = svg.get(&pre).cloned().unwrap_or_default();
             if grad.is_some() && bg >> 24 == 0 {
@@ -500,8 +537,9 @@ fn generate_layout(file: &str, name: &str, tagger: Tagger, fixed_root: bool) -> 
             if g(r, "tag") == "vector" && icon.is_empty() {
                 bg = scale_alpha(color(&g(r, "color")).unwrap_or(0xff00_0000), 0.25 * opacity);
             }
-            if grad.is_some() || !sh.is_empty() || !icon.is_empty() {
-                let lit = format!("Deco {{ grad: {}, shadows: &[{}], svg: {icon:?} }}", grad.unwrap_or_else(|| "None".into()), sh.join(", "));
+            let xf = transform(&g(r, "transform"));
+            if grad.is_some() || !sh.is_empty() || !icon.is_empty() || xf != "None" {
+                let lit = format!("Deco {{ grad: {}, shadows: &[{}], svg: {icon:?}, xform: {xf} }}", grad.unwrap_or_else(|| "None".into()), sh.join(", "));
                 deco = *deco_index.entry(lit.clone()).or_insert_with(|| {
                     decos.push(lit);
                     decos.len() - 1

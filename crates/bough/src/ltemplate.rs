@@ -15,7 +15,7 @@
 //!   clip is registered with the view so a scroll moves it.
 //! * **Hooks** mount the nodes the application owns (wired, interactive) with typed builders.
 use crate::color::Color;
-pub use crate::deco::{Deco, Grad, Shadow};
+pub use crate::deco::{Deco, Grad, Shadow, Xf};
 use crate::elem::{quad_instance, Element, Mounter};
 use crate::layout::{attach, LeafCtx};
 use crate::rt::*;
@@ -464,7 +464,9 @@ impl<V: 'static> Element<V> for LTemplate<V> {
         // SAFETY of the owner reference: the mounter's owner is the live owner being mounted.
         let owner: &V = unsafe { &*m.owner };
         // the layout parents: (template depth, layout node, clip of its children)
-        let mut parents: Vec<(u16, u32, u16)> = Vec::new();
+        let space0 = m.space;
+        // (template depth, layout node, clip of its children, space of its children)
+        let mut parents: Vec<(u16, u32, u16, u16)> = Vec::new();
         let mut contents: Vec<u16> = Vec::new();
         let mut skip_below: Option<u16> = None;
         for n in self.nodes.iter() {
@@ -491,6 +493,14 @@ impl<V: 'static> Element<V> for LTemplate<V> {
             m.depth = base + n.depth - contents.len() as u16;
             m.rt.lay.cur = parents.last().map_or(cur0, |p| p.1);
             m.clip = parents.last().map_or(clip0, |p| p.2);
+            m.space = parents.last().map_or(space0, |p| p.3);
+            // a transformed box: it and its subtree are mounted in a space of their own (the kernels'
+            // per-instance transform), following outer scrolls as a nested view; its records get the same
+            // transform in the core when laid out (PlaceHook::Xform -> Rt::transform_subtree)
+            let xform = if n.deco != 0 && n.flags & L_TEXT == 0 { self.decos.get(n.deco as usize).and_then(|d| d.xform) } else { None };
+            if xform.is_some() {
+                m.space = m.rt.xform_space(m.space);
+            }
             let (lid, rec) = if n.flags & L_HOOK != 0 {
                 let before = m.recs.len();
                 let mut ctx = LCtx { node: n, style_ids: &mut ids, decls: self.decls, text_style, decos: self.decos };
@@ -529,12 +539,17 @@ impl<V: 'static> Element<V> for LTemplate<V> {
             if n.flags & L_CLIP != 0 {
                 clip = m.rt.layout_clip(lid, m.clip);
             }
-            parents.push((n.depth, lid, clip));
+            if let Some(xf) = xform {
+                let h = m.rt.bough.handle_gen(m.recs[rec].handle);
+                m.rt.add_place_hook(lid, PlaceHook::Xform { space: m.space, handle: h, xf });
+            }
+            parents.push((n.depth, lid, clip, m.space));
         }
         m.depth = base;
         m.clip = clip0;
         m.rt.lay.cur = cur0;
         m.rt.lay.mount_avail = avail0;
+        m.space = space0;
     }
 }
 
@@ -550,6 +565,9 @@ pub(crate) enum PlaceHook {
     Anchor { view: u32 },
     /// A list region whose port is the box (`port_list` under a laid-out panel).
     Port { reg: u32 },
+    /// A transformed box: the subtree of record `handle` (its instances in `space`) takes the affine about the
+    /// box's centre whenever the box moves or resizes.
+    Xform { space: u16, handle: bough_core::Handle, xf: crate::deco::Xf },
     /// A decoration (deco.rs) at the box offset by (dx, dy): grown by `grow` on every side and sized with
     /// the box (a shadow), or keeping its own size (an icon).
     Deco { node: u32, dx: f32, dy: f32, grow: f32, sized: bool },
@@ -634,6 +652,14 @@ impl Rt {
             PlaceHook::Anchor { view } => {
                 let o = self.space(space);
                 crate::template::move_view(self, view, o[0] + ax, o[1] + ay);
+            }
+            PlaceHook::Xform { space: s, handle, xf } => {
+                let _ = space;
+                let mut t = [if xf.pct[0] { xf.t[0] * w } else { xf.t[0] * self.scale }, if xf.pct[1] { xf.t[1] * h } else { xf.t[1] * self.scale }];
+                if xf.m == [1.0, 0.0, 0.0, 1.0] {
+                    t = [t[0].round(), t[1].round()]; // a pure translation: whole px (sharp glyphs)
+                }
+                self.transform_subtree(handle, s, xf.m, [ax + 0.5 * w, ay + 0.5 * h], t);
             }
             PlaceHook::Deco { node, dx, dy, grow, sized } => {
                 let _ = space;

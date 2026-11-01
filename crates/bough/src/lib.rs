@@ -19,7 +19,7 @@ pub mod text;
 pub use bough_text::numeric::NumFmt;
 
 pub mod prelude {
-    pub use crate::deco::{deco_box, svg_image, Deco, Grad, Shadow};
+    pub use crate::deco::{deco_box, svg_image, Deco, Grad, Shadow, Xf};
     pub use crate::app::{App, Config, View};
     pub use crate::color::{rgb, Color};
     pub use crate::elem::{at, bars, clip, each, quad, text, virtual_list, Element, IntoProp, Mounter, Quad, TextSrc};

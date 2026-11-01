@@ -60,10 +60,21 @@ pub struct Deco {
     pub shadows: &'static [Shadow],
     /// A vector icon (an SVG document; `currentColor` already resolved), drawn over the box.
     pub svg: &'static str,
+    /// A CSS transform of the box and its subtree, about the box's centre (`transform-origin` 50% 50%).
+    pub xform: Option<Xf>,
+}
+
+/// A CSS transform: `m` = [a, b, c, d] (row-major: x' = a x + b y), then a translation `t` (px at scale 1,
+/// or fractions of the box's own size where `pct`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Xf {
+    pub m: [f32; 4],
+    pub t: [f32; 2],
+    pub pct: [bool; 2],
 }
 
 impl Deco {
-    pub const NONE: Deco = Deco { grad: None, shadows: &[], svg: "" };
+    pub const NONE: Deco = Deco { grad: None, shadows: &[], svg: "", xform: None };
 }
 
 // ================================================================================== rasterising from process entry

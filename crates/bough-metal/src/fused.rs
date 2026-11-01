@@ -84,6 +84,9 @@ pub struct Layout {
     pub runs_off: u32,
     pub toks_off: u32,
     pub tok_stride: u32,
+    /// Per space: the affine of a transformed subtree (`[f32; 8]`: M - I, pivot, translation; all zero is
+    /// the identity), indexed like `spaces` (round 3c, input agent).
+    pub xforms_off: u32,
     /// Three frame slots (two in flight, one for the reference render): header + damaged-row records.
     pub slot: [u32; 3],
     /// Capacity masks (capacity - 1, every column's capacity a power of two): the kernels AND every index
@@ -139,6 +142,7 @@ struct FHdr {
     bin_cap: u32,
     debug: u32,
     masks: [u32; 7],
+    xforms_off: u32,
 }
 /// Bytes reserved for the header at the start of the region.
 pub const HDR_BYTES: usize = 256;
@@ -806,6 +810,7 @@ impl Fused {
             bin_cap: self.bin_cap,
             debug: 0,
             masks: [l.masks.inst, l.masks.page, l.masks.glyph, l.masks.run, l.masks.space, l.masks.clip, l.masks.strike],
+            xforms_off: l.xforms_off,
         };
         // SAFETY: the region starts with HDR_BYTES reserved for the header; no GPU work reads it now.
         unsafe { (self.pool_ptr as *mut FHdr).write(h) };

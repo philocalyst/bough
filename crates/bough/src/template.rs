@@ -259,6 +259,21 @@ pub(crate) fn move_view(rt: &mut Rt, v: u32, vx: f32, vy: f32) {
 }
 
 impl Rt {
+    /// A space for a transformed subtree mounted in `parent`: the same translation, registered as a view
+    /// nested in the view being mounted so outer scrolls move it.
+    pub(crate) fn xform_space(&mut self, parent: u16) -> u16 {
+        let s = self.alloc_space();
+        let o = self.space(parent);
+        self.set_space(s, o);
+        let hd = self.bough.new_handle();
+        let v = self.input.views.len() as u32;
+        self.input.views.push(ScrollView { handle: hd, space: s, clip: 0, vx: o[0], vy: o[1], px: 0.0, clips: Vec::new(), nested: Vec::new(), tips: Vec::new(), root: NONE, follows: false, inset_w: 0.0 });
+        if let Some(outer) = self.input.mounting_view {
+            self.input.views[outer as usize].nested.push(v);
+        }
+        s
+    }
+
     /// A clip for an absolute rect inside the current clip `parent`. Inside a scroll view's content the
     /// clip is fresh (it moves with the content) and registered with the view; elsewhere it is shared.
     pub(crate) fn scoped_clip(&mut self, r: [f32; 4], parent: u16) -> u16 {

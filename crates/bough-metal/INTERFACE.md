@@ -199,3 +199,26 @@ unless marked "within". All integers are little-endian.
 * Tile rows: x span < 256 tiles (8-bit fields).
 * A row bin holds ≤ 8192 entries (each record or glyph at most once per row, so it cannot overflow while records +
   glyph slots ≤ 8192).
+
+## Transforms (round 3c/4, input agent): page affine + per-instance affine
+
+A transformed subtree's records live in pages that carry an affine (bough-core `Page::xm`, `Page::xv`, at
+byte offset 1448 = `FPG_XF`, 24 bytes in what was padding): the stored inks are the records' untransformed
+inks, and absolute = `M s + xv + off` with `M = I + xm` (row-major `[a, b, c, d]`; all zero = identity, so an
+untransformed page is unchanged). `off` (the page offset, scrolls) still composes after the affine.
+
+* **Bin pass** (`fs_bin`): for a page with a non-zero affine, the group test and the record test use the
+  transformed bounding box of the stored rect (`f_pg_xink`: four corners through `M`, plus `xv + off`, floor /
+  ceil, grown by 1 px), compared with the absolute tile threshold. Untransformed pages take the offset path
+  exactly as before.
+* **Per instance**: every instance and glyph run names a space; the header's `xforms_off` points at a column
+  of `FXf { float4 dm; float2 c; float2 t; }` per space (`dm = M - I`, pivot `c` in space-local px, translation
+  `t`; zeroed = identity). A point `u` (untransformed absolute = space-local + T) is drawn at `K + t + M (u - K)`,
+  `K = T + c`. Staging (`f_stage_rec`, `f_stage_glyph`) computes the coverage window as the transformed box
+  grown by 1 px and stores `M^-1`, `K`, `K + t` and `sqrt|det M|` in the record (`FRec.xi/xk/xt/xs`);
+  shading maps the pixel centre back (`u = K + M^-1 (c - K - t)`) and scales SDF distances by `xs`; glyphs are
+  sampled bilinearly when transformed. Index `space & m_space` as every other column.
+* The CPU keeps both halves equal: `Rt::transform_subtree` writes the space's `FXf` and calls
+  `Bough::set_run_xform` on the subtree's records (pages isolated, the same affine with the pivot in absolute
+  px). Damage is the exact tile cover of each transformed ink (per 32-px row, the quad's x extent); hit testing
+  maps the point through the inverse and tests the untransformed inks.
