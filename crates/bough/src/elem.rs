@@ -113,6 +113,11 @@ pub trait Element<V>: Sized {
     /// Re-description: walk the owner's retained records in lockstep with this (new) description,
     /// patching what differs (`describe.rs`). Wired operands keep their wires.
     fn update(self, m: &mut Mounter<'_, V>);
+    /// Identity of this element inside a dynamic part (0: positional). An item whose key changed between
+    /// two descriptions is replaced (unmounted and mounted), not updated (`describe::update_dyn`).
+    fn dyn_key(&self) -> u64 {
+        0
+    }
 }
 
 impl<V> Element<V> for () {

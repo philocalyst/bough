@@ -17,6 +17,7 @@ use bough_core::RecordInit;
 
 /// One item of a dynamic part: its record and layout-child counts, the resources it owns, its own tape.
 pub struct DynItem {
+    pub key: u64,
     pub nrec: u32,
     pub nkid: u32,
     pub scope: Scope,
@@ -94,7 +95,10 @@ pub(crate) fn mount_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl It
     m.scope.dyns.push(d);
     let mut out = Vec::new();
     for e in items {
-        out.push(mount_item(m, e, None));
+        let key = e.dyn_key();
+        let mut it = mount_item(m, e, None);
+        it.key = key;
+        out.push(it);
     }
     m.rt.dyns.parts[d as usize] = out;
 }
@@ -123,7 +127,7 @@ fn mount_item<V, E: Element<V>>(m: &mut Mounter<'_, V>, e: E, into: Option<&mut 
         }
     };
     let nkid = if lid == NONE { 0 } else { m.rt.lay.eng.kid_count(lid) - k0 };
-    DynItem { nrec: nrec as u32, nkid: nkid as u32, scope, tape }
+    DynItem { key: 0, nrec: nrec as u32, nkid: nkid as u32, scope, tape }
 }
 
 /// Re-describe a dynamic part: item `k` updates retained item `k`, new items are mounted as one run at the
@@ -137,7 +141,32 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
     let mut added: Vec<DynItem> = Vec::new();
     let (fresh_pos, fresh_kid) = (std::cell::Cell::new(usize::MAX), std::cell::Cell::new(0));
     for e in items {
-        if k < old.len() {
+        if k < old.len() && old[k].key != e.dyn_key() {
+            // a keyed item that changed identity: replaced in place (its run out, the new one in)
+            let key = e.dyn_key();
+            let gone = std::mem::replace(&mut old[k], DynItem { key, nrec: 0, nkid: 0, scope: Scope::default(), tape: Vec::new() });
+            if lid != NONE && gone.nkid > 0 {
+                for i in 0..gone.nkid as usize {
+                    let c = m.rt.lay.eng.kids(lid)[m.kid + i];
+                    m.rt.remove_layout_subtree(c);
+                }
+                m.rt.lay.eng.splice_kids(&m.rt.bough, lid, m.kid, gone.nkid as usize, &[]);
+            }
+            m.rt.bough.remove_run(m.pos, gone.nrec as usize);
+            m.rt.release_scope(gone.scope);
+            let mut buf = Vec::new();
+            let mut it = mount_item(m, e, Some(&mut buf));
+            it.key = key;
+            m.rt.bough.insert_run(m.pos, &buf);
+            if lid != NONE && it.nkid > 0 {
+                m.rt.lay.eng.place_tail_kids(lid, m.kid, it.nkid as usize);
+                m.rt.lay.eng.invalidate(&m.rt.bough, lid);
+                m.rt.queue_container(lid);
+            }
+            m.pos += it.nrec as usize;
+            m.kid += it.nkid as usize;
+            old[k] = it;
+        } else if k < old.len() {
             let it = &mut old[k];
             let (p0, k0) = (m.pos, m.kid);
             let recs: *mut Vec<RecordInit> = m.recs;
@@ -157,8 +186,9 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
                 fresh_pos.set(m.pos);
                 fresh_kid.set(m.kid);
             }
+            let key = e.dyn_key();
             let mut it = mount_item(m, e, Some(&mut fresh));
-            it.nrec = it.nrec.max(0);
+            it.key = key;
             added.push(it);
         }
         k += 1;

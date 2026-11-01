@@ -35,7 +35,7 @@ pub mod prelude {
     pub use crate::lanes::{lanes, Lane};
     pub use crate::list::{List, Slot};
     pub use crate::listview::{list, list_with};
-    pub use crate::reader::{latest, produce, Reader, Request};
+    pub use crate::reader::{boundary, latest, produce, Reader, Request};
     pub use crate::template::{clip_by, offset, port_list, scroll_y, template, wired_clip, Hooked, TNode, T_CLIP, T_FOCUS, T_HOOK};
     pub use crate::mlist::measured_list;
     pub use crate::rt::Caps;

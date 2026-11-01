@@ -24,6 +24,8 @@ use std::sync::{Arc, Mutex};
 
 const PENDING: u8 = 1;
 const HAS: u8 = 2;
+/// The last request failed: the reader keeps its last value and carries the failure until a request succeeds.
+const FAULT: u8 = 4;
 
 #[repr(C)]
 pub struct Reader<T> {
@@ -32,7 +34,8 @@ pub struct Reader<T> {
     state: Cell<u8>,
     ticket: Cell<u32>,
     value: UnsafeCell<Option<T>>,
-    staged: UnsafeCell<Option<T>>,
+    staged: UnsafeCell<Option<Result<T, String>>>,
+    fault: UnsafeCell<Option<String>>,
 }
 
 impl<T> Default for Reader<T> {
@@ -43,7 +46,7 @@ impl<T> Default for Reader<T> {
 
 impl<T> Reader<T> {
     pub const fn new() -> Reader<T> {
-        Reader { head: Cell::new(0), phead: Cell::new(0), state: Cell::new(0), ticket: Cell::new(0), value: UnsafeCell::new(None), staged: UnsafeCell::new(None) }
+        Reader { head: Cell::new(0), phead: Cell::new(0), state: Cell::new(0), ticket: Cell::new(0), value: UnsafeCell::new(None), staged: UnsafeCell::new(None), fault: UnsafeCell::new(None) }
     }
     /// The last committed (Ready) value; `None` before first readiness.
     pub fn latest(&self) -> Option<&T> {
@@ -51,6 +54,11 @@ impl<T> Reader<T> {
         unsafe { (*self.value.get()).as_ref() }
     }
     /// Does the next visible answer still wait on a request?
+    /// The last request's failure (the reader keeps its last value), until a request succeeds.
+    pub fn fault(&self) -> Option<&str> {
+        // SAFETY: written only by the runtime's commit, which holds the owner uniquely.
+        unsafe { (*self.fault.get()).as_deref() }
+    }
     pub fn is_pending(&self) -> bool {
         self.state.get() & PENDING != 0
     }
@@ -234,6 +242,9 @@ pub enum Exec {
 
 struct Member {
     reader: usize,
+    /// The reader's owner and its class (a row-owned reader settles with its row's class).
+    owner: usize,
+    cls: u32,
     staged: bool,
     stage: unsafe fn(usize, u32, Box<dyn Any + Send>) -> bool,
     commit: unsafe fn(usize),
@@ -254,6 +265,10 @@ pub struct Async {
     pub(crate) rescan: bool,
     /// Readers committed in the last admission (for `changed`).
     pub committed: Vec<usize>,
+    /// Non-root owners of committed readers, settled after the admission.
+    pub(crate) settle_owners: Vec<(usize, u32)>,
+    /// Boundaries (`boundary`): their branch clips.
+    pub(crate) bounds: Vec<Bound>,
     pub stats: AsyncStats,
 }
 #[derive(Default, Clone, Copy, Debug)]
@@ -266,7 +281,7 @@ pub struct AsyncStats {
 
 impl Default for Async {
     fn default() -> Self {
-        Async { exec: Exec::Manual(VecDeque::new()), done: Arc::default(), cohort: None, producers: Vec::new(), rescan: false, committed: Vec::new(), stats: AsyncStats::default() }
+        Async { exec: Exec::Manual(VecDeque::new()), done: Arc::default(), cohort: None, producers: Vec::new(), rescan: false, committed: Vec::new(), settle_owners: Vec::new(), bounds: Vec::new(), stats: AsyncStats::default() }
     }
 }
 
@@ -274,6 +289,9 @@ pub(crate) struct Producer {
     dst_off: u32,
     f: usize,
     last: Option<Box<dyn Any>>,
+    /// Revoked with its scope (`Rt::revoke_producer`): it requests nothing more.
+    dead: bool,
+    reader: usize,
 }
 
 /// # Safety
@@ -283,7 +301,7 @@ unsafe fn stage<T: 'static>(addr: usize, ticket: u32, v: Box<dyn Any + Send>) ->
     if r.ticket.get() != ticket {
         return false;
     }
-    let v = v.downcast::<T>().expect("job result of the reader's type");
+    let v = v.downcast::<Result<T, String>>().expect("job result of the reader's type");
     // SAFETY: the runtime owns the owner uniquely while admitting.
     unsafe { *r.staged.get() = Some(*v) };
     true
@@ -292,13 +310,23 @@ unsafe fn stage<T: 'static>(addr: usize, ticket: u32, v: Box<dyn Any + Send>) ->
 /// `addr` is a live `Reader<T>` with a staged value.
 unsafe fn commit<T: 'static>(addr: usize) {
     let r = unsafe { &*(addr as *const Reader<T>) };
-    unsafe {
-        let s = (*r.staged.get()).take();
-        if s.is_some() {
-            *r.value.get() = s;
+    let failed = unsafe {
+        match (*r.staged.get()).take() {
+            Some(Ok(v)) => {
+                *r.value.get() = Some(v);
+                *r.fault.get() = None;
+                false
+            }
+            // a failure keeps the last value presented (keep-stale; `boundary` shows its `failed` branch)
+            Some(Err(e)) => {
+                *r.fault.get() = Some(e);
+                true
+            }
+            None => false,
         }
-    }
-    r.state.set(HAS);
+    };
+    let has = r.state.get() & HAS != 0 || !failed;
+    r.state.set(if has { HAS } else { 0 } | if failed { FAULT } else { 0 });
     for h in [&r.head, &r.phead] {
         let x = h.get();
         if x != 0 {
@@ -343,6 +371,9 @@ impl Rt {
             for m in &c.members {
                 // SAFETY: as above.
                 unsafe { (m.commit)(m.reader) };
+                if m.cls != 0 {
+                    self.asy.settle_owners.push((m.owner, m.cls));
+                }
                 self.asy.committed.push(m.reader);
             }
             for &h in &c.held {
@@ -352,7 +383,35 @@ impl Rt {
                 head.set(if x != 0 { x | QUEUED } else { x });
             }
             self.asy.stats.commits += 1;
+            for (o, cls) in std::mem::take(&mut self.asy.settle_owners) {
+                // SAFETY: a member's owner is live (a released one revoked its producer and left the cohort).
+                unsafe { self.settle_cls(o as *const u8, cls) };
+            }
         }
+    }
+
+    /// A producer's scope was released (L5): it requests nothing more and its reader leaves the cohort (a
+    /// completion still in flight finds no member and is discarded).
+    pub(crate) fn revoke_producer(&mut self, p: u32) {
+        let pr = &mut self.asy.producers[p as usize];
+        pr.dead = true;
+        let r = pr.reader;
+        if let Some(c) = self.asy.cohort.as_mut() {
+            c.members.retain(|m| m.reader != r);
+            if c.members.is_empty() {
+                let c = self.asy.cohort.take().unwrap();
+                for &h in &c.held {
+                    // SAFETY: a held head is a signal head of a live owner (a dead row's heads were cleared).
+                    let head = unsafe { &*(h as *const Cell<u32>) };
+                    head.set(head.get() & !HELD);
+                }
+            }
+        }
+    }
+
+    /// Which branch boundary `i` shows (0 loading, 1 failed, 2 child).
+    pub fn boundary_shown(&self, i: usize) -> u8 {
+        self.asy.bounds[i].shown
     }
 
     /// Run up to `n` queued jobs (manual executor).
@@ -389,12 +448,16 @@ impl Rt {
 unsafe fn patch_produce<S: PartialEq + Clone + 'static, T: Send + 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, owner: *const u8) {
     let src = unsafe { &*(sig as *const Signal<S>) };
     let p = &mut rt.asy.producers[w.node as usize];
+    if p.dead {
+        return;
+    }
     if p.last.as_ref().and_then(|b| b.downcast_ref::<S>()) == Some(&**src) {
         return;
     }
     p.last = Some(Box::new((**src).clone()));
     let f: fn(&S) -> Request<T> = unsafe { std::mem::transmute::<usize, fn(&S) -> Request<T>>(p.f) };
     let addr = owner as usize + p.dst_off as usize;
+    p.reader = addr;
     // SAFETY: the contract.
     let r = unsafe { &*(addr as *const Reader<T>) };
     let ticket = r.ticket.get().wrapping_add(1);
@@ -412,7 +475,7 @@ unsafe fn patch_produce<S: PartialEq + Clone + 'static, T: Send + 'static>(rt: &
     let c = rt.asy.cohort.get_or_insert_with(Cohort::default);
     match c.members.iter_mut().find(|m| m.reader == addr) {
         Some(m) => m.staged = false,
-        None => c.members.push(Member { reader: addr, staged: false, stage: stage::<T>, commit: commit::<T> }),
+        None => c.members.push(Member { reader: addr, owner: owner as usize, cls: w.cls, staged: false, stage: stage::<T>, commit: commit::<T> }),
     }
     let h = sig as usize;
     if !c.held.contains(&h) {
@@ -433,9 +496,13 @@ unsafe fn patch_produce<S: PartialEq + Clone + 'static, T: Send + 'static>(rt: &
 }
 
 /// The work a producer hands the executor for one input (built by the producer's `fn(&S) -> Request<T>`).
-pub struct Request<T>(Box<dyn FnOnce() -> T + Send>);
-impl<T> Request<T> {
+pub struct Request<T>(Box<dyn FnOnce() -> Result<T, String> + Send>);
+impl<T: 'static> Request<T> {
     pub fn new(f: impl FnOnce() -> T + Send + 'static) -> Request<T> {
+        Request(Box::new(move || Ok(f())))
+    }
+    /// A request that may fail: its error becomes the reader's `fault` (the last value stays).
+    pub fn fallible(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Request<T> {
         Request(Box::new(f))
     }
 }
@@ -453,9 +520,10 @@ pub fn produce<'a, S, T, V>(src: Wired<'a, S, V>, dst: RWired<'a, T, V>, f: fn(&
 
 impl<'a, S: PartialEq + Clone + 'static, T: Send + 'static, V: 'static> crate::elem::Element<V> for Produce<'a, S, T, V> {
     fn mount(self, m: &mut Mounter<'_, V>) {
-        assert_eq!(m.cls, 0, "producers belong to the root owner");
+        // a producer belongs to the scope that declared it (a row's dies with the row: `revoke_producer`)
         let pi = m.rt.asy.producers.len() as u32;
-        m.rt.asy.producers.push(Producer { dst_off: self.dst.off, f: self.f as usize, last: None });
+        m.rt.asy.producers.push(Producer { dst_off: self.dst.off, f: self.f as usize, last: None, dead: false, reader: 0 });
+        m.scope.prods.push(pi);
         // SAFETY: `src` is an `offset_of!`-proven `Signal<S>` of `V`; `patch_produce::<S, T>` reads one, and its
         // producer names an `offset_of!`-proven `Reader<T>` of `V`.
         let w = unsafe { m.wire_cell(self.src.sig.head(), self.src.off, patch_produce::<S, T>, pi, [0; 16]) };
@@ -467,4 +535,89 @@ impl<'a, S: PartialEq + Clone + 'static, T: Send + 'static, V: 'static> crate::e
         unsafe { patch_produce::<S, T>(m.rt, &wire, self.src.sig as *const Signal<S> as *const u8, owner) };
     }
     fn update(self, _m: &mut Mounter<'_, V>) {}
+}
+
+// =============================================================================== boundary
+
+/// `boundary(sig!(self.r)).loading(L).failed(F).child(C)`: fetch high, block low. All three branches are
+/// mounted once, each under a clip of its own; the reader's transitions (a wire on its pending/fault head)
+/// show one branch and hide the others by rewriting two clip rects (damage: their xor). `loading` shows
+/// until the first readiness, `failed` while the last request failed and no value exists (with a value, a
+/// failure keeps the stale content: the reader's `fault()` is there to adorn it), `child` once a value
+/// exists. In a layout container the branches stack (their layout boxes all take space): put them in
+/// absolutely positioned boxes there.
+pub struct Boundary<'a, T, V, L, F, C> {
+    r: RWired<'a, T, V>,
+    loading: L,
+    failed: F,
+    child: C,
+}
+pub fn boundary<'a, T, V>(r: RWired<'a, T, V>) -> Boundary<'a, T, V, (), (), ()> {
+    Boundary { r, loading: (), failed: (), child: () }
+}
+impl<'a, T, V, L, F, C> Boundary<'a, T, V, L, F, C> {
+    pub fn loading<L2>(self, l: L2) -> Boundary<'a, T, V, L2, F, C> {
+        Boundary { r: self.r, loading: l, failed: self.failed, child: self.child }
+    }
+    pub fn failed<F2>(self, f: F2) -> Boundary<'a, T, V, L, F2, C> {
+        Boundary { r: self.r, loading: self.loading, failed: f, child: self.child }
+    }
+    pub fn child<C2>(self, c: C2) -> Boundary<'a, T, V, L, F, C2> {
+        Boundary { r: self.r, loading: self.loading, failed: self.failed, child: c }
+    }
+}
+
+pub(crate) struct Bound {
+    clips: [u16; 3],
+    rect: bough_core::NRect,
+    shown: u8,
+}
+
+fn branch_of<T>(r: &Reader<T>) -> u8 {
+    if r.has_value() {
+        2
+    } else if r.fault().is_some() {
+        1
+    } else {
+        0
+    }
+}
+
+unsafe fn patch_boundary<T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _o: *const u8) {
+    // SAFETY: wire contract: `sig` is the `phead` of a `Reader<T>` (offset 4).
+    let r = unsafe { &*(sig.sub(4) as *const Reader<T>) };
+    let b = &mut rt.asy.bounds[w.node as usize];
+    let now = branch_of(r);
+    if now == b.shown {
+        return;
+    }
+    let (old, rect, clips) = (b.shown, b.rect, b.clips);
+    b.shown = now;
+    rt.bough.set_clip_rect(clips[old as usize], bough_core::NRect::EMPTY);
+    rt.bough.set_clip_rect(clips[now as usize], rect);
+}
+
+impl<'a, T: 'static, V: 'static, L: crate::elem::Element<V>, F: crate::elem::Element<V>, C: crate::elem::Element<V>> crate::elem::Element<V> for Boundary<'a, T, V, L, F, C> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        crate::describe::mount_opaque(m, |m| {
+            let rect = if m.clip == 0 { m.rt.bough.window() } else { m.rt.bough.clip_rect(m.clip) };
+            let shown = branch_of(self.r.r);
+            let clips = [0u8, 1, 2].map(|i| m.rt.bough.new_clip(if i == shown { rect } else { bough_core::NRect::EMPTY }));
+            let bi = m.rt.asy.bounds.len() as u32;
+            m.rt.asy.bounds.push(Bound { clips, rect, shown });
+            // SAFETY: `phead` sits at `off + 4`; the patch reads the reader 4 bytes before it.
+            unsafe { m.wire_cell(&self.r.r.phead, self.r.off + 4, patch_boundary::<T>, bi, [0; 16]) };
+            let prev = m.clip;
+            m.clip = clips[0];
+            self.loading.mount(m);
+            m.clip = clips[1];
+            self.failed.mount(m);
+            m.clip = clips[2];
+            self.child.mount(m);
+            m.clip = prev;
+        });
+    }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_opaque(m);
+    }
 }

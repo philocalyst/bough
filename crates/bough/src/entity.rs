@@ -215,12 +215,13 @@ unsafe fn end_ents<T>(p: *const u8) {
 
 /// # Safety
 /// Wire contract: `sig` is an `Entities<T>` field of the live owner; `w.node` an `EView` index.
-unsafe fn patch_entities<T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+unsafe fn patch_entities<T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, owner: *const u8) {
     let e = unsafe { &*(sig as *const Entities<T>) };
     if !e.registered.get() {
         e.registered.set(true);
         rt.lists.ends.push((sig, end_ents::<T>));
         rt.pubs.ents(sig as usize, e.edits_raw());
+        rt.pubs.owner(owner as usize, w.cls);
     }
     let (cls, idx) = {
         let v = &rt.eviews[w.node as usize];
@@ -247,9 +248,38 @@ pub fn entity_view<'a, T: crate::app::View, V>(ents: EWired<'a, T, V>, e: Entity
 
 impl<'a, T: crate::app::View, V: 'static> Element<V> for EntityView<'a, T, V> {
     fn mount(self, m: &mut Mounter<'_, V>) {
+        if m.taping() {
+            // in a re-describing owner: a keyed dynamic part of one item, replaced when the entity changes
+            return crate::describe::mount_dyn(m, std::iter::once(Keyed(self)));
+        }
+        self.mount_in(m);
+    }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_dyn(m, std::iter::once(Keyed(self)));
+    }
+}
+
+/// The entity view as a dynamic item keyed by its entity (`Element::dyn_key`).
+struct Keyed<'a, T, V>(EntityView<'a, T, V>);
+impl<'a, T: crate::app::View, V: 'static> Element<V> for Keyed<'a, T, V> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        crate::describe::mount_opaque(m, |m| self.0.mount_in(m));
+    }
+    /// The same entity: its view is its own state; a re-description steps over it.
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_opaque(m);
+    }
+    fn dyn_key(&self) -> u64 {
+        (self.0.e.idx as u64) << 32 | self.0.e.generation as u64 | 1 << 63
+    }
+}
+
+impl<'a, T: crate::app::View, V: 'static> EntityView<'a, T, V> {
+    fn mount_in(self, m: &mut Mounter<'_, V>) {
         let ents = self.ents.ents;
         let p = ents.get(self.e).expect("entity_view of a removed entity") as *const T;
         let cls = m.rt.new_class();
+        m.rt.class_changed[cls as usize] = Some(crate::changed::changed_shim::<T>);
         let ev = m.rt.eviews.len() as u32;
         m.rt.eviews.push(EView { cls, idx: self.e.idx });
         // SAFETY: `self.ents` is an `offset_of!`-proven `Entities<T>` field of `V`; `patch_entities::<T>` reads one.
@@ -264,8 +294,5 @@ impl<'a, T: crate::app::View, V: 'static> Element<V> for EntityView<'a, T, V> {
             unsafe { &*p }.view().mount(&mut sub);
         }
         *ents.wired.borrow_mut() = m.rt.classes[cls as usize].clone();
-    }
-    fn update(self, _m: &mut Mounter<'_, V>) {
-        panic!("entity_view inside a re-describing owner is not supported");
     }
 }

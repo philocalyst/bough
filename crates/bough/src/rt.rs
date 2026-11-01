@@ -196,9 +196,14 @@ pub struct Wire {
     /// head moved elsewhere (a `Signal` swapped between owners or apps, a list row taken out and put back)
     /// carries indices that are not its own, and the chain is cut there instead of being run.
     pub head: usize,
+    /// Owner class of the owner the wire's head lives in (`changed` is shown to that owner).
+    pub cls: u32,
     pub patch: PatchFn,
     pub recipe: [u8; 16],
 }
+
+/// `View::changed` of an owner class, type-erased: `(owner, publications, committed readers)`.
+pub type ChangedFn = unsafe fn(*mut u8, &crate::changed::Pubs, &[usize]);
 
 unsafe fn nop(_: &mut Rt, _: &Wire, _: *const u8, _: *const u8) {}
 
@@ -217,6 +222,8 @@ pub struct Scope {
     pub dyns: Vec<u32>,
     /// List regions mounted in this scope (`listview.rs`), released with their rows.
     pub lregs: Vec<u32>,
+    /// Async producers declared in this scope (`reader.rs`), revoked with it.
+    pub prods: Vec<u32>,
 }
 
 pub struct RowInfo {
@@ -332,6 +339,8 @@ pub struct Rt {
     /// Per owner class: the offsets of its wired cells (class 0 is the app's root owner; every list
     /// region adds one class shared by all its rows, `list.rs`).
     pub(crate) classes: Vec<Vec<u32>>,
+    /// Per owner class: its `View::changed` (rows and entity views of a `View` type; class 0 is the app's).
+    pub(crate) class_changed: Vec<Option<ChangedFn>>,
     pub texts: Vec<crate::text::TextNode>,
     text_free: Vec<u32>,
     /// Virtual-list regions: crate-private (each holds a type-erased row function its `mount_row` trusts).
@@ -423,9 +432,10 @@ impl Rt {
             run_free: Vec::new(),
             nodes: vec![Node::blank()],
             node_free: Vec::new(),
-            wires: vec![Wire { next: 0, dead: true, latest: false, node: 0, head: 0, patch: nop, recipe: [0; 16] }],
+            wires: vec![Wire { next: 0, dead: true, latest: false, node: 0, head: 0, cls: 0, patch: nop, recipe: [0; 16] }],
             wire_free: Vec::new(),
             classes: vec![Vec::new()],
+            class_changed: vec![None],
             texts: Vec::new(),
             text_free: Vec::new(),
             regions: Vec::new(),
@@ -662,7 +672,7 @@ impl Rt {
             after = p;
             p = self.wires[p as usize].next;
         }
-        let w = Wire { next: if after == 0 { first } else { p }, dead: false, latest: false, node, head: addr, patch, recipe };
+        let w = Wire { next: if after == 0 { first } else { p }, dead: false, latest: false, node, head: addr, cls, patch, recipe };
         let idx = if let Some(i) = self.wire_free.pop() {
             self.wires[i as usize] = w;
             i
@@ -682,6 +692,7 @@ impl Rt {
     /// A new owner class (list rows, entities): its wired offsets start empty.
     pub(crate) fn new_class(&mut self) -> u32 {
         self.classes.push(Vec::new());
+        self.class_changed.push(None);
         (self.classes.len() - 1) as u32
     }
 
@@ -874,6 +885,9 @@ impl Rt {
         }
         for r in s.lregs.drain(..) {
             self.lr_release_region(r as usize);
+        }
+        for p in s.prods.drain(..) {
+            self.revoke_producer(p);
         }
         // dynamic items are cut now too (their wires may sit on live signals)
         for &d in &s.dyns {

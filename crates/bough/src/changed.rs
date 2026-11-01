@@ -11,6 +11,8 @@ use std::marker::PhantomData;
 /// The publications of one turn (flat buffers, reused).
 #[derive(Default)]
 pub struct Pubs {
+    /// Owners other than the root whose boundary cells published (owner, class): their `changed` runs too.
+    pub(crate) owners: Vec<(usize, u32)>,
     lists: Vec<(usize, u32, u32)>,
     ops: Vec<Op>,
     ents: Vec<(usize, u32, u32)>,
@@ -19,6 +21,7 @@ pub struct Pubs {
 
 impl Pubs {
     pub(crate) fn clear(&mut self) {
+        self.owners.clear();
         self.lists.clear();
         self.ops.clear();
         self.ents.clear();
@@ -26,6 +29,11 @@ impl Pubs {
     }
     pub(crate) fn is_empty(&self) -> bool {
         self.lists.is_empty() && self.ents.is_empty()
+    }
+    pub(crate) fn owner(&mut self, owner: usize, cls: u32) {
+        if cls != 0 && !self.owners.contains(&(owner, cls)) {
+            self.owners.push((owner, cls));
+        }
     }
     pub(crate) fn list(&mut self, addr: usize, ops: &[Op]) {
         if self.lists.iter().any(|l| l.0 == addr) || ops.is_empty() {
@@ -70,4 +78,15 @@ impl<V> Changed<'_, V> {
     pub fn reader<T>(&self, r: RWired<'_, T, V>) -> bool {
         self.readers.contains(&(r.r as *const _ as usize))
     }
+}
+
+/// `T::changed` behind a type-erased owner pointer (registered per owner class by list regions and entity
+/// views whose rows are `View`s).
+///
+/// # Safety
+/// `owner` points at a live `T` that nothing else borrows.
+pub(crate) unsafe fn changed_shim<T: crate::app::View>(owner: *mut u8, pubs: &Pubs, readers: &[usize]) {
+    let d = Changed { pubs, readers, _v: PhantomData };
+    // SAFETY: the function contract.
+    unsafe { (*(owner as *mut T)).changed(d) };
 }

@@ -335,6 +335,18 @@ impl<V: View> App<V> {
             }
             let d = crate::changed::Changed { pubs: &self.rt.pubs, readers: &self.rt.asy.committed, _v: std::marker::PhantomData };
             self.owner.changed(d);
+            // other owners (list rows, entities, row-owned readers) whose own boundaries published
+            let owners = std::mem::take(&mut self.rt.pubs.owners);
+            for &(o, cls) in &owners {
+                if let Some(f) = self.rt.class_changed[cls as usize] {
+                    // SAFETY: `o` is the live owner the publishing wire ran for (a row in its list's slab, an
+                    // entity in its slab), of the class's type; settled right after with its own class.
+                    unsafe {
+                        f(o as *mut u8, &self.rt.pubs, &self.rt.asy.committed);
+                        self.rt.settle_cls(o as *const u8, cls);
+                    }
+                }
+            }
             self.rt.pubs.clear();
             self.rt.asy.committed.clear();
             let owner = &mut *self.owner as *mut V as *const u8;
