@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/bough-mem", "crates/bough-core", "crates/bough-text", "crates/bough-metal", "crates/bough-damage-lab", "crates/bough", "comparisons/bough-heavy", "comparisons/bough-scenes", "comparisons/bough-vlist", "comparisons/bough-zgui", "comparisons/bough-text-bench"]
+members = ["crates/bough-mem", "crates/bough-core", "crates/bough-text", "crates/bough-metal", "crates/bough-damage-lab", "crates/bough", "comparisons/bough-heavy", "comparisons/bough-scenes", "comparisons/bough-vlist", "comparisons/bough-zgui", "comparisons/bough-text-bench", "crates/bough-gpu"]
+exclude = ["vendor"]
 
 [workspace.package]
 edition = "2024"
@@ -16,3 +17,15 @@ inherits = "release"
 debug = 0
 lto = "fat"
 codegen-units = 1
+
+# Vendored GPU and windowing stack (vendor/README.md: versions, provenance, local changes). Every crate in the graph
+# that names one of these resolves to the vendored copy.
+[patch.crates-io]
+wgpu = { path = "vendor/wgpu" }
+wgpu-core = { path = "vendor/wgpu-core" }
+wgpu-hal = { path = "vendor/wgpu-hal" }
+wgpu-types = { path = "vendor/wgpu-types" }
+naga = { path = "vendor/naga" }
+wgpu-naga-bridge = { path = "vendor/wgpu-naga-bridge" }
+wgpu-core-deps-apple = { path = "vendor/wgpu-core-deps-apple" }
+winit = { path = "vendor/winit" }
