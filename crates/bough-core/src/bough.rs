@@ -18,6 +18,16 @@ use crate::nrect::{NRect, Thresh, lt_mask, lt8, translate_union, union_all};
 use crate::page::{CAP, GROUP, NGROUPS, PAD_DEPTH, Page, PagePool, Record, find_first_le, find_last_lt, page_find_first_le, page_find_last_lt};
 pub use crate::page::RecordInit;
 use crate::prefix::Prefix;
+use bough_mem::Col;
+
+/// The GPU-visible storage of a Bough, carved from one region (see `bough_mem`): pages, the
+/// directory's page-id and union-ink columns, and the clip table. The GPU reads these in place.
+pub struct Columns {
+    pub pages: Col<Page>,
+    pub dir_id: Col<u32>,
+    pub dir_ink: Col<NRect>,
+    pub clips: Col<NRect>,
+}
 
 /// Pages below this fill are merged into a neighbour when they fit (bbtree `minimum`).
 pub const MIN_FILL: usize = 8;
@@ -45,7 +55,10 @@ pub struct Bough {
     pool: PagePool,
     // Directory, SoA (index = directory position).
     d_ptr: Vec<*mut Page>,
-    d_ink: Vec<NRect>,
+    /// Page id per directory entry and the page's absolute union ink: the two directory columns the
+    /// GPU's cull reads (carved from the shared region by [`Bough::with_columns`]).
+    d_id: Col<u32>,
+    d_ink: Col<NRect>,
     d_min_depth: Vec<u16>,
     d_len: Vec<u32>,
     /// Union of `d_ink` per chunk of 64 directory entries.
@@ -57,8 +70,9 @@ pub struct Bough {
     total: usize,
     scratch: Vec<RecordInit>,
     dirty_scratch: Vec<u32>,
-    /// Clip rects by id (absolute); id 0 = the whole domain (unclipped).
-    clips: Vec<NRect>,
+    /// Clip rects by id (absolute); id 0 = the whole domain (unclipped). GPU-visible (the shader clamps
+    /// every record to `clips[page.clip[slot]]`).
+    clips: Col<NRect>,
     /// Kinds whose content is uniform (translation-invariant): their ink changes mark only the
     /// symmetric difference of old and new (damage lab section 5.2).
     uniform: [u64; 4],
@@ -143,11 +157,30 @@ pub fn rect_sub(a: NRect, b: NRect, emit: &mut impl FnMut(NRect)) {
 }
 
 impl Bough {
+    /// A Bough on its own heap storage (tests, benches, replicas).
     pub fn new(window_w: i32, window_h: i32) -> Bough {
+        Self::build(window_w, window_h, PagePool::new(), Col::owned("dir_id"), Col::owned("dir_ink"), Col::owned("clips"))
+    }
+
+    /// A Bough whose pages, directory columns and clip table are `cols` (carved, empty columns of one
+    /// region): the GPU reads them where the CPU writes them.
+    pub fn with_columns(window_w: i32, window_h: i32, cols: Columns) -> Bough {
+        Self::build(window_w, window_h, PagePool::in_arena(cols.pages), cols.dir_id, cols.dir_ink, cols.clips)
+    }
+
+    /// Region offsets of (page 0, directory page ids, directory inks, clips), when carved.
+    pub fn gpu_offsets(&self) -> Option<[usize; 4]> {
+        Some([self.pool.arena_offset()?, self.d_id.region_offset()?, self.d_ink.region_offset()?, self.clips.region_offset()?])
+    }
+
+    fn build(window_w: i32, window_h: i32, pool: PagePool, d_id: Col<u32>, d_ink: Col<NRect>, mut clips: Col<NRect>) -> Bough {
+        clips.clear();
+        clips.push(NRect::new(crate::nrect::COORD_MIN, crate::nrect::COORD_MIN, crate::nrect::COORD_MAX, crate::nrect::COORD_MAX));
         Bough {
-            pool: PagePool::new(),
+            pool,
             d_ptr: Vec::new(),
-            d_ink: Vec::new(),
+            d_id,
+            d_ink,
             d_min_depth: Vec::new(),
             d_len: Vec::new(),
             c_ink: Vec::new(),
@@ -158,7 +191,7 @@ impl Bough {
             total: 0,
             scratch: Vec::new(),
             dirty_scratch: Vec::new(),
-            clips: vec![NRect::new(crate::nrect::COORD_MIN, crate::nrect::COORD_MIN, crate::nrect::COORD_MAX, crate::nrect::COORD_MAX)],
+            clips,
             uniform: [0; 4],
         }
     }
@@ -402,6 +435,12 @@ impl Bough {
         rect_sub(old, new, &mut |r| ring.add(r));
         rect_sub(new, old, &mut |r| ring.add(r));
     }
+    /// The current epoch's plane, for writers that produce tile marks themselves (bough-text's
+    /// labels OR their tile rows in at update time; [`Plane::or_rows`] keeps its row band exact).
+    #[inline(always)]
+    pub fn plane_mut(&mut self) -> &mut Plane {
+        self.ring.cur_mut()
+    }
     pub fn plane(&self, back: u32) -> &Plane {
         self.ring.plane(back)
     }
@@ -475,8 +514,13 @@ impl Bough {
         for _ in 0..count {
             ptrs.push(self.pool.alloc());
         }
+        self.d_id.insert_n(at, count, 0);
+        for (k, &p) in ptrs.iter().enumerate() {
+            // SAFETY: a live pool page.
+            self.d_id[at + k] = unsafe { (*p).id };
+        }
         self.d_ptr.splice(at..at, ptrs);
-        self.d_ink.splice(at..at, core::iter::repeat_n(NRect::EMPTY, count));
+        self.d_ink.insert_n(at, count, NRect::EMPTY);
         self.d_min_depth.splice(at..at, core::iter::repeat_n(PAD_DEPTH, count));
         self.d_len.splice(at..at, core::iter::repeat_n(0, count));
         for _ in 0..count {
@@ -489,6 +533,7 @@ impl Bough {
         // SAFETY: live page.
         let id = unsafe { (*self.d_ptr[d]).id };
         self.d_ptr.remove(d);
+        self.d_id.remove(d);
         self.d_ink.remove(d);
         self.d_min_depth.remove(d);
         self.d_len.remove(d);
@@ -1441,12 +1486,13 @@ impl Bough {
             }
             dst.d_ptr.push(dp);
         }
-        dst.d_ink.clone_from(&self.d_ink);
+        dst.d_id.clone_from_slice_of(&self.d_id);
+        dst.d_ink.clone_from_slice_of(&self.d_ink);
         dst.d_min_depth.clone_from(&self.d_min_depth);
         dst.d_len.clone_from(&self.d_len);
         dst.c_ink.clone_from(&self.c_ink);
         dst.prefix.copy_from(&self.prefix);
-        dst.clips.clone_from(&self.clips);
+        dst.clips.clone_from_slice_of(&self.clips);
         dst.ring.copy_from(&self.ring);
         dst.total = self.total;
         dst.uniform = self.uniform;
@@ -1470,6 +1516,7 @@ impl Bough {
     pub fn check_invariants(&self) {
         let n = self.d_ptr.len();
         assert_eq!(self.d_ink.len(), n);
+        assert_eq!(self.d_id.len(), n);
         assert_eq!(self.d_min_depth.len(), n);
         assert_eq!(self.d_len.len(), n);
         assert_eq!(self.c_ink.len(), n.div_ceil(CHUNK));
@@ -1481,6 +1528,7 @@ impl Bough {
         for d in 0..n {
             let p = self.page(d);
             assert_eq!(p.dir, d as u32, "page dir index");
+            assert_eq!(self.d_id[d], p.id, "directory page id column");
             assert_eq!(p.dirty, 0, "page left with stale groups");
             for g in 0..NGROUPS {
                 let any = p.clip[g * GROUP..g * GROUP + GROUP].iter().any(|&c| c != 0);

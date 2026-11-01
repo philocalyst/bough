@@ -39,7 +39,9 @@ fn rand_ink_in(rng: &mut Rng, ww: i32, wh: i32) -> NRect {
 
 impl H {
     fn new(seed: u64, w: i32, h: i32) -> H {
-        let mut b = Bough::new(w, h);
+        // every 3rd sequence runs on carved (GPU-shared-style) storage: pages and directory/clip columns
+        // in one fixed region, as the façade lays them out
+        let mut b = if seed % 3 == 2 { arena_bough(w, h) } else { Bough::new(w, h) };
         let mut o = Oracle::new(w, h);
         // kinds 0 and 2 are uniform content (xor damage), 1, 3, 4 are not
         for k in [0u8, 2] {
@@ -501,6 +503,19 @@ impl H {
             assert_eq!(out, self.o.changed_since(e), "changed_since({e})");
         }
     }
+}
+
+fn arena_bough(w: i32, h: i32) -> Bough {
+    let mut r = bough_mem::Region::heap(8 << 20);
+    let cols = bough_core::bough::Columns {
+        pages: r.carve("pages", 4096),
+        dir_id: r.carve("dir_id", 4096),
+        dir_ink: r.carve("dir_ink", 4096),
+        clips: r.carve("clips", 64),
+    };
+    let b = Bough::with_columns(w, h, cols);
+    assert!(b.gpu_offsets().is_some());
+    b
 }
 
 fn run_seq(seed: u64, steps: usize, w: i32, h: i32) {

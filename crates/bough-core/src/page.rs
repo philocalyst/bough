@@ -60,6 +60,7 @@ impl RecordInit {
 /// payload 768..1024, handle 1024..1280, clip 1280..1408, then the header (cgroups, version, id,
 /// dir, dirty, off).
 #[repr(C, align(64))]
+#[derive(Clone, Copy)]
 pub struct Page {
     pub depth: [u16; CAP],
     pub ink: [NRect; CAP],
@@ -94,6 +95,19 @@ pub struct Page {
 
 const _: () = assert!(core::mem::size_of::<Page>() == 1472);
 const _: () = assert!(core::mem::align_of::<Page>() == 64);
+
+/// Byte offsets of the columns the GPU reads (bough-metal `INTERFACE.md`): the shader's constants are
+/// these numbers, and the asserts below pin them.
+pub mod gpu_layout {
+    use super::Page;
+    pub const PAGE_BYTES: usize = core::mem::size_of::<Page>();
+    pub const INK: usize = core::mem::offset_of!(Page, ink);
+    pub const GINK: usize = core::mem::offset_of!(Page, gink);
+    pub const PAYLOAD: usize = core::mem::offset_of!(Page, payload);
+    pub const CLIP: usize = core::mem::offset_of!(Page, clip);
+    pub const OFFL: usize = core::mem::offset_of!(Page, offl);
+    const _: () = assert!(PAGE_BYTES == 1472 && INK == 128 && GINK == 640 && PAYLOAD == 768 && CLIP == 1280 && OFFL == 1436);
+}
 
 impl Page {
     fn blank(id: u32) -> Box<Page> {
@@ -270,11 +284,17 @@ impl Page {
     }
 }
 
-/// Type-stable pool: pages are boxed once and never returned to the allocator while the pool
+/// Type-stable pool: pages are created once and never returned to the allocator while the pool
 /// lives. Freed pages are reset to padding and go on a free list; a page's `version` only grows.
+///
+/// Two backings, one mechanism: **arena** pages are the elements of a fixed-capacity column carved
+/// from the GPU-shared region ([`PagePool::in_arena`]): page `id` is element `id`, so the GPU finds it
+/// at `arena offset + id * size_of::<Page>()` and reads the very bytes the CPU writes (no mirror).
+/// Without an arena each page is its own heap box (standalone use: tests, benches, replicas).
 pub struct PagePool {
-    pages: Vec<Box<Page>>,
+    pages: Vec<*mut Page>,
     free: Vec<u32>,
+    arena: Option<bough_mem::Col<Page>>,
 }
 
 impl Default for PagePool {
@@ -283,28 +303,65 @@ impl Default for PagePool {
     }
 }
 
+impl Drop for PagePool {
+    fn drop(&mut self) {
+        if self.arena.is_none() {
+            for &p in &self.pages {
+                // SAFETY: heap pages were created by Box::into_raw in `alloc`/`ensure` and are freed once.
+                drop(unsafe { Box::from_raw(p) });
+            }
+        }
+    }
+}
+
 impl PagePool {
     pub fn new() -> Self {
-        PagePool { pages: Vec::new(), free: Vec::new() }
+        PagePool { pages: Vec::new(), free: Vec::new(), arena: None }
+    }
+
+    /// A pool whose pages are the elements of `arena` (an empty carved column).
+    pub fn in_arena(arena: bough_mem::Col<Page>) -> Self {
+        assert!(arena.is_empty());
+        PagePool { pages: Vec::with_capacity(arena.capacity()), free: Vec::new(), arena: Some(arena) }
+    }
+
+    /// Byte offset of page 0 in the arena's region (`None` for heap pages).
+    pub fn arena_offset(&self) -> Option<usize> {
+        self.arena.as_ref().and_then(|a| a.region_offset())
+    }
+
+    fn create(&mut self) -> *mut Page {
+        let id = self.pages.len() as u32;
+        let p = match self.arena.as_mut() {
+            Some(a) => {
+                // SAFETY: a page written whole (`blank`), element `id` of the arena; the column never
+                // moves (carved), so the pointer stays valid for the pool's life.
+                a.push(*Page::blank(id));
+                unsafe { a.as_mut_ptr().add(id as usize) }
+            }
+            None => Box::into_raw(Page::blank(id)),
+        };
+        self.pages.push(p);
+        p
     }
 
     /// A blank page (all sentinel). The returned pointer stays valid for the pool's lifetime.
     pub fn alloc(&mut self) -> *mut Page {
         if let Some(id) = self.free.pop() {
-            let p = &mut *self.pages[id as usize];
+            // SAFETY: a pool page (valid for the pool's life); &mut self is exclusive.
+            let p = unsafe { &mut *self.pages[id as usize] };
             p.version += 1;
             p.wgen = p.wgen.wrapping_add(1);
             p as *mut Page
         } else {
-            let id = self.pages.len() as u32;
-            self.pages.push(Page::blank(id));
-            &mut *self.pages[id as usize] as *mut Page
+            self.create()
         }
     }
 
     /// Return a page to the free list (reset to sentinels, version bumped).
     pub fn free(&mut self, id: u32) {
-        let p = &mut *self.pages[id as usize];
+        // SAFETY: as in `alloc`.
+        let p = unsafe { &mut *self.pages[id as usize] };
         p.set_sentinel(0, CAP);
         p.gink = [NRect::EMPTY; NGROUPS];
         p.cgroups = 0;
@@ -322,15 +379,15 @@ impl PagePool {
         self.free.len()
     }
     pub fn page(&self, id: u32) -> &Page {
-        &self.pages[id as usize]
+        // SAFETY: as in `alloc`; shared access through &self.
+        unsafe { &*self.pages[id as usize] }
     }
     /// Make page `id` exist (blank) in this pool; returns its stable pointer (replica pools).
     pub fn ensure(&mut self, id: u32) -> *mut Page {
         while self.pages.len() <= id as usize {
-            let n = self.pages.len() as u32;
-            self.pages.push(Page::blank(n));
+            self.create();
         }
-        &mut *self.pages[id as usize] as *mut Page
+        self.pages[id as usize]
     }
     pub fn heap_bytes(&self) -> usize {
         self.pages.capacity() * 8 + self.pages.len() * core::mem::size_of::<Page>() + self.free.capacity() * 4

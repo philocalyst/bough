@@ -45,6 +45,7 @@ name = "bough-core"
 version = "0.0.0"
 dependencies = [
  "bough-damage-lab",
+ "bough-mem",
 ]
 
 [[package]]
@@ -60,6 +61,10 @@ dependencies = [
  "libc",
  "zgx-workload",
 ]
+
+[[package]]
+name = "bough-mem"
+version = "0.0.0"
 
 [[package]]
 name = "bough-metal"
@@ -91,6 +96,7 @@ dependencies = [
 name = "bough-text"
 version = "0.0.0"
 dependencies = [
+ "bough-mem",
  "libc",
  "objc2",
  "objc2-foundation",

@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+bough-mem = { path = "../bough-mem" }
 
 [dev-dependencies]
 # Trace replay (examples/trace_bench.rs): the damage lab's zgx-derived workloads and its hw32 form.

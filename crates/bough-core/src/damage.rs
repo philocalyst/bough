@@ -100,6 +100,24 @@ impl Plane {
         }
     }
 
+    /// `rows[r] |= m` for `r` in `r0..=r1` (tile rows, clamped to the window's rows; `r0 > r1` or
+    /// `m == 0` marks nothing). The tile-mark sink of bough-text: its labels compute their damage as
+    /// row masks at update time.
+    #[inline(always)]
+    pub fn or_rows(&mut self, r0: i32, r1: i32, m: u128) {
+        let r0 = r0.max(0);
+        let r1 = r1.min(self.n as i32 - 1);
+        if r1 < r0 || m == 0 {
+            return;
+        }
+        self.solid = false;
+        self.y0 = self.y0.min(r0 as u32);
+        self.y1 = self.y1.max(r1 as u32 + 1);
+        for r in r0..=r1 {
+            self.rows[r as usize] |= m;
+        }
+    }
+
     /// Set every tile a (canonical, window-clipped, non-empty) rect touches.
     #[inline(always)]
     pub fn mark(&mut self, r: NRect) {
@@ -317,6 +335,11 @@ impl DamageRing {
         }
         self.epoch = o.epoch;
         self.cur = &mut self.planes[self.epoch as usize % RING] as *mut Plane;
+    }
+    #[inline(always)]
+    pub fn cur_mut(&mut self) -> &mut Plane {
+        // SAFETY: `cur` points into `planes` (boxed, never moved); &mut self is exclusive.
+        unsafe { &mut *self.cur }
     }
     /// The plane of the epoch `back` epochs ago (0 = current).
     pub fn plane(&self, back: u32) -> &Plane {
