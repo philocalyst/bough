@@ -26,7 +26,7 @@ impl PairTable {
         let mut acc: Vec<Option<i32>> = vec![Some(0); n * n];
         let mut decided = vec![false; n * n];
         let apply = |acc: &mut Vec<Option<i32>>, k: usize, v1: &ValueRecord, v2: &ValueRecord| {
-            let r = if !value_is_zero(v2) { None } else { value_is_plain_xadv(v1) };
+            let r = if !value_is_zero(face, v2) { None } else { value_is_plain_xadv(face, v1) };
             acc[k] = match (acc[k], r) {
                 (Some(s), Some(x)) => Some(s + x),
                 _ => None,

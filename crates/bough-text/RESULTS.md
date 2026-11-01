@@ -33,13 +33,23 @@ bench/zgx/build_text.sh                       # zgx 06debe9d's text examples (re
 bench/results/text3/run_zgx.sh zgx_stock.txt  # zgx's numbers on this Mac (raw: bench/results/text3/zgx_stock.txt)
 D=target/text3/dist
 $D/label_churn; RENDER=1 $D/label_churn                     # zgui label-churn
-/usr/bin/time -l $D/text_bench                              # zgx-gpu text_bench (zgx: text3-zgxbin/text_bench{,_dejavu})
-/usr/bin/time -l $D/editor_streaming                        # zgx editor_streaming
+/usr/bin/time -l $D/text_bench_port                         # zgx-gpu text_bench (STOCK=1: SF NS instances; zgx: text3-zgxbin/text_bench{,_dejavu})
+DELTA=0|1 /usr/bin/time -l $D/editor_streaming              # zgx editor_streaming (whole string / bough's delta)
 /usr/bin/time -l $D/i18n_bench [template]                   # zgx i18n_bench
 MODE=message|template|switch /usr/bin/time -l $D/i18n_script_bench   # zgx-script i18n_bench
 /usr/bin/time -l $D/code_editor_bench                       # zgx-script code_editor_bench (text half)
 BOUGH_DIST=$D python3 bench/integrate/slope.py bough 0 heavy          # heavy cells (raw: bench/results/text3/slopes.txt)
 ```
+
+## III.0 Round 3b (the lead's follow-up): what changed
+
+| item | result |
+|---|---|
+| **vlist regression removed by representation** | `Para` split into a hot half (text, slots, words, one wrap: 104 B) and a **cold half carved on first edit, stream, second width or second font** (`COLD_HALVES` = 0 over a 600-tick vlist jump); labels are **line-only paragraphs** (the degenerate case: slots and line width, no word table, no starts vector); the word table runs once per space. Interleaved slopes against canonical-before-text3 (fbaf06a, `target/base`): fling **19,475 / 19,489 vs 19,461 / 19,555**, jump **35,489 / 35,432 vs 35,540 / 35,465**, scroll 13,011 / 13,027 vs 12,928 / 12,896 (min-max overlaps); heavy stream 148,757 vs 178,317 (−16.6 %), both 182,026 vs 214,412 (−15.1 %) (`bench/results/text3/slopes_3b.txt`). A row's text mount (`leaf_mount`): 12.6-12.9 K, the verbatim round-2 leaf 12.5-12.8 K; `Para::set` alone is now 4 % cheaper than the round-2 leaf's set. |
+| **text_bench on zgx's stock fonts** | the table takes a **variable-font instance** (`SimpleScript::build_instance`: HVAR advances through ttf-parser, GPOS device deltas through GDEF's item variation store, rounded, applied only at an instance, exactly as rustybuzz does; `y_advance` ignored for horizontal text as rustybuzz does); the shaping path is unchanged. Gate `tests/variation.rs`: SF NS at (wght 400, opsz 17), (wght 700, opsz 17) and default, every ≤ 2-character string over the covered set, 2,000 text_bench sentences, 20,000 random ASCII strings: **26,760 accepted, all equal to rustybuzz** with the same coordinates (the refusals are Latin-1: SF's 4 live GSUB rules leave it without a token model; no lowercase pair triggers). `STOCK=1 text_bench_port` (body/bold = SF NS wght 400/700 at opsz 14 as cosmic-text picks): **113-115 M instructions whole run vs zgx stock 4,464-4,511 M (39×)**; first measure 1.2-1.5 ms vs 37-67 ms; same width 0.01 ms; new width 0.08-0.10 ms vs 35-55 ms; stream 0.10 ms vs 117-176 ms. Remaining caveat: the code face (1 run in 11) is DejaVu Sans Mono, because zgx's Menlo is an AAT (`morx`) font, which the table does not model. |
+| **editor_streaming, bough's idiomatic form** | the writer's delta (`TextModel::splice` / `push_str`) records the edit as it applies it: nothing is compared. **0.08-0.15 ms vs zgx 10.7-12.6 ms (~100×); 41.7-41.8 M vs 230 M whole run (5.5×)**, requested peak 1,054,712 B. The whole-string form stays at 179 M / 9-14 ms (1.28×). Gate `tests/model.rs`: delta == external value over 20,000 random edits (ASCII, Latin-1, CJK) with history limits, undo and redo. Run: `DELTA=1 editor_streaming` / `DELTA=0`. |
+| **vlist prefix index on a reactive row edit** (LAYOUT.md gap) | the roots whose text changed this turn (`Lay::touched_roots`, already recorded, never read) mark their mounted rows unmeasured; a list holding one re-runs its update at its offset: those rows are re-measured, their heights set in the Fenwick index (O(log n) each), the first visible row stays anchored, the rows that moved are re-placed (`mlist::mregions_retouch`, called after `settle`). Gate `reactive_row_edits_update_the_prefix_index` (bough-text-bench): 30 turns of edits and scrolls at ring ages 1..4, every frame presented == full redraw and every mounted row's index height == its layout; at the top, retained == fresh mount. Sabotage check: without the call the gate fails at step 1. |
+| **not done in 3b** | the façade editor view measured with its GPU frame (item 3); multi-core shaping, a SIMD ligature tokenizer, boundary kerning beyond Latin-1 (item 5): see III.5. |
 
 ## III.1 Against zgx and zgui, in their own units
 
@@ -161,16 +171,15 @@ re-tokenizes the 41 rows in view each frame (~15 K instructions) instead of only
 
 ## III.5 Losing regimes and honest gaps
 
-* **vlist fling/jump R=0 +2.6 % / +3.0 %** (scroll +0.9 %) against canonical: layout leaves now carry a `Para`
-  (line-local edits, cached wraps per width). The mount path costs ~200 instructions more per mounted row
-  (one more vector, the wrap cache's bookkeeping). Reduced from +7.5 % by one vector per wrap, a reused rewrap
-  scratch, no run list for single-font text, line starts read from the paragraph, and the classifying kernel's
-  tail built in registers. The lead may prefer the round-2 leaf for vlist; the gates cover both.
+* (Round 3 had vlist fling/jump R=0 +2.6 % / +3.0 %; removed in 3b, III.0.)
+* **Not done in 3b**: the façade editor view with caret, selection and its GPU frame (code_editor's numbers stay
+  the text engine's part); multi-core shaping of large documents; the SIMD ligature tokenizer (designed: a run of
+  `f`s parses in closed form, `ff` pairs from the left and the run's parity decides the last `f`, so lanes need
+  only their rank in the run, a prefix-max scan); boundary kerning beyond Latin-1; AAT (`morx`) fonts such as Menlo.
 * Ligature lines: scalar byte-slot tokenizer, ~40 instructions a byte.
 * **Beyond Latin-1**: still rustybuzz per chunk into glyph instances, and **kerning across a segment boundary is
   not applied** (not done this round). Shaping large documents on other cores: not done (a 100,000-line open
   shapes only the screen, 9 M instructions, so nothing called for it).
-* **A reactive text edit in a list row** still does not update vlist's prefix index (LAYOUT.md gap, unchanged).
 * `letter_spacing` / `line_height` / `model_text` / `large_document`: zgx's are windowed smoke tests of its
   editor widget (input's area); `LineSet::restyle` makes a line-height change header-only (no glyph touched) but
   no scene measures it.

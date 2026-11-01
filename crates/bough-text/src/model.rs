@@ -95,6 +95,33 @@ impl TextModel {
         true
     }
 
+    /// The writer's own edit (text round 3b, "the value that was there all along"): the writer knows what changed,
+    /// so the delta is recorded as it is applied and nothing is compared. Same history, same caret rule as
+    /// `set_text` of the resulting value.
+    pub fn splice(&mut self, range: std::ops::Range<usize>, insert: &str) -> bool {
+        if range.is_empty() && insert.is_empty() {
+            return false;
+        }
+        let e = Edit { at: range.start, removed: self.text[range.clone()].into(), inserted: insert.into() };
+        if *e.removed == *e.inserted {
+            return false;
+        }
+        self.text.replace_range(range.clone(), insert);
+        let c = range.start + insert.len();
+        self.bytes += e.bytes();
+        self.undo.push_back(e);
+        self.redo.clear();
+        self.sel = Selection { anchor: c, focus: c };
+        self.trim();
+        true
+    }
+
+    /// Append `s` (a stream's token): `splice(len..len, s)`.
+    pub fn push_str(&mut self, s: &str) -> bool {
+        let n = self.text.len();
+        self.splice(n..n, s)
+    }
+
     pub fn undo(&mut self) -> bool {
         let Some(e) = self.undo.pop_back() else { return false };
         self.bytes -= e.bytes();

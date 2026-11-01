@@ -297,7 +297,8 @@ fn word_table_pipeline_equals_glyph_run_pipeline() {
             let (lf, ls) = (fast.wrap_at(max_units), slow.wrap_at(max_units));
             assert_eq!(lf, ls, "line count of {text:?} at {max_units}");
             let fs: Vec<u32> = (0..lf).map(|i| fast.line_start(i)).collect();
-            assert_eq!(fs, slow.starts, "line starts of {text:?} at {max_units}");
+            let ss: Vec<u32> = (0..ls).map(|i| slow.line_start(i)).collect();
+            assert_eq!(fs, ss, "line starts of {text:?} at {max_units}");
             assert_eq!(fast.widest, slow.widest, "widest line of {text:?} at {max_units}");
             // glyph quads line by line: the window onto the block vs instances of the rebased line run
             let n = text.len();
