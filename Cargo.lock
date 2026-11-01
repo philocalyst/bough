@@ -37,6 +37,7 @@ dependencies = [
  "objc2-quartz-core",
  "rustybuzz",
  "ttf-parser",
+ "zgx-workload",
 ]
 
 [[package]]
@@ -91,6 +92,7 @@ version = "0.0.0"
 dependencies = [
  "bough",
  "bough-metal",
+ "cephal",
  "libc",
  "zgx-workload",
 ]

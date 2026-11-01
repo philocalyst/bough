@@ -83,6 +83,8 @@ pub struct Spec {
     pub justify: Option<Justify>,
     /// Absolute: (left, top) inset in points; the box sizes itself by `w`/`h`.
     pub abs: Option<(f32, f32)>,
+    /// `position: relative`: the containing block of absolutely positioned children.
+    pub relative: bool,
 }
 
 impl Spec {
@@ -103,6 +105,7 @@ impl Spec {
             self_align: None,
             justify: None,
             abs: None,
+            relative: false,
         }
     }
 
@@ -165,6 +168,9 @@ impl Spec {
         st.align_items = self.items.map(Self::align);
         st.align_self = self.self_align.map(Self::align);
         st.justify_content = self.justify.map(Self::justify_c);
+        if self.relative {
+            st.position = Position::Relative;
+        }
         if let Some((x, y)) = self.abs {
             st.position = Position::Absolute;
             st.inset.left = la(x);
@@ -251,6 +257,11 @@ pub trait Styled: Sized {
     }
     fn justify(mut self, j: Justify) -> Self {
         self.spec_mut().justify = Some(j);
+        self
+    }
+    /// `position: relative` (the containing block of `abs` children).
+    fn relative(mut self) -> Self {
+        self.spec_mut().relative = true;
         self
     }
     /// Absolutely positioned at (x, y) points from the parent's padding box.
@@ -506,6 +517,19 @@ impl Lay {
     /// Group height (px) after `compute`.
     pub fn root_height(&self, root: u32) -> f32 {
         self.eng.rect(root).3
+    }
+
+    /// Test / inspection helpers: the first live group root, a node's i-th child and its rect.
+    pub fn first_root(&self) -> u32 {
+        self.info.iter().position(|i| i.live && i.parent == NONE).expect("a layout group") as u32
+    }
+    pub fn child(&self, n: u32, i: usize) -> u32 {
+        let mut v = Vec::new();
+        self.eng.children_into(n, &mut v);
+        v[i]
+    }
+    pub fn child_rect(&self, n: u32, i: usize) -> (f32, f32, f32, f32) {
+        self.eng.rect(self.child(n, i))
     }
 }
 

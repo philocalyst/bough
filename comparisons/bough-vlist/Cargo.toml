@@ -27,3 +27,6 @@ path = "src/bin/micro_bench.rs"
 [[bin]]
 name = "vlist_shot"
 path = "src/bin/vlist_shot.rs"
+
+[dev-dependencies]
+cephal = { path = "/Users/mileswirht/Downloads/ilo-prod-work/cephal", default-features = false, features = ["flex", "block"] }
