@@ -225,6 +225,8 @@ pub struct VRegion {
     pub clip: u16,
     /// The viewport (absolute device px): the scroll marks are clipped to it.
     pub vp: NRect,
+    /// The clip the port lies in (a moved port is cut to it).
+    pub parent_clip: u16,
     pub depth: u16,
     pub base_pos: usize,
     pub range: Range<usize>,
@@ -322,6 +324,9 @@ pub struct Rt {
     pub mregions: Vec<crate::mlist::MRegion>,
     /// Pointer, hover, focus, routes (input.rs).
     pub input: crate::input::Input,
+    /// The mounted owner (boxed by `App`, never moves): what a layout placement hook needs to mount the rows
+    /// of a list whose port it moved.
+    pub(crate) owner: *const u8,
     /// Keeps a heap region alive (the GPU region is kept alive by the columns' reference count too).
     _region: Region,
 }
@@ -397,6 +402,7 @@ impl Rt {
             lay: crate::layout::Lay::new(scale),
             mregions: Vec::new(),
             input: Default::default(),
+            owner: std::ptr::null(),
             _region: region,
         }
     }

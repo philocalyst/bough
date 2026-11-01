@@ -40,6 +40,7 @@ fn assert_exact<V: View>(app: &mut App<V>, full_w: usize, what: &str) {
 /// Run `steps`; after each, frame and compare. Returns the app.
 fn run<V: View>(name: &str, mut app: App<V>, steps: usize, mut step: impl FnMut(&mut App<V>, usize)) -> App<V> {
     let w = app.rt.win_w as usize;
+    let name = &format!("{name} (windowed {}, ring {})", app.windowed, app.surfaces());
     app.frame();
     for t in 0..steps {
         step(&mut app, t);
@@ -330,4 +331,72 @@ fn hover_enter_leave_sets_equal_the_oracle() {
         prev = cur;
     }
     assert!(moves == 3000 && app.rt.input.stats.crossings > 500, "{:?}", app.rt.input.stats);
+}
+
+#[test]
+fn laid_out_gallery_interactions_and_resize_are_pixel_exact() {
+    use bough_zgui::gallery::{turn_l, GalleryL};
+    for ring in RINGS {
+        let app = app_ring(GalleryL::new(), config(WIDTH, HEIGHT), ring);
+        let keys: Vec<Key> = std::iter::repeat_n(Key::Tab, 22).chain("xyz".chars().map(Key::Char)).chain([Key::Left, Key::Char('Q'), Key::End, Key::Backspace]).collect();
+        let nk = keys.len();
+        let mut app = run("gallery-l", app, nk + 34, |a, t| {
+            if t < nk {
+                a.key_down(keys[t], Mods::default());
+                return;
+            }
+            match t - nk {
+                0 => a.pointer_move(41.0, 41.0),
+                1 => a.pointer_down(41.0, 41.0, Button::Primary),
+                2 => a.pointer_up(41.0, 41.0, Button::Primary),
+                3 => a.pointer_move(800.0, 500.0),
+                4 | 9 => a.wheel(800.0, 500.0, 0.0, 3.0),
+                // relayout at narrower and shorter windows (the surfaces keep their size: shrink only)
+                20 => a.resize(1480.0, 1000.0),
+                24 => a.resize(1352.0, 920.0),
+                28 => a.resize(1544.0, 960.0),
+                _ => {
+                    turn_l(a, TICK_60);
+                }
+            }
+        });
+        while app.animating() {
+            turn_l(&mut app, TICK_60);
+        }
+        app.pointer_leave();
+        app.set_focus(None, false);
+        app.frame();
+        let g = &app.owner;
+        let fresh = GalleryL { scroll: Signal::new(*g.scroll), picked: Signal::new(*g.picked), value: Signal::new((*g.value).clone()), clock: Signal::new(*g.clock), slide: Signal::new(*g.slide) };
+        assert_eq!(*g.value, "Ada LovelacexyQ");
+        let (w, h) = (app.rt.win_w as f32, app.rt.win_h as f32);
+        same_as_fresh("gallery-l", &mut app, App::new(fresh, config(w, h), true));
+    }
+}
+
+#[test]
+fn laid_out_shell_drag_and_resize_are_pixel_exact() {
+    use bough_zgui::shell::ShellL;
+    for ring in RINGS {
+        let app = app_ring(ShellL::new(), config(WIDTH, HEIGHT), ring);
+        let mut app = run("shell-l", app, 40, |a, t| match t {
+            0 => a.pointer_move(25.0, 21.0),
+            1 | 2 | 3 => {
+                a.tick(1.0 / 60.0);
+            }
+            4 => a.pointer_move(800.0, 692.5),
+            5 => a.pointer_down(800.0, 692.5, Button::Primary),
+            k if k < 26 => a.pointer_move(800.0, 692.5 - (k as f32 - 5.0) * 9.0),
+            26 => a.pointer_up(800.0, 512.5, Button::Primary),
+            30 => a.resize(1440.0, 920.0),
+            34 => a.resize(1280.0, 840.0),
+            _ => a.pointer_leave(),
+        });
+        let split = *app.owner.split;
+        assert!(split < 65.0, "{split}");
+        let mut fresh = ShellL::new();
+        fresh.split = Signal::new(split);
+        let (w, h) = (app.rt.win_w as f32, app.rt.win_h as f32);
+        same_as_fresh("shell-l", &mut app, App::new(fresh, config(w, h), true));
+    }
 }

@@ -653,6 +653,8 @@ pub struct LInfo {
     /// Group roots: available space (px); `NaN` height = max-content.
     pub avail_w: f32,
     pub avail_h: f32,
+    /// A placement hook (`Input::lhooks` index, NONE): a clip or an anchored space that follows the box.
+    pub hook: u32,
 }
 
 impl LInfo {
@@ -675,6 +677,7 @@ impl LInfo {
             ah: 0.0,
             avail_w: 0.0,
             avail_h: f32::NAN,
+            hook: NONE,
         }
     }
 }
@@ -947,6 +950,9 @@ impl Rt {
                 }
                 self.lay.stats.nodes_written += 1;
             }
+            if li.hook != NONE && (moved || sized) {
+                self.lay_hook(li.hook, li.space, ax, ay, w, h);
+            }
             {
                 let l = &mut self.lay.info[n as usize];
                 l.ax = ax;
@@ -1126,7 +1132,7 @@ impl<Bg, Ch> LBox<Bg, Ch> {
 }
 
 /// Attach the layout node `lid` under the current parent (or make it a group root).
-fn attach<V>(m: &mut Mounter<'_, V>, lid: u32) -> u32 {
+pub(crate) fn attach<V>(m: &mut Mounter<'_, V>, lid: u32) -> u32 {
     let parent = m.rt.lay.cur;
     m.rt.lay.register(lid, parent);
     {

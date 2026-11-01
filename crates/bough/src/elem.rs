@@ -749,6 +749,7 @@ impl<'a, V: 'static> Element<V> for VirtualList<'a, V> {
             vp_y: vy,
             clip,
             vp,
+            parent_clip: m.clip,
             depth: m.depth,
             base_pos: m.recs.len(),
             range: 0..0,

@@ -140,9 +140,12 @@ fn main() {
         "idle" => idle(),
         "hover-storm" => hover_storm(),
         "scroll" => scroll(),
-        "cold-start" => gallery::cold_start(gpu()),
-        "kitchen-sink" => gallery::kitchen(gpu()),
-        "app-shell" => shell::run(gpu()),
+        "cold-start" => gallery::cold_start::<gallery::GalleryL>(gpu()),
+        "kitchen-sink" => gallery::kitchen::<gallery::GalleryL>(gpu()),
+        "app-shell" => shell::run::<shell::ShellL>(gpu()),
+        "cold-start-dump" => gallery::cold_start::<gallery::Gallery>(gpu()),
+        "kitchen-sink-dump" => gallery::kitchen::<gallery::Gallery>(gpu()),
+        "app-shell-dump" => shell::run::<shell::Shell>(gpu()),
         other => panic!("unknown scenario {other}"),
     }
 }

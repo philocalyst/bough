@@ -131,6 +131,7 @@ dependencies = [
  "bough-core",
  "bough-metal",
  "bough-text",
+ "cephal",
  "libc",
  "objc2",
  "objc2-app-kit",

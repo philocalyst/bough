@@ -385,6 +385,9 @@ impl Fused {
         };
         // SAFETY: the region starts with HDR_BYTES reserved for the header; no GPU work reads it now.
         unsafe { (self.pool_ptr as *mut FHdr).write(h) };
+        // a new row count moves the bin-need slot (`counts[tiles_y]`): no stale count may read as a need
+        // SAFETY: `counts` holds the surfaces' rows + 1 u32s (created with them); the GPU is idle.
+        unsafe { std::ptr::write_bytes(self.counts.contents().as_ptr() as *mut u8, 0, self.counts.length()) };
     }
 
     /// Wait for the GPU's last frame (the CPU is about to write the region); redraw it if a bin overflowed.
@@ -425,7 +428,9 @@ impl Fused {
             unsafe { std::ptr::copy_nonoverlapping(keep.as_ptr(), self.pool_ptr.add(self.lay.slot[k] as usize), sb) };
         }
         let cap = need.next_power_of_two().max(self.bin_cap * 2);
-        self.bins = self.device.newBufferWithLength_options(ty * cap as usize * 16, MTLResourceOptions::StorageModePrivate).expect("bins");
+        // rows for the surfaces' height, not the layout's: a window that shrank may grow back (input.rs resize)
+        let rows = ty.max(self.h.div_ceil(32));
+        self.bins = self.device.newBufferWithLength_options(rows * cap as usize * 16, MTLResourceOptions::StorageModePrivate).expect("bins");
         if let Some(r) = &self.resid {
             r.addAllocation(ProtocolObject::from_ref(&*self.bins));
             r.commit();
@@ -452,7 +457,7 @@ impl Fused {
     /// Replace the row bins by ones of `cap` entries per row (tests; not while streaming).
     pub fn reset_bins(&mut self, cap: u32) {
         assert!(self.ev.is_none());
-        let ty = self.lay.tiles_y() as usize;
+        let ty = (self.lay.tiles_y() as usize).max(self.h.div_ceil(32));
         self.bins = self.device.newBufferWithLength_options(ty * cap as usize * 16, MTLResourceOptions::StorageModePrivate).expect("bins");
         self.bin_cap = cap;
         // SAFETY: header field `bin_cap`; the GPU is idle (the caller synced).

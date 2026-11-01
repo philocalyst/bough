@@ -183,6 +183,7 @@ impl<V: View> App<V> {
         let mut recs: Vec<RecordInit> = Vec::with_capacity(4096);
         let mut scope = Scope::default();
         let ptr = &*owner as *const V;
+        rt.owner = ptr as *const u8;
         {
             let el = owner.view();
             let mut m = Mounter { rt: &mut rt, owner: ptr, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None };
@@ -529,6 +530,11 @@ impl<V: View> App<V> {
             return (0..self.held.len()).any(|i| Some(i) != self.shown && g.surfs[i].touched.get() && !g.surfs[i].volatile.get());
         }
         false
+    }
+
+    /// Surfaces in the ring.
+    pub fn surfaces(&self) -> usize {
+        self.held.len()
     }
 
     /// The tile rows the last repair covered (tests and diagnostics).
