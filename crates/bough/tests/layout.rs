@@ -58,6 +58,7 @@ fn rects(app: &App<impl View>, root: u32) -> Vec<(u32, (f32, f32, f32, f32))> {
 
 struct Flex;
 impl View for Flex {
+    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         column((
             // 0: a row of fixed boxes with gap and padding
@@ -125,6 +126,7 @@ struct Wrap {
 }
 const A: &str = "the build passed on main after we moved layout into its own pass and a list of rows now measures each height once text wraps at the width so scrolling stays smooth";
 impl View for Wrap {
+    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         column((
             para(sig!(self.a)).font(14.0, 20.0).w(self.w).color(rgb(0xe5edf7)),
@@ -209,6 +211,7 @@ fn incremental_edits_equal_cold_layout_and_fresh_mount() {
 
 struct Abs;
 impl View for Abs {
+    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         // the absolutely positioned block's containing block is the root (`relative`), two static boxes up
         column((

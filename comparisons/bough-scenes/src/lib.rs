@@ -73,6 +73,7 @@ fn control(s: &'static str, x: f32) -> impl Element<Lab> {
 }
 
 impl View for Lab {
+    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         (
             quad(0.0, 0.0, wl::WIDTH, wl::HEIGHT).bg(rgb(0x10141c)),
@@ -120,6 +121,7 @@ fn dot_color(i: usize, t: f32) -> Color {
 }
 
 impl View for Anim {
+    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         use wl::animation::*;
         (
@@ -145,6 +147,7 @@ pub struct Blink {
 }
 
 impl View for Blink {
+    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         use wl::blink::*;
         let c = CARET_COLOR;
@@ -164,6 +167,7 @@ pub struct MicroState {
 }
 
 impl View for MicroState {
+    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         use wl::micro::*;
         let ink = rgb(wl::vlist::TEXT);
@@ -197,6 +201,7 @@ pub fn micro_rows(scroll: f32) -> Range<usize> {
 }
 
 impl View for MicroScroll {
+    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         use wl::micro::*;
         (

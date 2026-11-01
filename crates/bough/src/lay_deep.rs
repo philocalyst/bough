@@ -92,19 +92,36 @@ impl Deep {
         }
     }
 
-    pub fn add(&mut self, hd: Handle, spec: &Spec, scale: f32, ctx: Option<LeafCtx>) -> u32 {
-        let i = hd.idx;
-        if self.n.len() <= i as usize {
-            self.n.resize_with(i as usize + 1, DNode::blank);
-        }
-        let style = match self.spec_ids.get(&SpecKey(*spec)) {
+    /// The interned style of `spec` (one hash of the spec's words; the `Style` is built once per spec).
+    pub fn style_id(&mut self, spec: &Spec, scale: f32) -> u32 {
+        match self.spec_ids.get(&SpecKey(*spec)) {
             Some(&id) => id,
             None => {
                 let id = self.styles.intern(spec.to_style(scale));
                 self.spec_ids.insert(SpecKey(*spec), id);
                 id
             }
-        };
+        }
+    }
+    pub fn style_of(&self, n: u32) -> u32 {
+        self.n[n as usize].style
+    }
+    /// Restyle node `n` (a re-description changed its spec) and invalidate it.
+    pub fn set_style(&mut self, b: &Bough, n: u32, style: u32) {
+        let measured = self.n[n as usize].ctx.is_some();
+        let keep = self.n[n as usize].flags & !META_MASK;
+        self.n[n as usize].style = style;
+        self.n[n as usize].flags = meta_bits(&self.styles, style, measured) | keep;
+        self.n[n as usize].cache.clear();
+        self.invalidate(b, n);
+    }
+
+    pub fn add(&mut self, hd: Handle, spec: &Spec, scale: f32, ctx: Option<LeafCtx>) -> u32 {
+        let i = hd.idx;
+        if self.n.len() <= i as usize {
+            self.n.resize_with(i as usize + 1, DNode::blank);
+        }
+        let style = self.style_id(spec, scale);
         let flags = meta_bits(&self.styles, style, ctx.is_some());
         let nd = &mut self.n[i as usize];
         nd.style = style;
@@ -131,6 +148,38 @@ impl Deep {
         p.kids.push(child);
     }
 
+    /// Number of children of container `n`.
+    pub fn kid_count(&self, n: u32) -> usize {
+        self.n[n as usize].kids.len()
+    }
+    /// The children of `n` (mount order = flow order).
+    pub fn kids(&self, n: u32) -> &[u32] {
+        &self.n[n as usize].kids
+    }
+    /// Structural edit of container `n`'s children (a list region's rows): `kids[at..at+del]` becomes `ins`;
+    /// the container is invalidated (its algorithm reruns over its children at the next layout).
+    pub fn splice_kids(&mut self, b: &Bough, n: u32, at: usize, del: usize, ins: &[u32]) {
+        {
+            let nd = &mut self.n[n as usize];
+            nd.kids.splice(at..at + del, ins.iter().copied());
+            nd.nkids = nd.kids.len() as u32;
+        }
+        self.invalidate(b, n);
+    }
+    /// Rotate the last `k` children of `n` to index `at` (rows mounted at the end, then placed).
+    pub fn place_tail_kids(&mut self, n: u32, at: usize, k: usize) {
+        let kids = &mut self.n[n as usize].kids;
+        let len = kids.len();
+        if k > 0 && at + k < len {
+            kids[at..].rotate_right(k);
+        }
+    }
+    /// Overwrite `kids[at..at+new.len()]` (a permutation of them) and invalidate `n`.
+    pub fn permute_kids(&mut self, b: &Bough, n: u32, at: usize, new: &[u32]) {
+        self.n[n as usize].kids[at..at + new.len()].copy_from_slice(new);
+        self.invalidate(b, n);
+    }
+
     pub fn ctx_mut(&mut self, n: u32) -> Option<&mut LeafCtx> {
         self.n[n as usize].ctx.as_mut()
     }
@@ -145,6 +194,8 @@ impl Deep {
         for &i in all {
             let nd = &mut self.n[i as usize];
             nd.live = false;
+            // a queued entry of a removed node pops as clean (see `Incremental::depth`)
+            nd.flags &= META_MASK;
             nd.cache.clear();
             nd.ctx = None;
             nd.kids.clear();
@@ -430,6 +481,11 @@ impl Incremental for DView<'_> {
         Some(nid(self.b.record(p).handle))
     }
     fn depth(&self, node: NodeId) -> u32 {
+        // a node removed while queued (a list row) answers depth 0: the scheduler re-files it there and
+        // pops it clean (its flags were cleared by `remove_tree`)
+        if !self.d.n[ix(node)].live {
+            return 0;
+        }
         let r = self.r();
         self.b.depth_at(r.pos(ix(node) as u32)) as u32
     }

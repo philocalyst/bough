@@ -145,6 +145,8 @@ pub struct App<V: View> {
     trim_mark: u64,
     /// Throughput mode: the surface of the last released frame, published at the next sync.
     pending: Option<usize>,
+    /// The root's re-description tape (`describe.rs`; empty for a `FIXED` view).
+    tape: Vec<u32>,
 }
 
 impl<V: View> App<V> {
@@ -182,10 +184,12 @@ impl<V: View> App<V> {
         let owner = Box::new(view);
         let mut recs: Vec<RecordInit> = Vec::with_capacity(4096);
         let mut scope = Scope::default();
+        let mut tape: Vec<u32> = Vec::new();
         let ptr = &*owner as *const V;
         {
             let el = owner.view();
-            let mut m = Mounter { rt: &mut rt, owner: ptr, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None };
+            let tp: *mut Vec<u32> = if V::FIXED { std::ptr::null_mut() } else { &mut tape };
+            let mut m = Mounter { rt: &mut rt, owner: ptr, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None, cls: 0, tape: tp, ti: 0, pos: 0, kid: 0 };
             el.mount(&mut m);
         }
         rt.bough.insert_run(0, &recs);
@@ -216,6 +220,7 @@ impl<V: View> App<V> {
             last_use: vec![0; ring],
             trim_mark: 0,
             pending: None,
+            tape,
         }
     }
 
@@ -249,9 +254,10 @@ impl<V: View> App<V> {
         self.sync();
         self.prof.reset();
         f(&mut self.owner);
-        let owner = &*self.owner as *const V as *const u8;
+        let owner = &mut *self.owner as *mut V as *const u8;
         // SAFETY: the owner is the mounted view; every wire was installed from a `sig!` proof for it.
         unsafe { self.rt.settle(owner) };
+        self.redescribe();
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
         self.prof.mark(PH_TEXT);
@@ -265,10 +271,19 @@ impl<V: View> App<V> {
     /// The rest of a turn after `write`: settle the queued signals' wires and lay out what changed.
     pub fn flush(&mut self) {
         self.sync();
-        let owner = &*self.owner as *const V as *const u8;
+        let owner = &mut *self.owner as *mut V as *const u8;
         // SAFETY: as in `turn`.
         unsafe { self.rt.settle(owner) };
+        self.redescribe();
         self.rt.lay_flush();
+    }
+
+    /// A `FIXED = false` view: describe again and patch the retained records (`describe.rs`).
+    fn redescribe(&mut self) {
+        if !V::FIXED {
+            // SAFETY: the tape was recorded by this owner's mount at the start of the Bough.
+            unsafe { crate::describe::redescribe(&mut self.rt, &*self.owner, &mut self.tape) };
+        }
     }
 
     /// OR of the last `age` planes of both damage rings into `self.rows` (`false`: nothing damaged).

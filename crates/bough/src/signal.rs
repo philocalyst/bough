@@ -19,6 +19,51 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
 pub const QUEUED: u32 = 1 << 31;
+/// The head's cell is held by a pending async cohort (`reader.rs`): only `latest` wires run until the
+/// cohort commits, which re-queues it.
+pub const HELD: u32 = 1 << 30;
+
+/// A reactive cell whose first field is its wire head: `Signal`, `List`, `Reader`, `Entities`. `sig!`
+/// proves any of them at an `offset_of!` offset and hands back the cell's operand type `At`.
+///
+/// # Safety
+/// The implementor is `#[repr(C)]` with its `Cell<u32>` head at offset 0 (the runtime reaches the head of
+/// any wired cell at `owner + offset`).
+pub unsafe trait Headed {
+    /// The proven operand (`Wired` for a `Signal`).
+    type At<'a, V>
+    where
+        Self: 'a;
+    /// # Safety
+    /// `off` is the `offset_of!` offset of this cell in an owner of type `V` (only `prove` calls it).
+    #[doc(hidden)]
+    unsafe fn at<'a, V>(&'a self, off: u32) -> Self::At<'a, V>;
+}
+
+/// `sig!`'s expansion for every headed cell type.
+///
+/// # Safety
+/// `off` must be `offset_of!(V, path)` for the same struct field path as `_path` (the macro computes both
+/// from one token sequence; nothing else may call this).
+#[doc(hidden)]
+#[inline(always)]
+pub unsafe fn prove<'a, C: Headed, V>(c: &'a C, off: usize, _path: fn(&V) -> &C) -> C::At<'a, V> {
+    assert!(off + size_of::<C>() <= size_of::<V>() && off <= u32::MAX as usize);
+    // SAFETY: the caller's contract.
+    unsafe { c.at(off as u32) }
+}
+
+// SAFETY: `#[repr(C)]`, the head first.
+unsafe impl<T> Headed for Signal<T> {
+    type At<'a, V>
+        = Wired<'a, T, V>
+    where
+        T: 'a;
+    #[inline(always)]
+    unsafe fn at<'a, V>(&'a self, off: u32) -> Wired<'a, T, V> {
+        Wired { sig: self, off, _v: PhantomData }
+    }
+}
 
 #[repr(C)]
 pub struct Signal<T> {
@@ -186,12 +231,12 @@ macro_rules! sig {
         let r = &$o.$($f).+;
         let p: fn(&$t) -> &_ = |o: &$t| &o.$($f).+;
         // SAFETY: the offset and the accessor name the same struct field path of `$t`.
-        unsafe { $crate::signal::Wired::<_, $t>::proven(r, ::core::mem::offset_of!($t, $($f).+), p) }
+        unsafe { $crate::signal::prove::<_, $t>(r, ::core::mem::offset_of!($t, $($f).+), p) }
     }};
     ($s:tt . $($f:ident).+) => {{
         let r = &$s.$($f).+;
         let p: fn(&Self) -> &_ = |o: &Self| &o.$($f).+;
         // SAFETY: the offset and the accessor name the same struct field path of `Self`.
-        unsafe { $crate::signal::Wired::<_, Self>::proven(r, ::core::mem::offset_of!(Self, $($f).+), p) }
+        unsafe { $crate::signal::prove::<_, Self>(r, ::core::mem::offset_of!(Self, $($f).+), p) }
     }};
 }

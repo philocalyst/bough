@@ -38,6 +38,7 @@ fn quiet(fixed: bool) -> impl Element<Big> {
 }
 
 impl View for Big {
+    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         let (cols, per, fixed) = (self.cols, self.per, self.fixed);
         let mid = cols / 2;

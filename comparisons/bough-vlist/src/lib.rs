@@ -37,6 +37,7 @@ impl VList {
 }
 
 impl View for VList {
+    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         (
             quad(0.0, 0.0, vlist::WIDTH, vlist::HEIGHT).bg(rgb(vlist::BACKGROUND)),

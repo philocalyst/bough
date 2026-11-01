@@ -1126,7 +1126,7 @@ impl<Bg, Ch> LBox<Bg, Ch> {
 }
 
 /// Attach the layout node `lid` under the current parent (or make it a group root).
-fn attach<V>(m: &mut Mounter<'_, V>, lid: u32) -> u32 {
+pub(crate) fn attach<V>(m: &mut Mounter<'_, V>, lid: u32) -> u32 {
     let parent = m.rt.lay.cur;
     m.rt.lay.register(lid, parent);
     {
@@ -1187,11 +1187,66 @@ where
             // a paint-less box still has a record: the layout structure IS the Bough's depth column
             m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: hd.idx, clip: m.clip });
         }
+        m.tape_push(lid);
         m.depth += 1;
         m.rt.lay.cur = lid;
         self.ch.mount(m);
         m.rt.lay.cur = parent;
         m.depth -= 1;
+    }
+
+    fn update(self, m: &mut Mounter<'_, V>) {
+        let lid = m.tape_next();
+        restyle(m.rt, lid, &self.spec);
+        let li = m.rt.lay.info[lid as usize];
+        assert_eq!(self.draw, li.kind == 1, "a re-description cannot add or drop a box's paint (bg/rounded/border)");
+        if li.clip != m.clip {
+            m.rt.bough.set_clip_run(m.pos, 1, m.clip);
+            m.rt.lay.info[lid as usize].clip = m.clip;
+        }
+        if self.draw {
+            let node = li.rtn;
+            let bg = self.bg.value();
+            let s = m.rt.scale;
+            let (ins, _kind, margin) = quad_instance(bg, self.radius * s, self.border, s, m.space);
+            let inst = m.rt.runs[m.rt.nodes[node as usize].run as usize].first;
+            let old = *m.rt.inst_mut(inst);
+            if old.radius != ins.radius || old.kind != ins.kind || old.bw != ins.bw || (self.border.is_some() && old.color != ins.color) {
+                let p = m.rt.inst_mut(inst);
+                let (pos, size) = (p.pos, p.size);
+                *p = Instance { pos, size, ..ins };
+                let n = &mut m.rt.nodes[node as usize];
+                n.margin = margin;
+                n.color = bg.0;
+                n.kind = if self.border.is_some() { NK_BORDER } else { NK_QUAD };
+                m.rt.quad_ink(node);
+            } else {
+                <ApplyBg as crate::elem::Apply>::apply(m.rt, node, &bg);
+            }
+        }
+        m.pos += 1;
+        m.kid += 1;
+        let (cur, kid) = (m.rt.lay.cur, m.kid);
+        m.rt.lay.cur = lid;
+        m.kid = 0;
+        m.depth += 1;
+        self.ch.update(m);
+        m.depth -= 1;
+        m.rt.lay.cur = cur;
+        m.kid = kid;
+    }
+}
+
+/// A re-description's spec for layout node `lid`: restyle and queue its group when it changed.
+pub(crate) fn restyle(rt: &mut Rt, lid: u32, spec: &Spec) {
+    let sid = rt.lay.eng.style_id(spec, rt.scale);
+    if sid != rt.lay.eng.style_of(lid) {
+        rt.lay.eng.set_style(&rt.bough, lid, sid);
+        let root = rt.lay.root_of(lid);
+        if !rt.lay.info[root as usize].queued {
+            rt.lay.info[root as usize].queued = true;
+            rt.lay.pending.push(root);
+        }
     }
 }
 
@@ -1281,8 +1336,43 @@ impl<V: 'static, S: TextSrc<V>> Element<V> for Para<S> {
         m.rt.lay.info[lid as usize].rtn = node;
         m.rt.lay.info[lid as usize].kind = 2;
         m.scope.nodes.push(node);
+        m.tape_push(lid);
         // provisional: empty ink (never drawn) until the first write-back points the lines at the block
         m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_TEXT, payload: 0, handle: hd.idx, clip: m.clip });
+    }
+
+    fn update(self, m: &mut Mounter<'_, V>) {
+        let lid = m.tape_next();
+        restyle(m.rt, lid, &self.spec);
+        let node = m.rt.lay.info[lid as usize].rtn;
+        let ti = m.rt.nodes[node as usize].text;
+        let s = m.rt.scale;
+        {
+            let t = &m.rt.texts[ti as usize];
+            assert!(t.size_px == self.size * s && t.line_h == self.lh * s, "a re-description cannot change a laid-out text's font size");
+        }
+        if m.rt.lay.info[lid as usize].clip != m.clip {
+            m.rt.bough.set_clip_run(m.pos, 1, m.clip);
+            m.rt.lay.info[lid as usize].clip = m.clip;
+        }
+        let text = self.s.value();
+        if m.rt.texts[ti as usize].text != text {
+            m.rt.lay_text_changed(node, &text);
+        }
+        if m.rt.texts[ti as usize].color != self.color.0 {
+            m.rt.texts[ti as usize].color = self.color.0;
+            m.rt.nodes[node as usize].color = self.color.0;
+            // re-placed at the write-back with the new colour (old and new ink damaged)
+            m.rt.lay.info[lid as usize].tdirty = true;
+            m.rt.lay.dirty.push(lid);
+            let root = m.rt.lay.root_of(lid);
+            if !m.rt.lay.info[root as usize].queued {
+                m.rt.lay.info[root as usize].queued = true;
+                m.rt.lay.pending.push(root);
+            }
+        }
+        m.pos += 1;
+        m.kid += 1;
     }
 }
 

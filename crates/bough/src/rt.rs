@@ -172,12 +172,21 @@ pub struct Wire {
     /// Next wire of the same signal (0 = end).
     pub next: u32,
     pub dead: bool,
+    /// Runs while its source is held by a pending cohort (`latest(..)` operands, reader pending wires).
+    pub latest: bool,
     pub node: u32,
+    /// Address of the head the wire was linked into. `settle` runs a wire only from that exact head: a
+    /// head moved elsewhere (a `Signal` swapped between owners or apps, a list row taken out and put back)
+    /// carries indices that are not its own, and the chain is cut there instead of being run.
+    pub head: usize,
     pub patch: PatchFn,
     pub recipe: [u8; 16],
 }
 
 unsafe fn nop(_: &mut Rt, _: &Wire, _: *const u8, _: *const u8) {}
+
+/// Index bits of a head (the rest are flags: `QUEUED`, `HELD`).
+pub const HEAD_IDX: u32 = (1 << 30) - 1;
 
 /// Everything created while mounting one subtree that must be released when it unmounts.
 #[derive(Default)]
@@ -187,6 +196,8 @@ pub struct Scope {
     pub runs: Vec<u32>,
     /// Layout roots (groups) created while mounting; removed from the layout engine on release.
     pub lroots: Vec<u32>,
+    /// Dynamic parts of a re-describing owner (`describe.rs`), released with their items.
+    pub dyns: Vec<u32>,
 }
 
 pub struct RowInfo {
@@ -274,8 +285,10 @@ pub struct Rt {
     /// The wire arena and the owner offsets of wired signals: crate-private, because `settle` trusts them
     /// (every offset is an `offset_of!`-proven `Signal<_>` field, every recipe the closure its patch reads).
     pub(crate) wires: Vec<Wire>,
-    wire_free: Vec<u32>,
-    pub(crate) wired: Vec<u32>,
+    pub(crate) wire_free: Vec<u32>,
+    /// Per owner class: the offsets of its wired cells (class 0 is the app's root owner; every list
+    /// region adds one class shared by all its rows, `list.rs`).
+    pub(crate) classes: Vec<Vec<u32>>,
     pub texts: Vec<crate::text::TextNode>,
     text_free: Vec<u32>,
     /// Virtual-list regions: crate-private (each holds a type-erased row function its `mount_row` trusts).
@@ -293,6 +306,10 @@ pub struct Rt {
     /// The layout bridge (cephal over the mounted records) and the measured lists.
     pub lay: crate::layout::Lay,
     pub mregions: Vec<crate::mlist::MRegion>,
+    /// List regions (`listview.rs`).
+    pub lists: crate::listview::Lists,
+    /// Dynamic parts of re-describing owners (`describe.rs`).
+    pub dyns: crate::describe::Dyns,
     /// Keeps a heap region alive (the GPU region is kept alive by the columns' reference count too).
     _region: Region,
 }
@@ -351,9 +368,9 @@ impl Rt {
             run_free: Vec::new(),
             nodes: vec![Node::blank()],
             node_free: Vec::new(),
-            wires: vec![Wire { next: 0, dead: true, node: 0, patch: nop, recipe: [0; 16] }],
+            wires: vec![Wire { next: 0, dead: true, latest: false, node: 0, head: 0, patch: nop, recipe: [0; 16] }],
             wire_free: Vec::new(),
-            wired: Vec::new(),
+            classes: vec![Vec::new()],
             texts: Vec::new(),
             text_free: Vec::new(),
             regions: Vec::new(),
@@ -367,6 +384,8 @@ impl Rt {
             ctr: Counters::default(),
             lay: crate::layout::Lay::new(scale),
             mregions: Vec::new(),
+            lists: Default::default(),
+            dyns: Default::default(),
             _region: region,
         }
     }
@@ -523,18 +542,24 @@ impl Rt {
         self.text_free.push(t);
     }
 
-    /// Install a wire on the signal whose head is `head` (the signal lives at `owner + off`).
+    /// Install a wire on the cell whose head is `head` (the cell lives at `owner + off`, owner class `cls`).
     ///
     /// # Safety
-    /// `off` must be the `offset_of!`-proven offset of a `Signal<T>` field of the owner type, `head` that
-    /// signal's head, and `patch` monomorphised for that `T` (and `recipe` holding what it reads).
-    pub(crate) unsafe fn add_wire(&mut self, head: &std::cell::Cell<u32>, off: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
+    /// `off` must be the `offset_of!`-proven offset of a headed cell field of the class's owner type, `head`
+    /// that cell's head, and `patch` monomorphised for the cell's type (and `recipe` holding what it reads).
+    pub(crate) unsafe fn add_wire(&mut self, head: &std::cell::Cell<u32>, off: u32, cls: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
+        let addr = head as *const _ as usize;
         let h = head.get();
-        let first = h & !crate::signal::QUEUED;
-        if first == 0 {
-            self.wired.push(off);
+        let mut first = h & HEAD_IDX;
+        // a chain that is not this head's own (moved in from elsewhere) is dropped, never extended
+        if first != 0 && self.wires.get(first as usize).is_none_or(|w| w.head != addr) {
+            first = 0;
         }
-        let w = Wire { next: first, dead: false, node, patch, recipe };
+        let c = &mut self.classes[cls as usize];
+        if !c.contains(&off) {
+            c.push(off);
+        }
+        let w = Wire { next: first, dead: false, latest: false, node, head: addr, patch, recipe };
         let idx = if let Some(i) = self.wire_free.pop() {
             self.wires[i as usize] = w;
             i
@@ -542,49 +567,90 @@ impl Rt {
             self.wires.push(w);
             (self.wires.len() - 1) as u32
         };
-        head.set(idx | (h & crate::signal::QUEUED));
+        assert!(idx <= HEAD_IDX, "wire arena full");
+        head.set(idx | (h & !HEAD_IDX));
         idx
     }
 
-    /// Run every queued signal's wires. Dead wires are unlinked as they are met.
+    /// A new owner class (list rows, entities): its wired offsets start empty.
+    pub(crate) fn new_class(&mut self) -> u32 {
+        self.classes.push(Vec::new());
+        (self.classes.len() - 1) as u32
+    }
+
+    /// Run every queued cell's wires of the root owner. Dead wires are unlinked as they are met.
     ///
     /// # Safety
-    /// `owner` must point at the live owner whose wired signals were installed through `Wired` (every
-    /// offset in `wired` is an `offset_of!`-proven `Signal<_>` field of it; the head is the first field of
-    /// every `Signal`, `#[repr(C)]`).
+    /// `owner` must point at the live root owner whose wired cells were installed through `sig!` proofs
+    /// (every offset in class 0 is an `offset_of!`-proven headed field of it; the head is the first field of
+    /// every cell, `#[repr(C)]`), and be derived from a unique borrow (list patches write their cell).
     pub unsafe fn settle(&mut self, owner: *const u8) {
+        unsafe { self.settle_cls(owner, 0) };
+        self.lists_end_turn();
+    }
+
+    /// `settle` for the owner at `owner` of class `cls` (a list row, an entity).
+    ///
+    /// # Safety
+    /// As `settle`, for the class's owner type.
+    pub(crate) unsafe fn settle_cls(&mut self, owner: *const u8, cls: u32) {
         let mut k = 0;
-        while k < self.wired.len() {
-            let off = self.wired[k] as usize;
+        while k < self.classes[cls as usize].len() {
+            let off = self.classes[cls as usize][k] as usize;
             k += 1;
-            // SAFETY: see the function contract: a Signal<_> lives at owner + off, its head first.
+            // SAFETY: see the function contract: a headed cell lives at owner + off, its head first.
             let sig = unsafe { owner.add(off) };
             let head = unsafe { &*(sig as *const std::cell::Cell<u32>) };
             let h = head.get();
             if h & crate::signal::QUEUED == 0 {
                 continue;
             }
-            head.set(h & !crate::signal::QUEUED);
-            let mut i = h & !crate::signal::QUEUED;
-            let mut prev = 0u32;
-            while i != 0 {
-                let w = self.wires[i as usize];
-                if w.dead {
-                    // unlink
+            unsafe { self.run_head(head, sig, owner) };
+        }
+    }
+
+    /// Run the wires of one queued head (clears QUEUED; a HELD head runs only its `latest` wires).
+    ///
+    /// # Safety
+    /// `sig` is the cell whose head is `head`, inside the live owner `owner` its wires were installed for.
+    pub(crate) unsafe fn run_head(&mut self, head: &std::cell::Cell<u32>, sig: *const u8, owner: *const u8) {
+        let addr = head as *const _ as usize;
+        let h = head.get();
+        let held = h & crate::signal::HELD != 0;
+        head.set(h & !crate::signal::QUEUED);
+        let mut i = h & HEAD_IDX;
+        let mut prev = 0u32;
+        while i != 0 {
+            let w = match self.wires.get(i as usize) {
+                Some(w) if w.head == addr => *w,
+                // not this head's chain (see `Wire::head`): cut it here
+                _ => {
                     if prev == 0 {
-                        head.set(w.next | (head.get() & crate::signal::QUEUED));
+                        head.set(head.get() & !HEAD_IDX);
                     } else {
-                        self.wires[prev as usize].next = w.next;
+                        self.wires[prev as usize].next = 0;
                     }
-                    self.wire_free.push(i);
-                } else {
-                    self.ctr.wires_run += 1;
-                    // SAFETY: the wire was installed for this signal's type and the owner's type.
-                    unsafe { (w.patch)(self, &w, sig, owner) };
-                    prev = i;
+                    break;
                 }
-                i = w.next;
+            };
+            if w.dead {
+                // unlink
+                if prev == 0 {
+                    head.set(w.next | (head.get() & !HEAD_IDX));
+                } else {
+                    self.wires[prev as usize].next = w.next;
+                }
+                self.wires[i as usize].head = 0;
+                self.wire_free.push(i);
+            } else {
+                if !held || w.latest {
+                    self.ctr.wires_run += 1;
+                    // SAFETY: the wire was installed for this cell's type and the owner's type.
+                    unsafe { (w.patch)(self, &w, sig, owner) };
+                }
+                prev = i;
             }
+            i = w.next;
         }
     }
 
@@ -687,6 +753,9 @@ impl Rt {
         }
         for r in s.lroots {
             self.lay_remove_root(r);
+        }
+        for d in s.dyns {
+            self.release_dyn(d);
         }
     }
 

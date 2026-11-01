@@ -887,6 +887,17 @@ impl Bough {
         assert!(start + len <= self.total && to <= self.total - len);
         let mut stage = core::mem::take(&mut self.scratch);
         stage.clear();
+        self.read_run_impl(start, len, ddepth, &mut stage);
+        self.remove_impl(start, len, false, true);
+        self.insert_impl(to, &stage, false);
+        stage.clear();
+        self.scratch = stage;
+    }
+
+    fn read_run_impl(&self, start: usize, len: usize, ddepth: i32, out: &mut Vec<RecordInit>) {
+        if len == 0 {
+            return;
+        }
         let (mut d, mut s) = self.locate(start);
         let mut rem = len;
         while rem > 0 {
@@ -894,7 +905,7 @@ impl Bough {
             let n = rem.min(l - s);
             let p = self.page(d);
             for i in s..s + n {
-                stage.push(RecordInit {
+                out.push(RecordInit {
                     depth: (p.depth[i] as i32 + ddepth) as u16,
                     ink: p.abs(p.ink[i]),
                     kind: p.kind[i],
@@ -907,10 +918,23 @@ impl Bough {
             d += 1;
             s = 0;
         }
-        self.remove_impl(start, len, false, true);
-        self.insert_impl(to, &stage, false);
-        stage.clear();
-        self.scratch = stage;
+    }
+
+    /// Append the records `[start, start+len)` to `out` (absolute ink, handles kept): the input of a
+    /// `rewrite_run` that permutes sub-runs (a list's rows reordered).
+    pub fn read_run(&self, start: usize, len: usize, out: &mut Vec<RecordInit>) {
+        assert!(start + len <= self.total);
+        self.read_run_impl(start, len, 0, out);
+    }
+
+    /// Replace the run `[start, start+recs.len())` by `recs`, a rearrangement of the same records (their
+    /// handles stay bound and follow them). Damages the old and the new ink of the run.
+    pub fn rewrite_run(&mut self, start: usize, recs: &[RecordInit]) {
+        if recs.is_empty() {
+            return;
+        }
+        self.remove_impl(start, recs.len(), false, true);
+        self.insert_impl(start, recs, true);
     }
 
     // ------------------------------------------------------------------ translate / ink / touch

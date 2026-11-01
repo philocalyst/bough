@@ -142,6 +142,7 @@ fn table<'a>(live: Wired<'a, u64, Dash>, scroll: Wired<'a, f32, Dash>) -> impl E
 }
 
 impl View for Dash {
+    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         (
             quad(0.0, 0.0, WIDTH, HEIGHT).bg(rgb(BACKGROUND)),

@@ -386,7 +386,7 @@ unsafe fn mount_mrow<V: 'static>(rt: &mut Rt, owner: *const u8, reg: usize, row:
     let before = recs.len();
     rt.lay.cur = crate::layout::NONE;
     {
-        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None };
+        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls: 0, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0 };
         f(unsafe { &*(owner as *const V) }, row, &mut m);
     }
     assert_eq!(scope.lroots.len(), 1, "a measured-list row must mount exactly one layout group (a column / row)");
@@ -427,10 +427,15 @@ impl<'a, V: 'static> Element<V> for MeasuredList<'a, V> {
             stats: MStats::default(),
         });
         let sc = self.scroll;
-        debug_assert_eq!(sc.sig as *const Signal<f32> as usize, m.owner as usize + sc.off as usize);
         // SAFETY: `sc` is a `Wired<f32, V>` (an `offset_of!`-proven `Signal<f32>` field of `V`); `patch_mscroll`
         // reads a `Signal<f32>`.
-        let wi = unsafe { m.rt.add_wire(sc.sig.head(), sc.off, patch_mscroll, reg as u32, [0; 16]) };
-        m.scope.wires.push(wi);
+        unsafe { m.wire_cell(sc.sig.head(), sc.off, patch_mscroll, reg as u32, [0; 16]) };
+        m.tape_push(reg as u32);
+    }
+    /// The rows are the list's (scroll-driven); a re-description only re-anchors the run.
+    fn update(self, m: &mut Mounter<'_, V>) {
+        let reg = m.tape_next() as usize;
+        m.rt.mregions[reg].base_pos = m.pos;
+        m.pos += m.rt.mregions[reg].rows.iter().map(|r| r.nrec as usize).sum::<usize>();
     }
 }

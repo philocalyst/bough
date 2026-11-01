@@ -1,0 +1,451 @@
+//! `List<T>`: keyed rows with durable [`Slot`] identity, and the per-turn delta log its regions replay.
+//!
+//! # Representation
+//! * **Rows never move in memory.** Items live in a slab of 64-item chunks (allocated when the slab grows,
+//!   never moved or freed while the list lives), so a row is an *owner* at a stable address: the wires a
+//!   row's description installs (`sig!(self.label)` with `Self = T`) read `row + offset_of!(T, label)`
+//!   for the row's whole life, whatever happens to its position.
+//! * **Order is a vector of slot ids** (`order[pos] = slot`). A splice, a move or a permutation edits
+//!   that vector; no item is copied.
+//! * **Identity is a generational slot** (`Slot<T>`: index + generation, `Copy`): taking an item bumps the
+//!   generation, so a stale slot answers `None`, never another item.
+//! * **The delta log.** Each op appends what a region needs to replay it on its own mounted rows:
+//!   `Insert { at, slot }`, `Remove { at }`, `Move { from, to }`, `Permute { at, n }` (the new slot
+//!   order of positions `at..at+n`, kept in a side vector) and `Edit { slot }` (once per slot per turn:
+//!   a bit in the slot's meta word). The log is kept only while the list is displayed (its head has
+//!   wires) and is cleared when the turn's settle is over, after every region showing it has replayed
+//!   it. A freed slot is reused only after that (`pending_free`), so a log entry never names two items.
+//!
+//! The list's own head (first field, `#[repr(C)]`) is a wire head like a `Signal`'s: every op sets
+//! `QUEUED` when the list is displayed, and the root's settle scan runs the region's wire.
+use crate::signal::{Headed, QUEUED};
+use std::cell::Cell;
+use std::marker::PhantomData;
+use std::mem::MaybeUninit;
+
+const CHUNK: usize = 64;
+const NONE: u32 = u32::MAX;
+/// Meta word of a slot: generation in the low 30 bits, LIVE and EDITED above.
+const LIVE: u32 = 1 << 31;
+const EDITED: u32 = 1 << 30;
+const GEN: u32 = EDITED - 1;
+
+/// Durable identity of one item of a `List<T>`: valid until the item is taken out.
+pub struct Slot<T> {
+    pub(crate) idx: u32,
+    pub(crate) generation: u32,
+    _t: PhantomData<fn() -> T>,
+}
+impl<T> Clone for Slot<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for Slot<T> {}
+impl<T> PartialEq for Slot<T> {
+    fn eq(&self, o: &Self) -> bool {
+        self.idx == o.idx && self.generation == o.generation
+    }
+}
+impl<T> Eq for Slot<T> {}
+impl<T> std::fmt::Debug for Slot<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Slot({}#{})", self.idx, self.generation)
+    }
+}
+impl<T> Slot<T> {
+    pub fn index(&self) -> u32 {
+        self.idx
+    }
+}
+
+/// One replayable step of a turn's changes (positions are those of the list at the time of the op).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Op {
+    Insert { at: u32, slot: u32 },
+    Remove { at: u32, slot: u32 },
+    /// The item at `from` ends at `to` in the resulting sequence.
+    Move { from: u32, to: u32 },
+    /// Positions `at..at+n` now hold `perm[off..off+n]` (slot ids), a permutation of what they held.
+    Permute { at: u32, n: u32, off: u32 },
+    Edit { slot: u32 },
+}
+
+#[repr(C)]
+pub struct List<T> {
+    head: Cell<u32>,
+    chunks: Vec<Box<[MaybeUninit<T>; CHUNK]>>,
+    meta: Vec<u32>,
+    order: Vec<u32>,
+    free: Vec<u32>,
+    pending_free: Vec<u32>,
+    log: Vec<Op>,
+    perm: Vec<u32>,
+    /// Offsets of the row fields that carry wires (a row region's owner class), so an item taken out
+    /// leaves with clean heads. Written by the regions as rows mount.
+    pub(crate) wired: std::cell::RefCell<Vec<u32>>,
+    /// Some region's patch has registered this list for the end-of-settle cleanup this turn.
+    pub(crate) registered: Cell<bool>,
+}
+
+// SAFETY: `#[repr(C)]` with the head first.
+unsafe impl<T> Headed for List<T> {
+    type At<'a, V>
+        = LWired<'a, T, V>
+    where
+        T: 'a;
+    unsafe fn at<'a, V>(&'a self, off: u32) -> LWired<'a, T, V> {
+        LWired { list: self, off, _v: PhantomData }
+    }
+}
+
+/// A list operand of owner type `V` at a compiler-proven offset (`sig!(self.items)`).
+pub struct LWired<'a, T, V> {
+    pub(crate) list: &'a List<T>,
+    pub(crate) off: u32,
+    _v: PhantomData<fn(&V)>,
+}
+impl<T, V> Clone for LWired<'_, T, V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T, V> Copy for LWired<'_, T, V> {}
+impl<'a, T, V> LWired<'a, T, V> {
+    pub fn get(&self) -> &'a List<T> {
+        self.list
+    }
+}
+
+impl<T> Default for List<T> {
+    fn default() -> Self {
+        List::new()
+    }
+}
+
+impl<T> Drop for List<T> {
+    fn drop(&mut self) {
+        for &s in &self.order {
+            // SAFETY: every slot in `order` is live and initialised.
+            unsafe { self.slot_ptr(s).drop_in_place() };
+        }
+    }
+}
+
+impl<T> List<T> {
+    pub fn new() -> List<T> {
+        List { head: Cell::new(0), chunks: Vec::new(), meta: Vec::new(), order: Vec::new(), free: Vec::new(), pending_free: Vec::new(), log: Vec::new(), perm: Vec::new(), wired: Default::default(), registered: Cell::new(false) }
+    }
+    pub fn with_capacity(n: usize) -> List<T> {
+        let mut l = List::new();
+        l.order.reserve(n);
+        l.meta.reserve(n);
+        l.chunks.reserve(n.div_ceil(CHUNK));
+        l
+    }
+    pub fn from_iter_in(it: impl IntoIterator<Item = T>) -> List<T> {
+        let mut l = List::new();
+        for v in it {
+            l.push(v);
+        }
+        l
+    }
+
+    #[inline(always)]
+    pub(crate) fn head(&self) -> &Cell<u32> {
+        &self.head
+    }
+    #[inline(always)]
+    fn displayed(&self) -> bool {
+        self.head.get() != 0
+    }
+    #[inline(always)]
+    fn note(&mut self, op: Op) {
+        if self.displayed() {
+            self.log.push(op);
+            let h = self.head.get();
+            self.head.set(h | QUEUED);
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn slot_ptr(&self, s: u32) -> *mut T {
+        let c = &self.chunks[s as usize / CHUNK];
+        c[s as usize % CHUNK].as_ptr() as *mut T
+    }
+    fn alloc_slot(&mut self, v: T) -> u32 {
+        let s = match self.free.pop() {
+            Some(s) => s,
+            None => {
+                let s = self.meta.len() as u32;
+                if s as usize % CHUNK == 0 {
+                    // SAFETY: an array of MaybeUninit needs no initialisation.
+                    self.chunks.push(Box::new(unsafe { MaybeUninit::<[MaybeUninit<T>; CHUNK]>::uninit().assume_init() }));
+                }
+                self.meta.push(0);
+                s
+            }
+        };
+        // SAFETY: a free slot holds no value.
+        unsafe { self.slot_ptr(s).write(v) };
+        self.meta[s as usize] = (self.meta[s as usize] & GEN) | LIVE;
+        s
+    }
+    fn slot_of(&self, s: u32) -> Slot<T> {
+        Slot { idx: s, generation: self.meta[s as usize] & GEN, _t: PhantomData }
+    }
+    /// Move the item out of slot `s`; the slot's heads are cleared first (see `wired`).
+    fn free_slot(&mut self, s: u32) -> T {
+        let p = self.slot_ptr(s);
+        for &off in self.wired.borrow().iter() {
+            // SAFETY: `wired` holds `offset_of!`-proven headed fields of `T` (written by the row region).
+            unsafe { (*((p as *const u8).add(off as usize) as *const Cell<u32>)).set(0) };
+        }
+        let m = &mut self.meta[s as usize];
+        *m = ((*m & GEN) + 1) & GEN;
+        if self.displayed() {
+            self.pending_free.push(s);
+        } else {
+            self.free.push(s);
+        }
+        // SAFETY: the slot was live; it is marked free above and never read again until rewritten.
+        unsafe { p.read() }
+    }
+    #[inline]
+    fn live(&self, s: Slot<T>) -> bool {
+        self.meta.get(s.idx as usize).is_some_and(|&m| m & LIVE != 0 && m & GEN == s.generation)
+    }
+
+    // ------------------------------------------------------------------ reads
+    pub fn len(&self) -> usize {
+        self.order.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+    pub fn get(&self, pos: usize) -> Option<&T> {
+        let &s = self.order.get(pos)?;
+        // SAFETY: slots in `order` are live.
+        Some(unsafe { &*self.slot_ptr(s) })
+    }
+    pub fn slot(&self, pos: usize) -> Option<Slot<T>> {
+        self.order.get(pos).map(|&s| self.slot_of(s))
+    }
+    pub fn get_slot(&self, s: Slot<T>) -> Option<&T> {
+        // SAFETY: a live slot is initialised.
+        self.live(s).then(|| unsafe { &*self.slot_ptr(s.idx) })
+    }
+    /// The position of `s` (a scan of the order vector), or `None` if it was taken out.
+    pub fn position(&self, s: Slot<T>) -> Option<usize> {
+        if !self.live(s) {
+            return None;
+        }
+        self.order.iter().position(|&x| x == s.idx)
+    }
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &T> + '_ {
+        // SAFETY: slots in `order` are live.
+        self.order.iter().map(move |&s| unsafe { &*self.slot_ptr(s) })
+    }
+    pub fn slots(&self) -> impl ExactSizeIterator<Item = Slot<T>> + '_ {
+        self.order.iter().map(move |&s| self.slot_of(s))
+    }
+
+    // ------------------------------------------------------------------ ops
+    pub fn push(&mut self, v: T) -> Slot<T> {
+        let at = self.order.len();
+        self.insert(at, v)
+    }
+    pub fn insert(&mut self, at: usize, v: T) -> Slot<T> {
+        assert!(at <= self.order.len(), "insert position out of range");
+        let s = self.alloc_slot(v);
+        self.order.insert(at, s);
+        self.note(Op::Insert { at: at as u32, slot: s });
+        self.slot_of(s)
+    }
+    pub fn extend(&mut self, it: impl IntoIterator<Item = T>) {
+        for v in it {
+            self.push(v);
+        }
+    }
+    pub fn remove(&mut self, at: usize) -> T {
+        let s = self.order.remove(at);
+        self.note(Op::Remove { at: at as u32, slot: s });
+        self.free_slot(s)
+    }
+    pub fn pop(&mut self) -> Option<T> {
+        (!self.order.is_empty()).then(|| self.remove(self.order.len() - 1))
+    }
+    /// Take the item out (its slot dies: a later lookup answers `None`).
+    pub fn take(&mut self, s: Slot<T>) -> Option<T> {
+        let at = self.position(s)?;
+        Some(self.remove(at))
+    }
+    pub fn clear(&mut self) {
+        while !self.order.is_empty() {
+            self.remove(self.order.len() - 1);
+        }
+    }
+    pub fn truncate(&mut self, n: usize) {
+        while self.order.len() > n {
+            self.remove(self.order.len() - 1);
+        }
+    }
+    /// Keep the items `f` accepts (in order).
+    pub fn retain(&mut self, mut f: impl FnMut(&T) -> bool) {
+        let mut i = 0;
+        while i < self.order.len() {
+            // SAFETY: slots in `order` are live.
+            if f(unsafe { &*self.slot_ptr(self.order[i]) }) {
+                i += 1;
+            } else {
+                drop(self.remove(i));
+            }
+        }
+    }
+    /// The item at `from` moves so that it ends at `to`.
+    pub fn move_to(&mut self, from: usize, to: usize) {
+        let n = self.order.len();
+        assert!(from < n && to < n, "move out of range");
+        if from == to {
+            return;
+        }
+        let s = self.order.remove(from);
+        self.order.insert(to, s);
+        self.note(Op::Move { from: from as u32, to: to as u32 });
+    }
+    /// Move `s` so it sits right before `other` (`None`: at the end).
+    pub fn move_before(&mut self, s: Slot<T>, other: Option<Slot<T>>) {
+        let Some(from) = self.position(s) else { return };
+        let to = match other.and_then(|o| self.position(o)) {
+            Some(p) if p > from => p - 1,
+            Some(p) => p,
+            None => self.order.len() - 1,
+        };
+        self.move_to(from, to);
+    }
+    pub fn swap(&mut self, a: usize, b: usize) {
+        if a == b {
+            return;
+        }
+        self.permute_with(a.min(b), a.max(b) + 1, |o| o.swap(0, o.len() - 1));
+    }
+    pub fn reverse(&mut self) {
+        let n = self.order.len();
+        self.permute_with(0, n, |o| o.reverse());
+    }
+    pub fn sort_by(&mut self, mut f: impl FnMut(&T, &T) -> std::cmp::Ordering) {
+        let n = self.order.len();
+        let chunks = &self.chunks;
+        let p = |s: u32| -> *const T { chunks[s as usize / CHUNK][s as usize % CHUNK].as_ptr() };
+        let mut o = self.order.clone();
+        // SAFETY: slots in `order` are live.
+        o.sort_by(|&a, &b| f(unsafe { &*p(a) }, unsafe { &*p(b) }));
+        self.permute_with(0, n, |x| x.copy_from_slice(&o));
+    }
+    pub fn sort_by_key<K: Ord>(&mut self, mut f: impl FnMut(&T) -> K) {
+        self.sort_by(|a, b| f(a).cmp(&f(b)));
+    }
+    fn permute_with(&mut self, lo: usize, hi: usize, f: impl FnOnce(&mut [u32])) {
+        if hi <= lo + 1 {
+            return;
+        }
+        f(&mut self.order[lo..hi]);
+        if self.displayed() {
+            let off = self.perm.len() as u32;
+            self.perm.extend_from_slice(&self.order[lo..hi]);
+            self.note(Op::Permute { at: lo as u32, n: (hi - lo) as u32, off });
+        }
+    }
+    /// Edit the item at `pos`: its row's queued signals run (and a re-describing row re-describes) at the
+    /// turn's settle.
+    pub fn edit(&mut self, pos: usize) -> &mut T {
+        let s = self.order[pos];
+        self.mark_edit(s);
+        // SAFETY: live slot; `&mut self` makes this the only borrow.
+        unsafe { &mut *self.slot_ptr(s) }
+    }
+    pub fn edit_slot(&mut self, s: Slot<T>) -> Option<&mut T> {
+        if !self.live(s) {
+            return None;
+        }
+        self.mark_edit(s.idx);
+        // SAFETY: as in `edit`.
+        Some(unsafe { &mut *self.slot_ptr(s.idx) })
+    }
+    #[inline]
+    fn mark_edit(&mut self, s: u32) {
+        let m = self.meta[s as usize];
+        if m & EDITED == 0 && self.displayed() {
+            self.meta[s as usize] = m | EDITED;
+            self.note(Op::Edit { slot: s });
+        }
+    }
+    /// Replace the item at `pos` (identity kept: the same slot, its row re-mounted).
+    pub fn set(&mut self, pos: usize, v: T) -> T {
+        let old = self.remove(pos);
+        let s = self.alloc_slot(v);
+        self.order.insert(pos, s);
+        self.note(Op::Insert { at: pos as u32, slot: s });
+        old
+    }
+
+    // ------------------------------------------------------------------ runtime side
+    /// This turn's ops, and the permutation side vector.
+    pub(crate) fn log(&self) -> (&[Op], &[u32]) {
+        (&self.log, &self.perm)
+    }
+    pub(crate) fn order_slots(&self) -> &[u32] {
+        &self.order
+    }
+    /// End of the turn's settle: drop the log, clear the edit bits, release the slots freed this turn.
+    pub(crate) fn end_turn(&mut self) {
+        for op in &self.log {
+            if let Op::Edit { slot } = *op {
+                self.meta[slot as usize] &= !EDITED;
+            }
+        }
+        self.log.clear();
+        self.perm.clear();
+        self.free.append(&mut self.pending_free);
+        self.registered.set(false);
+    }
+    #[inline]
+    pub(crate) fn slot_live(&self, s: u32) -> bool {
+        self.meta[s as usize] & LIVE != 0
+    }
+    /// The slot id at `pos` (runtime side, no generation).
+    #[inline]
+    pub(crate) fn slot_at(&self, pos: usize) -> u32 {
+        self.order[pos]
+    }
+}
+
+/// Positional operations of a `Vec` oracle, for the differential tests (`tests/list.rs`).
+#[doc(hidden)]
+pub fn replay<X: Copy>(rows: &mut Vec<X>, op: Op, perm: &[u32], resolve: impl Fn(u32) -> X) {
+    match op {
+        Op::Insert { at, slot } => rows.insert(at as usize, resolve(slot)),
+        Op::Remove { at, .. } => {
+            rows.remove(at as usize);
+        }
+        Op::Move { from, to } => {
+            let x = rows.remove(from as usize);
+            rows.insert(to as usize, x);
+        }
+        Op::Permute { at, n, off } => {
+            for i in 0..n as usize {
+                rows[at as usize + i] = resolve(perm[off as usize + i]);
+            }
+        }
+        Op::Edit { .. } => {}
+    }
+}
+
+#[allow(dead_code)]
+const _: () = assert!(NONE == u32::MAX);
+
+/// A list's current delta log (tests: replaying it on the previous order gives the current one).
+#[doc(hidden)]
+pub fn log_of<T>(l: &List<T>) -> (&[Op], &[u32]) {
+    l.log()
+}
