@@ -6,3 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+
+[[bin]]
+name = "lab"
+path = "src/bin/lab.rs"

@@ -1,0 +1,43 @@
+traces built in 0.6s
+  heavy-stream: 2560x1600 px, 3840 slots (2763 live), 600 frames, 799.7 node ev/frame (1751 slots), 0 group slots/frame
+  heavy-scroll: 2560x1600 px, 3840 slots (2770 live), 600 frames, 8.2 node ev/frame (57 slots), 1078 group slots/frame
+  heavy-both: 2560x1600 px, 3840 slots (2762 live), 600 frames, 807.5 node ev/frame (1805 slots), 1081 group slots/frame
+  lab-stream: 1920x1440 px, 1536 slots (1084 live), 600 frames, 1.0 node ev/frame (734 slots), 0 group slots/frame
+  lab-scroll: 1920x1440 px, 1536 slots (483 live), 600 frames, 2.0 node ev/frame (35 slots), 465 group slots/frame
+  animate: 1920x1440 px, 128 slots (88 live), 600 frames, 35.0 node ev/frame (35 slots), 0 group slots/frame
+  blink: 1920x1440 px, 64 slots (2 live), 120 frames, 1.0 node ev/frame (1 slots), 0 group slots/frame
+  vlist-scroll: 1440x1600 px, 26368 slots (1666 live), 600 frames, 1.2 node ev/frame (276 slots), 1566 group slots/frame
+  vlist-fling: 1440x1600 px, 26368 slots (1666 live), 600 frames, 2.1 node ev/frame (367 slots), 1677 group slots/frame
+  vlist-jump: 1440x1600 px, 26368 slots (1666 live), 600 frames, 2.5 node ev/frame (388 slots), 1643 group slots/frame
+counter overhead: 5109 instructions
+bench heavy-stream ring 1 done
+bench heavy-stream ring 2 done
+bench heavy-stream ring 3 done
+bench heavy-scroll ring 1 done
+bench heavy-scroll ring 2 done
+bench heavy-scroll ring 3 done
+bench heavy-both ring 1 done
+bench heavy-both ring 2 done
+bench heavy-both ring 3 done
+bench lab-stream ring 1 done
+bench lab-stream ring 2 done
+bench lab-stream ring 3 done
+bench lab-scroll ring 1 done
+bench lab-scroll ring 2 done
+bench lab-scroll ring 3 done
+bench animate ring 1 done
+bench animate ring 2 done
+bench animate ring 3 done
+bench blink ring 1 done
+bench blink ring 2 done
+bench blink ring 3 done
+bench vlist-scroll ring 1 done
+bench vlist-scroll ring 2 done
+bench vlist-scroll ring 3 done
+bench vlist-fling ring 1 done
+bench vlist-fling ring 2 done
+bench vlist-fling ring 3 done
+bench vlist-jump ring 1 done
+bench vlist-jump ring 2 done
+bench vlist-jump ring 3 done
+bench -> /Users/mileswirht/projects/bough/crates/bough-damage-lab/results/bench_final2.csv
