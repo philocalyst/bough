@@ -51,6 +51,85 @@ BOUGH_DIST=$D python3 bench/integrate/slope.py bough 0 heavy          # heavy ce
 | **vlist prefix index on a reactive row edit** (LAYOUT.md gap) | the roots whose text changed this turn (`Lay::touched_roots`, already recorded, never read) mark their mounted rows unmeasured; a list holding one re-runs its update at its offset: those rows are re-measured, their heights set in the Fenwick index (O(log n) each), the first visible row stays anchored, the rows that moved are re-placed (`mlist::mregions_retouch`, called after `settle`). Gate `reactive_row_edits_update_the_prefix_index` (bough-text-bench): 30 turns of edits and scrolls at ring ages 1..4, every frame presented == full redraw and every mounted row's index height == its layout; at the top, retained == fresh mount. Sabotage check: without the call the gate fails at step 1. |
 | **not done in 3b** | the façade editor view measured with its GPU frame (item 3); multi-core shaping, a SIMD ligature tokenizer, boundary kerning beyond Latin-1 (item 5): see III.5. |
 
+## III.0b Round 3c: unfinished (stopped by the round-4 redirect to vendored parley), concrete designs
+
+Round 3c was stopped by the user's round-4 redirect (research/ROUND4.md §7: text becomes vendored parley with these
+mechanisms grafted in), and this agent's context was spent. canonical (floor 3b) is merged; the full suite is green:
+111 passed, 0 failed, zero warnings (`bench/results/text3/final_checks_3c.txt`). Items 1, 4 and 5 below now come
+through parley (PlainEditor, harfrust's AAT/morx, parley's itemization); 2 and 3 remain valid as grafts. What is left, in the lead's order, with the design each should take:
+
+1. **The editor view through the façade, whole frame, R0/R1, pixel gates at ring ages 1-4.**
+   * *Document:* a `Signal<Doc>`, where `Doc` is `doc.rs`'s gap buffer + line index. A keystroke routed by
+     `input.rs`'s text-field `on_key` becomes `Doc::insert` at the caret, i.e. a `TextModel::splice`-style delta
+     naming the touched line, so nothing is compared.
+   * *Rows:* the façade's `virtual_list` (fixed 19 pt rows; it gets floor's `scroll_run_copy` when that lands).
+     Each row is one text record whose payload is a header range: the line's `LineSet` slot plus its colour
+     windows (`doc.rs::View::show` already writes them, 16 per row). A new `TShape::Spans` in `text.rs`, built
+     from that code, is needed so the record draws the range.
+   * *Caret and selection:* two quads per visible line of the selection, positioned from the line's pens
+     (`pool.x[base + col]`), as `input.rs::place_caret` does for labels.
+   * *Measurement:* code_editor_bench's phases (open, 20 keystrokes, 30 page / line scrolls, wrapped page), each
+     as `App::turn` + `App::frame()`. R1 adds the fused GPU frame. Gates: presented == reference per frame,
+     retained == fresh mount at the same document and scroll.
+   * *zgx caveat:* its frame includes its Luau script host and highlighter; bough's is Rust.
+2. **Multi-core shaping of large documents.** A `ChunkedDoc` type owns its text in 64 KiB chunks cut at line
+   ends. Dispatch is on that type, not on a size check per call.
+   * *Pass 1:* each worker shapes whole lines of its chunks into a per-thread slot scratch (`any_slots` is pure)
+     and records per-line glyph counts. One slot per byte, so the counts are just byte counts.
+   * *Pass 2:* a prefix sum of the chunks' byte counts gives each chunk's base in the pool. Byte slots make the
+     upper bound exact, so workers can write in place: reserve `bytes` slots, base = prefix sum of bytes, no
+     second copy.
+   * *Determinism:* placement depends only on byte offsets, so the pool image is identical for any thread count
+     (gate: N = 1 vs N = 8, byte for byte).
+   * *Threshold:* where the spawn and join cost (≈ 20-40 µs on this machine) is below 1/N of the shaping cost
+     (≈ 7 instructions a byte ⇒ about 64 KiB). It is the chunk size of `ChunkedDoc`, so it is decided at
+     construction, never per call.
+3. **SIMD ligature tokenizer.** For the font's set {ffl, ffi, fl, fi, ff} (checked at table build: the closed
+   form below holds iff every ligature is `f` followed by one or two of {f, i, l} and `ff`'s alternatives are
+   ffi/ffl), the greedy replay of an `f`-run of length k followed by byte c is:
+   * `ff` pairs from the run's start;
+   * if k is even, the last pair becomes `ffi` / `ffl` when c ∈ {i, l};
+   * if k is odd, the last `f` becomes `fi` / `fl` when c ∈ {i, l}, else stays `f`.
+
+   A lane needs its rank r in the run and the run's remaining length k − r: a 16-lane prefix-max of "last
+   non-`f` index" (4 `vmaxq` + `vext` steps, carried across chunks), then three compares and `bsl`s produce
+   ligature tokens and phantoms; the next-real-token select widens from 2 to 3 shifted vectors (a ligature has
+   up to 2 phantoms). Gate: every string ≤ 7 over `f i l x ␠ é` at every lane offset, against
+   `token_slots_scalar` (the lane-outcome hook already requires the lanes to finish).
+4. **Kerning across segment boundaries beyond Latin-1.** Shape each non-Latin-1 chunk with one covered character
+   of context on each side (the boundary glyph pair). The context glyph's advance gives `kern(last ASCII glyph,
+   first chunk glyph)` and `kern(last chunk glyph, next ASCII glyph)`, applied to the two boundary steps. The
+   chunk cache key includes the two context characters. Gate: whole-line rustybuzz on mixed corpora (CJK, emoji
+   with Latin neighbours).
+5. **AAT `morx` for Menlo.** First read what Menlo's `morx` actually holds (`feat` lists its features;
+   ttf-parser exposes the chains), then model only that subset. A non-contextual (type 4) or ligature (type 2)
+   subtable with a small class table reduces to the existing trigger analysis plus token replay, as GSUB
+   ligatures do. Contextual or insertion subtables stay triggers.
+
+## III.0c Round 4 handoff: grafting bough-text into vendored parley (plan, not started)
+
+The round-4 work starts from this branch. In order, each step is one reviewable diff against upstream parley, with a
+parley-vs-upstream gate (grafted output == unmodified parley's glyphs, clusters, advances and lines):
+
+1. Vendor parley + fontique + harfrust + skrifa at pinned versions (`vendor/README.md`: crate, version, upstream
+   commit, licence); read gpui-ce3's `parley_stack_01..06` for the integration seams (font context, layout context,
+   `PlainEditor`). Port bough-text's existing gates (`exact`, `slots`, `lines`, `para`, `variation`, the pixel
+   gates) to run against the parley path first: that defines "no regression".
+2. **Shaping fast path** inside parley's shaping step: a run whose script/font pass bough's table analysis (built
+   from skrifa instead of ttf-parser; variable instances = parley's variation coordinates) is shaped by the byte-slot
+   NEON kernel (`slots.rs`) instead of harfrust; anything else goes to harfrust. One classification per run.
+   Table cache keyed by font blob + coordinates (`script.rs` cache).
+3. **Retained layouts**: parley rebuilds a `Layout` per text; graft the hot/cold paragraph (`para.rs`): keep the
+   shaped clusters, re-shape only the changed words, line breaking re-run from the line before the change until a
+   break lands where it was (parley's breaker gets a "resume from line k with these old breaks" entry).
+4. **Ring of lines** for multi-line/log text: one parley `Layout` per line with line matching (`lines.rs`).
+5. **Labels**: the digit patch / 16-byte head (`pool.rs::Label`) as a parley-layout fast update for equal-length
+   class-preserving edits (no relayout).
+6. **Text model**: `PlainEditor` fed by the delta form (`model.rs::splice/push_str`) instead of whole strings.
+7. GPU side: parley glyph runs written into bough's glyph pool columns (6 B/glyph, run headers as windows).
+Benchmarks to keep (III.1 / III.0): label-churn, text_bench stock (now with Menlo via harfrust's morx), i18n ×2,
+editor_streaming both forms, code_editor, heavy/lab/vlist cells.
+
 ## III.1 Against zgx and zgui, in their own units
 
 The ports live in `comparisons/bough-text-bench` (one binary per workload, same generators, same phases, same
