@@ -32,10 +32,16 @@ fn main() {
     let target = app.last_surface;
     let g = app.gpu.as_mut().unwrap();
     for &d in &debugs {
-        let mut part: Vec<f64> = (0..5).map(|_| g.bench_frames(target, &rows, false, n_dir, reps, d)).collect();
-        let mut full: Vec<f64> = (0..5).map(|_| g.bench_frames(target, &rows, true, n_dir, reps, d)).collect();
+        let mut part: Vec<f64> = (0..5).map(|_| g.bench_frames(target, &rows, false, n_dir, reps, d, &bough_metal::fused::SlotCopy::NONE)).collect();
+        let mut full: Vec<f64> = (0..5).map(|_| g.bench_frames(target, &rows, true, n_dir, reps, d, &bough_metal::fused::SlotCopy::NONE)).collect();
         part.sort_by(|a, b| a.partial_cmp(b).unwrap());
         full.sort_by(|a, b| a.partial_cmp(b).unwrap());
         println!("{mode:?} debug {d}: repair ({tiles} tiles) {:.4} ms [{:.4}..{:.4}]   full redraw {:.4} ms [{:.4}..{:.4}]", part[2], part[0], part[4], full[2], full[0], full[4]);
     }
+    // the scroll copy alone (RESULTS §15): the whole window from the other surface moved 28 px up, no repair
+    let (w, h) = (g.w as i32, g.h as i32);
+    let copy = bough_metal::fused::SlotCopy { src: (1 - target) as u32, rect: [0, 0, w, h - 28], dx: 0, dy: -28 };
+    let mut c: Vec<f64> = (0..5).map(|_| g.bench_frames(target, &[], false, n_dir, reps, 2, &copy)).collect();
+    c.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!("copy {w}x{} px (debug 2: no tile pass): {:.4} ms [{:.4}..{:.4}]", h - 28, c[2], c[0], c[4]);
 }

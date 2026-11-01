@@ -1253,3 +1253,54 @@ compared with `scene_shot`, Mode::Both:
 The difference sits in the text bands (the streamed paragraph at t = 120, the list rows' labels) and in the title/button
 band, where `render_parity`'s lab differs in layout (button alignment, one fewer label; noted in round 2). It is the same
 order as heavy's 2.68 % > 16.
+
+## 15. Round 3c: scroll by copy (direct Metal; superseded by ROUND4's wgpu pipeline, kept as its reference)
+
+Built, gated, measured, then stopped by the round-4 change of direction (the GPU path moves to vendored wgpu with
+wgsl-rs shaders; scroll-by-copy is rebuilt there on this design). Load average 85–146 throughout.
+
+**Mechanism.**
+* **Core** (`Bough::scroll_run_copy`, `Plane::shift_within`, `DamageRing::{scroll, set_scroll}`, `ScrollRec`): a scroll
+  of any clip region C by an integral d marks only (1) the exposed strip(s) C \ (C + d); (2) this epoch's earlier marks
+  inside C, also at their moved place (kept at the old place too: a mark from a record that did not scroll stays
+  true); (3) the **static content's bands**: every record outside the run whose visible ink meets C does not move but
+  the copy moves its pixels, so for a box (the caller's `band(kind, payload) >= 0`) exactly `damage_edges(v + d, v)`
+  of its visible ink v (its perpendicular edges' bands and their moved copies), and for anything else (text, images,
+  gradients: band −1) v ∪ (v + d). It keeps one `ScrollRec {clip, dx, dy}` per epoch beside the plane. A second scroll
+  in the same epoch with another clip or delta marks both clips whole and poisons the record (a bounds condition).
+* **Façade** (`Rt::scroll_copy`, used by `virtual_list` and the measured list): the paint ring's earlier marks get the
+  same `shift_within`; the band closure is `edge_band` for single box quads, −1 otherwise. Positions are integral
+  device px by construction (spaces are `[i32; 2]`; scroll offsets are rounded to device px before the delta is
+  taken), so the moved content's pixels equal the copied ones bit for bit.
+* **App::copy_plan**: if any epoch in the target's age window has a record, the clip's pixels come from the surface
+  showing epoch e − 1 (`shown`, always exact) by ONE copy whatever the age (move = epoch e's own d, or 0 if the scroll
+  was earlier): no sum of deltas is needed because the source is age 1. Rows = repair(age) on tiles not wholly inside
+  C, plus epoch e's own marks (both rings) on tiles meeting C, plus any other record's clip whole. No source (ring of
+  1) marks the clips whole.
+* **Kernel `fs_copy`**: third dispatch, first in the pre-armed encoder (indirect args in the slot). One threadgroup per
+  tile of the destination's tile span, 32 × 8 threads × 4 rows, skipping tiles in the frame's `FRow` bits, so copy and
+  repair write disjoint tiles and no barrier is needed. Source through `FBind.r[4]` (appended, table 216 B); slot
+  header 32 → 64 B (INTERFACE.md).
+
+**Gates (all green):** core `tests/scroll_copy.rs` (`shift_within` == a per-tile oracle over 3,000 random planes;
+`scroll_run_copy`'s marks cover every pixel a copy gets wrong in a pixel model of 200 random scenes with static solid
+and text records); the pixel gates presented == full redraw at ring ages 1–4 and the windowed ring for vlist
+scroll/fling/jump/back-up, heavy scroll/both/jumps, lab scroll/both/jumps, micro vscroll; retained == fresh mount;
+present.rs. The delta+1 sabotage is the `bough/sabotage_copy` feature (not run before the redirect).
+
+**Measured.**
+
+| | before (3b) | **copy** |
+|---|---:|---:|
+| heavy scroll, repaired tiles/frame (ring 4 headless) | 990 | **90** |
+| heavy both | 1,952 | **1,201** |
+| vlist scroll / fling / jump, tiles/frame | ~2,250 (whole viewport) | **101 / 169 / 173** |
+| vlist scroll GPU Kcycles/frame, ABAB pairs in one run (3 pairs) | 522–583 | **322–359**, median ratio **0.58** [0.55 .. 0.69] |
+
+**Finding that bounds the idea (kernel_bench, saturated clock, lab 1920 × 1440):** copying 1920 × 1412 px costs
+**0.215 ms**, a full compute redraw of the whole window 0.249 ms. A copy reads and writes every pixel (8 B/px), a redraw
+only writes (4 B/px), and simple content (solid rows) shades almost for free, so moving existing pixels costs about
+what drawing them does: the copy saves only the shading of dense content (−36…−45 % on vlist scroll), and vlist stays
+above zgx's 203 Kcycles. The bandwidth floor, not the bin scan, is what a full-viewport scroll pays; a smaller copy
+needs fewer moved pixels (only tiles whose content differs from the target's own, or compositor-side scrolling of a
+sublayer), not a faster copy.

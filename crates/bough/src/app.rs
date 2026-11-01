@@ -301,6 +301,76 @@ impl<V: View> App<V> {
         any != 0
     }
 
+    /// Scroll by copy (bough-metal RESULTS §15) for target `i` of age `age` at `epoch`, after `repair_rows`.
+    /// A scroll epoch damaged only its exposed strip and static bands, so a surface whose age window holds one
+    /// lacks the scrolled clip's content. It is taken from the surface showing epoch - 1 (`shown`, always exact)
+    /// by ONE copy whatever the age: clip C = the latest record's, move = this epoch's (0 if the scroll was
+    /// earlier). The rows then are: repair(age) on tiles not wholly inside C, this epoch's own marks on tiles
+    /// meeting C (they include the exposed strip and the static bands), and every other record's clip whole.
+    /// No source (ring of 1: the target IS `shown`) or a clip that changed inside the window: those clips are
+    /// marked whole. Bounds conditions of the copy's one source and one rect, not a policy.
+    fn copy_plan(&mut self, i: usize, epoch: u32, age: u32) -> bough_metal::fused::SlotCopy {
+        use bough_metal::fused::SlotCopy;
+        let b = &self.rt.bough;
+        let Some((b0, r0)) = (0..age).find_map(|k| b.scroll_rec(k).map(|r| (k, r))) else { return SlotCopy::NONE };
+        let src = self.shown.filter(|&s| s != i && self.held[s] == Some(epoch - 1));
+        let rows = self.rows.len();
+        let mark = |out: &mut [u128], c: bough_core::NRect| {
+            if c.is_empty() {
+                return;
+            }
+            let (tx0, ty0, tx1, ty1) = bough_core::damage::tile_span(c);
+            let m = (u128::MAX >> (128 - (tx1 - tx0))) << tx0;
+            for r in &mut out[ty0 as usize..(ty1 as usize).min(rows)] {
+                *r |= m;
+            }
+        };
+        let Some(s) = src else {
+            for k in b0..age {
+                if let Some(r) = b.scroll_rec(k) {
+                    mark(&mut self.rows, r.clip);
+                }
+            }
+            return SlotCopy::NONE;
+        };
+        let c = r0.clip;
+        let (dx, dy) = if b0 == 0 { (r0.dx, r0.dy) } else { (0, 0) };
+        // the gates' sabotage: a copy one pixel off must make every pixel gate fail
+        #[cfg(feature = "sabotage_copy")]
+        let dy = dy + 1;
+        let [x0, y0, x1, y1] = c.to_xyxy();
+        let [_, _, ww, wh] = b.window().to_xyxy();
+        // tiles wholly inside C (a tile past the window's edge counts as inside if C reaches that edge)
+        let (ix0, iy0) = ((x0 + 31) >> 5, (y0 + 31) >> 5);
+        let ix1 = if x1 >= ww { (ww + 31) >> 5 } else { x1 >> 5 };
+        let iy1 = if y1 >= wh { (wh + 31) >> 5 } else { y1 >> 5 };
+        if ix0 < ix1 {
+            let inner = (u128::MAX >> (128 - (ix1 - ix0))) << ix0;
+            for r in &mut self.rows[iy0.max(0) as usize..(iy1.max(0) as usize).min(rows)] {
+                *r &= !inner;
+            }
+        }
+        // this epoch's own marks on every tile meeting C
+        let (tx0, ty0, tx1, ty1) = bough_core::damage::tile_span(c);
+        let span = (u128::MAX >> (128 - (tx1 - tx0))) << tx0;
+        let (p, q) = (b.plane(0), self.rt.paint.plane(0));
+        for y in ty0 as usize..(ty1 as usize).min(rows) {
+            self.rows[y] |= (p.rows[y] | q.rows[y]) & span;
+        }
+        for k in b0 + 1..age {
+            if let Some(r) = b.scroll_rec(k) {
+                if r.clip != c {
+                    mark(&mut self.rows, r.clip);
+                }
+            }
+        }
+        let dst = c.intersect(c.translate(dx, dy)).canon();
+        if dst.is_empty() {
+            return SlotCopy::NONE;
+        }
+        SlotCopy { src: s as u32, rect: dst.to_xyxy(), dx, dy }
+    }
+
     /// Does surface `s` hold every pixel of the current state (epoch `epoch`, which has only paint damage)?
     /// No epoch since it was drawn may have had non-paint damage, none may have overflowed its paint log,
     /// and the logged paint writes since then must compose to the identity for every record.
@@ -470,8 +540,10 @@ impl<V: View> App<V> {
         }
         let age = self.held[i].map(|l| epoch - l);
         let full = !matches!(age, Some(a) if a as usize <= RING);
+        let mut copy = bough_metal::fused::SlotCopy::NONE;
         if !full {
             self.repair_rows(age.unwrap());
+            copy = self.copy_plan(i, epoch, age.unwrap());
         }
         self.prof.mark(PH_DAMAGE);
         let n_dir = self.rt.bough.num_pages() as u32;
@@ -487,13 +559,13 @@ impl<V: View> App<V> {
             if g.sync_atlas(a.width, a.height, &a.pixels, a.dirty_bytes != 0) {
                 a.dirty_bytes = 0;
             }
-            self.repaired_tiles = g.draw::<PACED>(i, &self.rows, full, n_dir);
+            self.repaired_tiles = g.draw::<PACED>(i, &self.rows, full, n_dir, &copy);
             drawn = true;
         }
         if !drawn {
             // headless: the CPU side of the frame ends at the tile list in the region's frame slot
             // SAFETY: the runtime's region, laid out by `rt.layout`; headless, so no GPU reads it.
-            let (nt, _) = unsafe { bough_metal::fused::write_slot(self.rt.region_base(), &self.rt.layout, (self.frames % 2) as usize, i as u32, &self.rows, full) };
+            let (nt, _) = unsafe { bough_metal::fused::write_slot(self.rt.region_base(), &self.rt.layout, (self.frames % 2) as usize, i as u32, &self.rows, full, &copy) };
             self.repaired_tiles = nt;
             self.prof.mark(PH_CULL);
         }

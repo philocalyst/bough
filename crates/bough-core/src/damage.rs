@@ -233,6 +233,52 @@ impl Plane {
         self.rows[lo..hi].iter().all(|&r| r == 0)
     }
 
+    /// Scroll by copy (bough-metal RESULTS §15): the marks already made this epoch inside clip `c` were made
+    /// where the content was before a scroll by `(dx, dy)` px; after the scroll that content (and its change)
+    /// is `(dx, dy)` further. Each set tile meeting `c`'s tile span is ALSO set at its translated place (the
+    /// 1-2 tiles a 32-px tile covers after a non-multiple-of-32 move), clipped to the span; the original marks
+    /// stay (a mark from a record that did not scroll is still where it was). O(rows of the span).
+    pub fn shift_within(&mut self, c: NRect, dx: i32, dy: i32) {
+        let c = c.canon();
+        if c.is_empty() || (dx == 0 && dy == 0) {
+            return;
+        }
+        let (tx0, ty0, tx1, ty1) = tile_span(c);
+        let (lo, hi) = self.occ_range();
+        let (lo, hi) = (lo.max(ty0 as usize), hi.min(ty1 as usize));
+        if lo >= hi {
+            return;
+        }
+        let span = colmask(tx0, tx1);
+        let (qx, rx) = (dx.div_euclid(TILE), dx.rem_euclid(TILE));
+        let (qy, ry) = (dy.div_euclid(TILE), dy.rem_euclid(TILE));
+        let shl = |m: u128, q: i32| if q >= 128 || q <= -128 { 0 } else if q >= 0 { m << q } else { m >> -q };
+        // rows move by qy (and qy + 1 when ry != 0): visit them so that every source row is read before
+        // anything is written into it (bottom-up when moving down)
+        let mut y = if qy >= 0 { hi as i32 - 1 } else { lo as i32 };
+        let step = if qy >= 0 { -1 } else { 1 };
+        let (mut n0, mut n1) = (self.y0, self.y1);
+        while y >= lo as i32 && y < hi as i32 {
+            let m = self.rows[y as usize] & span;
+            if m != 0 {
+                let mh = (shl(m, qx) | if rx != 0 { shl(m, qx + 1) } else { 0 }) & span;
+                if mh != 0 {
+                    for k in 0..=(ry != 0) as i32 {
+                        let t = y + qy + k;
+                        if t >= ty0 as i32 && t < ty1 as i32 {
+                            self.rows[t as usize] |= mh;
+                            n0 = n0.min(t as u32);
+                            n1 = n1.max(t as u32 + 1);
+                        }
+                    }
+                }
+            }
+            y += step;
+        }
+        (self.y0, self.y1) = (n0, n1);
+        self.solid = false;
+    }
+
     /// Pixel bounding box of the set tiles clipped to `window` (EMPTY when clear).
     pub fn px_bbox(&self, window: NRect) -> NRect {
         let (lo, hi) = self.occ_range();
@@ -259,8 +305,20 @@ fn bbox_of(cols: u128, y0: usize, y1: usize, window: NRect) -> NRect {
     NRect::new(x0 << TILE_SHIFT, (y0 as i32) << TILE_SHIFT, x1 << TILE_SHIFT, (y1 as i32) << TILE_SHIFT).intersect(window).canon()
 }
 
+/// Scroll by copy (bough-metal RESULTS §15): an epoch's scroll of clip rect `clip` by `(dx, dy)` device px whose
+/// damage was only the exposed strip(s) and the static content's bands. A presenter repairs a surface of that
+/// epoch by copying `clip ∩ (clip + d)` from the surface showing the previous epoch.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ScrollRec {
+    pub clip: NRect,
+    pub dx: i32,
+    pub dy: i32,
+}
+
 pub struct DamageRing {
     planes: Box<[Plane; RING]>,
+    /// One scroll record per epoch (`epoch % RING`), next to its plane; cleared with it.
+    scrolls: [Option<ScrollRec>; RING],
     /// `&mut planes[epoch % RING]`, kept so a mark does no index arithmetic.
     cur: *mut Plane,
     pub epoch: u32,
@@ -282,7 +340,7 @@ impl DamageRing {
         }
         let window = NRect::new(0, 0, w, h);
         let cur = &mut planes[1 % RING] as *mut Plane;
-        DamageRing { planes, cur, epoch: 1, window, wthresh: Thresh::of_rect(window), tw: ((w + TILE - 1) >> TILE_SHIFT) as u32, rows }
+        DamageRing { planes, scrolls: [None; RING], cur, epoch: 1, window, wthresh: Thresh::of_rect(window), tw: ((w + TILE - 1) >> TILE_SHIFT) as u32, rows }
     }
     /// Mark a rect (any form; empty and off-window rects mark nothing), clipped to the window, into
     /// the current epoch. Clipping is done in tile units: the window starts at 0 and its last tile
@@ -336,7 +394,23 @@ impl DamageRing {
         self.epoch += 1;
         let e = self.epoch as usize % RING;
         self.planes[e].clear();
+        self.scrolls[e] = None;
         self.cur = &mut self.planes[e] as *mut Plane;
+    }
+    /// The scroll record of the epoch `back` epochs ago (0 = current).
+    #[inline]
+    pub fn scroll(&self, back: u32) -> Option<ScrollRec> {
+        self.scrolls[self.epoch.wrapping_sub(back) as usize % RING]
+    }
+    /// Set (or clear) the current epoch's scroll record.
+    #[inline]
+    pub fn set_scroll(&mut self, r: Option<ScrollRec>) {
+        self.scrolls[self.epoch as usize % RING] = r;
+    }
+    /// [`Plane::shift_within`] on the current epoch's plane.
+    #[inline]
+    pub fn shift_within(&mut self, c: NRect, dx: i32, dy: i32) {
+        self.cur_mut().shift_within(c, dx, dy);
     }
     /// Become a copy of `o` (same window), touching only occupied rows.
     pub fn copy_from(&mut self, o: &DamageRing) {
@@ -346,6 +420,7 @@ impl DamageRing {
             d.rows[lo..hi].copy_from_slice(&s.rows[lo..hi]);
             (d.y0, d.y1, d.solid, d.n) = (s.y0, s.y1, s.solid, s.n);
         }
+        self.scrolls = o.scrolls;
         self.epoch = o.epoch;
         self.cur = &mut self.planes[self.epoch as usize % RING] as *mut Plane;
     }

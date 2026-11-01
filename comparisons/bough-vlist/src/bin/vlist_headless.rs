@@ -32,12 +32,14 @@ fn main() {
     let start = std::time::Instant::now();
     let mut warm = (t0.instrs, 0usize, [0u64; 5], 0u64, [0u64; 8]);
     let mut frames = 0u64;
+    let mut tiles = 0u64;
     for tick in 1..=ticks {
         if tick == 60 {
             warm = (bough_metal::perf::snap().instrs, tick, app.prof.acc, frames, app.rt.lay.prof.acc);
         }
         step(&mut app, mode, tick as u64);
         frames += app.frame() as u64;
+        tiles += app.repaired_tiles as u64;
         #[cfg(target_os = "macos")]
         if render && tick % 60 == 0 {
             app.gpu.as_mut().unwrap().sync();
@@ -50,6 +52,7 @@ fn main() {
     let t1 = bough_metal::perf::snap();
     let measured = ticks.saturating_sub(60).max(1) as f64;
     let m = app.rt.mregions[0].stats;
+    println!("repaired tiles/frame {:.1}", tiles as f64 / frames.max(1) as f64);
     println!(
         "{mode:?} render={render}: {:.4} ms/tick, frames presented {frames}/{ticks}, instr/tick (after 60 warm-up ticks) {:.0}, ri_instructions total {}, footprint {:.1} MB, rows mounted {} unmounted {} passes {} height changes {}, layouts {} nodes written {}, fallbacks {}",
         start.elapsed().as_secs_f64() * 1e3 / ticks as f64,

@@ -910,8 +910,14 @@ struct FSlot {
     uint tile_tg[3];   // +12 indirect args of the tile pass: (ntiles, 1, 1)
     uint target;       // +24
     uint nrows;        // +28
-    // FRow rows[] at +32
+    uint copy_tg[3];   // +32 indirect args of the scroll copy: (tiles of the destination's tile span, 1, 1), or 0
+    uint src;          // +44 source surface of the copy (the one showing the previous frame)
+    uint dst0, dst1;   // +48 destination rect [x0, y0, x1, y1) as u16 pairs
+    uint d;            // +56 the move (dx, dy) as i16 pair: destination p reads source p - d
+    uint cspan;        // +60 the copy's tile span: x0 | y0 << 8 | width << 16
+    // FRow rows[] at +64
 };
+constant uint FSLOT_ROWS = 64;
 struct FRow {
     uint ty;
     uint span;         // x0 | x1 << 8: tiles [x0, x1) hold every damaged tile of the row
@@ -940,6 +946,7 @@ struct FBind {
     texture2d<float> atlas;
     device uint4* bins;
     device atomic_uint* counts;
+    texture2d<float, access::read> r[4];   // round 3c: the same surfaces, read (the scroll copy's source)
 };
 constant uint FBIND_OFF = 128;
 typedef Instance FInst;
@@ -988,7 +995,7 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
     device const FHdr& h = *(device const FHdr*)pool;
     device const FBind& fb = *(device const FBind*)(pool + FBIND_OFF);
     device uint4* bins = fb.bins;
-    device const FRow* frows = (device const FRow*)(pool + slot.x + 32);
+    device const FRow* frows = (device const FRow*)(pool + slot.x + FSLOT_ROWS);
     device const uint* dpage = (device const uint*)(pool + h.dir_id_off);
     device const short4* dink = (device const short4*)(pool + h.dir_ink_off);
     device const uchar* pages = pool + h.pages_off;
@@ -1241,7 +1248,7 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
     device const uint4* bins = fb.bins;
     texture2d<float> atlas = fb.atlas;
     device const FSlot& fs = *(device const FSlot*)(pool + slot.x);
-    device const FRow* frows = (device const FRow*)(pool + slot.x + 32);
+    device const FRow* frows = (device const FRow*)(pool + slot.x + FSLOT_ROWS);
     device const FInst* inst = (device const FInst*)(pool + h.inst_off);
     // this threadgroup's tile: the last row whose prefix <= i, then the k-th set bit of that row
     uint i = tgid2.x;
@@ -1317,6 +1324,37 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
         uint2 px = o + 2u * lt + uint2(j & 1u, j >> 1);
         if (px.x >= uint(h.viewport.x) || px.y >= uint(h.viewport.y)) continue;
         fb.t[fs.target & 3u].write(float4(acc[j]), px);
+    }
+}
+
+// Scroll by copy (RESULTS §15): the pixels of a scrolled clip already exist in the surface showing the previous
+// frame. One threadgroup per 32x32 tile of the destination rect's tile span copies the tile's pixels inside the
+// rect from the source at p - d, unless the frame's damaged rows mark the tile (the tile pass writes those whole),
+// so copy and repair write disjoint tiles and no barrier orders them. 32 x 8 threads x 4 rows: a simdgroup moves
+// 32 consecutive pixels of one row.
+kernel void fs_copy(uint2 tgid2 [[threadgroup_position_in_grid]],
+                    uint2 lt [[thread_position_in_threadgroup]],
+                    device const uchar* pool [[buffer(0)]],
+                    constant uint2& slot [[buffer(1)]]) {
+    device const FSlot& fs = *(device const FSlot*)(pool + slot.x);
+    device const FBind& fb = *(device const FBind*)(pool + FBIND_OFF);
+    device const FRow* frows = (device const FRow*)(pool + slot.x + FSLOT_ROWS);
+    uint i = tgid2.x, tw = max(fs.cspan >> 16, 1u);
+    uint2 tile = uint2((fs.cspan & 0xffu) + i % tw, ((fs.cspan >> 8) & 0xffu) + i / tw);
+    // the repair's rows are sorted by tile row: is this tile one of them?
+    uint lo = 0, hi = fs.nrows;
+    while (lo < hi) {
+        uint mid = (lo + hi) >> 1;
+        if (frows[mid].ty < tile.y) lo = mid + 1; else hi = mid;
+    }
+    if (lo < fs.nrows && frows[lo].ty == tile.y && ((frows[lo].bits[(tile.x >> 5) & 3u] >> (tile.x & 31u)) & 1u) != 0u) return;
+    int2 d = int2(as_type<short2>(fs.d));
+    uint2 r0 = uint2(fs.dst0 & 0xffffu, fs.dst0 >> 16), r1 = uint2(fs.dst1 & 0xffffu, fs.dst1 >> 16);
+    texture2d<float, access::read> src = fb.r[fs.src & 3u];
+    texture2d<float, access::write> dst = fb.t[fs.target & 3u];
+    for (uint j = 0; j < 4; j++) {
+        uint2 px = tile * 32u + uint2(lt.x, lt.y + 8u * j);
+        if (all(px >= r0) && all(px < r1)) dst.write(src.read(uint2(int2(px) - d)), px);
     }
 }
 
