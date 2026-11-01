@@ -1,0 +1,502 @@
+//! Static templates and scroll views.
+//!
+//! **Templates** (DESIGN.md 7: "mounting memcpys the const template into pages"): a document known at
+//! compile time is a `&'static [TNode]` in paint preorder (depth, absolute rect, paint, text, flags), and
+//! mounting it is one pass over the table: a record per node (paint-less boxes are depth markers with
+//! empty ink), a 48-byte instance per painted box, a label per text. A hook mounts the nodes the
+//! application owns (wired, interactive) with typed builders at the node's depth and origin.
+//!
+//! **Scroll views** (`scroll_y`): a viewport record whose subtree is its content, mounted in a space of its
+//! own and clipped to the port. A new offset is one space write (instances and glyph runs follow on the
+//! GPU), one `scroll_run` over the content's records (page offsets: the damage is the port ∩ the old and
+//! new content bounds), and the clips the content owns moved with it (clip rects are absolute).
+use crate::color::Color;
+use crate::elem::{quad, text, Element, Mounter};
+use crate::input::Interact;
+use crate::rt::*;
+use crate::signal::{Signal, Wired};
+use bough_core::{NRect, RecordInit, KF_FOCUS, KF_INTERACT};
+
+/// Node flags (`TNode::flags`).
+pub const T_FOCUS: u16 = 1;
+/// The node clips its subtree to its rect (`overflow` other than visible).
+pub const T_CLIP: u16 = 2;
+/// The hook mounts this node (see [`Hook`]).
+pub const T_HOOK: u16 = 4;
+
+#[derive(Clone, Copy, Debug)]
+pub struct TNode {
+    /// Depth below the template's root (preorder).
+    pub depth: u16,
+    /// Absolute rect (points) in the template's space.
+    pub rect: [f32; 4],
+    /// Background (alpha 0 and no border: a paint-less box).
+    pub bg: u32,
+    pub border_w: f32,
+    pub border: u32,
+    pub radius: f32,
+    /// Text content (a text node when non-empty or `font > 0`).
+    pub text: &'static str,
+    pub font: f32,
+    pub line_h: f32,
+    pub color: u32,
+    pub flags: u16,
+    /// Application tag for the hook.
+    pub tag: u16,
+}
+
+/// What a hook did with a node.
+pub enum Hooked {
+    /// Nothing: the template mounts the node itself.
+    Default,
+    /// The hook mounted the node; the template mounts its children.
+    Node,
+    /// The hook mounted the node and its whole subtree.
+    Subtree,
+    /// The hook mounted the node; its children are clipped to this clip id (a `wired_clip`).
+    NodeClip(u16),
+}
+
+/// Mounts application-owned nodes (`T_HOOK`) with typed builders. The mounter is at the node's depth, in
+/// the template's space and clip, origin at the template origin (node rects are absolute in it).
+pub type Hook<V> = fn(&V, &mut Mounter<'_, V>, usize, &TNode) -> Hooked;
+
+pub struct Template<V: 'static> {
+    nodes: &'static [TNode],
+    hook: Hook<V>,
+}
+
+pub fn template<V>(nodes: &'static [TNode], hook: Hook<V>) -> Template<V> {
+    Template { nodes, hook }
+}
+
+impl<V> Mounter<'_, V> {
+    /// The current depth (hooks place children below it).
+    pub fn depth(&self) -> u16 {
+        self.depth
+    }
+    pub fn set_depth(&mut self, d: u16) {
+        self.depth = d;
+    }
+    /// A paint-less box record at the current depth (a template node a hook mounts as structure only).
+    pub fn push_box(&mut self) {
+        self.recs.push(RecordInit { depth: self.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: 0, clip: self.clip });
+    }
+}
+
+impl<V: 'static> Element<V> for Template<V> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        let base = m.depth;
+        let s = m.rt.scale;
+        let (clip0, ox, oy) = (m.clip, m.ox, m.oy);
+        // clip stack by depth: (depth the clip applies below, clip id)
+        let mut clips: Vec<(u16, u16)> = Vec::new();
+        let mut skip_below: Option<u16> = None;
+        // SAFETY of the owner reference: the mounter's owner is the live owner being mounted.
+        let owner: &V = unsafe { &*m.owner };
+        for (i, n) in self.nodes.iter().enumerate() {
+            if let Some(d) = skip_below {
+                if n.depth > d {
+                    continue;
+                }
+                skip_below = None;
+            }
+            while clips.last().is_some_and(|&(d, _)| n.depth <= d) {
+                clips.pop();
+            }
+            m.depth = base + n.depth;
+            m.clip = clips.last().map_or(clip0, |c| c.1);
+            let before = m.recs.len();
+            let hooked = if n.flags & T_HOOK != 0 { (self.hook)(owner, m, i, n) } else { Hooked::Default };
+            match hooked {
+                Hooked::Subtree => {
+                    skip_below = Some(n.depth);
+                    continue;
+                }
+                Hooked::Node => {}
+                Hooked::NodeClip(id) => {
+                    clips.push((n.depth, id));
+                    continue;
+                }
+                Hooked::Default => mount_node(m, n),
+            }
+            if n.flags & T_FOCUS != 0 && m.recs.len() > before {
+                let r = &mut m.recs[before];
+                if r.handle == 0 {
+                    r.handle = m.rt.bough.new_handle().idx;
+                }
+                r.kind |= KF_FOCUS | KF_INTERACT;
+                let h = m.rt.bough.handle_gen(r.handle);
+                m.rt.input.ensure_act(h);
+            }
+            if n.flags & T_CLIP != 0 {
+                let o = m.rt.space(m.space);
+                let [x, y, w, h] = n.rect;
+                let r = [o[0] + (ox + x) * s, o[1] + (oy + y) * s, o[0] + (ox + x + w) * s, o[1] + (oy + y + h) * s];
+                let id = m.rt.scoped_clip(r, m.clip);
+                clips.push((n.depth, id));
+            }
+        }
+        m.depth = base;
+        m.clip = clip0;
+    }
+}
+
+/// The template's own lowering of a node: a text label, a painted quad, or a paint-less box record.
+fn mount_node<V: 'static>(m: &mut Mounter<'_, V>, n: &TNode) {
+    let [x, y, w, h] = n.rect;
+    if !n.text.is_empty() {
+        // a one-line label caches its tile rows (at most 4: 128 px); larger display text is set at 60 px
+        let size = n.font.min(60.0 / m.rt.scale);
+        text(n.text).at(x, y).size(size).line_height(n.line_h.min(size * 1.4)).color(Color(n.color)).mount(m);
+        return;
+    }
+    let painted = n.bg >> 24 != 0 || (n.border_w > 0.0 && n.border >> 24 != 0);
+    if painted && w > 0.0 && h > 0.0 {
+        let q = quad(x, y, w, h).bg(Color(n.bg)).rounded(n.radius);
+        if n.border_w > 0.0 && n.border >> 24 != 0 {
+            q.border(n.border_w, Color(n.border)).mount(m);
+        } else {
+            q.mount(m);
+        }
+        return;
+    }
+    m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: 0, clip: m.clip });
+}
+
+// =============================================================================== scroll views
+
+/// A vertical scroll view: one per `scroll_y` (`Input::views`).
+pub(crate) struct ScrollView {
+    pub handle: bough_core::Handle,
+    pub space: u16,
+    pub clip: u16,
+    /// Port origin (device px, in the parent's space terms: absolute).
+    pub vx: f32,
+    pub vy: f32,
+    /// Current offset (device px).
+    pub px: f32,
+    /// Clips owned by the content: (id, parent clip id, rect in content px at offset 0).
+    pub clips: Vec<(u16, u16, [f32; 4])>,
+}
+
+impl Rt {
+    /// A clip for an absolute rect inside the current clip `parent`. Inside a scroll view's content the
+    /// clip is fresh (it moves with the content) and registered with the view; elsewhere it is shared.
+    pub(crate) fn scoped_clip(&mut self, r: [f32; 4], parent: u16) -> u16 {
+        let p = self.bough.clip_rect(parent).to_xyxy();
+        let c = [r[0].max(p[0] as f32), r[1].max(p[1] as f32), r[2].min(p[2] as f32), r[3].min(p[3] as f32)];
+        if let Some(v) = self.input.mounting_view {
+            let view = &self.input.views[v as usize];
+            // content px at offset 0: absolute minus the port origin plus the offset
+            let (dx, dy) = (view.vx, view.vy - view.px);
+            let id = self.bough.new_clip(NRect::new(c[0].floor() as i32, c[1].floor() as i32, c[2].ceil() as i32, c[3].ceil() as i32));
+            self.input.views[v as usize].clips.push((id, parent, [r[0] - dx, r[1] - dy, r[2] - dx, r[3] - dy]));
+            return id;
+        }
+        self.clip_rect(c)
+    }
+}
+
+/// # Safety
+/// Wire contract: `sig` is a `Signal<f32>`; `w.node` is the view index.
+unsafe fn patch_view(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    // SAFETY: see the function contract.
+    let s = unsafe { &*(sig as *const Signal<f32>) };
+    let v = w.node as usize;
+    let new_px = (**s * rt.scale).round();
+    let old_px = rt.input.views[v].px;
+    if new_px == old_px {
+        return;
+    }
+    let dy = (new_px - old_px) as i32;
+    let (h, space, clip, vx, vy) = {
+        let view = &mut rt.input.views[v];
+        view.px = new_px;
+        (view.handle, view.space, view.clip, view.vx, view.vy)
+    };
+    rt.set_space(space, [vx, vy - new_px]);
+    // the content's clips move with it (parents first: they were registered in preorder)
+    let n = rt.input.views[v].clips.len();
+    for k in 0..n {
+        let (id, parent, r) = rt.input.views[v].clips[k];
+        let p = rt.bough.clip_rect(parent).to_xyxy();
+        let a = [r[0] + vx, r[1] + vy - new_px, r[2] + vx, r[3] + vy - new_px];
+        let c = NRect::new(a[0].max(p[0] as f32).floor() as i32, a[1].max(p[1] as f32).floor() as i32, a[2].min(p[2] as f32).ceil() as i32, a[3].min(p[3] as f32).ceil() as i32);
+        rt.bough.set_clip_rect(id, c);
+    }
+    let Some(pos) = rt.bough.pos_of(h) else { return };
+    let end = rt.bough.subtree_end(pos);
+    let port = rt.bough.clip_rect(clip);
+    rt.bough.scroll_run(pos + 1, end - pos - 1, 0, -dy, port);
+}
+
+pub struct ScrollY<'a, V, C> {
+    sig: Wired<'a, f32, V>,
+    rect: [f32; 4],
+    bg: Color,
+    line: f32,
+    max: f32,
+    content: C,
+}
+
+/// A vertical scroll view of `rect` (points) over `content` (mounted in its own space, origin at the
+/// port's top-left at offset 0), scrolled by `sig` (points); the wheel glides it within `0..=max`.
+pub fn scroll_y<V, C>(sig: Wired<'_, f32, V>, rect: [f32; 4], max: f32, content: C) -> ScrollY<'_, V, C> {
+    ScrollY { sig, rect, bg: Color(0), line: 48.0, max, content }
+}
+impl<V, C> ScrollY<'_, V, C> {
+    pub fn bg(mut self, c: Color) -> Self {
+        self.bg = c;
+        self
+    }
+    /// Points per wheel line.
+    pub fn line(mut self, l: f32) -> Self {
+        self.line = l;
+        self
+    }
+}
+
+impl<V: 'static, C: Element<V>> Element<V> for ScrollY<'_, V, C> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        let [x, y, w, h] = self.rect;
+        let s = m.rt.scale;
+        let before = m.recs.len();
+        // the port: a quad (possibly transparent) with a handle, the wheel target
+        quad(x, y, w, h).bg(self.bg).scrolls(self.sig, self.line, self.max).mount(m);
+        let hidx = m.recs[before].handle;
+        let handle = m.rt.bough.handle_gen(hidx);
+        let o = m.rt.space(m.space);
+        let (vx, vy) = (o[0] + (m.ox + x) * s, o[1] + (m.oy + y) * s);
+        let clip = m.rt.scoped_clip([vx, vy, vx + w * s, vy + h * s], m.clip);
+        let space = m.rt.alloc_space();
+        let px = (*self.sig.get() * s).round();
+        m.rt.set_space(space, [vx, vy - px]);
+        let v = m.rt.input.views.len() as u32;
+        m.rt.input.views.push(ScrollView { handle, space, clip, vx, vy, px, clips: Vec::new() });
+        m.wire(&self.sig, patch_view, v, [0; 16]);
+        let saved = (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view);
+        m.space = space;
+        m.ox = 0.0;
+        m.oy = 0.0;
+        m.clip = clip;
+        m.depth += 1;
+        m.rt.input.mounting_view = Some(v);
+        self.content.mount(m);
+        (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view) = saved;
+    }
+}
+
+// =============================================================================== wired clips and port lists
+
+/// Children clipped to a rect that a signal moves: `f(&value)` gives (x, y, w, h) points in the current
+/// space. A new value is one clip write (damage: the old and new clip's xor).
+pub struct ClipBy<'a, T, V, F, C> {
+    sig: Wired<'a, T, V>,
+    f: F,
+    ch: C,
+}
+pub fn clip_by<'a, T, V, F: Fn(&T) -> [f32; 4] + Copy + 'static, C>(sig: Wired<'a, T, V>, f: F, ch: C) -> ClipBy<'a, T, V, F, C> {
+    ClipBy { sig, f, ch }
+}
+
+/// # Safety
+/// Wire contract: `sig` is a `Signal<T>`; the recipe holds an `F`; `w.node` is the clip index in `Input::clips`.
+unsafe fn patch_clip_by<T: 'static, F: Fn(&T) -> [f32; 4] + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    // SAFETY: see the function contract.
+    let s = unsafe { &*(sig as *const Signal<T>) };
+    let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
+    let (id, space, parent) = rt.input.wclips[w.node as usize];
+    let r = clip_px(rt, space, f(s), parent);
+    rt.bough.set_clip_rect(id, r);
+}
+
+fn clip_px(rt: &Rt, space: u16, r: [f32; 4], parent: u16) -> NRect {
+    let (s, o) = (rt.scale, rt.space(space));
+    let a = NRect::new((o[0] + r[0] * s).floor() as i32, (o[1] + r[1] * s).floor() as i32, (o[0] + (r[0] + r[2]) * s).ceil() as i32, (o[1] + (r[1] + r[3]) * s).ceil() as i32);
+    a.intersect(rt.bough.clip_rect(parent)).canon()
+}
+
+/// A clip id whose rect `f(&value)` (points, current space, inside the current clip) follows `sig`.
+pub fn wired_clip<T: 'static, V, F: Fn(&T) -> [f32; 4] + Copy + 'static>(m: &mut Mounter<'_, V>, sig: Wired<'_, T, V>, f: F) -> u16 {
+    let prev = m.clip;
+    let r = clip_px(m.rt, m.space, f(sig.get()), prev);
+    let id = m.rt.bough.new_clip(r);
+    let k = m.rt.input.wclips.len() as u32;
+    m.rt.input.wclips.push((id, m.space, prev));
+    let mut recipe = [0u8; 16];
+    const { assert!(size_of::<F>() <= 16, "clip closure: at most 16 bytes of captures") };
+    // SAFETY: size_of::<F>() <= 16 (checked above); unaligned write into a byte array.
+    unsafe { std::ptr::write_unaligned(recipe.as_mut_ptr() as *mut F, f) };
+    m.wire(&sig, patch_clip_by::<T, F>, k, recipe);
+    id
+}
+
+impl<'a, T: 'static, V, F: Fn(&T) -> [f32; 4] + Copy + 'static, C: Element<V>> Element<V> for ClipBy<'a, T, V, F, C> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        let prev = m.clip;
+        m.clip = wired_clip(m, self.sig, self.f);
+        self.ch.mount(m);
+        m.clip = prev;
+    }
+}
+
+/// A fixed-row virtual list whose port's top edge a signal moves (a resizable panel's content): rows
+/// `count`, `row_h` points each, the port from `top` to `bottom` (points) at `x`, `w` wide. A new top
+/// edge moves the mounted rows (one space write per row, `scroll_run` over their records), moves the port
+/// clip, and mounts or unmounts the rows that entered or left the port. Scrolling is `scroll`.
+pub struct PortList<'a, V> {
+    scroll: Wired<'a, f32, V>,
+    top: Wired<'a, f32, V>,
+    x: f32,
+    w: f32,
+    bottom: f32,
+    row_h: f32,
+    count: usize,
+    row: fn(&V, usize, &mut Mounter<'_, V>),
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn port_list<'a, V>(scroll: Wired<'a, f32, V>, top: Wired<'a, f32, V>, x: f32, w: f32, bottom: f32, row_h: f32, count: usize, row: fn(&V, usize, &mut Mounter<'_, V>)) -> PortList<'a, V> {
+    PortList { scroll, top, x, w, bottom, row_h, count, row }
+}
+
+/// # Safety
+/// Wire contract: `sig` is a `Signal<f32>` (the port's top edge, points); `owner` is the region's owner.
+unsafe fn patch_port(rt: &mut Rt, w: &Wire, sig: *const u8, owner: *const u8) {
+    // SAFETY: see the function contract.
+    let top = **unsafe { &*(sig as *const Signal<f32>) };
+    let reg = w.node as usize;
+    let s = rt.scale;
+    let (old_y, clip, bottom_px, scroll_px) = {
+        let r = &rt.regions[reg];
+        (r.vp_y, r.clip, r.vp_y + r.port_h * s, r.scroll_px)
+    };
+    let new_y = (top * s).round();
+    if new_y == old_y {
+        return;
+    }
+    let dy = (new_y - old_y) as i32;
+    let old_vp = rt.regions[reg].vp;
+    let [x0, _, x1, _] = old_vp.to_xyxy();
+    let vp = NRect::new(x0, new_y as i32, x1, bottom_px as i32);
+    rt.bough.set_clip_rect(clip, vp);
+    {
+        let r = &mut rt.regions[reg];
+        r.vp_y = new_y;
+        r.vp = vp;
+        r.port_h = (bottom_px - new_y) / s;
+    }
+    // the mounted rows follow the port's top edge
+    let (base, nrec) = {
+        let r = &rt.regions[reg];
+        (r.base_pos, r.rows.iter().map(|x| x.nrec as usize).sum::<usize>())
+    };
+    for i in 0..rt.regions[reg].rows.len() {
+        let sp = rt.regions[reg].rows[i].space as usize;
+        rt.glyphs.spaces[sp][1] += dy;
+    }
+    rt.bough.scroll_run(base, nrec, 0, dy, old_vp.union(vp));
+    // rows that entered or left the port
+    // SAFETY: the region's row function was monomorphised for this owner (`region_mount` contract).
+    unsafe { rt.region_scroll(reg, owner, scroll_px / s) };
+}
+
+impl<'a, V: 'static> Element<V> for PortList<'a, V> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        let s = m.rt.scale;
+        let o = m.rt.space(m.space);
+        let top = *self.top.get();
+        let (vx, vy) = ((o[0] + (m.ox + self.x) * s).round(), (o[1] + (m.oy + top) * s).round());
+        let vb = (o[1] + (m.oy + self.bottom) * s).round();
+        let vp0 = NRect::new(vx as i32, vy as i32, (vx + self.w * s) as i32, vb as i32).intersect(m.rt.bough.clip_rect(m.clip)).canon();
+        // a clip of its own (it moves with the port)
+        let clip = m.rt.bough.new_clip(vp0);
+        let vp = m.rt.bough.clip_rect(clip);
+        let reg = m.rt.regions.len();
+        fn none(_: f32) -> std::ops::Range<usize> {
+            0..0
+        }
+        m.rt.regions.push(VRegion {
+            row_h: self.row_h * s,
+            vp_x: vx,
+            vp_y: vy,
+            clip,
+            vp,
+            depth: m.depth,
+            base_pos: m.recs.len(),
+            range: 0..0,
+            rows: Default::default(),
+            scroll_px: 0.0,
+            visible: none,
+            count: self.count,
+            port_h: (vb - vy) / s,
+            scale_pt: s,
+            mount_row: crate::elem::mount_row::<V>,
+            row_fn: self.row as usize,
+        });
+        m.wire(&self.scroll, crate::elem::patch_scroll, reg as u32, [0; 16]);
+        m.wire(&self.top, patch_port, reg as u32, [0; 16]);
+        // SAFETY: the owner pointer is the mounted owner (`App::new` / a row mount).
+        unsafe { m.rt.region_initial(reg, m.owner as *const u8, *self.scroll.get(), m.recs) };
+    }
+}
+
+// =============================================================================== offsets (drag previews, popovers)
+
+/// Children translated by a signal's (dx, dy) points: they live in a space of their own (the GPU adds its
+/// translation to their instances and glyph runs), under a paint-less record whose subtree they are; a new
+/// value is one space write plus one `translate_run` over the subtree's records (damage: their old and new
+/// bounds). A drag preview following the pointer is one such write per move.
+pub struct Offset<'a, V, C> {
+    sig: Wired<'a, (f32, f32), V>,
+    ch: C,
+}
+pub fn offset<V, C>(sig: Wired<'_, (f32, f32), V>, ch: C) -> Offset<'_, V, C> {
+    Offset { sig, ch }
+}
+
+/// (record handle, space, base origin x, y in device px, current offset in device px).
+pub(crate) type OffsetState = (bough_core::Handle, u16, f32, f32, [i32; 2]);
+
+/// # Safety
+/// Wire contract: `sig` is a `Signal<(f32, f32)>`; `w.node` indexes `Input::offsets`.
+unsafe fn patch_offset(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    // SAFETY: see the function contract.
+    let v = **unsafe { &*(sig as *const Signal<(f32, f32)>) };
+    let (h, space, bx, by, cur) = rt.input.offsets[w.node as usize];
+    let s = rt.scale;
+    let new = [(v.0 * s).round() as i32, (v.1 * s).round() as i32];
+    if new == cur {
+        return;
+    }
+    rt.input.offsets[w.node as usize].4 = new;
+    rt.set_space(space, [bx + new[0] as f32, by + new[1] as f32]);
+    let Some(pos) = rt.bough.pos_of(h) else { return };
+    let end = rt.bough.subtree_end(pos);
+    rt.bough.translate_run(pos + 1, end - pos - 1, new[0] - cur[0], new[1] - cur[1]);
+}
+
+impl<V: 'static, C: Element<V>> Element<V> for Offset<'_, V, C> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        let s = m.rt.scale;
+        let o = m.rt.space(m.space);
+        let (bx, by) = (o[0] + m.ox * s, o[1] + m.oy * s);
+        let v = *self.sig.get();
+        let cur = [(v.0 * s).round() as i32, (v.1 * s).round() as i32];
+        let space = m.rt.alloc_space();
+        m.rt.set_space(space, [bx + cur[0] as f32, by + cur[1] as f32]);
+        let h = m.rt.bough.new_handle();
+        m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: h.idx, clip: m.clip });
+        let k = m.rt.input.offsets.len() as u32;
+        m.rt.input.offsets.push((h, space, bx, by, cur));
+        m.wire(&self.sig, patch_offset, k, [0; 16]);
+        let saved = (m.space, m.ox, m.oy, m.depth);
+        m.space = space;
+        m.ox = 0.0;
+        m.oy = 0.0;
+        m.depth += 1;
+        self.ch.mount(m);
+        (m.space, m.ox, m.oy, m.depth) = saved;
+    }
+}

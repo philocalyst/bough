@@ -1,0 +1,30 @@
+SCENARIO app-shell 12 tooltip triggers, 48 rows of library controls, a dock of 5000 virtualised lines in a vertical resizable group; 3 sweeps, 60 drag steps of 5 px, 40 window sizes
+MEASURE	app-shell	shell.tooltip_crossing	us	1868.5830	1750.0000	over	measured at 1.24 ms; one tooltip mounted on its band and the last one handed over, and the page built again for neither (10-11 ms while every mount rebuilt the document's boxes)	4000.0000	met	p50=1868.5830;p95=29697.2080;p99=51603.7920;max=51603.7920;n=37
+MEASURE	app-shell	shell.tooltip_tree_builds	builds	0.0000	0.0000	ok	a tooltip is a small surface on its own band; a whole box-tree build renames every box in the window for it	0.0000	met	-
+MEASURE	app-shell	shell.tooltip_hit_rebuilds	rebuilds	5.0000	5.0000	ok	a surface born on a band its parent paints in stacking order rather than layout order renumbers the index; the sweep measured five	-	-	-
+MEASURE	app-shell	shell.drag_step	us	397.5830	420.0000	ok	measured at 0.30 ms; one edge moved: two panels sized, the strips along the edge repainted, the log's newly exposed lines built	8333.0000	met	p50=397.5830;p95=6552.6660;p99=21506.2910;max=71251.6250;n=60
+MEASURE	app-shell	shell.drag_restyled	elems	2.5500	8.0000	ok	a panel's size is a basis on the panel, which no descendant inherits	-	-	-
+MEASURE	app-shell	shell.drag_hit_rebuilds	rebuilds	1.0000	0.0000	over	moving boxes keeps their paint order, so the hit index moves its entries in place	-	-	-
+MEASURE	app-shell	shell.drag_observation_passes	passes	2.0000	2.0000	ok	the log's scrollport is delivered once, and one more pass finds nothing left to deliver; a third is an observer that did not settle	-	-	-
+MEASURE	app-shell	shell.drag_primitives_emitted	prims	864.0833	1000.0000	ok	measured at 864: the strips along the moved edge and the log's lines, never the page above it	-	-	-
+MEASURE	app-shell	shell.resize_step	us	3266.0420	2800.0000	over	measured at 1.2-2.1 ms; every box is asked again at a new size, once, in one frame, and only what moved and what is exposed is painted	-	-	p50=3266.0420;p95=9049.5420;p99=25161.0830;max=25161.0830;n=40
+MEASURE	app-shell	shell.resize_truncated	deliveries	0.0000	0.0000	ok	a delivery cut short paints a frame against geometry its observers have not answered, and asks for another	0.0000	met	-
+MEASURE	app-shell	reshape.paragraphs_forgotten	paragraphs	0.0000	0.0000	ok	one element's brush moving costs that element's paragraphs, not the window's	-	-	-
+MEASURE	app-shell	reshape.boxes_marked_all_dirty	boxes	0.0000	0.0000	ok	nothing these scenarios drive changes the device scale, which is the one change every box pays for	-	-	-
+INSTR app-shell shell.tooltip_crossing p50=11312783 p10=11092491 p90=14851626 n=37
+INSTR app-shell shell.drag_step p50=3411263 p10=3032606 p90=4162439 n=60
+INSTR app-shell shell.resize_step p50=16369020 p10=13629942 p90=19399270 n=40
+PACE	app-shell	8333.0000	2	60
+ESCALATION	app-shell	86264	67814	16309	4850	35570
+  shell.tooltip_crossing                  1868.58 us   band 1250.0 +40% = 1750.0     REGRESSED
+  shell.tooltip_tree_builds                  0.00 builds band <= 0                     ok
+  shell.tooltip_hit_rebuilds                 5.00 rebuilds band <= 5                     ok
+  shell.drag_step                          397.58 us   band 300.0 +40% = 420.0       ok
+  shell.drag_restyled                        2.55 elems band <= 8                     ok
+  shell.drag_hit_rebuilds                    1.00 rebuilds band <= 0                     REGRESSED
+  shell.drag_observation_passes              2.00 passes band <= 2                     ok
+  shell.drag_primitives_emitted            864.08 prims band <= 1000                  ok
+  shell.resize_step                       3266.04 us   band 2000.0 +40% = 2800.0     REGRESSED
+  shell.resize_truncated                     0.00 deliveries band <= 0                     ok
+  reshape.paragraphs_forgotten               0.00 paragraphs band <= 0                     ok
+  reshape.boxes_marked_all_dirty             0.00 boxes band <= 0                     ok

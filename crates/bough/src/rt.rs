@@ -74,8 +74,14 @@ pub const NK_BARS: u8 = 4;
 /// Layout-owned text (measured, wrapped and placed by the layout flush).
 pub const NK_LTEXT: u8 = 5;
 pub const NK_GALPHA: u8 = 6;
+/// Flag on `Node::kind`: the record shows its hover colour (input.rs); a colour wire then stores the base
+/// colour without writing the instance.
+pub const NK_HOVERED: u8 = 0x80;
 
 pub const NONE: u32 = u32::MAX;
+
+/// The largest window side (device px): the damage planes' 128 tile rows.
+pub const MAX_WINDOW: u32 = 4096;
 
 /// Capacities of the region's columns (fixed for the window's life: a column never moves).
 #[derive(Clone, Copy, Debug)]
@@ -104,7 +110,8 @@ impl Caps {
 
     pub fn region_bytes(&self, w: u32, h: u32) -> usize {
         let caps = self.pow2();
-        let sb = Layout::slot_bytes(w, h);
+        // frame slots sized for the tallest window (resize never moves them; 4.3 KB each)
+        let sb = Layout::slot_bytes(w, h.max(MAX_WINDOW));
         let a = |n: usize| n.next_multiple_of(256) + 256;
         HDR_BYTES
             + 3 * a(sb)
@@ -226,6 +233,20 @@ pub struct RowInfo {
     pub scope: Scope,
 }
 
+impl VRegion {
+    /// The rows a scroll offset (points) mounts.
+    #[inline]
+    pub fn range_at(&self, scroll_pt: f32) -> Range<usize> {
+        if self.count == 0 {
+            return (self.visible)(scroll_pt);
+        }
+        let row_pt = self.row_h / self.scale_pt;
+        let first = (scroll_pt / row_pt) as usize;
+        let end = ((scroll_pt + self.port_h) / row_pt).ceil() as usize;
+        first.saturating_sub(2)..end.saturating_add(2).min(self.count)
+    }
+}
+
 pub type RowMountFn = unsafe fn(&mut Rt, *const u8, usize, usize, &mut Vec<RecordInit>) -> RowInfo;
 
 pub struct VRegion {
@@ -241,6 +262,12 @@ pub struct VRegion {
     pub rows: VecDeque<RowInfo>,
     pub scroll_px: f32,
     pub visible: fn(f32) -> Range<usize>,
+    /// Port lists (`template::port_list`): row count and port height (points); the range is the rows
+    /// meeting the port, two rows of overscan each side. 0: `visible` decides.
+    pub count: usize,
+    pub port_h: f32,
+    /// Device px per point (`row_h` is in device px).
+    pub scale_pt: f32,
     pub(crate) mount_row: RowMountFn,
     /// The user's `fn(&V, usize, &mut Mounter<V>)`, type-erased (transmuted back by `mount_row`).
     pub(crate) row_fn: usize,
@@ -324,6 +351,8 @@ pub struct Rt {
     /// The layout bridge (cephal over the mounted records) and the measured lists.
     pub lay: crate::layout::Lay,
     pub mregions: Vec<crate::mlist::MRegion>,
+    /// Pointer, hover, focus, routes (input.rs).
+    pub input: crate::input::Input,
     /// Keeps a heap region alive (the GPU region is kept alive by the columns' reference count too).
     _region: Region,
 }
@@ -332,7 +361,7 @@ impl Rt {
     /// The runtime over `region` (the presenter's shared buffer, or heap memory of the same size).
     pub fn new(win_w: i32, win_h: i32, scale: f32, font: &[u8], mut region: Region, caps: Caps) -> Rt {
         let caps = caps.pow2();
-        let sb = Layout::slot_bytes(win_w as u32, win_h as u32);
+        let sb = Layout::slot_bytes(win_w as u32, (win_h as u32).max(MAX_WINDOW));
         let hdr = region.reserve(HDR_BYTES, 64);
         assert_eq!(hdr, 0, "the header is at offset 0");
         let mut slot = [0u32; 3];
@@ -408,6 +437,7 @@ impl Rt {
             ctr: Counters::default(),
             lay: crate::layout::Lay::new(scale),
             mregions: Vec::new(),
+            input: Default::default(),
             _region: region,
         }
     }
@@ -790,7 +820,7 @@ impl Rt {
     pub unsafe fn region_initial(&mut self, reg: usize, owner: *const u8, scroll_pt: f32, recs: &mut Vec<RecordInit>) {
         let r = &mut self.regions[reg];
         r.scroll_px = (scroll_pt * self.scale).round();
-        let range = (r.visible)(scroll_pt);
+        let range = r.range_at(scroll_pt);
         r.range = range.clone();
         let f = r.mount_row;
         for row in range {
@@ -814,7 +844,7 @@ impl Rt {
     /// As `region_initial`.
     pub unsafe fn region_scroll(&mut self, reg: usize, owner: *const u8, scroll_pt: f32) {
         let new_px = (scroll_pt * self.scale).round();
-        let new_range = (self.regions[reg].visible)(scroll_pt);
+        let new_range = self.regions[reg].range_at(scroll_pt);
         let (old_px, old_range) = (self.regions[reg].scroll_px, self.regions[reg].range.clone());
         if new_px == old_px && new_range == old_range {
             return;

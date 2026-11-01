@@ -1,0 +1,146 @@
+document: shell (1600x1000 CSS px, scale 1)
+layout boxes (window.layout().keys().len()): 824
+fragments (inspect::document): 1103
+dom nodes emitted to TSV: 391 elements + 277 text nodes = 668 rows; 961 markers skipped; max depth 9
+document store len: 1630
+focusable elements in tab order (host.focusables(root)): 61
+primitives in the display list after the first frame (scene.ops().len()): 1443
+counters moved by opening the window + first frame (nonzero only): Counters { elements_restyled: 391, elements_recascaded: 1, elements_traversed: 392, selector_matches: 6103, nodes_visited: 6389, dirty_walk_steps: 8303, boxes_rebuilt: 655, box_tree_builds: 1, nodes_relaid_out: 665, nodes_changed: 631, gutters_examined: 2, layout_reached_root: 2, layout_batches_distributed: 2, sizes_held: 999, sizes_measured: 1687, text_shaped: 236, text_bytes_shaped: 2188, text_rebroken: 234, fragments_diffed: 1111, fragments_rebuilt: 1104, repaints: 1103, styles_lowered: 56, styles_lowered_from_cache: 2087, chunks_reencoded: 1103, primitives_emitted: 1443, primitives_culled: 958, sprites_resolved_at_push: 1417, bounds_tree_inserts: 3844, hit_entries_updated: 1103, hit_entries_reinserted: 96, hit_index_rebuilds: 2, hit_retests: 1, observation_passes: 2, glyphs_placed: 2728, glyphs_rasterised: 140, record_tiles_retained: 2042, frames_drawn: 1, clip_entries_live: 53, clip_slots_reach: 53, spatial_nodes_live: 2, fragments_live: 1103, paint_chunk_bytes_live: 307584, boxes_live: 824, boxes_reshaped: 106, .. }
+  primitives_emitted=1443 primitives_culled=958 bounds_tree_inserts=3844 chunks_reencoded=1103
+swatch centres (34x34 boxes, CSS px, sorted by x): (25.00,21.00) (25.00,21.00) (63.00,21.00) (63.00,21.00)
+tip-0 centre (CSS px): (25.00,21.00)
+tip-1 centre (CSS px): (63.00,21.00)
+tip-2 centre (CSS px): (101.00,21.00)
+tip-3 centre (CSS px): (139.00,21.00)
+tip-4 centre (CSS px): (177.00,21.00)
+tip-5 centre (CSS px): (215.00,21.00)
+tip-6 centre (CSS px): (253.00,21.00)
+tip-7 centre (CSS px): (291.00,21.00)
+tip-8 centre (CSS px): (329.00,21.00)
+tip-9 centre (CSS px): (367.00,21.00)
+tip-10 centre (CSS px): (405.00,21.00)
+tip-11 centre (CSS px): (443.00,21.00)
+dock-handle centre (CSS px): (800.00,692.50)
+root element scroll extent (device px): content 0x0, scrollport 0x0, offset (0,0)
+document extent (furthest element box right/bottom, device px): 1600 x 90693
+scroll containers (1):
+  preorder=591 tag=scroll testid= classes=[zs-55d927fc shell-log zui-virtual-list] content=1585x90000 port=1585x350 scrolls_x=false scrolls_y=true
+one resize step (+8 px width) from rest: primitives_emitted=695 culled=524 scene ops after=695 boxes_rebuilt=0 nodes_relaid_out=114
+focus_a_field_timed: 400 Tab presses (loop stops at 400 if no text field is reached); input::typing=false; median press 657.1 us
+ends on: preorder=Some(234) testid/classes/tag=Some(("", "zs-9123059c zui-button zui-button--ghost zui-button--sm", "control")) (tab_stop index in the order above: Some(27))
+
+hover rules: no per-node API exposes which :hover rules match an element. Document-level facts: the table fixture's only hover rule is `.bench-row:hover { background-color: #1e2532 }`; the shell's is `.shell-row:hover { background-color: var(--zui-muted) }`; the zgui-ui component sheets contain 67 `:hover` selectors across 35 source files (used by s13). Elements with pointer-enter/leave listeners are visible in the `listeners` column.
+a11y role/label come from the node's Semantics (Debug of Role); `editable` = role TextInput/MultilineTextInput or tag input/textarea.
+`other_non_initial` lists every computed longhand (physical ones; logical block/inline duplicates omitted) whose value differs from the initial value and has no column of its own.
+colours are computed values converted to #rrggbbaa (oklch/oklab converted to sRGB without gamut mapping).
+x,y,w,h are window_box(node) in device px (scale 1). Text nodes: window_box of the text node's own fragment (block text children often report 0x0; read the parent element for the line box).
+
+--- shell drag and tooltip sweep (shell_motion) ---
+ResizablePanel elements found (class zui-resizable__panel): 2
+  initial rect (device px x,y,w,h): 0.00,42.00,1600.00,650.00
+  initial rect (device px x,y,w,h): 0.00,693.00,1600.00,350.00
+drag: 60 steps of 5 px (first half up, second half down) from the dock-handle centre; see shell_drag.tsv and tooltip_sweep.tsv
+
+tooltip sweep: one row per crossing (3 sweeps x 12 triggers, then the move away). frames_settle = frames run by settle(64) after the pointer move, frames_idle6 = frames run by the 6 idle turns of 16.667 ms; tooltip rect = window_box of the `.zui-tooltip` (TooltipContent) element after the idle turns, device px.
+sweep	trigger	frames_settle	frames_idle6	frames_total	tooltips_mounted	tooltip_x	tooltip_y	tooltip_w	tooltip_h	text
+0	tip-0	1	6	7	1	8.00	48.00	118.00	28.00	Action number 0
+0	tip-1	2	6	8	1	8.00	48.00	116.00	28.00	Action number 1
+0	tip-2	2	6	8	1	43.00	48.00	117.00	28.00	Action number 2
+0	tip-3	2	6	8	1	81.00	48.00	117.00	28.00	Action number 3
+0	tip-4	2	6	8	1	118.00	48.00	118.00	28.00	Action number 4
+0	tip-5	2	6	8	1	157.00	48.00	117.00	28.00	Action number 5
+0	tip-6	2	6	8	1	194.00	48.00	118.00	28.00	Action number 6
+0	tip-7	2	6	8	1	233.00	48.00	117.00	28.00	Action number 7
+0	tip-8	2	6	8	1	270.00	48.00	118.00	28.00	Action number 8
+0	tip-9	2	6	8	1	308.00	48.00	118.00	28.00	Action number 9
+0	tip-10	2	6	8	1	344.00	48.00	123.00	28.00	Action number 10
+0	tip-11	2	6	8	1	383.00	48.00	121.00	28.00	Action number 11
+1	tip-0	2	6	8	1	8.00	48.00	118.00	28.00	Action number 0
+1	tip-1	2	6	8	1	8.00	48.00	116.00	28.00	Action number 1
+1	tip-2	2	6	8	1	43.00	48.00	117.00	28.00	Action number 2
+1	tip-3	2	6	8	1	81.00	48.00	117.00	28.00	Action number 3
+1	tip-4	2	6	8	1	118.00	48.00	118.00	28.00	Action number 4
+1	tip-5	2	6	8	1	157.00	48.00	117.00	28.00	Action number 5
+1	tip-6	2	6	8	1	194.00	48.00	118.00	28.00	Action number 6
+1	tip-7	2	6	8	1	233.00	48.00	117.00	28.00	Action number 7
+1	tip-8	2	6	8	1	270.00	48.00	118.00	28.00	Action number 8
+1	tip-9	2	6	8	1	308.00	48.00	118.00	28.00	Action number 9
+1	tip-10	2	6	8	1	344.00	48.00	123.00	28.00	Action number 10
+1	tip-11	2	6	8	1	383.00	48.00	121.00	28.00	Action number 11
+2	tip-0	2	6	8	1	8.00	48.00	118.00	28.00	Action number 0
+2	tip-1	2	6	8	1	8.00	48.00	116.00	28.00	Action number 1
+2	tip-2	2	6	8	1	43.00	48.00	117.00	28.00	Action number 2
+2	tip-3	2	6	8	1	81.00	48.00	117.00	28.00	Action number 3
+2	tip-4	2	6	8	1	118.00	48.00	118.00	28.00	Action number 4
+2	tip-5	2	6	8	1	157.00	48.00	117.00	28.00	Action number 5
+2	tip-6	2	6	8	1	194.00	48.00	118.00	28.00	Action number 6
+2	tip-7	2	6	8	1	233.00	48.00	117.00	28.00	Action number 7
+2	tip-8	2	6	8	1	270.00	48.00	118.00	28.00	Action number 8
+2	tip-9	2	6	8	1	308.00	48.00	118.00	28.00	Action number 9
+2	tip-10	2	6	8	1	344.00	48.00	123.00	28.00	Action number 10
+2	tip-11	2	6	8	1	383.00	48.00	121.00	28.00	Action number 11
+away	-	2	6	8	0					
+
+drag: per step the two ResizablePanel elements' heights (panel0 = page, panel1 = dock) after the pointer move + settle; step -1 is the state at rest after the press.
+step	pointer_y_css	frames_run	panel0_h	panel1_h	panel0_y	panel1_y	boxes_rebuilt	nodes_relaid_out	primitives_emitted
+-1	692.50	0	650.00	350.00	42.00	693.00	0	0	0
+0	687.50	1	645.00	355.00	42.00	688.00	0	586	714
+1	682.50	1	640.00	360.00	42.00	683.00	0	7	726
+2	677.50	1	635.00	365.00	42.00	678.00	3	15	726
+3	672.50	1	630.00	370.00	42.00	673.00	0	7	764
+4	667.50	1	625.00	375.00	42.00	668.00	0	7	744
+5	662.50	1	620.00	380.00	42.00	663.00	3	15	736
+6	657.50	1	615.00	385.00	42.00	658.00	0	7	797
+7	652.50	1	610.00	390.00	42.00	653.00	0	7	801
+8	647.50	1	605.00	395.00	42.00	648.00	0	7	801
+9	642.50	1	600.00	400.00	42.00	643.00	3	15	799
+10	637.50	1	595.00	405.00	42.00	638.00	0	7	812
+11	632.50	1	590.00	410.00	42.00	633.00	0	7	831
+12	627.50	1	585.00	415.00	42.00	628.00	3	15	840
+13	622.50	1	580.00	420.00	42.00	623.00	0	7	840
+14	617.50	1	575.00	425.00	42.00	618.00	0	7	879
+15	612.50	1	570.00	430.00	42.00	613.00	0	7	861
+16	607.50	1	565.00	435.00	42.00	608.00	3	15	851
+17	602.50	1	560.00	440.00	42.00	603.00	0	7	915
+18	597.50	1	555.00	445.00	42.00	598.00	0	7	919
+19	592.50	1	550.00	450.00	42.00	593.00	0	7	919
+20	587.50	1	545.00	455.00	42.00	588.00	3	15	917
+21	582.50	1	540.00	460.00	42.00	583.00	0	7	929
+22	577.50	1	535.00	465.00	42.00	578.00	0	7	928
+23	572.50	1	530.00	470.00	42.00	573.00	3	15	958
+24	567.50	1	525.00	475.00	42.00	568.00	0	7	997
+25	562.50	1	520.00	480.00	42.00	563.00	0	7	997
+26	557.50	1	515.00	485.00	42.00	558.00	0	7	979
+27	552.50	1	510.00	490.00	42.00	553.00	3	15	968
+28	547.50	1	505.00	495.00	42.00	548.00	0	7	1027
+29	542.50	1	500.00	500.00	42.00	543.00	0	7	1036
+30	547.50	1	505.00	495.00	42.00	548.00	0	7	1036
+31	552.50	1	510.00	490.00	42.00	553.00	0	7	989
+32	557.50	1	515.00	485.00	42.00	558.00	0	13	979
+33	562.50	1	520.00	480.00	42.00	563.00	0	7	997
+34	567.50	1	525.00	475.00	42.00	568.00	0	7	997
+35	572.50	1	530.00	470.00	42.00	573.00	0	7	958
+36	577.50	1	535.00	465.00	42.00	578.00	0	13	958
+37	582.50	1	540.00	460.00	42.00	583.00	0	7	929
+38	587.50	1	545.00	455.00	42.00	588.00	0	7	917
+39	592.50	1	550.00	450.00	42.00	593.00	0	13	919
+40	597.50	1	555.00	445.00	42.00	598.00	0	7	919
+41	602.50	1	560.00	440.00	42.00	603.00	0	7	919
+42	607.50	1	565.00	435.00	42.00	608.00	0	7	877
+43	612.50	1	570.00	430.00	42.00	613.00	0	13	861
+44	617.50	1	575.00	425.00	42.00	618.00	0	7	879
+45	622.50	1	580.00	420.00	42.00	623.00	0	7	840
+46	627.50	1	585.00	415.00	42.00	628.00	0	7	840
+47	632.50	1	590.00	410.00	42.00	633.00	0	13	840
+48	637.50	1	595.00	405.00	42.00	638.00	0	7	832
+49	642.50	1	600.00	400.00	42.00	643.00	0	7	799
+50	647.50	1	605.00	395.00	42.00	648.00	0	13	801
+51	652.50	1	610.00	390.00	42.00	653.00	0	7	801
+52	657.50	1	615.00	385.00	42.00	658.00	0	7	801
+53	662.50	1	620.00	380.00	42.00	663.00	0	7	759
+54	667.50	1	625.00	375.00	42.00	668.00	0	13	742
+55	672.50	1	630.00	370.00	42.00	673.00	0	7	761
+56	677.50	1	635.00	365.00	42.00	678.00	0	7	723
+57	682.50	1	640.00	360.00	42.00	683.00	0	13	723
+58	687.50	1	645.00	355.00	42.00	688.00	0	7	723
+59	692.50	1	650.00	350.00	42.00	693.00	0	7	715

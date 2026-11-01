@@ -219,6 +219,147 @@ impl Warm {
     }
 }
 
+// ------------------------------------------------------------------ the publisher thread
+
+const NONE_SURF: usize = usize::MAX;
+
+struct SendIo(CFRetained<IOSurfaceRef>);
+// SAFETY: IOSurface objects are thread-safe (reference counted, used across processes).
+unsafe impl Send for SendIo {}
+
+struct PubJob {
+    surf: usize,
+    io: SendIo,
+    /// Shared-event value that says the frame is drawn (0: already drawn, a held surface).
+    wait: u64,
+    /// A new layer frame (window resize), committed in the same transaction as the new contents.
+    frame: Option<objc2_core_foundation::CGRect>,
+    /// Address of the bin-overflow word (shared storage): a frame that overflowed is not published; the
+    /// main thread's next `sync` redraws it and posts it again.
+    overflow: usize,
+}
+
+struct PubShared {
+    m: std::sync::Mutex<PubState>,
+    cv: std::sync::Condvar,
+    idle: std::sync::Condvar,
+    /// The surface being committed now, and the surface the last commit put on screen: both count as in use
+    /// (the compositor's own in-use flag lags a commit by up to one server turn).
+    in_flight: std::sync::atomic::AtomicUsize,
+    last: std::sync::atomic::AtomicUsize,
+    queued: std::sync::atomic::AtomicUsize,
+    commits: AtomicU64,
+    held_back: AtomicU64,
+}
+struct PubState {
+    job: Option<PubJob>,
+    quit: bool,
+}
+
+/// Owns what the thread touches: the event it waits on and the layer it commits to.
+struct PubObjs {
+    ev: Retained<ProtocolObject<dyn MTLSharedEvent>>,
+    layer: Retained<CALayer>,
+}
+// SAFETY: MTLSharedEvent is thread-safe; a CALayer may be modified from any thread inside an explicit
+// CATransaction, and only this thread modifies this layer after the first publication.
+unsafe impl Send for PubObjs {}
+
+/// The publisher (RESULTS Part IV): a thread that waits for a released frame on the shared event and puts
+/// its surface on the layer in its own explicit Core Animation transaction. The input (main) thread only
+/// writes the slot, signals the event and posts the job: no GPU wait, no transaction. One job slot: a job
+/// posted while another is queued supersedes it (frames are in order; the newer one shows everything).
+struct Publisher {
+    sh: Arc<PubShared>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Publisher {
+    fn spawn(ev: Retained<ProtocolObject<dyn MTLSharedEvent>>, layer: Retained<CALayer>) -> Publisher {
+        use std::sync::atomic::AtomicUsize;
+        let sh = Arc::new(PubShared {
+            m: std::sync::Mutex::new(PubState { job: None, quit: false }),
+            cv: std::sync::Condvar::new(),
+            idle: std::sync::Condvar::new(),
+            in_flight: AtomicUsize::new(NONE_SURF),
+            last: AtomicUsize::new(NONE_SURF),
+            queued: AtomicUsize::new(NONE_SURF),
+            commits: AtomicU64::new(0),
+            held_back: AtomicU64::new(0),
+        });
+        let (s2, objs) = (sh.clone(), PubObjs { ev, layer });
+        let thread = std::thread::Builder::new()
+            .name("bough-publish".into())
+            .spawn(move || {
+                let objs = objs;
+                Publisher::run(&s2, &objs)
+            })
+            .expect("publisher thread");
+        Publisher { sh, thread: Some(thread) }
+    }
+
+    fn run(sh: &PubShared, o: &PubObjs) {
+        loop {
+            let job = {
+                let mut g = sh.m.lock().unwrap();
+                loop {
+                    if g.quit {
+                        return;
+                    }
+                    if let Some(j) = g.job.take() {
+                        sh.in_flight.store(j.surf, Relaxed);
+                        sh.queued.store(NONE_SURF, Relaxed);
+                        break j;
+                    }
+                    sh.idle.notify_all();
+                    g = sh.cv.wait(g).unwrap();
+                }
+            };
+            let drawn = job.wait == 0 || o.ev.signaledValue() >= job.wait || o.ev.waitUntilSignaledValue_timeoutMS(job.wait, 5000);
+            // SAFETY: the overflow word lies in the live counts buffer (the main thread replaces it only after
+            // `publisher_idle`); shared storage, written by the GPU before it signalled the event.
+            let overflowed = unsafe { std::ptr::read_volatile(job.overflow as *const u32) } != 0;
+            if drawn && !overflowed {
+                CATransaction::begin();
+                CATransaction::setDisableActions(true);
+                if let Some(f) = job.frame {
+                    o.layer.setFrame(f);
+                }
+                // SAFETY: an IOSurfaceRef is a valid CALayer `contents` object.
+                unsafe { o.layer.setContents(Some(&*(&*job.io.0 as *const IOSurfaceRef as *const AnyObject))) };
+                CATransaction::commit();
+                sh.last.store(job.surf, Relaxed);
+                sh.commits.fetch_add(1, Relaxed);
+            } else {
+                sh.held_back.fetch_add(1, Relaxed);
+            }
+            sh.in_flight.store(NONE_SURF, Relaxed);
+        }
+    }
+
+    fn post(&self, job: PubJob) {
+        let mut g = self.sh.m.lock().unwrap();
+        self.sh.queued.store(job.surf, Relaxed);
+        g.job = Some(job);
+        self.sh.cv.notify_one();
+    }
+
+    /// Queued, being committed, or the last commit: the publisher (or a lagging compositor flag) holds it.
+    fn holds(&self, i: usize) -> bool {
+        self.sh.in_flight.load(Relaxed) == i || self.sh.last.load(Relaxed) == i || self.sh.queued.load(Relaxed) == i
+    }
+}
+
+impl Drop for Publisher {
+    fn drop(&mut self) {
+        self.sh.m.lock().unwrap().quit = true;
+        self.sh.cv.notify_one();
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
 /// Counters.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Stats {
@@ -227,6 +368,8 @@ pub struct Stats {
     pub ca_only: u64,
     pub warm_blits: u64,
     pub resident_surfaces: usize,
+    /// Pre-armed batches drained because the residency set grew.
+    pub drains: u64,
 }
 
 pub struct Fused {
@@ -249,6 +392,7 @@ pub struct Fused {
     pub layer: Retained<CALayer>,
     pub w: usize,
     pub h: usize,
+    scale: f64,
     /// Publish drawn surfaces to `layer` (windowed); off headless.
     pub publish: bool,
     lay: Layout,
@@ -267,6 +411,10 @@ pub struct Fused {
     armed_upto: u64,
     released: u64,
     batch: usize,
+    /// The publisher thread (windowed: spawned at the first publication).
+    publisher: Option<Publisher>,
+    /// A layer frame to commit with the next publication (set by `resize`).
+    pending_frame: Option<objc2_core_foundation::CGRect>,
 }
 
 /// Byte offset of the bind table in the region header (`FBind` in shader.metal).
@@ -329,6 +477,7 @@ impl Fused {
             layer,
             w,
             h,
+            scale,
             publish: false,
             lay: Layout::default(),
             resid: None,
@@ -343,6 +492,8 @@ impl Fused {
             armed_upto: 0,
             released: 0,
             batch: 16,
+            publisher: None,
+            pending_frame: None,
         };
         // the residency set is what makes the bind table's resources reachable (encoders bind nothing else)
         {
@@ -469,19 +620,33 @@ impl Fused {
             return;
         }
         let Some((k, _target, nr, nt)) = self.last_frame else { return };
+        // the publisher must have read the overflow word (and held the frame back) before it is cleared
+        self.publisher_idle();
         // SAFETY: `counts` holds ty + 1 u32s in shared storage; the GPU is idle.
         unsafe { *(self.counts.contents().as_ptr() as *mut u32).add(ty) = 0 };
         // The bins are named only by the bind table: growing them is a new buffer and a header write, and the
         // pre-armed frames read the new address when they run. The overflowed frame is redrawn from its slot
         // (which names the target) on the aux queue before anyone sees it.
         let cap = need.next_power_of_two().max(self.bin_cap * 2);
+        // growing the bins drains the pre-armed frames (`residency_changed`), which reuses both slots: keep
+        // the overflowed frame's
+        let sb = Layout::slot_bytes(self.lay.w, self.lay.h);
+        let mut keep = vec![0u8; sb];
+        // SAFETY: slot k lies inside the region (reserved for at least `sb` bytes); the GPU is idle.
+        unsafe { std::ptr::copy_nonoverlapping(self.pool_ptr.add(self.lay.slot[k] as usize), keep.as_mut_ptr(), sb) };
         self.replace_bins(cap);
+        // SAFETY: as above.
+        unsafe { std::ptr::copy_nonoverlapping(keep.as_ptr(), self.pool_ptr.add(self.lay.slot[k] as usize), sb) };
         self.bin_growths += 1;
         let cmd = self.aux.commandBuffer().expect("command buffer");
         self.encode(&cmd, k, nr, nt, false);
         cmd.commit();
         cmd.waitUntilCompleted();
         self.check_bins();
+        if self.publish {
+            // the publisher held the overflowed frame back: it is whole now
+            self.post(_target, 0);
+        }
     }
 
     /// New row bins of `cap` entries per row, named in the bind table (the GPU is idle).
@@ -497,6 +662,7 @@ impl Fused {
         // SAFETY: header field `bin_cap`; the GPU is idle.
         unsafe { (*(self.pool_ptr as *mut FHdr)).bin_cap = cap };
         self.write_binds();
+        self.residency_changed();
     }
 
     /// Replace the row bins by ones of `cap` entries per row (tests: forces the grow-and-redraw path).
@@ -505,8 +671,54 @@ impl Fused {
         self.replace_bins(cap);
     }
 
+    /// In use by the compositor, or held by the publisher (queued, being committed, or committed last).
     pub fn is_in_use(&self, i: usize) -> bool {
-        self.surfs[i].io.is_in_use()
+        self.publisher.as_ref().is_some_and(|p| p.holds(i)) || self.surfs[i].io.is_in_use()
+    }
+
+    /// The window is now `w` x `h` px: fresh surfaces of that size (unbacked until first drawn), row bins
+    /// and counts for its tile rows, and the layer's new frame committed with the next publication, so the
+    /// first frame at the new size and the new size reach the screen in one transaction (no frame dropped,
+    /// none shown stretched). The caller then writes the new layout (`set_layout`) and draws a full frame.
+    /// The surface on screen stays alive in the layer until it is replaced.
+    pub fn resize(&mut self, w: usize, h: usize) {
+        self.sync();
+        self.publisher_idle();
+        if (w, h) == (self.w, self.h) {
+            return;
+        }
+        let n = self.surfs.len();
+        let old = std::mem::replace(&mut self.surfs, (0..n).map(|_| Self::new_surface(&self.device, w, h)).collect());
+        let ty = h.div_ceil(32);
+        let bins = self.device.newBufferWithLength_options(ty * self.bin_cap as usize * 16, MTLResourceOptions::StorageModePrivate).expect("bins");
+        let counts = self.device.newBufferWithLength_options((ty + 1) * 4, MTLResourceOptions::StorageModeShared).expect("bin counts");
+        let (old_bins, old_counts) = (std::mem::replace(&mut self.bins, bins), std::mem::replace(&mut self.counts, counts));
+        if let Some(r) = &self.resid {
+            for s in old.iter().filter(|s| s.touched.get()) {
+                r.removeAllocation(ProtocolObject::from_ref(&*s.tex));
+            }
+            r.removeAllocation(ProtocolObject::from_ref(&*old_bins));
+            r.removeAllocation(ProtocolObject::from_ref(&*old_counts));
+            r.addAllocation(ProtocolObject::from_ref(&*self.bins));
+            r.addAllocation(ProtocolObject::from_ref(&*self.counts));
+            r.commit();
+        }
+        self.residency_changed();
+        self.stats.resident_surfaces = 0;
+        self.last_frame = None;
+        self.scratch = None; // the reference render's surface follows too
+        if let Some(p) = &self.publisher {
+            p.sh.last.store(NONE_SURF, Relaxed); // the old surfaces are gone; none of the new ones is on screen
+        }
+        (self.w, self.h) = (w, h);
+        self.pending_frame = Some(objc2_core_foundation::CGRect::new(
+            objc2_core_foundation::CGPoint::new(0.0, 0.0),
+            objc2_core_foundation::CGSize::new(w as f64 / self.scale, h as f64 / self.scale),
+        ));
+        if !self.publish {
+            self.layer.setFrame(self.pending_frame.take().unwrap());
+        }
+        self.write_binds();
     }
 
     /// Upload the glyph atlas (R8, `width` x `height`) if it changed since the last upload (`dirty`).
@@ -524,6 +736,7 @@ impl Fused {
                 r.commit();
             }
             self.write_binds();
+            self.residency_changed();
         }
         // SAFETY: `pixels` holds width * height bytes (asserted); the GPU is idle (sync()).
         unsafe {
@@ -555,8 +768,29 @@ impl Fused {
                 r.commit();
                 self.stats.resident_surfaces += 1;
             }
+            self.residency_changed();
         }
         purged
+    }
+
+    /// An allocation joined the residency set: frames already submitted were made resident without it (the
+    /// set is resolved when a command buffer is submitted, and the pre-armed batch is submitted long before
+    /// its frames run), so the pending frames are drained (released with empty slots) and a new batch is
+    /// armed. Rare: a surface's first use, a resize, a bin or atlas growth.
+    fn residency_changed(&mut self) {
+        let want = 2 * self.released;
+        if self.ev.signaledValue() < want {
+            self.ev.waitUntilSignaledValue_timeoutMS(want, 5000);
+        }
+        for f in self.released + 1..=self.armed_upto {
+            // SAFETY: slot f % 2 lies in the region; frame f - 1 (the other slot) is done or waited below.
+            unsafe { write_slot(self.pool_ptr, &self.lay, (f % 2) as usize, 0, &[], false) };
+            self.ev.setSignaledValue(2 * f - 1);
+            self.ev.waitUntilSignaledValue_timeoutMS(2 * f, 5000);
+        }
+        self.released = self.armed_upto;
+        self.stats.drains += 1;
+        self.arm_batch();
     }
 
     /// Make every surface `want(i)` selects purgeable-volatile (unless the compositor holds it); count.
@@ -631,11 +865,20 @@ impl Fused {
         let (nt, _) = self.write_slot(k, target as u32, rows, full);
         self.release(k, nt);
         if self.publish {
-            // same turn: published once the GPU is done (and repaired first if a bin overflowed)
-            self.sync();
-            self.publish_surface(target);
+            // the publisher thread waits for the frame and commits it: no GPU wait and no Core Animation
+            // transaction on this (input) thread
+            let wait = 2 * self.released;
+            self.post(target, wait);
         }
         nt
+    }
+
+    /// Hand surface `i` to the publisher thread, to be put on screen once `ev >= wait` (0: now).
+    fn post(&mut self, i: usize, wait: u64) {
+        let frame = self.pending_frame.take();
+        let overflow = self.counts.contents().as_ptr() as usize + 4 * self.lay.tiles_y() as usize;
+        let job = PubJob { surf: i, io: SendIo(self.surfs[i].io.clone()), wait, frame, overflow };
+        self.publisher.get_or_insert_with(|| Publisher::spawn(self.ev.clone(), self.layer.clone())).post(job);
     }
 
     fn after_gpu_frame(&mut self, nt: u32) {
@@ -661,14 +904,23 @@ impl Fused {
             w.cancelled.store(true, Relaxed);
         }
         if self.publish {
-            self.publish_surface(i);
+            self.post(i, 0);
         }
     }
 
-    fn publish_surface(&self, i: usize) {
-        CATransaction::setDisableActions(true);
-        // SAFETY: an IOSurfaceRef is a valid CALayer `contents` object.
-        unsafe { self.layer.setContents(Some(&*(&*self.surfs[i].io as *const IOSurfaceRef as *const AnyObject))) };
+    /// Publisher counters: (transactions committed, frames held back by a bin overflow).
+    pub fn publish_stats(&self) -> (u64, u64) {
+        self.publisher.as_ref().map_or((0, 0), |p| (p.sh.commits.load(Relaxed), p.sh.held_back.load(Relaxed)))
+    }
+
+    /// Wait until the publisher has nothing queued or in flight (resize, tests).
+    pub fn publisher_idle(&self) {
+        if let Some(p) = &self.publisher {
+            let mut g = p.sh.m.lock().unwrap();
+            while g.job.is_some() || p.sh.in_flight.load(Relaxed) != NONE_SURF {
+                g = p.sh.idle.wait(g).unwrap();
+            }
+        }
     }
 
     // ------------------------------------------------------------------ the frame stream
@@ -757,6 +1009,30 @@ impl Fused {
             r.commit();
         }
         read_io(&self.scratch.as_ref().unwrap().io, self.w, self.h)
+    }
+
+    /// GPU time of one frame's repair (`rows` / `full` into surface `target`), measured as one command
+    /// buffer of `reps` back-to-back copies on the aux queue: (GPUEndTime - GPUStartTime) / reps, in ms.
+    /// The GPU is saturated, so its clock is high and steady (kernel A/B, not a frame cost). `debug` goes to
+    /// the header's debug word for the run (kernel variants), then back to 0.
+    pub fn bench_frames(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32, reps: usize, debug: u32) -> f64 {
+        self.sync();
+        self.prepare_target(target);
+        // SAFETY: header fields `n_dir`, `debug`; the GPU is idle (synced above).
+        unsafe {
+            (*(self.pool_ptr as *mut FHdr)).n_dir = n_dir;
+            (*(self.pool_ptr as *mut FHdr)).debug = debug;
+        }
+        let (nt, nr) = self.write_slot(2, target as u32, rows, full);
+        let cmd = self.aux.commandBuffer().expect("command buffer");
+        for _ in 0..reps {
+            self.encode(&cmd, 2, nr, nt, false);
+        }
+        cmd.commit();
+        cmd.waitUntilCompleted();
+        // SAFETY: as above; the GPU is idle again.
+        unsafe { (*(self.pool_ptr as *mut FHdr)).debug = 0 };
+        (cmd.GPUEndTime() - cmd.GPUStartTime()) * 1e3 / reps as f64
     }
 
     /// Did a row bin overflow in the last frame and stay unrepaired? (tests: always false after a sync, since

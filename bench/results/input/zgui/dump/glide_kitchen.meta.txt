@@ -1,0 +1,19 @@
+gallery s13 after the kitchen scenario's preamble (22 Tabs, 32 keystrokes, 32 swatch clicks); pointer at window middle; wheel(middle, +-3.0) alternating, 60 Hz ticks of 16667 us while input::gliding (cap 60). scale 1.
+Tick 0 is the state right after the wheel event + settle, before any tick.
+notch 0 (lines 3): glided 15 ticks of 16.667 ms (15 with a frame), offset 0.00 -> 216.00 device px (216.00 css px)
+notch 1 (lines -3): glided 15 ticks of 16.667 ms (15 with a frame), offset 216.00 -> 0.00 device px (-216.00 css px)
+notch 2 (lines 3): glided 15 ticks of 16.667 ms (15 with a frame), offset 0.00 -> 216.00 device px (216.00 css px)
+notch 3 (lines -3): glided 15 ticks of 16.667 ms (15 with a frame), offset 216.00 -> 0.00 device px (-216.00 css px)
+notch 4 (lines 3): glided 15 ticks of 16.667 ms (15 with a frame), offset 0.00 -> 216.00 device px (216.00 css px)
+notch 5 (lines -3): glided 15 ticks of 16.667 ms (15 with a frame), offset 216.00 -> 0.00 device px (-216.00 css px)
+notch 6 (lines 3): glided 15 ticks of 16.667 ms (15 with a frame), offset 0.00 -> 216.00 device px (216.00 css px)
+notch 7 (lines -3): glided 15 ticks of 16.667 ms (15 with a frame), offset 216.00 -> 0.00 device px (-216.00 css px)
+
+--- scroll physics (read from crates/zgui-scroll and crates/zgui-runtime/src/window/scroll) ---
+glide: zgui_scroll::motion::Tween. DURATION = 240 ms, constant (not distance-proportional).
+easing: ease(t) = 1 - (1 - t)^3 (cubic ease-out), t = elapsed/240ms, position = from + (to - from) * ease(t); when elapsed >= 240 ms the step returns exactly `to` and is done.
+a second detent during a glide: destination = previous destination + new delta, and the tween is retargeted: from = current position, elapsed reset to 0 (ease restarts), so detents compose.
+wheel -> distance: ScrollDelta::Lines is multiplied by ScrollSettings.lines_per_notch (3 in the headless platform, direction AsReported), then by the scrolled container's computed line height (strut line_height).
+  LongList container: 13px font -> 19.5 px line: wheel(6.0) = 6*3*19.5 = 351 px.  Gallery root: 16px font -> 24 px line: wheel(3.0) = 3*3*24 = 216 px.
+animation frames are due on a refresh-interval phase (zgui-runtime window/anim/cadence.rs): a harness tick that does not cross the next due moment runs 0 frames (frames_run=0 rows), and a tick whose tween sample rounds to the same position repaints nothing new.
+offsets are the Scroller's composed offsets in device px (scale 1 here, so CSS px = device px).

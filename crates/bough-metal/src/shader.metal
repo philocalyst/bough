@@ -1236,6 +1236,7 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
                     device const uchar* pool [[buffer(0)]],
                     constant uint2& slot [[buffer(1)]]) {
     device const FHdr& h = *(device const FHdr*)pool;
+    if (h.debug == 2u) return;   // debug 2: the bin pass alone
     device const FBind& fb = *(device const FBind*)(pool + FBIND_OFF);
     device const uint4* bins = fb.bins;
     texture2d<float> atlas = fb.atlas;
@@ -1297,7 +1298,8 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
         uint k0 = 0;
         for (uint s2 = 0; s2 < 8; s2++) k0 = max(k0, flo[s2]);
         k0 = k0 > 0 ? k0 - 1u : 0u;
-        for (uint k = k0; k < nr; k++) {
+        uint kend = h.debug == 1u ? k0 : nr;   // debug 1: cull and stage only (no shading)
+        for (uint k = k0; k < kend; k++) {
             threadgroup const FRec& rr = rec[k];
             if (rr.q.x > blk.z || rr.q.z <= blk.x || rr.q.y > blk.w || rr.q.w <= blk.y) continue;
             if (blk.x >= rr.core.x && blk.z < rr.core.z && blk.y >= rr.core.y && blk.w < rr.core.w) {
