@@ -262,6 +262,35 @@ pub fn dispatch_event<V: View>(a: &mut App<V>, e: &NSEvent, content_h: f64) -> b
     true
 }
 
+/// Window resize (live or not): every size step relays the view out (`App::resize`) and draws a full frame
+/// at the new size into surfaces of that size; the publisher commits it with the layer's new frame in one
+/// transaction (bough-metal `Fused::resize`), so no frame is dropped and none is shown stretched.
+fn observe_resize<V: View>(host: &bough_metal::app::Host, app: &Rc<RefCell<App<V>>>, trim: &Rc<Trim>, content_h: &Rc<Cell<f64>>) {
+    use objc2_foundation::{NSNotification, NSNotificationCenter};
+    let (app, trim, content_h, window) = (app.clone(), trim.clone(), content_h.clone(), host.window.clone());
+    let blk = RcBlock::new(move |_n: NonNull<NSNotification>| {
+        let size = window.contentView().map_or(window.frame().size, |v| v.frame().size);
+        content_h.set(size.height);
+        if let Ok(mut a) = app.try_borrow_mut() {
+            a.resize(size.width as f32, size.height as f32);
+            let drew = a.frame();
+            after_frame(&app, &trim, &mut a, drew);
+        }
+    });
+    // SAFETY: AppKit posts window notifications on the main thread, where the app lives, and the block runs
+    // synchronously there; the observer and the block live as long as the process (forgotten).
+    let token = unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(objc2_app_kit::NSWindowDidResizeNotification),
+            Some(&host.window),
+            None, // synchronously, as AppKit posts it (also inside live resize's tracking loop)
+            &blk,
+        )
+    };
+    std::mem::forget(token);
+    std::mem::forget(blk);
+}
+
 /// An interactive window: AppKit's mouse, wheel and key events go to the app's input turns (a local event
 /// monitor; the window accepts mouse-moved events), each followed by a frame; while an input animation runs
 /// (a glide, a tooltip fade) the display link ticks it and draws, and it pauses when nothing animates.
@@ -287,13 +316,16 @@ pub fn run_interactive<V: View>(
             app.frame();
             let app = Rc::new(RefCell::new(app));
             host.window.setAcceptsMouseMovedEvents(true);
+            // the content height flips AppKit's coordinates; it follows the window (live resize)
+            let content_h = Rc::new(Cell::new(h));
+            observe_resize(host, &app, &trim, &content_h);
             {
-                let (app, trim, host2) = (app.clone(), trim.clone(), host.clone());
+                let (app, trim, host2, content_h) = (app.clone(), trim.clone(), host.clone(), content_h.clone());
                 let blk = RcBlock::new(move |e: NonNull<NSEvent>| -> *mut NSEvent {
                     // SAFETY: AppKit hands the monitor a live event for the duration of the call.
                     let ev = unsafe { e.as_ref() };
                     if let Ok(mut a) = app.try_borrow_mut() {
-                        if dispatch_event(&mut a, ev, h) {
+                        if dispatch_event(&mut a, ev, content_h.get()) {
                             if std::env::var_os("BOUGH_NOFRAME").is_none() {
                                 let drew = a.frame();
                                 after_frame(&app, &trim, &mut a, drew);

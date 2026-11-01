@@ -280,9 +280,10 @@ impl Images {
 
 // ================================================================================== margins and instances
 
-/// Ink margin (px, the kernel's `flags`) of a shadow of blur sigma `sigma`.
+/// Ink margin (px, the kernel's `flags`) of a shadow of blur sigma `sigma`: 4 sigma (where the kernel's erf
+/// saturates; its y window is 3 sigma) plus a pixel.
 pub fn shadow_margin(sigma: f32) -> u8 {
-    ((3.0 * sigma).ceil() + 1.0).clamp(1.0, 255.0) as u8
+    ((4.0 * sigma).ceil() + 1.0).clamp(1.0, 255.0) as u8
 }
 
 /// Ink margin of an image that may rotate: its circumscribed circle beyond the box, plus a texel.
@@ -315,6 +316,8 @@ pub fn gradient_instance(ins: &mut Instance, g: &Grad, ramp: [u16; 4]) {
 
 /// Mount one decoration record (its own node, run, instance and handle) at px box (x, y, w, h).
 pub(crate) fn mount_deco<V>(m: &mut Mounter<'_, V>, ins: Instance, x: f32, y: f32, w: f32, h: f32, margin: f32) -> u32 {
+    // the geometry grid (1/256 px): sums exact on the GPU, moved edges compared exactly (rt::quad_geom)
+    let (x, y, w, h) = (snap(x), snap(y), snap(w), snap(h));
     let node = m.rt.alloc_node();
     let run = m.rt.alloc_run(1);
     m.rt.runs[run as usize].len = 1;
@@ -346,21 +349,10 @@ pub(crate) fn mount_deco<V>(m: &mut Mounter<'_, V>, ins: Instance, x: f32, y: f3
 }
 
 impl Rt {
-    /// Move / resize decoration node `node` to px box (x, y, w, h) in its space; old and new ink damaged.
+    /// Move / resize decoration node `node` to px box (x, y, w, h) in its space (snapped to the geometry grid):
+    /// the damage is the bands around the edges that moved, each kind's band from `rt::edge_band_of`.
     pub(crate) fn place_deco(&mut self, node: u32, x: f32, y: f32, w: f32, h: f32) {
-        let n = &mut self.nodes[node as usize];
-        if (n.x, n.y, n.w, n.h) == (x, y, w, h) {
-            return;
-        }
-        n.x = x;
-        n.y = y;
-        n.w = w;
-        n.h = h;
-        let inst = self.runs[n.run as usize].first;
-        let p = self.inst_mut(inst);
-        p.pos = [x, y];
-        p.size = [w, h];
-        self.quad_ink(node);
+        self.quad_geom(node, x, y, w, h);
     }
 }
 

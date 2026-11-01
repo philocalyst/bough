@@ -212,15 +212,9 @@ impl Apply for ApplyW {
     type P = f32;
     #[inline]
     fn apply(rt: &mut Rt, node: u32, v: &f32) {
-        let w = *v * rt.scale;
-        let n = &mut rt.nodes[node as usize];
-        if n.w == w {
-            return;
-        }
-        n.w = w;
-        let inst = rt.runs[n.run as usize].first;
-        rt.inst_mut(inst).size[0] = w;
-        rt.quad_ink(node);
+        let n = &rt.nodes[node as usize];
+        let (x, y, h) = (n.x, n.y, n.h);
+        rt.quad_geom(node, x, y, *v * rt.scale, h);
     }
 }
 
@@ -229,18 +223,9 @@ impl Apply for ApplySpan {
     type P = (f32, f32);
     #[inline]
     fn apply(rt: &mut Rt, node: u32, v: &(f32, f32)) {
-        let n = &mut rt.nodes[node as usize];
-        let (y, h) = (n.y0 + v.0 * rt.scale, v.1 * rt.scale);
-        if n.y == y && n.h == h {
-            return;
-        }
-        n.y = y;
-        n.h = h;
-        let inst = rt.runs[n.run as usize].first;
-        let p = rt.inst_mut(inst);
-        p.pos[1] = y;
-        p.size[1] = h;
-        rt.quad_ink(node);
+        let n = &rt.nodes[node as usize];
+        let (x, w, y, h) = (n.x, n.w, n.y0 + v.0 * rt.scale, v.1 * rt.scale);
+        rt.quad_geom(node, x, y, w, h);
     }
 }
 
@@ -299,7 +284,7 @@ pub(crate) fn quad_instance(bg: Color, radius_px: f32, border: Option<(f32, Colo
     if let Some((bw, bc)) = border {
         ins.color = bc.0;
         ins.color2 = bg.0;
-        ins.bw = bw * scale;
+        ins.bw = snap(bw * scale);
     }
     (ins, kind, margin)
 }
@@ -318,9 +303,10 @@ where
         let w = self.wd.lower::<ApplyW>(m, node);
         let (y, h) = self.sp.lower::<ApplySpan>(m, node);
         let s = m.rt.scale;
-        let (x_px, y0_px) = ((m.ox + self.x) * s, m.oy * s);
-        let (y_px, h_px, w_px) = (y0_px + y * s, h * s, w * s);
-        let (mut ins, _kind, margin) = quad_instance(bg, self.radius * s, self.border, s, m.space);
+        // on the geometry grid from the start (`snap`): every later edge comparison is exact
+        let (x_px, y0_px) = (snap((m.ox + self.x) * s), m.oy * s);
+        let (y_px, h_px, w_px) = (snap(y0_px + y * s), snap(h * s), snap(w * s));
+        let (mut ins, _kind, margin) = quad_instance(bg, snap(self.radius * s), self.border, s, m.space);
         ins.pos = [x_px, y_px];
         ins.size = [w_px, h_px];
         let run = m.rt.alloc_run(1);
@@ -805,8 +791,10 @@ impl<F, V> Bars<'_, F, V> {
 }
 
 /// Recompute the node's samples for `key` (shifting when the key advanced by one) and write the bar
-/// instances; returns the union ink.
-fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F) -> NRect {
+/// instances; returns the union ink. With `damage`, each bar whose top moved marks only the strip between
+/// its old and new top (`Bough::damage_edges`, a solid's band): bars are bottom-anchored on the geometry
+/// grid, so the bottom edge `y + h` is the same exact value every tick and never damages.
+fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage: bool) -> NRect {
     let n = &mut rt.nodes[node as usize];
     let count = n.series.len();
     if n.series_ok && key == n.series_key.wrapping_add(1) {
@@ -822,19 +810,45 @@ fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F) -> NRec
     // geometry: n.x = x of bar 0 (px), n.w = bar width px, n.h = step px, n.y = base pt (space-local),
     // n.margin = max_h pt, n.line_h = min_h pt, n.size_px = scale
     let (x0, wpx, step, base_pt, max_h, min_h, scale, y0) = (n.x, n.w, n.h, n.y, n.margin, n.line_h, n.size_px, n.y0);
-    let first = rt.runs[n.run as usize].first;
+    let first = rt.runs[n.run as usize].first as usize;
+    let space = n.space;
+    let (bottom, wb) = (snap(y0 + base_pt * scale), snap(wpx));
+    let [sx, sy] = rt.space(space);
+    let band = edge_band(KIND_SOLID, 0.0, 0.0) as f32;
+    let (inst, series) = (&mut rt.inst, &rt.nodes[node as usize].series);
+    // Bars are bottom-anchored on the geometry grid: only their top edges move (x, width and bottom are
+    // fixed, written at mount). The edge-band rule (`Bough::damage_edges`) gives each moved bar the strip
+    // between its old and new top plus a solid's band; their union is covered by ONE rect: the sparkline's
+    // columns between the highest and the lowest moved top (a min / max folded in registers, 2 selects a
+    // bar). The bars' bodies below the lowest top, which old ∪ new repaints every tick, are never damaged.
+    let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
     let mut top = f32::MAX;
     for i in 0..count {
-        let h = (max_h * rt.nodes[node as usize].series[i]).max(min_h);
-        let y = y0 + (base_pt - h) * scale;
-        let p = rt.inst_mut(first + i as u32);
-        p.pos = [x0 + i as f32 * step, y];
-        p.size = [wpx, h * scale];
-        top = top.min(y);
+        let h = (max_h * series[i]).max(min_h);
+        let y = snap(y0 + (base_pt - h) * scale);
+        let p = &mut inst[first + i];
+        let oy = p.pos[1];
+        if !damage {
+            p.pos[0] = snap(x0 + i as f32 * step);
+            p.size[0] = wb;
+        }
+        p.pos[1] = y;
+        p.size[1] = bottom - y;
+        top = if y < top { y } else { top };
+        // an unmoved bar has oy == y: it would add only its band, so it is not folded
+        let (mn, mx) = if oy < y { (oy, y) } else { (y, oy) };
+        let moved = damage && oy != y;
+        lo = if moved && mn < lo { mn } else { lo };
+        hi = if moved && mx > hi { mx } else { hi };
     }
-    let space = rt.nodes[node as usize].space;
-    let bottom = y0 + base_pt * scale;
-    rt.ink_rect(space, x0, top, (count as f32 - 1.0) * step + wpx, bottom - top, 0.0)
+    if lo <= hi {
+        let xa = snap(x0) + sx;
+        let r = NRect::new(xa.floor() as i32, (lo + sy - band).floor() as i32, (xa + snap((count as f32 - 1.0) * step) + wb).ceil() as i32, (hi + sy + band).ceil() as i32);
+        let clip = rt.nodes[node as usize].clip;
+        rt.bough.damage_clipped(r, clip);
+    }
+    let xa = snap(x0);
+    rt.ink_rect(space, xa, top, snap(x0 + (count as f32 - 1.0) * step) + wb - xa, bottom - top, 0.0)
 }
 
 /// # Safety
@@ -843,11 +857,10 @@ unsafe fn patch_bars<F: Fn(u64) -> f32 + Copy>(rt: &mut Rt, w: &Wire, sig: *cons
     // SAFETY: see the function contract.
     let key = **unsafe { &*(sig as *const Signal<u64>) };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
-    let ink = write_bars(rt, w.node, key, f);
+    // each bar damages the strip its top moved through (inside write_bars); the record's ink is the union
+    let ink = write_bars(rt, w.node, key, f, true);
     let h = rt.nodes[w.node as usize].handle;
-    // the bars changed inside the old union too: old and new ink, even when the union is the same
-    rt.bough.touch_handle(h);
-    rt.bough.set_ink_handle(h, ink);
+    rt.bough.set_ink_handle_nodamage(h, ink);
 }
 
 impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a, F, V> {
@@ -878,7 +891,7 @@ impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a,
             n.series.resize(self.count, 0.0);
             n.series_ok = false;
         }
-        let ink = write_bars(m.rt, node, *self.key.get(), self.sample);
+        let ink = write_bars(m.rt, node, *self.key.get(), self.sample, false);
         m.wire(&self.key, patch_bars::<F>, node, recipe_of(self.sample));
         let hd = m.rt.bough.new_handle();
         m.rt.nodes[node as usize].handle = hd;

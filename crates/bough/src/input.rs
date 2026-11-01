@@ -808,7 +808,7 @@ fn place_caret(rt: &mut Rt, f: u32) {
         let fl = &rt.input.fields[f as usize];
         (fl.ti, fl.caret_node, fl.caret, fl.caret_color, fl.focused && fl.lit)
     };
-    let len = rt.texts[ti as usize].text.len();
+    let len = rt.texts[ti as usize].bytes().len();
     let caret = caret.min(len);
     rt.input.fields[f as usize].caret = caret;
     let (ox, size_px) = (rt.texts[ti as usize].ox, rt.texts[ti as usize].size_px);
@@ -831,14 +831,18 @@ fn place_caret(rt: &mut Rt, f: u32) {
     if !moved && !recolor {
         return;
     }
-    let (inst, h, old) = (rt.runs[n.run as usize].first, n.handle, n.color);
-    n.x = x;
+    let (inst, h, old, (y, w, hh)) = (rt.runs[n.run as usize].first, n.handle, n.color, (n.y, n.w, n.h));
     n.color = want;
-    let p = rt.inst_mut(inst);
-    p.pos[0] = x;
-    p.color = want;
+    rt.inst_mut(inst).color = want;
     if moved {
-        rt.quad_ink(cn);
+        // a recoloured caret changes everywhere it is: old and new ink; a moved one only near its edges
+        if recolor {
+            rt.bough.touch_handle(h);
+        }
+        rt.quad_geom(cn, x, y, w, hh);
+        if recolor {
+            rt.bough.touch_handle(h);
+        }
     } else {
         rt.paint_write(h, old as u64, want as u64);
     }
@@ -883,7 +887,7 @@ impl<V: 'static> Element<V> for TextField<'_, V> {
         text(self.sig).at(self.pad, ty).size(self.size).line_height(lh).color(self.color).mount(m);
         let tnode = m.scope.nodes[tn_before..].iter().copied().find(|&n| m.rt.nodes[n as usize].text != NONE).expect("label node");
         m.rt.input.fields[f as usize].ti = m.rt.nodes[tnode as usize].text;
-        let len = m.rt.texts[m.rt.input.fields[f as usize].ti as usize].text.len();
+        let len = m.rt.texts[m.rt.input.fields[f as usize].ti as usize].bytes().len();
         m.rt.input.fields[f as usize].caret = len;
         (m.ox, m.oy, m.depth, m.clip) = (ox, oy, depth, clip);
         // the caret sits at the start, transparent, until the field is focused (`place_caret`)

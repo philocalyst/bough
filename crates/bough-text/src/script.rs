@@ -77,6 +77,8 @@ impl CpSet {
 #[derive(Default, Debug, Clone)]
 pub struct BuildReport {
     pub covered: usize,
+    /// Pairs whose table value differs from the probe (only counted under `PAIR_CHECK`; must be 0).
+    pub pair_table_mismatches: usize,
     pub single_triggers: Vec<u8>,
     pub pair_triggers: usize,
     pub pair_triggers_example: Vec<(u8, u8)>,
@@ -166,18 +168,26 @@ fn build_tokens(
     script_dep: usize,
 ) -> Option<TokenTable> {
     // Conditions under which the ligature replay is the whole GSUB story.
-    if !single.is_empty() || script_dep != 0 || b.ligs.is_empty() {
+    if !single.is_empty() || script_dep != 0 {
         return None;
     }
-    let lookup = b.ligs[0].0;
-    if b.ligs.iter().any(|l| l.0 != lookup) || !gsub_latn.contains(&lookup) {
-        return None;
-    }
-    if b.rep.live_rules != b.ligs.len() {
-        return None; // some other rule is live: its triggers must stay
-    }
-    if gsub_latn.iter().any(|&i| i > lookup) {
-        return None; // a later GSUB lookup could see the ligature glyphs
+    if b.ligs.is_empty() {
+        // No ligature at all (a monospace font, say): the token model is Latin-1 alone, valid when no GSUB rule
+        // is live (every pair is the matrix's).
+        if b.rep.live_rules != 0 {
+            return None;
+        }
+    } else {
+        let lookup = b.ligs[0].0;
+        if b.ligs.iter().any(|l| l.0 != lookup) || !gsub_latn.contains(&lookup) {
+            return None;
+        }
+        if b.rep.live_rules != b.ligs.len() {
+            return None; // some other rule is live: its triggers must stay
+        }
+        if gsub_latn.iter().any(|&i| i > lookup) {
+            return None; // a later GSUB lookup could see the ligature glyphs
+        }
     }
     let mut ligs = vec![];
     for (k, (_, first, comps, gid)) in b.ligs.iter().enumerate() {
@@ -752,9 +762,190 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// Release-mode gate of the pair table (text round 3, owner's review of `pairfast`): when set, `build` also
+/// probes every covered pair one lookup walk at a time and counts differences into
+/// `BuildReport::pair_table_mismatches` (debug builds assert them instead). Tests set it for every font they load.
+#[doc(hidden)]
+pub static PAIR_CHECK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Latin-script letters inside the covered range (Unicode `Script=Latin`).
 pub fn is_latin_letter(cp: u8) -> bool {
     matches!(cp, b'A'..=b'Z' | b'a'..=b'z' | 0xAA | 0xBA | 0xC0..=0xD6 | 0xD8..=0xF6 | 0xF8..=0xFF)
+}
+
+/// Where built tables are kept between runs (`BOUGH_CACHE_DIR`, else `~/Library/Caches/bough` on macOS,
+/// `$XDG_CACHE_HOME/bough` / `~/.cache/bough` elsewhere; `BOUGH_CACHE_DIR=off` disables it).
+fn cache_dir() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    match std::env::var("BOUGH_CACHE_DIR") {
+        Ok(d) if d == "off" => return None,
+        Ok(d) => return Some(PathBuf::from(d)),
+        Err(_) => {}
+    }
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    if cfg!(target_os = "macos") {
+        Some(home.join("Library/Caches/bough"))
+    } else {
+        Some(std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or(home.join(".cache")).join("bough"))
+    }
+}
+
+/// The cache key of a font: its bytes, 8 at a time (multiply-xor), its length and the face index.
+fn font_key(data: &[u8], face: u32) -> u64 {
+    let mut h = 0x9E37_79B9_7F4A_7C15u64 ^ data.len() as u64 ^ (face as u64) << 48;
+    let mut c = data.chunks_exact(8);
+    for w in &mut c {
+        h = (h ^ u64::from_le_bytes(w.try_into().unwrap())).wrapping_mul(0x100_0000_01B3).rotate_left(29);
+    }
+    for &b in c.remainder() {
+        h = (h ^ b as u64).wrapping_mul(0x100_0000_01B3);
+    }
+    h
+}
+
+const CACHE_MAGIC: &[u8; 8] = b"BOUGHSS2";
+
+impl SimpleScript {
+    /// [`build`](Self::build), or the table an earlier `build` of the same font bytes left in the cache directory
+    /// (round 3: the table is a pure function of the font, ~100 M instructions to derive and ~140 KB to keep; zgx
+    /// keeps its font database in a cache file the same way). A file that does not decode is rebuilt.
+    pub fn build_cached(data: &[u8], face_index: u32) -> Option<Self> {
+        let path = cache_dir().map(|d| d.join(format!("simple-script-{:016x}.bin", font_key(data, face_index))));
+        if let Some(p) = &path {
+            if let Some(s) = std::fs::read(p).ok().and_then(|b| Self::decode(&b)) {
+                return Some(s);
+            }
+        }
+        let s = Self::build(data, face_index)?;
+        if let Some(p) = &path {
+            if let Some(dir) = p.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            // written whole and renamed: a concurrent reader never sees half a file
+            let tmp = p.with_extension(format!("{}.partial", std::process::id()));
+            if std::fs::write(&tmp, s.encode()).is_ok() {
+                let _ = std::fs::rename(&tmp, p);
+            }
+        }
+        Some(s)
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut o = Vec::with_capacity(200_000);
+        o.extend_from_slice(CACHE_MAGIC);
+        o.extend_from_slice(&self.upem.to_le_bytes());
+        for v in self.gid.iter().chain(&self.adv) {
+            o.extend_from_slice(&v.to_le_bytes());
+        }
+        o.extend_from_slice(&self.class1);
+        o.extend_from_slice(&self.class2);
+        for v in [self.n1 as u32, self.n2 as u32, self.matrix.len() as u32, self.max_step] {
+            o.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in &self.matrix {
+            o.extend_from_slice(&v.to_le_bytes());
+        }
+        for w in self.covered.0 {
+            o.extend_from_slice(&w.to_le_bytes());
+        }
+        match &self.tokens {
+            None => o.push(0),
+            Some(t) => {
+                o.push(1);
+                for v in t.step.iter().chain(&t.gid) {
+                    o.extend_from_slice(&v.to_le_bytes());
+                }
+                o.extend_from_slice(&t.max_step.to_le_bytes());
+                o.push(t.ligs.len() as u8);
+                for (f, rest, tok) in &t.ligs {
+                    o.push(*f);
+                    o.push(rest.len() as u8);
+                    o.extend_from_slice(rest);
+                    o.push(*tok);
+                }
+            }
+        }
+        o
+    }
+
+    fn decode(b: &[u8]) -> Option<Self> {
+        struct R<'a>(&'a [u8]);
+        impl R<'_> {
+            fn take(&mut self, n: usize) -> Option<&[u8]> {
+                if self.0.len() < n {
+                    return None;
+                }
+                let (a, rest) = self.0.split_at(n);
+                self.0 = rest;
+                Some(a)
+            }
+            fn u8(&mut self) -> Option<u8> {
+                Some(self.take(1)?[0])
+            }
+            fn u16(&mut self) -> Option<u16> {
+                Some(u16::from_le_bytes(self.take(2)?.try_into().ok()?))
+            }
+            fn u32(&mut self) -> Option<u32> {
+                Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
+            }
+        }
+        let mut r = R(b);
+        if r.take(8)? != CACHE_MAGIC {
+            return None;
+        }
+        let upem = r.u16()?;
+        let mut gid = [0u16; 256];
+        let mut adv = [0u16; 256];
+        for v in gid.iter_mut().chain(adv.iter_mut()) {
+            *v = r.u16()?;
+        }
+        let class1: [u8; 256] = r.take(256)?.try_into().ok()?;
+        let class2: [u8; 256] = r.take(256)?.try_into().ok()?;
+        let (n1, n2, nm, max_step) = (r.u32()? as usize, r.u32()? as usize, r.u32()? as usize, r.u32()?);
+        if nm != n1 * n2 {
+            return None;
+        }
+        let mut matrix = Vec::with_capacity(nm);
+        for _ in 0..nm {
+            matrix.push(r.u16()? as i16);
+        }
+        let mut covered = CpSet::default();
+        for w in covered.0.iter_mut() {
+            *w = u64::from_le_bytes(r.take(8)?.try_into().ok()?);
+        }
+        let tokens = match r.u8()? {
+            0 => None,
+            _ => {
+                let mut step = vec![0u16; 65536].into_boxed_slice();
+                for v in step.iter_mut() {
+                    *v = r.u16()?;
+                }
+                let mut tg = [0u16; 256];
+                for v in tg.iter_mut() {
+                    *v = r.u16()?;
+                }
+                let tmax = r.u32()?;
+                let nl = r.u8()? as usize;
+                let mut ligs = Vec::with_capacity(nl);
+                let mut lig_first = [false; 128];
+                for _ in 0..nl {
+                    let f = r.u8()?;
+                    let k = r.u8()? as usize;
+                    let rest = r.take(k)?.to_vec();
+                    let tok = r.u8()?;
+                    lig_first[(f & 127) as usize] = true;
+                    ligs.push((f, rest, tok));
+                }
+                Some(TokenTable { step, gid: tg, ligs, lig_first, max_step: tmax })
+            }
+        };
+        if !r.0.is_empty() {
+            return None;
+        }
+        let mut report = BuildReport { covered: covered.len(), ..Default::default() };
+        report.notes.push("loaded from the table cache".into());
+        Some(SimpleScript { upem, gid, adv, class1, class2, n1, n2, matrix, covered, max_step, report, tokens })
+    }
 }
 
 impl SimpleScript {
@@ -858,6 +1049,9 @@ impl SimpleScript {
                 let kl = tl.get(ia, ic);
                 let kd = td.get(ia, ic);
                 debug_assert_eq!((kl, kd), (b.pair_value(&latn_l, a, c), b.pair_value(&dflt_l, a, c)), "pair table != probe for {a} {c}");
+                if PAIR_CHECK.load(std::sync::atomic::Ordering::Relaxed) && (kl, kd) != (b.pair_value(&latn_l, a, c), b.pair_value(&dflt_l, a, c)) {
+                    b.rep.pair_table_mismatches += 1;
+                }
                 let common = !is_latin_letter(a) && !is_latin_letter(c);
                 let v = if common {
                     match (kl, kd) {

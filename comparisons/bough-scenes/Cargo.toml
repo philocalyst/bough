@@ -35,3 +35,6 @@ path = "src/bin/scene_shot.rs"
 [[bin]]
 name = "scene_diff"
 path = "src/bin/scene_diff.rs"
+[[bin]]
+name = "kernel_bench"
+path = "src/bin/kernel_bench.rs"

@@ -7,15 +7,20 @@
 //! * [`shape`]: the ASCII dense kernels (scalar, NEON), the token path, the pool slot kernels
 //! * [`pool`]: the glyph pool (6 bytes per glyph), retained labels, delta updates, tile marks
 //! * [`window`]: runs as windows onto shaped slots: wrapped lines, streams
+//! * [`slots`]: one slot per byte for all covered text (phantoms), the classifying NEON kernel
 //! * [`numeric`]: numeric labels rendered from the value, without `core::fmt`
 //! * [`atlas`]: rasterization, the atlas, token entry tables, the 48-byte reference writer
 //! * [`wrap`]: greedy wrapping over a `GlyphRun`
 
 pub mod atlas;
+pub mod lines;
+pub mod model;
 pub mod numeric;
+pub mod para;
 pub mod pool;
 pub mod script;
 pub mod shape;
+pub mod slots;
 pub mod window;
 pub mod wrap;
 

@@ -149,8 +149,6 @@ pub struct App<V: View> {
     /// `frames` value when each ring slot was last drawn into.
     last_use: Vec<u64>,
     trim_mark: u64,
-    /// Throughput mode: the surface of the last released frame, published at the next sync.
-    pending: Option<usize>,
     /// How the mount overlapped the GPU's preparation (see [`prepare`]).
     pub startup: Startup,
 }
@@ -194,7 +192,16 @@ pub fn prepare(cfg: &Config, strikes: &[(f32, &str, u8)], svgs: &[(&'static str,
         // faces by logical id: the configured font, or the regular one when the face is absent
         let font_of = |l: u8| cfg.faces.iter().find(|f| f.0 == l).map_or(&cfg.font[..], |f| &f.1[..]);
         let fonts: Vec<&[u8]> = (0..4u8).map(font_of).collect();
-        let px: Vec<(f32, &str, usize)> = strikes.iter().map(|&(s, t, f)| (s * cfg.scale, t, f as usize & 3)).collect();
+        // each strike is ASCII-complete from its creation (text.rs), so its whole printable alphabet too
+        const ASCII: &str = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+        let mut px: Vec<(f32, &str, usize)> = strikes.iter().map(|&(s, t, f)| (s * cfg.scale, t, f as usize & 3)).collect();
+        let mut seen: Vec<(u32, usize)> = Vec::new();
+        for &(s, _, f) in strikes {
+            if !seen.contains(&(s.to_bits(), f as usize)) {
+                seen.push((s.to_bits(), f as usize));
+                px.push((s * cfg.scale, ASCII, f as usize & 3));
+            }
+        }
         bough_text::atlas::prerender_in_background(&fonts, &px, raster_threads);
     }
     if !svgs.is_empty() && raster_threads > 0 {
@@ -302,20 +309,16 @@ impl<V: View> App<V> {
             core_epochs: [false; RING],
             last_use: vec![0; ring],
             trim_mark: 0,
-            pending: None,
             startup,
         }
     }
 
-    /// Throughput mode for animation that no input drives (RESULTS 12.8): the GPU's command stream is
-    /// pre-encoded `k` frames ahead, each waiting on a shared event; a frame writes its slot and signals,
-    /// and its surface is published at the next turn (one refresh later). No command buffer, encoder or
-    /// completion wait per frame.
+    /// Frames per pre-armed command buffer. Every frame goes through the pre-armed stream (bough-metal
+    /// RESULTS Part IV: released by a shared event, published in the same turn); this only sizes its batches.
     #[cfg(target_os = "macos")]
     pub fn stream(&mut self, k: usize) {
         if let Some(g) = self.gpu.as_mut() {
-            g.sync();
-            g.arm_stream(k);
+            g.set_batch(k);
         }
     }
 
@@ -323,9 +326,6 @@ impl<V: View> App<V> {
     fn sync(&mut self) {
         if let Some(g) = self.gpu.as_mut() {
             g.sync();
-            if let Some(i) = self.pending.take() {
-                g.publish_later(i);
-            }
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -338,14 +338,15 @@ impl<V: View> App<V> {
 
     /// The window is now `w` x `h` device px: the tile-row buffer follows and every surface is stale.
     pub(crate) fn resized(&mut self, w: i32, h: i32) {
-        let _ = w;
         self.rows = vec![0; (h as usize).div_ceil(32)];
         for e in &mut self.held {
             *e = None;
         }
         #[cfg(target_os = "macos")]
         if let Some(g) = self.gpu.as_mut() {
-            g.sync();
+            // surfaces, bins and the layer follow the window (bough-metal `Fused::resize`); the next frame
+            // is a full redraw at the new size, published with the new layer frame in one transaction
+            g.resize(w as usize, h as usize);
             g.set_layout(self.rt.layout);
         }
     }
@@ -579,9 +580,6 @@ impl<V: View> App<V> {
                 g.sync_images(self.rt.images.pixels(), rows);
             }
             self.repaired_tiles = g.draw(i, &self.rows, full, n_dir);
-            if g.streaming() {
-                self.pending = Some(i);
-            }
             drawn = true;
         }
         if !drawn {

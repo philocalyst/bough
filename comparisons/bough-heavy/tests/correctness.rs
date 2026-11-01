@@ -147,3 +147,36 @@ fn bin_overflow_grows_the_bins_and_redraws_exactly() {
     assert!(app.gpu.as_ref().unwrap().bin_growths > 0, "the small bins never overflowed");
     assert!(!app.bins_overflowed());
 }
+
+/// Text round 3: the log pane is a ring of lines. Every tick at ring ages 1..4 (not every 7th), over a stretch
+/// whose visible window holds the `ff` ligature lines of the hex checksums: presented == full redraw, retained ==
+/// fresh mount, one line shaped per tick (the other four keep their blocks; the headers slide).
+#[test]
+fn log_pane_ring_of_lines_is_pixel_exact_at_every_ring_age() {
+    for ring in 1..=4 {
+        let mut work = Heavy::from_env();
+        work.mode = Mode::Stream;
+        let mut app = App::new(Dash::new(&work), cfg(ring), true);
+        app.frame();
+        let (shaped0, kept0) = (app.rt.ctr.lines_shaped, app.rt.ctr.lines_kept);
+        let (mut lig_ticks, mut checked) = (0, 0);
+        for t in 1..=90 {
+            work.tick();
+            app.turn(|d| publish(d, &work, Mode::Stream));
+            if app.frame() {
+                let px = app.presented_pixels();
+                let reference = app.reference_pixels();
+                assert!(px == reference, "ring {ring} tick {t}: presented != full redraw at {:?}", first_diff(&px, &reference));
+                checked += 1;
+                lig_ticks += work.visible_log().contains("ff") as u32;
+            }
+        }
+        assert_eq!(app.rt.ctr.lines_shaped - shaped0, 90, "one log line shaped per tick");
+        assert_eq!(app.rt.ctr.lines_kept - kept0, 4 * 90, "four log lines kept per tick");
+        assert!(checked == 90 && lig_ticks > 5, "checked {checked}, ticks with a ligature line {lig_ticks}");
+        let px = app.presented_pixels();
+        let mut fresh = App::new(Dash::new(&work), cfg(ring), true);
+        fresh.frame();
+        assert!(px == fresh.presented_pixels(), "ring {ring}: retained log != fresh mount");
+    }
+}

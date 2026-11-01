@@ -177,8 +177,8 @@ fn box_shadows_are_gaussian_and_their_ink_is_exact() {
         assert!((got - want).abs() <= 2.0, "shadow at ({x},{y}): {got} vs Gaussian {want:.2} (coverage {v:.4})");
     }
     eprintln!("shadow: worst error {worst:.2} levels");
-    // nothing outside the record's ink: the whole frame is white there
-    let ink = (c.0 - hs.0 - (3.0 * sigma).ceil() - 1.0, c.1 - hs.1 - (3.0 * sigma).ceil() - 1.0, c.0 + hs.0 + (3.0 * sigma).ceil() + 1.0, c.1 + hs.1 + (3.0 * sigma).ceil() + 1.0);
+    // nothing outside the record's ink (the box plus ceil(4 sigma) + 1): the whole frame is white there
+    let ink = (c.0 - hs.0 - (4.0 * sigma).ceil() - 1.0, c.1 - hs.1 - (4.0 * sigma).ceil() - 1.0, c.0 + hs.0 + (4.0 * sigma).ceil() + 1.0, c.1 + hs.1 + (4.0 * sigma).ceil() + 1.0);
     for y in 0..H {
         for x in 0..W {
             let (fx, fy) = (x as f64 + 0.5, y as f64 + 0.5);
