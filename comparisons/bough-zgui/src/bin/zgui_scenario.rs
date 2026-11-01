@@ -91,6 +91,9 @@ fn scroll() {
     for tick in 0..600 {
         if tick % 40 == 0 {
             app.wheel(mx, my, 0.0, 6.0);
+            if std::env::var_os("TRACE").is_some() {
+                eprintln!("{tick}\tnotch {:?} chain {}", app.rt.input.stats, app.rt.input.hovered().len());
+            }
             app.frame();
             app.tick(TICK_120);
             app.frame();
@@ -106,6 +109,9 @@ fn scroll() {
             continue;
         }
         let built = app.rt.ctr.rows_mounted - rows0;
+        if std::env::var_os("TRACE").is_some() {
+            eprintln!("{tick}\t{:.4}\t{built}", *app.owner.scroll);
+        }
         if built == 0 {
             translation.push(us, instr);
             stray_layout += app.rt.lay.stats.computes - lay0;

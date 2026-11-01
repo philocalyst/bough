@@ -4,3 +4,5 @@ batch 2:  05:28:10 up 6 days 16:01,  51 users,  load average: 100.13, 107.70, 97
 batch 2 end:  05:28:37 up 6 days 16:02,  51 users,  load average: 84.48, 103.51, 96.14
 batch 3:  05:28:37 up 6 days 16:02,  51 users,  load average: 84.48, 103.51, 96.14
 batch 3 end:  05:28:56 up 6 days 16:02,  51 users,  load average: 75.58, 100.27, 95.14
+ 05:29:27 up 6 days 16:02,  51 users,  load average: 75.17, 97.59, 94.34
+ 05:29:46 up 6 days 16:03,  51 users,  load average: 75.63, 96.26, 93.94

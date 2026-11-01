@@ -156,6 +156,8 @@ pub(crate) struct Act {
     pub base: u32,
     /// The instance is a border box: its background is `color2`.
     pub bordered: bool,
+    /// The pointer is over it (its hover style shows).
+    pub hovered: bool,
     pub click: Option<Route>,
     pub press: Option<Route>,
     pub hover: Option<Route>,
@@ -172,7 +174,7 @@ pub(crate) struct Act {
 
 impl Act {
     fn new(handle: Handle) -> Act {
-        Act { handle, node: NONE, inst: NONE, hover_bg: None, base: 0, bordered: false, click: None, press: None, hover: None, key: None, drag: None, scroll: NONE, field: NONE, tip: 0, tip_rect: NRect::EMPTY }
+        Act { handle, node: NONE, inst: NONE, hover_bg: None, base: 0, bordered: false, hovered: false, click: None, press: None, hover: None, key: None, drag: None, scroll: NONE, field: NONE, tip: 0, tip_rect: NRect::EMPTY }
     }
 }
 
@@ -240,6 +242,9 @@ pub struct Input {
     by_handle: Vec<u32>,
     pub(crate) scrollers: Vec<Scroller>,
     pub(crate) fields: Vec<Field>,
+    /// Scroll views (`template::scroll_y`) and the one whose content is being mounted.
+    pub(crate) views: Vec<crate::template::ScrollView>,
+    pub(crate) mounting_view: Option<u32>,
     /// Handles of the hover chain (dispatch chain under the pointer), nearest first.
     hover: Vec<Handle>,
     cell: NRect,
@@ -273,6 +278,8 @@ impl Default for Input {
             by_handle: Vec::new(),
             scrollers: Vec::new(),
             fields: Vec::new(),
+            views: Vec::new(),
+            mounting_view: None,
             hover: Vec::new(),
             cell: NRect::EMPTY,
             cell_epoch: 0,
@@ -317,6 +324,13 @@ impl Input {
         let a = (self.acts.len() - 1) as u32;
         self.by_handle[h.idx as usize] = a;
         a
+    }
+    pub(crate) fn ensure_act(&mut self, h: Handle) -> u32 {
+        self.ensure(h)
+    }
+    /// Is the focused element a text field (zgui's `input::typing`)?
+    pub fn focused_field(&self) -> bool {
+        self.focus_act != 0 && self.acts[self.focus_act as usize].field != NONE
     }
     pub fn hovered(&self) -> &[Handle] {
         &self.hover
@@ -434,6 +448,64 @@ impl<V> ActOp<V> for Scrolls<'_, V> {
     }
 }
 
+/// The paint state of an instance as one hash word (content addressing: one convention per record).
+#[inline]
+fn pair(color: u32, color2: u32) -> u64 {
+    (color as u64) << 32 | color2 as u64
+}
+
+/// `paint_with`: a wire writing both colour words of the element's instance (`color`, `color2`: the
+/// border and the fill of a border box) from one signal: one class on one element. While the element is
+/// hovered its fill stays the hover colour and the new fill becomes the base it returns to.
+pub struct PaintOp<'a, T, V, F> {
+    sig: Wired<'a, T, V>,
+    f: F,
+}
+impl<'a, T: 'static, V, F: Fn(&T) -> (Color, Color) + Copy + 'static> ActOp<V> for PaintOp<'a, T, V, F> {
+    fn install(self, m: &mut Mounter<'_, V>, a: u32) {
+        let inst = m.rt.input.acts[a as usize].inst;
+        assert!(inst != NONE, "paint_with needs a painted quad");
+        let bordered = m.rt.inst[inst as usize].kind == KIND_BORDER;
+        let (c1, c2) = (self.f)(self.sig.get());
+        let act = &mut m.rt.input.acts[a as usize];
+        act.bordered = bordered;
+        let p = &mut m.rt.inst[inst as usize];
+        if bordered {
+            p.color = c1.0;
+            p.color2 = c2.0;
+            act.base = c2.0;
+        } else {
+            p.color = c2.0;
+            act.base = c2.0;
+        }
+        m.wire(&self.sig, patch_paint2::<T, F>, a, recipe(self.f));
+    }
+}
+
+/// # Safety
+/// Wire contract: `sig` is a `Signal<T>`; the recipe holds an `F`; `w.node` is the act.
+unsafe fn patch_paint2<T: 'static, F: Fn(&T) -> (Color, Color) + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    // SAFETY: see the function contract.
+    let s = unsafe { &*(sig as *const Signal<T>) };
+    let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
+    let (c1, c2) = f(s);
+    let act = rt.input.acts[w.node as usize];
+    rt.input.acts[w.node as usize].base = c2.0;
+    let p = rt.inst_mut(act.inst);
+    let old = pair(p.color, p.color2);
+    let fill = if act.hovered && act.hover_bg.is_some() { act.hover_bg.unwrap() } else { c2.0 };
+    if act.bordered {
+        p.color = c1.0;
+        p.color2 = fill;
+    } else {
+        p.color = fill;
+    }
+    let now = pair(p.color, p.color2);
+    if now != old {
+        rt.paint_write(act.handle, old, now);
+    }
+}
+
 /// Interaction ops on any element (they apply to its first record).
 pub trait Interact<V>: Element<V> + Sized {
     /// Activation (a primary press and release on the element, zgui's / the DOM's click).
@@ -451,6 +523,11 @@ pub trait Interact<V>: Element<V> + Sized {
     /// Background while hovered (`:hover { background }`): a paint write on crossing, no route.
     fn hover_bg(self, c: Color) -> On<Self, HoverBg> {
         On(self, HoverBg(c))
+    }
+    /// Both colour words of the element (border and fill of a border box; the fill of a plain one) from one
+    /// signal, hover-aware (see [`PaintOp`]).
+    fn paint_with<'a, T: 'static, F: Fn(&T) -> (Color, Color) + Copy + 'static>(self, sig: Wired<'a, T, V>, f: F) -> On<Self, PaintOp<'a, T, V, F>> {
+        On(self, PaintOp { sig, f })
     }
     /// A tab stop (focus order is preorder).
     fn focusable(self) -> On<Self, Focusable> {
@@ -787,6 +864,7 @@ impl<V: View> App<V> {
         if a == 0 {
             return false;
         }
+        self.rt.input.acts[a as usize].hovered = on;
         let act = self.rt.input.acts[a as usize];
         let mut ran = false;
         if let Some(c) = act.hover_bg {
@@ -798,11 +876,15 @@ impl<V: View> App<V> {
                 n.kind = if on { n.kind | crate::rt::NK_HOVERED } else { n.kind & !crate::rt::NK_HOVERED };
             }
             let p = self.rt.inst_mut(act.inst);
-            let slot = if act.bordered { &mut p.color2 } else { &mut p.color };
-            let old = *slot;
-            if old != new {
-                *slot = new;
-                self.rt.paint_write(h, old as u64, new as u64);
+            let old = pair(p.color, p.color2);
+            if act.bordered {
+                p.color2 = new;
+            } else {
+                p.color = new;
+            }
+            let now = pair(p.color, p.color2);
+            if old != now {
+                self.rt.paint_write(h, old, now);
             }
             ran = true;
         }

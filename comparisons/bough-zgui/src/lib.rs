@@ -180,7 +180,7 @@ pub const LIST_H: f32 = 1000.0;
 /// Points one wheel line moves the list: zgui reads it from the scrolled container's used line height
 /// (13 px sans-serif); `LINE_PX` overrides.
 pub fn line_px() -> f32 {
-    std::env::var("LINE_PX").ok().and_then(|v| v.parse().ok()).unwrap_or(16.0)
+    std::env::var("LINE_PX").ok().and_then(|v| v.parse().ok()).unwrap_or(58.5)
 }
 
 pub struct LongList {

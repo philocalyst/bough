@@ -11,6 +11,7 @@ pub mod layout;
 pub mod mlist;
 pub mod rt;
 pub mod signal;
+pub mod template;
 pub mod text;
 
 pub use bough_text::numeric::NumFmt;
@@ -20,6 +21,7 @@ pub mod prelude {
     pub use crate::color::{rgb, Color};
     pub use crate::elem::{at, bars, clip, each, quad, text, virtual_list, Element, IntoProp, Mounter, Quad, TextSrc};
     pub use crate::input::{no_hit, text_field, tooltip, Button, Ev, Interact, Key, Mods};
+    pub use crate::template::{scroll_y, template, Hooked, TNode, T_CLIP, T_FOCUS, T_HOOK};
     pub use crate::mlist::measured_list;
     pub use crate::rt::Caps;
     pub use crate::sig;
