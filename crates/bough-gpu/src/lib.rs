@@ -7,3 +7,5 @@ pub static METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bough_gpu
 
 #[cfg(target_os = "macos")]
 pub mod hal;
+#[cfg(target_os = "macos")]
+pub mod fused;
