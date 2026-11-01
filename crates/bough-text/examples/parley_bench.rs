@@ -64,8 +64,24 @@ fn label(zoom: usize, index: usize) -> String {
     format!("{value:.2}")
 }
 
+/// Relayout a retained one-style layout with a new text: graft 6's `retext` where the engine has it, a
+/// `build_into` otherwise (upstream parley's only way).
+macro_rules! relabel {
+    (grafted, $e:expr, $c:expr, $l:expr) => {{
+        if $l.retext(&mut $e.lcx, $c.text) {
+            $l.break_all_lines($c.width);
+            $l.align(bough_text::parley::Alignment::Start, bough_text::parley::AlignmentOptions::default());
+        } else {
+            $e.layout_into(&$c, $l);
+        }
+    }};
+    (upstream, $e:expr, $c:expr, $l:expr) => {{
+        $e.layout_into(&$c, $l);
+    }};
+}
+
 macro_rules! bench {
-    ($eng:expr, $name:literal) => {{
+    ($eng:expr, $name:tt) => {{
         let e = &mut $eng;
         let mut out = Vec::new();
         // text_bench
@@ -106,7 +122,7 @@ macro_rules! bench {
         for z in 1..=200 {
             for (i, (s, l)) in labels.iter_mut().zip(ll.iter_mut()).enumerate() {
                 *s = label(z, i);
-                e.layout_into(&Case::plain(s, "DejaVu Sans", 11.0, None), l);
+                relabel!($name, e, Case::plain(s, "DejaVu Sans", 11.0, None), l);
             }
         }
         let i7 = meter::instructions();
@@ -118,16 +134,16 @@ macro_rules! bench {
         let mut num_l: Vec<_> = nums[0].iter().map(|(s, z)| e.layout(&Case::plain(s, "DejaVu Sans", *z, None))).collect();
         let i8 = meter::instructions();
         for t in 0..300 {
-            e.layout_into(&Case::plain(&logs[t], "DejaVu Sans", 12.0, None), &mut log_l);
+            relabel!($name, e, Case::plain(&logs[t], "DejaVu Sans", 12.0, None), &mut log_l);
             for ((s, z), l) in nums[t].iter().zip(num_l.iter_mut()) {
-                e.layout_into(&Case::plain(s, "DejaVu Sans", *z, None), l);
+                relabel!($name, e, Case::plain(s, "DejaVu Sans", *z, None), l);
             }
         }
         let i9 = meter::instructions();
         let mut log_only = 0;
         for t in 0..300 {
             let a = meter::instructions();
-            e.layout_into(&Case::plain(&logs[t], "DejaVu Sans", 12.0, None), &mut log_l);
+            relabel!($name, e, Case::plain(&logs[t], "DejaVu Sans", 12.0, None), &mut log_l);
             log_only += meter::instructions() - a;
         }
         out.push(("heavy text per tick (log line + numeric labels)", (i9 - i8) / 300));
@@ -142,12 +158,11 @@ macro_rules! bench {
         }
         let ib = meter::instructions();
         for (s, l) in fr.iter().zip(ml.iter_mut()) {
-            e.layout_into(&Case::plain(s, "DejaVu Sans", 13.0, None), l);
+            relabel!($name, e, Case::plain(s, "DejaVu Sans", 13.0, None), l);
         }
         let ic = meter::instructions();
         out.push(("i18n 1000 messages", ib - ia));
         out.push(("i18n locale switch (1000 messages)", ic - ib));
-        let _ = $name;
         out
     }};
 }
@@ -156,8 +171,8 @@ fn main() {
     let fonts = twin::dejavu();
     let mut g = twin::grafted::Eng::new(&fonts, false);
     let mut u = twin::upstream::Eng::new(&fonts, false);
-    let rg = bench!(g, "grafted");
-    let ru = bench!(u, "upstream");
+    let rg = bench!(g, grafted);
+    let ru = bench!(u, upstream);
     println!("{:50} {:>14} {:>14} {:>7}", "phase (instructions)", "upstream", "grafted", "x");
     for ((name, a), (_, b)) in ru.iter().zip(&rg) {
         println!("{name:50} {a:14} {b:14} {:7.2}", *a as f64 / (*b).max(1) as f64);

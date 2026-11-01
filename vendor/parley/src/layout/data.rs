@@ -312,6 +312,22 @@ pub(crate) struct LayoutData<B: Brush> {
     pub(crate) indent_amount: f32,
     /// Options controlling text-indent behavior (each-line, hanging).
     pub(crate) indent_options: IndentOptions,
+    /// bough graft 6: set by the fused build when the layout is one style on one font (its first complete
+    /// candidate, with a table): what `Layout::retext` needs to lay out a new text without the builder.
+    pub(crate) bough_fast: Option<FastKey>,
+}
+
+/// bough graft 6: the retained half of a one-style, one-font layout built by the fused path.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FastKey {
+    pub(crate) font: FontData,
+    pub(crate) attrs: fontique::Attributes,
+    pub(crate) synthesis: fontique::Synthesis,
+    pub(crate) size: f32,
+    pub(crate) style_index: u16,
+    pub(crate) word_spacing: f32,
+    pub(crate) letter_spacing: f32,
+    pub(crate) vars: Vec<harfrust::Variation>,
 }
 
 impl<B: Brush> Default for LayoutData<B> {
@@ -340,6 +356,7 @@ impl<B: Brush> Default for LayoutData<B> {
             layout_max_advance: 0.0,
             indent_amount: 0.0,
             indent_options: IndentOptions::default(),
+            bough_fast: None,
         }
     }
 }
@@ -363,6 +380,7 @@ impl<B: Brush> LayoutData<B> {
         self.glyphs.clear();
         self.lines.clear();
         self.line_items.clear();
+        self.bough_fast = None;
     }
 
     /// Push an inline box to the list of items

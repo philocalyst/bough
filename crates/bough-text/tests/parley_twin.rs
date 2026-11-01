@@ -305,3 +305,48 @@ fn upstream_self_consistency() {
     }
     assert_eq!(x, y, "upstream vs upstream");
 }
+
+/// Graft 6: `Layout::retext` (a new text in a one-style, one-font layout, without the builder) equals upstream
+/// building the new text with the same style: label churn values, heavy's numbers and log lines, i18n messages
+/// before and after a locale switch, random covered strings, and texts it must refuse (CJK, controls, newlines:
+/// then the layout is rebuilt). Sizes and widths vary per sequence.
+#[test]
+fn retext_sequences() {
+    let mut t = Twin::new(&dejavu(), false);
+    let mut seqs: Vec<(f32, Option<f32>, Vec<String>)> = vec![];
+    seqs.push((11.0, None, (0..200).map(|z| format!("{:.2}", ((z * 7_919 + 3 * 104_729) % 200_000) as f64 / 1_000.0 - 100.0)).collect()));
+    seqs.push((12.0, None, corpus::heavy_log_lines(150)));
+    for i in 0..6 {
+        seqs.push((16.0, None, (0..60u64).map(|tk| corpus::heavy_numeric(tk)[i * 7].0.clone()).collect()));
+    }
+    seqs.push((13.0, Some(90.0), (0..300u32).map(|n| if n % 2 == 0 { format!("{n} messages") } else { format!("{n} messages reçus") }).collect()));
+    let pool = ["a", "fi", "ffl", " ", "é", "ß", "1", ".", ",", "-", "/", "(", ")", "'", "%", "«", "»", "©", "日本", "\n", "\t", "שלום"];
+    let mut seed = 0x1234_5678_9ABC_DEF1u64;
+    let mut rnd: Vec<String> = vec![];
+    for _ in 0..400 {
+        let n = 1 + rng(&mut seed) as usize % 12;
+        rnd.push((0..n).map(|_| pool[rng(&mut seed) as usize % pool.len()]).collect());
+    }
+    seqs.push((14.0, Some(60.0), rnd));
+    let (mut hits, mut misses) = (0u64, 0u64);
+    for (size, width, texts) in &seqs {
+        let first = Case::plain(&texts[0], SANS, *size, *width);
+        let mut l = t.g.layout(&first);
+        for s in &texts[1..] {
+            let c = Case::plain(s, SANS, *size, *width);
+            if l.retext(&mut t.g.lcx, s) {
+                hits += 1;
+                l.break_all_lines(c.width);
+                l.align(bough_text::parley::Alignment::Start, bough_text::parley::AlignmentOptions::default());
+            } else {
+                misses += 1;
+                l = t.g.layout(&c);
+            }
+            let (g, u) = (common::twin::grafted::dump(&l), t.u.dump(&c));
+            assert_eq!(g, u, "retext to {s:?} (size {size}, width {width:?})");
+            t.cases += 1;
+        }
+    }
+    eprintln!("retext: {} cases equal; {hits} re-texted, {misses} rebuilt", t.cases);
+    assert!(hits > 1000, "the label, number, log and message sequences re-text (the random one mostly rebuilds)");
+}

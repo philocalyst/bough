@@ -26,6 +26,18 @@ pub struct Layout<B: Brush> {
     pub(crate) data: LayoutData<B>,
 }
 
+impl<B: Brush> Layout<B> {
+    /// bough graft 6: replace the text of a layout built from **one style on one font** by the fused path (a
+    /// label, a log line), keeping its style: no builder, no style resolution, no font query, only boundaries,
+    /// table shaping and clusters. Equal to building the new text with the same styles (gate:
+    /// `tests/parley_twin.rs`). Returns `false`, leaving the layout untouched, when the layout or the text does
+    /// not qualify; then build as usual. Line breaking and alignment are the caller's, as after a build.
+    #[cfg(feature = "std")]
+    pub fn retext(&mut self, lcx: &mut crate::LayoutContext<B>, text: &str) -> bool {
+        crate::shape::retext_simple(self, &mut lcx.scx, &lcx.analysis_data_sources, text)
+    }
+}
+
 impl<B: Brush> fmt::Debug for Layout<B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {

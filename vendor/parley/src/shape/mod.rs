@@ -859,9 +859,106 @@ pub(crate) fn build_simple<'a, B: Brush>(
         }
         scx.bounds = bounds;
         scx.props = props;
+        if style_runs.len() == 1 && runs.len() == 1 {
+            let font = &runs[0].2;
+            scx.fast_vars.clear();
+            scx.fast_vars.extend(variations_iter(&font.font.synthesis, rcx.variations(item.variations)));
+            layout.data.bough_fast = Some(crate::layout::data::FastKey {
+                font: FontData::new(font.font.blob.clone(), font.font.index),
+                attrs: font.attrs,
+                synthesis: font.font.synthesis,
+                size: item.size,
+                style_index: item.style_index,
+                word_spacing: item.word_spacing,
+                letter_spacing: item.letter_spacing,
+                vars: scx.fast_vars.clone(),
+            });
+        }
     }
     runs.clear();
     scx.fast_runs = runs;
+    ok
+}
+
+/// bough graft 6: lay out a new text in a layout the fused path built from one style on one font, without the
+/// builder: no style resolution, no font query. That font was the query's first candidate, so for a new covered
+/// text every cluster selects it again (graft 2's argument), and the style table is unchanged (the caller's
+/// contract: only the text changed). `false` (layout untouched) means the caller rebuilds.
+#[cfg(feature = "std")]
+pub(crate) fn retext_simple<B: Brush>(
+    layout: &mut Layout<B>,
+    scx: &mut ShapeContext,
+    analysis_data_sources: &AnalysisDataSources,
+    text: &str,
+) -> bool {
+    let Some(key) = layout.data.bough_fast.take() else { return false };
+    let ok = (|| {
+        if text.is_empty() || !layout.data.inline_boxes.is_empty() {
+            return false;
+        }
+        let classes = crate::analysis::simple_classes(analysis_data_sources);
+        let b = text.as_bytes();
+        let mut k = 0;
+        while k < b.len() {
+            let (cp, n) = match b[k] {
+                c if c < 0x80 => (c, 1),
+                0xC2 if k + 1 < b.len() => (b[k + 1], 2),
+                0xC3 if k + 1 < b.len() => (b[k + 1] + 0x40, 2),
+                _ => return false,
+            };
+            if classes[cp as usize] == 0 {
+                return false;
+            }
+            k += n;
+        }
+        let (id, index, data) = (key.font.data.id(), key.font.index, key.font.data.clone());
+        if !scx.fast.covers(id, index, data.as_ref(), &key.vars, text)
+            || !scx.fast.shape_seg(0, id, index, data.as_ref(), &key.vars, text, key.size)
+        {
+            return false;
+        }
+        let d = &mut layout.data;
+        d.text_len = text.len();
+        d.width = 0.;
+        d.full_width = 0.;
+        d.height = 0.;
+        d.coords.clear();
+        d.runs.clear();
+        d.items.clear();
+        d.clusters.clear();
+        d.glyphs.clear();
+        d.lines.clear();
+        d.line_items.clear();
+        let mut bounds = mem::take(&mut scx.bounds);
+        let mut props = mem::take(&mut scx.props);
+        crate::bough::breaks::boundaries(b, &mut bounds, &mut props);
+        let (slots, coords) = scx.fast.seg(0);
+        let mut ordinal = 0usize;
+        let style = key.style_index;
+        d.push_slot_run(
+            key.font.clone(),
+            key.size,
+            key.attrs,
+            key.synthesis,
+            slots,
+            key.style_index,
+            key.word_spacing,
+            key.letter_spacing,
+            text,
+            0..text.len(),
+            coords,
+            &mut scx.metrics,
+            &bounds,
+            &mut ordinal,
+            &mut |_| style,
+        );
+        scx.bounds = bounds;
+        scx.props = props;
+        d.finish();
+        crate::bough::count_segment(true);
+        true
+    })();
+    layout.data.bough_fast = Some(key);
     ok
 }
 
