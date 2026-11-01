@@ -176,7 +176,7 @@ repair from the rect table, one instanced draw, AOT metallib, `IsInUse` skip, 4t
 
 ### 4.3 The `bars` series run
 Zgx draws the 26 sparkline bars of a card as 26 elements, each with its own `live` wire. Done literally (and it was, first: 780 wires/tick, one `sinf`-heavy closure plus
-a `set_ink_handle` each) they cost ~430 K of the 860 K instructions per stream frame. `bars` is one record owning a run of N solid quads, one wire,
+a `set_ink_handle` each) they cost ~460 K of the 863 K instructions per stream frame. `bars` is one record owning a run of N solid quads, one wire,
 one ink write (old and new union), and it memoises its samples: bar `i` at tick `t` is bar `i-1` at tick `t+1`, so when `key` advances by one the window shifts
 and only the new rightmost sample is computed (26x fewer `sin` calls); any other jump recomputes all. Pixel output is identical (the full-redraw and fresh-mount tests
 cover it). This is the "text mechanism applied to quads": a record may own a run of instances and a single operand patches the run.
@@ -197,7 +197,7 @@ cover it). This is the "text mechanism applied to quads": a record may own a run
   into a handful of `uv` writes; each text/quad geometry change still pays core's `set_ink_at` (two plane adds + summary maintenance, ~350 instructions).
 * Text: ASCII fast path; Latin-1/other text and `ff/fi/fl` lines take the rustybuzz fallback (which keeps glyph ids and x advances only, not y offsets; it lives in the
   façade because rustybuzz is a dev-dependency of bough-text; 2.5 % of heavy's log lines); no wrapping/bidi/line breaking in the façade; baseline = CSS half-leading from hhea metrics,
-  which matches zgx's glyph rows on DejaVu.
+  which lands on zgx's glyph rows: shifting bough's frame by any whole pixel in x or y at least doubles the >16 difference (3.0 % unshifted, 6.2-10.3 % shifted, `frame_diff`).
 * The row clip is a rectangle (vertex-stage clamp); no rounded clip; at most 32 clips, 512 spaces (about 500 mounted rows), 16,384 instances.
 * `ZGX_PARITY` is honoured (`Heavy::turn()`); `micro_bench` scenes (state, vscroll-fixed/variable) have no bough adapter yet (the façade has what they need, nothing was written).
 * Slope noise: a single slope sample has +-10 K of startup variance (visible on the idle rows); stream/both medians are stable to 1 %.
