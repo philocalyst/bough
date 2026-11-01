@@ -132,6 +132,14 @@ impl Deep {
     pub fn style_of(&self, n: u32) -> u32 {
         self.n[n as usize].style
     }
+    /// Set node `n`'s style before it was ever laid out (a mount's operand values): no invalidation.
+    pub fn set_style_fresh(&mut self, n: u32, style: u32) {
+        let measured = self.ctx_ref(n).is_some_and(|c| c.user.is_none());
+        let keep = self.n[n as usize].flags & !META_MASK;
+        self.n[n as usize].style = style;
+        self.n[n as usize].flags = meta_bits(&self.styles, style, measured) | keep;
+    }
+
     /// Restyle node `n` (a re-description changed its spec) and invalidate it.
     pub fn set_style(&mut self, b: &Bough, n: u32, style: u32) {
         let measured = self.ctx_ref(n).is_some_and(|c| c.user.is_none());

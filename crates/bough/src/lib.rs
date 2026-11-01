@@ -3,6 +3,7 @@
 //! (`rt.rs`); a frame's CPU work ends at the tile list (`app.rs`).
 pub mod app;
 pub mod backend;
+pub mod boxops;
 pub mod changed;
 pub mod color;
 pub mod describe;

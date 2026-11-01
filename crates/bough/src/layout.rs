@@ -802,6 +802,8 @@ pub struct Lay {
     kids: Vec<u32>,
     /// Roots whose text changed reactively since the last flush (for lists to re-measure rows).
     pub touched_roots: Vec<u32>,
+    /// The user specs of boxes with size operands (`boxops.rs`), by layout node.
+    pub specs: std::collections::HashMap<u32, Spec>,
     stack_ids: Vec<u32>,
 }
 
@@ -825,6 +827,7 @@ impl Lay {
             stack: Vec::new(),
             kids: Vec::new(),
             touched_roots: Vec::new(),
+            specs: Default::default(),
             stack_ids: Vec::new(),
         }
     }
@@ -1061,13 +1064,13 @@ impl Rt {
         n.y = y;
         n.w = w;
         n.h = h;
-        let (inst, margin, hd) = (self.runs[n.run as usize].first, n.margin, n.handle);
+        let (inst, margin, hd, tx, ty) = (self.runs[n.run as usize].first, n.margin, n.handle, n.tx, n.ty);
         let p = self.inst_mut(inst);
-        p.pos = [x, y];
+        p.pos = [x + tx, y + ty];
         p.size = [w, h];
         // the old position's pixels (a sub-pixel move can keep the rounded ink), then old and new ink
         self.bough.touch_handle(hd);
-        let ink = self.ink_rect(li.space, x, y, w, h, margin);
+        let ink = self.ink_rect(li.space, x + tx, y + ty, w, h, margin);
         self.bough.set_ink_handle(hd, ink);
     }
 
@@ -1166,38 +1169,59 @@ impl Rt {
 // =============================================================================== builders
 
 /// A layout box: a flex container (`column` / `row`) or a leaf rectangle (`block`), optionally painted.
-pub struct LBox<Bg = Color, Ch = ()> {
+pub struct LBox<Bg = Color, Ch = (), X = ()> {
     spec: Spec,
     draw: bool,
     bg: Bg,
     radius: f32,
     border: Option<(f32, Color)>,
     ch: Ch,
+    /// Reactive operands (`boxops.rs`): opacity, translate, width, height.
+    x: X,
 }
 
 pub fn column<Ch>(ch: Ch) -> LBox<Color, Ch> {
-    LBox { spec: Spec::new(true, true), draw: false, bg: Color(0), radius: 0.0, border: None, ch }
+    LBox { spec: Spec::new(true, true), draw: false, bg: Color(0), radius: 0.0, border: None, ch, x: () }
 }
 pub fn row<Ch>(ch: Ch) -> LBox<Color, Ch> {
-    LBox { spec: Spec::new(true, false), draw: false, bg: Color(0), radius: 0.0, border: None, ch }
+    LBox { spec: Spec::new(true, false), draw: false, bg: Color(0), radius: 0.0, border: None, ch, x: () }
 }
 /// A leaf rectangle of `w` x `h` points (paint it with `.bg`).
 pub fn block(w: f32, h: f32) -> LBox<Color, ()> {
-    let mut b = LBox { spec: Spec::new(false, false), draw: false, bg: Color(0), radius: 0.0, border: None, ch: () };
+    let mut b = LBox { spec: Spec::new(false, false), draw: false, bg: Color(0), radius: 0.0, border: None, ch: (), x: () };
     b.spec.w = Dim::Pt(w);
     b.spec.h = Dim::Pt(h);
     b
 }
 
-impl<Bg, Ch> Styled for LBox<Bg, Ch> {
+impl<Bg, Ch, X> Styled for LBox<Bg, Ch, X> {
     fn spec_mut(&mut self) -> &mut Spec {
         &mut self.spec
     }
 }
 
-impl<Bg, Ch> LBox<Bg, Ch> {
-    pub fn bg<B2>(self, bg: B2) -> LBox<B2, Ch> {
-        LBox { spec: self.spec, draw: true, bg, radius: self.radius, border: self.border, ch: self.ch }
+impl<Bg, Ch, X> LBox<Bg, Ch, X> {
+    pub fn bg<B2>(self, bg: B2) -> LBox<B2, Ch, X> {
+        LBox { spec: self.spec, draw: true, bg, radius: self.radius, border: self.border, ch: self.ch, x: self.x }
+    }
+    fn op<O>(self, o: O) -> LBox<Bg, Ch, (X, O)> {
+        LBox { spec: self.spec, draw: self.draw, bg: self.bg, radius: self.radius, border: self.border, ch: self.ch, x: (self.x, o) }
+    }
+    /// Paint opacity operand (0..=1; the box must be painted).
+    pub fn opacity<P>(self, p: P) -> LBox<Bg, Ch, (X, crate::boxops::Opacity<P>)> {
+        self.op(crate::boxops::Opacity(p))
+    }
+    /// Paint offset operand (points): the box's paint moves, its layout place does not.
+    pub fn translate<P>(self, p: P) -> LBox<Bg, Ch, (X, crate::boxops::Translate<P>)> {
+        self.op(crate::boxops::Translate(p))
+    }
+    /// Width operand (points): restyles the box.
+    pub fn w_op<P>(self, p: P) -> LBox<Bg, Ch, (X, crate::boxops::WidthOp<P>)> {
+        self.op(crate::boxops::WidthOp(p))
+    }
+    /// Height operand (points): restyles the box.
+    pub fn h_op<P>(self, p: P) -> LBox<Bg, Ch, (X, crate::boxops::HeightOp<P>)> {
+        self.op(crate::boxops::HeightOp(p))
     }
     pub fn rounded(mut self, r: f32) -> Self {
         self.radius = r;
@@ -1235,7 +1259,7 @@ pub(crate) fn attach<V>(m: &mut Mounter<'_, V>, lid: u32) -> u32 {
     parent
 }
 
-impl<V: 'static, Bg, Ch> Element<V> for LBox<Bg, Ch>
+impl<V: 'static, Bg, Ch, X: crate::boxops::BoxOps<V>> Element<V> for LBox<Bg, Ch, X>
 where
     Bg: IntoProp<Color, V>,
     Ch: Element<V>,
@@ -1243,8 +1267,17 @@ where
     fn mount(self, m: &mut Mounter<'_, V>) {
         let s = m.rt.scale;
         let hd = m.rt.bough.new_handle();
-        let lid = m.rt.lay.eng.add(hd, &self.spec, s, None);
+        let mut spec = self.spec;
+        // size operands: the box is created with their initial values, the spec kept for later restyles
+        let lid = if X::SIZE {
+            let lid = m.rt.lay.eng.add(hd, &spec, s, None);
+            lid
+        } else {
+            m.rt.lay.eng.add(hd, &spec, s, None)
+        };
         let parent = attach(m, lid);
+        assert!(!X::PAINT || self.draw, "opacity/translate need a painted box (bg, rounded or border)");
+        let mut qnode = NONE;
         if self.draw {
             let node = m.rt.alloc_node();
             let bg = self.bg.lower::<ApplyBg>(m, node);
@@ -1269,9 +1302,21 @@ where
             m.rt.lay.info[lid as usize].rtn = node;
             m.rt.lay.info[lid as usize].kind = 1;
             m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_QUAD, payload: inst, handle: hd.idx, clip: m.clip });
+            qnode = node;
         } else {
             // a paint-less box still has a record: the layout structure IS the Bough's depth column
             m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: hd.idx, clip: m.clip });
+        }
+        if X::SIZE || X::PAINT {
+            self.x.install(m, lid, qnode, &mut spec);
+            if X::SIZE {
+                m.rt.lay.specs.insert(lid, spec);
+                if spec != self.spec {
+                    // not laid out yet (its records are not in the Bough): the style is set, nothing invalidated
+                    let sid = m.rt.lay.eng.style_id(&spec, s);
+                    m.rt.lay.eng.set_style_fresh(lid, sid);
+                }
+            }
         }
         m.tape_push(lid);
         m.depth += 1;
@@ -1283,9 +1328,18 @@ where
 
     fn update(self, m: &mut Mounter<'_, V>) {
         let lid = m.tape_next();
-        restyle(m.rt, lid, &self.spec);
+        if X::SIZE {
+            // the size operands own w/h: the description's other properties restyle around them
+            let cur = m.rt.lay.specs.get(&lid).copied().unwrap_or(self.spec);
+            let spec = Spec { w: cur.w, h: cur.h, ..self.spec };
+            m.rt.lay.specs.insert(lid, spec);
+            restyle(m.rt, lid, &spec);
+        } else {
+            restyle(m.rt, lid, &self.spec);
+        }
         let li = m.rt.lay.info[lid as usize];
         assert_eq!(self.draw, li.kind == 1, "a re-description cannot add or drop a box's paint (bg/rounded/border)");
+        self.x.refresh(m.rt, lid, li.rtn);
         if li.clip != m.clip {
             m.rt.bough.set_clip_run(m.pos, 1, m.clip);
             m.rt.lay.info[lid as usize].clip = m.clip;
@@ -1337,12 +1391,13 @@ pub(crate) fn restyle(rt: &mut Rt, lid: u32, spec: &Spec) {
 }
 
 /// Wrapping text (`para`) or a single-line label (`label`), measured by the shaper.
-pub struct Para<S> {
+pub struct Para<S, C = Color> {
     s: S,
     spec: Spec,
     size: f32,
     lh: f32,
-    color: Color,
+    /// A colour operand (a constant, `sig!(..)`, `sig!(..).map(f)`): a paint-only write of the lines' colour.
+    color: C,
     wrap: bool,
 }
 
@@ -1355,30 +1410,30 @@ pub fn label<S>(s: S) -> Para<S> {
     Para { wrap: false, ..para(s) }
 }
 
-impl<S> Styled for Para<S> {
+impl<S, C> Styled for Para<S, C> {
     fn spec_mut(&mut self) -> &mut Spec {
         &mut self.spec
     }
 }
-impl<S> Para<S> {
+impl<S, C> Para<S, C> {
     pub fn font(mut self, size_pt: f32, line_height_pt: f32) -> Self {
         self.size = size_pt;
         self.lh = line_height_pt;
         self
     }
-    pub fn color(mut self, c: Color) -> Self {
-        self.color = c;
-        self
+    pub fn color<C2>(self, c: C2) -> Para<S, C2> {
+        Para { s: self.s, spec: self.spec, size: self.size, lh: self.lh, color: c, wrap: self.wrap }
     }
 }
 
-impl<V: 'static, S: TextSrc<V>> Element<V> for Para<S> {
+impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C> {
     fn mount(self, m: &mut Mounter<'_, V>) {
         let s = m.rt.scale;
         let node = m.rt.alloc_node();
         m.pending_num = None;
         let init = self.s.lower(m, node);
         let num = m.pending_num.take();
+        let color = self.color.lower::<crate::boxops::ApplyTextColor>(m, node);
         let size_px = self.size * s;
         let lh_px = self.lh * s;
         let strike = m.rt.text.strike(size_px);
@@ -1403,7 +1458,7 @@ impl<V: 'static, S: TextSrc<V>> Element<V> for Para<S> {
             strike: strike as u32,
             size_px,
             line_h: lh_px,
-            color: self.color.0,
+            color: color.0,
             ox: 0.0,
             oy: 0.0,
             space: m.space,
@@ -1419,7 +1474,7 @@ impl<V: 'static, S: TextSrc<V>> Element<V> for Para<S> {
             n.space = m.space;
             n.clip = m.clip;
             n.kind = NK_LTEXT;
-            n.color = self.color.0;
+            n.color = color.0;
             n.size_px = size_px;
             n.line_h = lh_px;
             n.handle = hd;
@@ -1458,18 +1513,7 @@ impl<V: 'static, S: TextSrc<V>> Element<V> for Para<S> {
         if m.rt.texts[ti as usize].text != text {
             m.rt.lay_text_changed(node, &text);
         }
-        if m.rt.texts[ti as usize].color != self.color.0 {
-            m.rt.texts[ti as usize].color = self.color.0;
-            m.rt.nodes[node as usize].color = self.color.0;
-            // re-placed at the write-back with the new colour (old and new ink damaged)
-            m.rt.lay.info[lid as usize].tdirty = true;
-            m.rt.lay.dirty.push(lid);
-            let root = m.rt.lay.root_of(lid);
-            if !m.rt.lay.info[root as usize].queued {
-                m.rt.lay.info[root as usize].queued = true;
-                m.rt.lay.pending.push(root);
-            }
-        }
+        <crate::boxops::ApplyTextColor as crate::elem::Apply>::apply(m.rt, node, &self.color.value());
         m.pos += 1;
         m.kid += 1;
     }

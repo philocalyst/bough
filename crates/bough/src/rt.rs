@@ -138,6 +138,10 @@ pub struct Node {
     pub lnode: u32,
     /// Allocation serial: tells a reused node from the one an outside table recorded (`select.rs`).
     pub serial: u32,
+    /// Box operands (`boxops.rs`): paint offset (device px) and opacity.
+    pub tx: f32,
+    pub ty: f32,
+    pub alpha: f32,
 }
 
 impl Node {
@@ -165,6 +169,9 @@ impl Node {
             text: NONE,
             lnode: NONE,
             serial: 0,
+            tx: 0.0,
+            ty: 0.0,
+            alpha: 1.0,
         }
     }
 }
@@ -776,7 +783,7 @@ impl Rt {
     #[inline]
     pub fn quad_ink(&mut self, node: u32) {
         let n = &self.nodes[node as usize];
-        let ink = self.ink_rect(n.space, n.x, n.y, n.w, n.h, n.margin);
+        let ink = self.ink_rect(n.space, n.x + n.tx, n.y + n.ty, n.w, n.h, n.margin);
         let h = n.handle;
         self.bough.touch_handle(h);
         self.bough.set_ink_handle(h, ink);

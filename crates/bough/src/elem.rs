@@ -279,15 +279,17 @@ impl Apply for ApplyBg {
         if n.kind & NK_HOVERED != 0 {
             return; // the hover colour shows; the base returns when the pointer leaves (input.rs)
         }
-        let (h, inst, bordered) = (n.handle, rt.runs[n.run as usize].first, n.kind == NK_BORDER);
+        let (h, inst, bordered, a) = (n.handle, rt.runs[n.run as usize].first, n.kind == NK_BORDER, n.alpha);
         let p = rt.inst_mut(inst);
+        let c = crate::boxops::mul_alpha(v.0, a);
         if bordered {
-            p.color2 = v.0;
+            p.color2 = c;
         } else {
-            p.color = v.0;
+            p.color = c;
         }
-        // the colour word is the record's whole paint state: logged as is (content addressing)
-        rt.paint_write(h, old as u64, v.0 as u64);
+        // the colour word (with the opacity operand's alpha, `boxops::paint_state`) is the record's whole paint
+        // state: logged as is (content addressing)
+        rt.paint_write(h, crate::boxops::paint_state(old, a), crate::boxops::paint_state(v.0, a));
     }
 }
 
