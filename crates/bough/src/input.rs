@@ -199,6 +199,8 @@ pub(crate) struct Field {
     pub caret: usize,
     pub caret_color: u32,
     pub focused: bool,
+    /// The caret's blink phase: shown (`true`) or hidden.
+    pub lit: bool,
 }
 
 /// zgui's smooth scroll (zgui-scroll `Tween`): 240 ms, ease-out cubic; a detent during a glide adds to
@@ -278,6 +280,9 @@ pub struct Input {
     pub ring_width: f32,
     pub ring_offset: f32,
     pub stats: InputStats,
+    /// Caret blink: half-period (seconds; 0: no blink) and the time since the last flip.
+    pub blink_half: f32,
+    blink_t: f32,
     chain: Vec<usize>,
     chain_h: Vec<Handle>,
 }
@@ -313,6 +318,8 @@ impl Default for Input {
             ring_width: 2.0,
             ring_offset: 2.0,
             stats: InputStats::default(),
+            blink_half: 0.53,
+            blink_t: 0.0,
             chain: Vec::new(),
             chain_h: Vec::new(),
         }
@@ -799,7 +806,7 @@ unsafe fn patch_caret(rt: &mut Rt, w: &Wire, _sig: *const u8, _owner: *const u8)
 fn place_caret(rt: &mut Rt, f: u32) {
     let (ti, cn, caret, color, focused) = {
         let fl = &rt.input.fields[f as usize];
-        (fl.ti, fl.caret_node, fl.caret, fl.caret_color, fl.focused)
+        (fl.ti, fl.caret_node, fl.caret, fl.caret_color, fl.focused && fl.lit)
     };
     let len = rt.texts[ti as usize].text.len();
     let caret = caret.min(len);
@@ -847,7 +854,7 @@ impl<V: 'static> Element<V> for TextField<'_, V> {
         quad(x, y, w, h).bg(self.bg).rounded(self.radius).border(1.0, self.border).children(()).mount(m);
         let a = act_for(m, before, nodes_before, KF_FOCUS);
         let f = m.rt.input.fields.len() as u32;
-        m.rt.input.fields.push(Field { off: self.sig.off, ti: NONE, caret_node: NONE, caret: 0, caret_color: self.color.0, focused: false });
+        m.rt.input.fields.push(Field { off: self.sig.off, ti: NONE, caret_node: NONE, caret: 0, caret_color: self.color.0, focused: false, lit: true });
         m.rt.input.acts[a as usize].field = f;
         // children inside the border, clipped to the inner box
         let (ox, oy, depth, clip) = (m.ox, m.oy, m.depth, m.clip);
@@ -1184,6 +1191,36 @@ impl<V: View> App<V> {
         self.settle_input();
     }
 
+    /// The focused field's caret blinks every `blink_half` seconds: one paint write per flip (the caret's
+    /// colour word), so after two frames every flip finds a surface that already shows it (content
+    /// addressing: no GPU work). Returns whether it flipped.
+    fn blink(&mut self, dt: f32) -> bool {
+        let fa = self.rt.input.focus_act;
+        if fa == 0 || self.rt.input.blink_half <= 0.0 {
+            return false;
+        }
+        let f = self.rt.input.acts[fa as usize].field;
+        if f == NONE {
+            return false;
+        }
+        self.rt.input.blink_t += dt;
+        if self.rt.input.blink_t < self.rt.input.blink_half {
+            return false;
+        }
+        self.rt.input.blink_t -= self.rt.input.blink_half * (self.rt.input.blink_t / self.rt.input.blink_half).floor();
+        self.sync_pub();
+        let lit = !self.rt.input.fields[f as usize].lit;
+        self.rt.input.fields[f as usize].lit = lit;
+        place_caret(&mut self.rt, f);
+        true
+    }
+
+    /// Seconds until the focused caret's next blink flip (`None`: nothing blinks): a host arms a timer for it.
+    pub fn next_blink(&self) -> Option<f32> {
+        let fa = self.rt.input.focus_act;
+        (fa != 0 && self.rt.input.blink_half > 0.0 && self.rt.input.acts[fa as usize].field != NONE).then(|| self.rt.input.blink_half - self.rt.input.blink_t)
+    }
+
     /// Precise (trackpad) scroll at (x, y) by `dy` points: the nearest scroller moves at once (the device's
     /// own deltas are already smooth; no glide).
     pub fn wheel_points(&mut self, x: f32, y: f32, dy: f32) {
@@ -1222,8 +1259,12 @@ impl<V: View> App<V> {
     /// Advance input animations by `dt` seconds (glides write their scroll signals). Returns whether any
     /// ran; pair with `frame()`.
     pub fn tick(&mut self, dt: f32) -> bool {
+        let blinked = self.blink(dt);
         if !self.animating() {
-            return false;
+            if blinked {
+                self.settle_input();
+            }
+            return blinked;
         }
         self.sync_pub();
         let o = self.owner_mut();
@@ -1343,6 +1384,8 @@ impl<V: View> App<V> {
             _ => return false,
         };
         self.rt.input.fields[f as usize].caret = new_caret;
+        self.rt.input.fields[f as usize].lit = true;
+        self.rt.input.blink_t = 0.0;
         if matches!(key, Key::Left | Key::Right | Key::Home | Key::End) {
             place_caret(&mut self.rt, f);
         }
@@ -1371,6 +1414,8 @@ impl<V: View> App<V> {
             let f = self.rt.input.acts[a as usize].field;
             if f != NONE {
                 self.rt.input.fields[f as usize].focused = true;
+                self.rt.input.fields[f as usize].lit = true;
+                self.rt.input.blink_t = 0.0;
                 place_caret(&mut self.rt, f);
             }
         }

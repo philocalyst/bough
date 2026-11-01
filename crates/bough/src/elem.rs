@@ -665,14 +665,8 @@ impl<V, Ch: Element<V>> Element<V> for Clip<Ch> {
         let [x, y, w, h] = self.0;
         let r = [o[0] + (m.ox + x) * s, o[1] + (m.oy + y) * s, o[0] + (m.ox + x + w) * s, o[1] + (m.oy + y + h) * s];
         let prev = m.clip;
-        let r = if prev != 0 {
-            // nested clips compose (intersection)
-            let p = m.rt.bough.clip_rect(prev).to_xyxy();
-            [r[0].max(p[0] as f32), r[1].max(p[1] as f32), r[2].min(p[2] as f32), r[3].min(p[3] as f32)]
-        } else {
-            r
-        };
-        // inside a scroll view's content the clip moves with the content (template.rs)
+        // nested clips compose (intersection, in `scoped_clip`); inside a scroll view's content the clip moves
+        // with the content and is re-cut against its parent when either moves (template.rs)
         m.clip = m.rt.scoped_clip(r, prev);
         self.1.mount(m);
         m.clip = prev;

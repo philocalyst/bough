@@ -426,3 +426,88 @@ fn thread_resize_rewraps_pixel_exact() {
         same_as_fresh("thread", &mut app, App::new(Thread { scroll: Signal::new(s) }, thread_config(w, h), true));
     }
 }
+
+/// A focused field's blinking caret: pixel exact at every flip, and after the first two flips every frame is
+/// a surface that already holds the state (no GPU work), as the blink scene.
+#[test]
+fn caret_blink_is_served_by_held_surfaces() {
+    use bough_zgui::gallery::Gallery;
+    let mut app = app_ring(Gallery::new(), config(WIDTH, HEIGHT), 0);
+    app.frame();
+    for _ in 0..22 {
+        app.key_down(Key::Tab, Mods::default());
+        app.frame();
+    }
+    assert!(app.rt.input.focused_field());
+    let w = app.rt.win_w as usize;
+    let gpu0 = app.surf_stats.gpu;
+    for t in 0..40 {
+        assert!(app.tick(0.53), "flip {t}");
+        assert!(app.frame());
+        assert_exact(&mut app, w, &format!("blink flip {t}"));
+    }
+    assert!(app.surf_stats.gpu - gpu0 <= 2, "GPU frames after the first two flips: {:?}", app.surf_stats);
+}
+
+/// A scroll view nested in another, with a tooltip in the outer content: the inner view's space and clips and
+/// the tooltip's rect follow the outer scroll; pixel exact, and equal to a fresh mount at the same offsets.
+struct Nested {
+    outer: Signal<f32>,
+    inner: Signal<f32>,
+}
+
+fn nested_row(i: usize) -> impl Element<Nested> {
+    quad(10.0, i as f32 * 40.0, 300.0, 34.0).bg(Color::rgba(40, (i * 30 % 255) as u8, 120, 255)).children(text(format!("row {i}")).at(8.0, 8.0).size(14.0).line_height(18.0).color(rgb(0xffffff)))
+}
+
+impl View for Nested {
+    const FIXED: bool = true;
+    fn view(&self) -> impl Element<Self> + '_ {
+        (
+            quad(0.0, 0.0, 800.0, 600.0).bg(rgb(0x101010)),
+            scroll_y(
+                sig!(self.outer),
+                [20.0, 20.0, 700.0, 500.0],
+                1200.0,
+                (
+                    each((0..40).map(nested_row)),
+                    tooltip(quad(400.0, 300.0, 60.0, 30.0).bg(rgb(0x3d7ef7)), "inside the outer view", [380.0, 340.0, 180.0, 28.0]),
+                    clip(380.0, 600.0, 320.0, 300.0, scroll_y(sig!(self.inner), [380.0, 600.0, 300.0, 200.0], 400.0, each((0..15).map(|i| quad(0.0, i as f32 * 40.0, 280.0, 34.0).bg(Color::rgba(200, (i * 17 % 255) as u8, 60, 255))))).bg(rgb(0x202830))),
+                ),
+            )
+            .bg(rgb(0x181818))
+            .line(40.0),
+        )
+    }
+}
+
+#[test]
+fn nested_views_and_tooltips_follow_an_outer_scroll() {
+    for ring in RINGS {
+        let app = app_ring(Nested { outer: Signal::new(0.0), inner: Signal::new(0.0) }, config(800.0, 600.0), ring);
+        let mut app = run("nested", app, 60, |a, t| {
+            match t {
+            0 => a.pointer_move(500.0, 300.0),
+            1 => a.wheel(500.0, 300.0, 0.0, 6.0), // outer: 240, the inner view comes into the port
+            20 => a.pointer_move(500.0, 450.0),
+            21 => a.wheel(500.0, 450.0, 0.0, 3.0), // the inner view
+            40 => {
+                a.pointer_move(440.0, 95.0); // the tooltip trigger, moved up 240 with the outer content
+                assert_eq!(a.rt.input.hovered().len(), 2, "the trigger (and the outer port) are hovered");
+            }
+            41 => a.wheel(440.0, 95.0, 0.0, -1.0), // the shown tooltip moves with the outer view
+            _ => {
+                a.tick(1.0 / 60.0);
+            }
+        }});
+        while app.animating() {
+            app.tick(1.0 / 60.0);
+            app.frame();
+        }
+        app.pointer_leave();
+        app.frame();
+        let (o, i) = (*app.owner.outer, *app.owner.inner);
+        assert!(o > 0.0 && i > 0.0, "both views scrolled: {o} {i}");
+        same_as_fresh("nested", &mut app, App::new(Nested { outer: Signal::new(o), inner: Signal::new(i) }, config(800.0, 600.0), true));
+    }
+}
