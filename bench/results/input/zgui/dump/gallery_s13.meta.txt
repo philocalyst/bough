@@ -1,0 +1,31 @@
+document: s13 (1600x1000 CSS px, scale 1)
+layout boxes (window.layout().keys().len()): 2695
+fragments (inspect::document): 3426
+dom nodes emitted to TSV: 1702 elements + 678 text nodes = 2380 rows; 3162 markers skipped; max depth 20
+document store len: 5543
+focusable elements in tab order (host.focusables(root)): 134
+primitives in the display list after the first frame (scene.ops().len()): 1177
+counters moved by opening the window + first frame (nonzero only): Counters { elements_restyled: 1679, elements_recascaded: 6, elements_traversed: 1717, custom_subtrees_skipped: 3, selector_matches: 49373, nodes_visited: 22116, dirty_walk_steps: 28151, boxes_rebuilt: 2294, box_tree_builds: 1, nodes_relaid_out: 2771, nodes_changed: 2294, gutters_examined: 18, layout_reached_root: 2, layout_batches_distributed: 4, sizes_held: 10992, sizes_measured: 8067, text_shaped: 653, text_bytes_shaped: 6541, text_rebroken: 1198, text_forms_restored: 2, fragments_diffed: 3456, fragments_rebuilt: 3427, custom_maps_refreshed: 10, repaints: 3367, styles_lowered: 870, styles_lowered_from_cache: 6288, group_targets: 12, chunks_reencoded: 3367, primitives_emitted: 1177, primitives_culled: 5184, sprites_resolved_at_push: 890, bounds_tree_inserts: 7472, hit_entries_updated: 3426, hit_entries_reinserted: 21, hit_index_rebuilds: 1, hit_retests: 1, observation_passes: 2, vello_passes: 1, glyphs_placed: 7126, glyphs_rasterised: 985, record_tiles_retained: 4923, frames_drawn: 1, clip_entries_live: 57, clip_slots_reach: 57, spatial_nodes_live: 72, fragments_live: 3426, paint_chunk_bytes_live: 948648, boxes_live: 2695, vector_route_mask: 87, vector_route_general: 1, vector_route_analytic: 78, vector_route_marks: 8, marks_union_bins: 1, vector_mask_misses: 38, vector_route_layer: 3, vector_layers_rasterised: 2, vector_layer_raster_us: 272, vector_layer_bytes_uploaded: 60944, boxes_reshaped: 49, .. }
+  primitives_emitted=1177 primitives_culled=5184 bounds_tree_inserts=7472 chunks_reencoded=3367
+swatch centres (34x34 boxes, CSS px, sorted by x): (41.00,41.00) (85.00,41.00) (129.00,41.00) (173.00,41.00)
+root element scroll extent (device px): content 1585x8066, scrollport 1585x1000, offset (0,0)
+document extent (furthest element box right/bottom, device px): 2094 x 2405054
+scroll containers (9):
+  preorder=0 tag=root testid= classes=[] content=1585x8066 port=1585x1000 scrolls_x=true scrolls_y=true
+  preorder=37 tag=box testid=probe-port classes=[probe-port] content=305x424 port=305x96 scrolls_x=true scrolls_y=true
+  preorder=946 tag=scroll testid= classes=[zui-command__list] content=532x169 port=528x169 scrolls_x=false scrolls_y=true
+  preorder=1063 tag=column testid= classes=[zui-sidebar__content] content=240x468 port=240x298 scrolls_x=true scrolls_y=true
+  preorder=1141 tag=scroll testid= classes=[zui-scroll-area__viewport] content=521x760 port=521x160 scrolls_x=true scrolls_y=true
+  preorder=1243 tag=box testid= classes=[zui-table-container] content=536x223 port=536x223 scrolls_x=true scrolls_y=true
+  preorder=1287 tag=box testid= classes=[zui-table-container] content=1503x153 port=1503x153 scrolls_x=true scrolls_y=true
+  preorder=1288 tag=box testid= classes=[zui-data-table__grid zui-table zs-4d8c0ec2] content=1501x151 port=1501x151 scrolls_x=false scrolls_y=true
+  preorder=2026 tag=scroll testid= classes=[tall frame] content=346x2400000 port=346x142 scrolls_x=true scrolls_y=true
+one resize step (+8 px width) from rest: primitives_emitted=277 culled=69 scene ops after=277 boxes_rebuilt=0 nodes_relaid_out=338
+focus_a_field_timed: 22 Tab presses (loop stops at 400 if no text field is reached); input::typing=true; median press 389.6 us
+ends on: preorder=Some(302) testid/classes/tag=Some(("", "zui-input zs-3dbfed25 zui-field", "field")) (tab_stop index in the order above: Some(21))
+
+hover rules: no per-node API exposes which :hover rules match an element. Document-level facts: the table fixture's only hover rule is `.bench-row:hover { background-color: #1e2532 }`; the shell's is `.shell-row:hover { background-color: var(--zui-muted) }`; the zgui-ui component sheets contain 67 `:hover` selectors across 35 source files (used by s13). Elements with pointer-enter/leave listeners are visible in the `listeners` column.
+a11y role/label come from the node's Semantics (Debug of Role); `editable` = role TextInput/MultilineTextInput or tag input/textarea.
+`other_non_initial` lists every computed longhand (physical ones; logical block/inline duplicates omitted) whose value differs from the initial value and has no column of its own.
+colours are computed values converted to #rrggbbaa (oklch/oklab converted to sRGB without gamut mapping).
+x,y,w,h are window_box(node) in device px (scale 1). Text nodes: window_box of the text node's own fragment (block text children often report 0x0; read the parent element for the line box).

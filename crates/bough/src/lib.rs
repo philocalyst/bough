@@ -5,6 +5,7 @@ pub mod app;
 pub mod backend;
 pub mod color;
 pub mod elem;
+pub mod input;
 pub mod lay_deep;
 pub mod layout;
 pub mod mlist;
@@ -18,6 +19,7 @@ pub mod prelude {
     pub use crate::app::{App, Config, View};
     pub use crate::color::{rgb, Color};
     pub use crate::elem::{at, bars, clip, each, quad, text, virtual_list, Element, IntoProp, Mounter, Quad, TextSrc};
+    pub use crate::input::{no_hit, text_field, tooltip, Button, Ev, Interact, Key, Mods};
     pub use crate::mlist::measured_list;
     pub use crate::rt::Caps;
     pub use crate::sig;

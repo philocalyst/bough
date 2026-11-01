@@ -52,8 +52,14 @@ pub const NK_BARS: u8 = 4;
 /// Layout-owned text (measured, wrapped and placed by the layout flush).
 pub const NK_LTEXT: u8 = 5;
 pub const NK_GALPHA: u8 = 6;
+/// Flag on `Node::kind`: the record shows its hover colour (input.rs); a colour wire then stores the base
+/// colour without writing the instance.
+pub const NK_HOVERED: u8 = 0x80;
 
 pub const NONE: u32 = u32::MAX;
+
+/// The largest window side (device px): the damage planes' 128 tile rows.
+pub const MAX_WINDOW: u32 = 4096;
 
 /// Capacities of the region's columns (fixed for the window's life: a column never moves).
 #[derive(Clone, Copy, Debug)]
@@ -73,7 +79,8 @@ impl Caps {
     pub const DEFAULT: Caps = Caps { instances: 8192, pages: 512, glyphs: 1 << 16, runs: 8192, spaces: 2048, clips: 512, strikes: 16 };
 
     pub fn region_bytes(&self, w: u32, h: u32) -> usize {
-        let sb = Layout::slot_bytes(w, h);
+        // frame slots sized for the tallest window (resize never moves them; 4.3 KB each)
+        let sb = Layout::slot_bytes(w, h.max(MAX_WINDOW));
         let a = |n: usize| n.next_multiple_of(256) + 256;
         HDR_BYTES
             + 3 * a(sb)
@@ -293,6 +300,8 @@ pub struct Rt {
     /// The layout bridge (cephal over the mounted records) and the measured lists.
     pub lay: crate::layout::Lay,
     pub mregions: Vec<crate::mlist::MRegion>,
+    /// Pointer, hover, focus, routes (input.rs).
+    pub input: crate::input::Input,
     /// Keeps a heap region alive (the GPU region is kept alive by the columns' reference count too).
     _region: Region,
 }
@@ -300,7 +309,7 @@ pub struct Rt {
 impl Rt {
     /// The runtime over `region` (the presenter's shared buffer, or heap memory of the same size).
     pub fn new(win_w: i32, win_h: i32, scale: f32, font: &[u8], mut region: Region, caps: Caps) -> Rt {
-        let sb = Layout::slot_bytes(win_w as u32, win_h as u32);
+        let sb = Layout::slot_bytes(win_w as u32, (win_h as u32).max(MAX_WINDOW));
         let hdr = region.reserve(HDR_BYTES, 64);
         assert_eq!(hdr, 0, "the header is at offset 0");
         let mut slot = [0u32; 3];
@@ -367,6 +376,7 @@ impl Rt {
             ctr: Counters::default(),
             lay: crate::layout::Lay::new(scale),
             mregions: Vec::new(),
+            input: Default::default(),
             _region: region,
         }
     }

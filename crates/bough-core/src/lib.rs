@@ -40,6 +40,7 @@ pub mod stats {
 }
 
 pub use bough::{Bough, Handle, RecordInit};
+pub use bough::hit::{KF_FOCUS, KF_INTERACT, KF_MASK, KF_NOHIT};
 pub use damage::Plane;
 pub use nrect::NRect;
 

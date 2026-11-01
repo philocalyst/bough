@@ -1,0 +1,25 @@
+SCENARIO thread-resize 250 messages, 499 wrapped paragraphs, 9517 boxes; 32 width steps and a 120ms drag at 75 Hz
+MEASURE	thread-resize	thread.resize	ms	25.2698	16.5000	over	measured at 51ms before the resize retention work: the clip identity fix alone took it to 13, and the counts beside this say where the rest goes	8.0000	missed	p50=25.2698;p95=71.7240;p99=82.3133;max=82.3133;n=32
+MEASURE	thread-resize	thread.resize_p95	ms	71.7240	18.7500	over	the shoulder of the same distribution: a drag is judged by its worst steps, which is what a person calls stutter	-	-	p50=25.2698;p95=71.7240;p99=82.3133;max=82.3133;n=32
+MEASURE	thread-resize	thread.rebreaks_per_step	paragraphs	499.0000	499.0000	ok	a width step re-breaks the wrapped paragraphs and no more; the fixed-width header cells owe it nothing	-	-	-
+MEASURE	thread-resize	thread.reshapes_per_step	runs	0.0000	0.0000	ok	shaping is width-independent by design, so a resize that shapes is a cache key that grew a width in it	0.0000	met	-
+MEASURE	thread-resize	thread.relayouts_per_step	nodes	1530.0000	19034.0000	ok	every box may be re-asked at a new width, at most twice when a scrollbar decision flips; a third asking is a pass that ran again	-	-	-
+MEASURE	thread-resize	thread.hit_rebuilds_per_step	rebuilds	0.0000	2.0000	ok	a full relayout earns one wholesale rebuild, two when the gutter fixpoint runs the pass again	-	-	-
+MEASURE	thread-resize	thread.drag.layouts	layouts	10.0000	12.0000	ok	a drag's layouts are bounded by elapsed time over the output's refresh interval, never by how many configures arrived	-	-	-
+MEASURE	thread-resize	reshape.paragraphs_forgotten	paragraphs	0.0000	0.0000	ok	one element's brush moving costs that element's paragraphs, not the window's	-	-	-
+MEASURE	thread-resize	reshape.boxes_marked_all_dirty	boxes	0.0000	0.0000	ok	nothing these scenarios drive changes the device scale, which is the one change every box pays for	-	-	-
+INSTR thread-resize thread.resize p50=130991804 p10=127202010 p90=132290801 n=32
+PACE	thread-resize	16667.0000	17	32
+NOTE	thread-resize	one step relays out 1530 nodes (p50) against 9517 boxes and re-breaks 499 of 499 paragraphs; 1 layout passes reached the root and the pool distributed 2 batches
+NOTE	thread-resize	paint answered a step with 73 re-encodes against 59 replays (p50), uploading 0 chunk bytes
+NOTE	thread-resize	the drag laid out 10 times against a ceiling of 12, deferring 111 configures and declining 111 offered frames
+ESCALATION	thread-resize	152838	16506	1512	3066	2478
+  thread.resize                             25.27 ms   band 13.2 +25% = 16.5         REGRESSED
+  thread.resize_p95                         71.72 ms   band 15.0 +25% = 18.8         REGRESSED
+  thread.rebreaks_per_step                 499.00 paragraphs band <= 499                   ok
+  thread.reshapes_per_step                   0.00 runs band <= 0                     ok
+  thread.relayouts_per_step               1530.00 nodes band <= 19034                 ok
+  thread.hit_rebuilds_per_step               0.00 rebuilds band <= 2                     ok
+  thread.drag.layouts                       10.00 layouts band <= 12                    ok
+  reshape.paragraphs_forgotten               0.00 paragraphs band <= 0                     ok
+  reshape.boxes_marked_all_dirty             0.00 boxes band <= 0                     ok

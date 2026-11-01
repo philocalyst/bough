@@ -39,7 +39,7 @@ impl<V> Mounter<'_, V> {
         e.mount(self)
     }
     /// Install a wire for `w` (an `offset_of!`-proven field of this mounter's owner type).
-    fn wire<T>(&mut self, w: &Wired<'_, T, V>, patch: PatchFn, node: u32, recipe: [u8; 16]) {
+    pub(crate) fn wire<T>(&mut self, w: &Wired<'_, T, V>, patch: PatchFn, node: u32, recipe: [u8; 16]) {
         // The runtime inference the proof replaced survives as a debug check: the operand is the owner's
         // own field (not a field of another value of the same type).
         debug_assert_eq!(w.sig as *const Signal<T> as usize, self.owner as usize + w.off as usize, "sig! operand is not a field of the mounted owner");
@@ -193,6 +193,9 @@ impl Apply for ApplyBg {
         }
         let old = n.color;
         n.color = v.0;
+        if n.kind & NK_HOVERED != 0 {
+            return; // the hover colour shows; the base returns when the pointer leaves (input.rs)
+        }
         let (h, inst, bordered) = (n.handle, rt.runs[n.run as usize].first, n.kind == NK_BORDER);
         let p = rt.inst_mut(inst);
         if bordered {
