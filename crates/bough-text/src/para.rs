@@ -329,10 +329,9 @@ impl Para {
         let b = self.base as usize;
         let k = self.run_of(a - 1);
         let same = (a as usize) < self.text.len() && self.run_of(a) == k;
-        let tt = fonts[self.font(k)].script.tokens.as_ref().expect("token model");
         let t = pool.ent[b + a as usize - 1] as usize;
         let u = if same { t_first as usize } else { 0 };
-        pool.x[b + a as usize - 1].wrapping_add(tt.step[t << 8 | u] as i32)
+        pool.x[b + a as usize - 1].wrapping_add(step(fonts[self.font(k)], t, u))
     }
 
     /// Shape `[a, e)` from pen 0, then move it to the pen it takes after slot `a - 1`. Returns the pen after it.
@@ -436,14 +435,14 @@ impl Para {
         let pen_after = self.reshape(pool, fonts, a as u32, e_new as u32)?;
         let new_sfx_x = if sfx > 0 {
             // the last changed glyph steps into the suffix's first byte (a space), not into the end
-            let tt = fonts[self.runs().first().map_or(0, |r| r.font) as usize].script.tokens.as_ref().expect("token model");
+            let sh = fonts[self.runs().first().map_or(0, |r| r.font) as usize];
             if e_new > a {
                 let mut g = e_new - 1;
                 while g > a && pool.ent[b + g] == crate::script::TOK_PH as u16 {
                     g -= 1;
                 }
                 let t = pool.ent[b + g] as usize;
-                let x = pool.x[b + g].wrapping_add(tt.step[t << 8 | b' ' as usize] as i32);
+                let x = pool.x[b + g].wrapping_add(step(sh, t, b' ' as usize));
                 for k in g + 1..e_new {
                     pool.x[b + k] = x;
                 }
@@ -636,6 +635,16 @@ impl Para {
     /// Byte offset where line `i` of `wrap` starts.
     pub fn line_start(&self, wrap: &Wrap, i: usize) -> u32 {
         if self.words.is_empty() || i == 0 { 0 } else { self.words[wrap.lines[i].0 as usize].ws }
+    }
+}
+
+/// The pen step of token `t` followed by token `u` (`0`: the end): the token table, or the dense ASCII table for a
+/// font without a token model (whose slots are all ASCII bytes).
+#[inline]
+fn step(sh: &Shaper, t: usize, u: usize) -> i32 {
+    match sh.script.tokens.as_ref() {
+        Some(tt) => tt.step[t << 8 | u] as i32,
+        None => sh.dense()[(t & 127) << 7 | (u & 127)] as i32,
     }
 }
 

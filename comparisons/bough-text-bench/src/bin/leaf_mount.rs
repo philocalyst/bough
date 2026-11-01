@@ -8,6 +8,7 @@ use bough_text::pool::GlyphPool;
 use bough_text_bench::instrs;
 
 /// The round-2 leaf (git 9c61b75 `LeafCtx`, fast path), verbatim but for paths, as the baseline.
+#[allow(dead_code)]
 #[derive(Clone, Default)]
 pub struct OldLeaf {
     pub fast: bool,
