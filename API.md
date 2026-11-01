@@ -44,15 +44,23 @@ Operands accept the closed `IntoProp<P>` family, one lowering per form:
 | operand | lowering | per-update cost |
 |---|---|---|
 | `T` (constant) | written into the record/instance at mount | none |
-| `&Signal<T>` | wire: owner-relative field offset → (record, property) | one patch fn |
-| `sig.map(f)` (`f: Copy`, ≤ 16 B of captures) | wire with the recipe inline | `f` + one patch fn |
+| `sig!(self.f)` | wire: `offset_of!` field offset → (record, property) | one patch fn |
+| `&Signal<T>` (plain borrow) | constant of this description | re-description only |
+| `sig!(self.f).map(f)` (`f: Copy`, ≤ 16 B of captures) | wire with the recipe inline | `f` + one patch fn |
 | `&Reader<T>` / `reader.project(...)` | wire guarded by readiness; Pending holds the previous value | patch on Ready |
 | `&List<T>` + row fn | keyed region; rows are owners; deltas splice runs | per inserted/removed row |
 
-The owner-relative trick: lowering knows the owner's address, so `&self.count` becomes
-`offset = addr(field) − addr(owner)`. If `offset < size_of::<V>()` the field is stable for the owner's life and
-the wire is installed; otherwise (heap-held signal) the operand is treated as a constant of this description and
-the owner falls back to re-description.
+**Wires are installed from compiler-proven field paths.** `sig!(self.count)` (a `macro_rules!`, not a proc
+macro) expands to `Wired::new(&self.count, core::mem::offset_of!(Self, count))`; nested struct paths work
+(`sig!(self.stats.p99)`). `offset_of!` only accepts struct field paths, and a struct field can never change
+location or type for the owner's life, so the patch's `owner + offset` read is sound. A plain borrow
+(`text(&self.count)`) is a constant of this description, refreshed when the owner re-describes.
+
+Rejected (review of the integration prototype, 2026-11-01): inferring the offset at runtime from
+`addr(field) − addr(owner)` and accepting it when it lies inside `size_of::<V>()`. That proves the signal is
+inside the owner's bytes, not that it stays there: a signal inside an enum variant or `Option` field has its bytes
+reused when the variant changes, and the wire would then read another type's bytes as `Signal<T>` — undefined
+behaviour reachable from safe code. The runtime range check survives only as a debug assertion.
 
 ## Routes and turns
 
