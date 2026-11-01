@@ -400,3 +400,29 @@ fn laid_out_shell_drag_and_resize_are_pixel_exact() {
         same_as_fresh("shell-l", &mut app, App::new(fresh, config(w, h), true));
     }
 }
+
+#[test]
+fn thread_resize_rewraps_pixel_exact() {
+    use bough_zgui::thread::{thread_config, Thread};
+    for ring in RINGS {
+        let app = app_ring(Thread { scroll: Signal::new(0.0) }, thread_config(WIDTH, HEIGHT), ring);
+        let widths = [1400.0, 700.0, 1180.0, 520.0, 1560.0];
+        let mut app = run("thread", app, widths.len() + 6, |a, t| {
+            if t < widths.len() {
+                a.resize(widths[t], HEIGHT);
+            } else if t == widths.len() {
+                a.pointer_move(300.0, 500.0);
+                a.wheel(300.0, 500.0, 0.0, 9.0);
+            } else {
+                a.tick(1.0 / 60.0);
+            }
+        });
+        while app.animating() {
+            app.tick(1.0 / 60.0);
+            app.frame();
+        }
+        let s = *app.owner.scroll;
+        let (w, h) = (app.rt.win_w as f32, app.rt.win_h as f32);
+        same_as_fresh("thread", &mut app, App::new(Thread { scroll: Signal::new(s) }, thread_config(w, h), true));
+    }
+}

@@ -429,6 +429,7 @@ impl LeafCtx {
         self.fast = pool.shape_block(&ts.shaper, text.as_bytes(), &mut blk);
         if !self.fast {
             ts.shape_run(text, self.size_px, &mut self.run);
+            self.slow_words();
             return;
         }
         self.block = Some(blk);
@@ -475,6 +476,41 @@ impl LeafCtx {
         self.line_w = self.words.last().map_or(0, |w| w.x1);
     }
 
+    /// The word table of a run shaped by the general path (ligatures, kerning triggers, Latin-1): words are
+    /// maximal runs of glyphs whose cluster is not a space; `ws`/`we` are the byte offsets of the word's first
+    /// cluster and of the cluster after it (lines are byte spans, each re-shaped when placed), `x0`/`x1` the
+    /// pens at the word's first glyph and after its last. Lines then wrap over words as on the fast path
+    /// (round 3b: a paragraph with "fi" was one unwrapped line before, the old slow path needed glyph i =
+    /// byte i).
+    fn slow_words(&mut self) {
+        self.words.clear();
+        let n = self.run.len();
+        let cl = |i: usize| -> usize { if self.run.identity_clusters || self.run.cluster.is_empty() { i } else { self.run.cluster[i] as usize } };
+        let byte = |i: usize| -> u8 { self.text.get(cl(i)).copied().unwrap_or(b' ') };
+        let mut i = 0;
+        while i < n {
+            while i < n && byte(i) == b' ' {
+                i += 1;
+            }
+            let ws = i;
+            while i < n && byte(i) != b' ' {
+                i += 1;
+            }
+            if i > ws {
+                let x1 = self.run.x[i - 1] + self.run.advance(i - 1);
+                let we = if i < n { cl(i) } else { self.text.len() };
+                self.words.push(Word { ws: cl(ws) as u32, we: we as u32, x0: self.run.x[ws], x1 });
+            }
+        }
+        self.line_w = self.words.last().map_or(0, |w| w.x1);
+    }
+
+    /// Wrapping works on the word table (both paths fill it).
+    #[inline]
+    fn word_wrap(&self) -> bool {
+        self.fast || !self.words.is_empty()
+    }
+
     #[inline]
     fn k(&self) -> f32 {
         self.size_px / self.upem.max(1.0)
@@ -483,7 +519,7 @@ impl LeafCtx {
     /// Does this text wrap at all (a paragraph, whose slow path additionally needs glyph i = byte i)?
     #[inline]
     fn wraps(&self) -> bool {
-        self.wrap && self.ascii && (self.fast || self.run.len() == self.text.len())
+        self.wrap && (self.word_wrap() || (self.ascii && self.run.len() == self.text.len()))
     }
 
     /// Wrap at `max_units`; returns the line count (`starts` holds the first byte / glyph of each line).
@@ -503,10 +539,10 @@ impl LeafCtx {
         if !self.wraps() {
             self.starts.clear();
             self.starts.push(0);
-            self.widest = if self.fast { self.line_w } else { self.line_width() };
+            self.widest = if self.word_wrap() { self.line_w } else { self.line_width() };
             return 1;
         }
-        if self.fast {
+        if self.word_wrap() {
             // wrap_greedy over the word table: break before a word whose right edge is past the line
             self.starts.clear();
             self.starts.push(0);
@@ -544,6 +580,9 @@ impl LeafCtx {
 
     /// Width of the whole text on one line, trailing spaces excluded (font units).
     fn line_width(&self) -> i32 {
+        if self.word_wrap() {
+            return self.line_w;
+        }
         if self.fast {
             return self.line_w;
         }
@@ -570,7 +609,7 @@ impl LeafCtx {
         if self.min_word >= 0 {
             return self.min_word;
         }
-        let best = if self.fast {
+        let best = if self.word_wrap() {
             self.words.iter().map(|w| w.x1 - w.x0).max().unwrap_or(0)
         } else {
             let (n, mut best, mut i) = (self.run.len(), 0, 0);

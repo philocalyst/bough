@@ -11,6 +11,7 @@ use std::ops::Range;
 
 pub mod gallery;
 pub mod shell;
+pub mod thread;
 
 pub fn font_bytes() -> Vec<u8> {
     zgx_workload::font_file().unwrap_or_else(|| zgx_workload::FONT_BYTES.to_vec())

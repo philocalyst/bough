@@ -143,6 +143,7 @@ fn main() {
         "cold-start" => gallery::cold_start::<gallery::GalleryL>(gpu()),
         "kitchen-sink" => gallery::kitchen::<gallery::GalleryL>(gpu()),
         "app-shell" => shell::run::<shell::ShellL>(gpu()),
+        "thread-resize" => thread::run(gpu()),
         "cold-start-dump" => gallery::cold_start::<gallery::Gallery>(gpu()),
         "kitchen-sink-dump" => gallery::kitchen::<gallery::Gallery>(gpu()),
         "app-shell-dump" => shell::run::<shell::Shell>(gpu()),
