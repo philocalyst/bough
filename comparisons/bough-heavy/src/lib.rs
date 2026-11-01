@@ -34,7 +34,7 @@ pub fn font_bytes() -> Vec<u8> {
 const FONT_BYTES_FALLBACK: &[u8] = zgx_workload::FONT_BYTES;
 
 pub fn config(scale: f32) -> Config {
-    Config { width_pt: WIDTH, height_pt: HEIGHT, scale, font: font_bytes(), ring: 4 }
+    Config { width_pt: WIDTH, height_pt: HEIGHT, scale, font: font_bytes(), ring: std::env::var("BOUGH_RING").ok().and_then(|v| v.parse().ok()).unwrap_or(4) }
 }
 
 fn panel<Ch>(pos: (f32, f32), size: (f32, f32), radius: f32, ch: Ch) -> Quad<Color, f32, (f32, f32), Ch> {
