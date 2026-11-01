@@ -106,7 +106,7 @@ elements become blocks; the thread's inline spans are one run per paragraph).
 | shell.resize_step (40 sizes) | 3,266 µs / 16.4 M | **77 µs / 1.51 M** | 10.9 | – |
 | thread.resize (250 messages, 499 rewraps/step) | 28 ms / 130.2 M | **1.04 ms / 21.7 M** | 6.0 | – |
 | shell.drag_step (panel basis restyled, relaid) | 402 µs / 3.44 M | **5.4 µs / 101.6 K** | 34 | 0.38 µs / 6.3 K |
-| shell.tooltip_crossing | 2,239 µs / 11.3 M | 0.92 µs / 17.2 K | 657 | 17.3 K |
+| shell.tooltip_crossing | 2,239 µs / 11.3 M | 0.92 µs / 17.2 K | 659 | 17.3 K |
 | kitchen.keystroke / click / tab / untouched / glide tick | (1.1) | 3,448 / 1,378 / 3,189 / 4,518 / 21,588 | 1,290 / 341 / 1,422 / 199 / 486 | 3,441 / 1,371 / 3,112 / 4,199 / 20,446 |
 
 Spans in bough's cold.first_frame: `App::new` (runtime and region, the mount of 2,451 records, style resolution,
@@ -144,8 +144,8 @@ entry to the GPU's completion of the first frame:
 | | serial (all on main) | **overlapped** |
 |---|---:|---:|
 | wall, entry → first presented pixel (load ~110) | 45.5–55.7 ms (median 47.0) | 42.0–59.7 ms (median 52.2) |
-| wall, the same in a quieter moment (load ~73) | 42–49 ms | 36.6 ms |
-| main thread: mount done | 38–50 ms | 7.6–10.7 ms |
+| wall, a quieter moment (load ~73), before decorations and faces were added | 42–49 ms | 36.6 ms |
+| main thread: mount done (from entry) | 39.8–50.1 ms | 8.2–10.7 ms |
 | instructions: main thread | 208.5 M | **98.7 M** |
 | GPU preparation thread (device 22–50 ms under load) | – | 52.6 M |
 | SVG workers (66 documents) / face threads / raster workers | – | 29.2 M / 28.6 M / 6.0 M |
