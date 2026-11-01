@@ -29,11 +29,13 @@
 //!   and the slot offset; surfaces, atlas, bins and counts are Metal 3 resource ids / GPU addresses in the
 //!   header's bind table (`FBIND_OFF`), all in the queue's residency set. So a pending frame names no
 //!   surface (IOSurfaceIsInUse reports only the compositor) and growing the bins is a header write.
-//! * **Publish:** in the same turn, on the calling (main) thread: wait for `ev >= 2f` (a kernel wait on the
-//!   shared event, no completion handler, no notification thread), then `setContents` joins the run loop
-//!   turn's implicit transaction. No added latency, no thread hop, one commit per turn, and the CPU never
-//!   writes the region while the GPU reads it (`sync` is a 72-instruction read of the event when the GPU is
-//!   done).
+//! * **Publish (windowed): the publisher thread.** The input thread only writes the slot, signals the event
+//!   and posts the surface; the publisher waits for `ev >= 2f`, commits the surface in its own explicit
+//!   Core Animation transaction, and keeps the stream armed (`Kern`). No GPU wait, CA transaction, encode or
+//!   commit on the input thread, and no added latency. The CPU never writes the region while the GPU reads
+//!   it (`sync` is a 72-instruction read of the event when the GPU is done).
+//! * **Resize:** fresh surfaces, bins and counts at the new size; the layer's new frame is committed with the
+//!   first frame drawn at that size.
 use crate::gpu::{Dev, Tex, METALLIB};
 use crate::instance::Instance;
 use dispatch2::DispatchData;

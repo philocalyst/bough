@@ -815,21 +815,42 @@ fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage:
     // geometry: n.x = x of bar 0 (px), n.w = bar width px, n.h = step px, n.y = base pt (space-local),
     // n.margin = max_h pt, n.line_h = min_h pt, n.size_px = scale
     let (x0, wpx, step, base_pt, max_h, min_h, scale, y0) = (n.x, n.w, n.h, n.y, n.margin, n.line_h, n.size_px, n.y0);
-    let (first, space, clip) = (rt.runs[n.run as usize].first, n.space, n.clip);
+    let first = rt.runs[n.run as usize].first as usize;
+    let space = n.space;
     let (bottom, wb) = (snap(y0 + base_pt * scale), snap(wpx));
+    let [sx, sy] = rt.space(space);
+    let band = edge_band(KIND_SOLID, 0.0, 0.0) as f32;
+    let (inst, series) = (&mut rt.inst, &rt.nodes[node as usize].series);
+    // Bars are bottom-anchored on the geometry grid: only their top edges move (x, width and bottom are
+    // fixed, written at mount). The edge-band rule (`Bough::damage_edges`) gives each moved bar the strip
+    // between its old and new top plus a solid's band; their union is covered by ONE rect: the sparkline's
+    // columns between the highest and the lowest moved top (a min / max folded in registers, 2 selects a
+    // bar). The bars' bodies below the lowest top, which old ∪ new repaints every tick, are never damaged.
+    let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
     let mut top = f32::MAX;
     for i in 0..count {
-        let h = (max_h * rt.nodes[node as usize].series[i]).max(min_h);
-        let (x, y) = (snap(x0 + i as f32 * step), snap(y0 + (base_pt - h) * scale));
-        let p = rt.inst_mut(first + i as u32);
+        let h = (max_h * series[i]).max(min_h);
+        let y = snap(y0 + (base_pt - h) * scale);
+        let p = &mut inst[first + i];
         let oy = p.pos[1];
-        p.pos = [x, y];
-        p.size = [wb, bottom - y];
-        if damage && oy != y {
-            let (oi, ni) = (rt.ink_rect(space, x, oy, wb, bottom - oy, 0.0), rt.ink_rect(space, x, y, wb, bottom - y, 0.0));
-            rt.bough.damage_edges(oi, ni, 0b0010, edge_band(KIND_SOLID, 0.0, 0.0), clip);
+        if !damage {
+            p.pos[0] = snap(x0 + i as f32 * step);
+            p.size[0] = wb;
         }
-        top = top.min(y);
+        p.pos[1] = y;
+        p.size[1] = bottom - y;
+        top = if y < top { y } else { top };
+        // an unmoved bar has oy == y: it would add only its band, so it is not folded
+        let (mn, mx) = if oy < y { (oy, y) } else { (y, oy) };
+        let moved = damage && oy != y;
+        lo = if moved && mn < lo { mn } else { lo };
+        hi = if moved && mx > hi { mx } else { hi };
+    }
+    if lo <= hi {
+        let xa = snap(x0) + sx;
+        let r = NRect::new(xa.floor() as i32, (lo + sy - band).floor() as i32, (xa + snap((count as f32 - 1.0) * step) + wb).ceil() as i32, (hi + sy + band).ceil() as i32);
+        let clip = rt.nodes[node as usize].clip;
+        rt.bough.damage_clipped(r, clip);
     }
     let xa = snap(x0);
     rt.ink_rect(space, xa, top, snap(x0 + (count as f32 - 1.0) * step) + wb - xa, bottom - top, 0.0)

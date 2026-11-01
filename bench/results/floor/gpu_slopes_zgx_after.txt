@@ -1,0 +1,1 @@
+zgx heavy stream  GPU   0.989 ms/frame  [0.860 .. 1.232]      445.7 Kcycles/frame  [428.5 .. 508.9]

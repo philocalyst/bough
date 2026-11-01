@@ -491,6 +491,12 @@ impl Bough {
         self.damage_edges(old, ink, moved, band, clip);
         true
     }
+    /// Mark `r` clipped to clip `clip` (0: none): a writer's own union of [`Bough::damage_edges`] strips.
+    #[inline]
+    pub fn damage_clipped(&mut self, r: NRect, clip: u16) {
+        let r = self.clipped(r.canon(), clip);
+        self.ring.add(r);
+    }
     /// The clip id of a handle's record (0: unclipped).
     pub fn clip_of_handle(&self, h: Handle) -> Option<u16> {
         let (d, s) = self.handle_loc(h)?;
