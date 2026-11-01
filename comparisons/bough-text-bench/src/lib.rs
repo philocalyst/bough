@@ -1,6 +1,7 @@
 //! Shared pieces of the text round-3 benchmark ports (`src/bin/*`): counters, medians, fonts, and the scenes
 //! whose pixels the tests check.
 pub mod churn;
+pub mod i18n;
 
 /// Instructions retired by this process so far (`proc_pid_rusage` `ri_instructions`).
 #[inline]
