@@ -25,10 +25,61 @@ fn scale_alpha(c: u32, k: f32) -> u32 {
 }
 
 fn main() {
-    let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let path = format!("{dir}/../../bench/results/input/zgui/dump/gallery_s13.tsv");
-    println!("cargo:rerun-if-changed={path}");
     println!("cargo:rerun-if-changed=build.rs");
+    let mut out = generate("gallery_s13.tsv", "GALLERY", gallery_tag);
+    out.push_str(&generate("shell.tsv", "SHELL", shell_tag));
+    std::fs::write(format!("{}/gallery_nodes.rs", std::env::var("OUT_DIR").unwrap()), out).unwrap();
+}
+
+/// Gallery hooks: the four probe swatches (100..), the text field the 22nd Tab reaches (2), the running
+/// animations (3 spinner, 4 skeleton, 5 progress slide, 6 OTP caret).
+fn gallery_tag(g: &dyn Fn(&str) -> String, st: &mut (u16, bool)) -> u16 {
+    if g("classes").split(' ').any(|c| c == "swatch") {
+        st.0 += 1;
+        return 100 + st.0 - 1;
+    }
+    if g("tag") == "field" && !st.1 && g("tab_stop") == "21" {
+        st.1 = true;
+        return 2;
+    }
+    match g("animation_name").as_str() {
+        "zui-spinner-turn" => 3,
+        "zui-skeleton-pulse" => 4,
+        "zui-progress-slide" => 5,
+        "zui-otp-caret-blink" => 6,
+        _ => 0,
+    }
+}
+
+/// Shell hooks: tooltip triggers (10 + n), page rows (40), the page panel (50), the dock handle (51), the
+/// dock panel with the log (52).
+fn shell_tag(g: &dyn Fn(&str) -> String, st: &mut (u16, bool)) -> u16 {
+    let classes = g("classes");
+    let has = |c: &str| classes.split(' ').any(|x| x == c);
+    if has("zui-tooltip__trigger") {
+        st.0 += 1;
+        return 10 + st.0 - 1;
+    }
+    if has("shell-row") {
+        return 40;
+    }
+    if has("zui-resizable__panel") {
+        let t = if st.1 { 52 } else { 50 };
+        st.1 = true;
+        return t;
+    }
+    if g("testid") == "dock-handle" {
+        return 51;
+    }
+    0
+}
+
+type Tagger = fn(&dyn Fn(&str) -> String, &mut (u16, bool)) -> u16;
+
+fn generate(file: &str, name: &str, tagger: Tagger) -> String {
+    let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let path = format!("{dir}/../../bench/results/input/zgui/dump/{file}");
+    println!("cargo:rerun-if-changed={path}");
     let data = std::fs::read_to_string(&path).expect("gallery dump");
     let mut lines = data.lines();
     let head: Vec<&str> = lines.next().unwrap().split('\t').collect();
@@ -37,11 +88,11 @@ fn main() {
     let g = |r: &Vec<&str>, c: &str| -> String { r.get(col[c]).copied().unwrap_or("").to_string() };
 
     let mut out = String::new();
-    writeln!(out, "pub static GALLERY: &[TNode] = &[").unwrap();
+    writeln!(out, "pub static {name}: &[TNode] = &[").unwrap();
+    let mut st = (0u16, false);
     // parents by depth (for text nodes, whose fragment box is often 0x0: the parent's line box)
     let mut parents: Vec<[f32; 4]> = Vec::new();
     let mut n = 0usize;
-    let (mut swatch, mut field_done) = (0u16, false);
     for r in &rows {
         let pre: usize = g(r, "preorder").parse().unwrap();
         let depth: usize = g(r, "depth").parse().unwrap();
@@ -65,7 +116,7 @@ fn main() {
         let kind = g(r, "kind");
         let display = g(r, "display");
         let mut flags = 0u16;
-        let mut tag = 0u16;
+        let tag;
         let (mut bg, mut bw, mut bc, mut radius) = (0u32, 0.0f32, 0u32, 0.0f32);
         let (mut text, mut font, mut lh, mut fg) = (String::new(), 0.0f32, 0.0f32, 0u32);
         let mut rect = rect;
@@ -106,26 +157,10 @@ fn main() {
         if !g(r, "tab_stop").is_empty() {
             flags |= 1; // T_FOCUS
         }
-        let classes = g(r, "classes");
-        if classes.split(' ').any(|c| c == "swatch") {
-            flags |= 4;
-            tag = 100 + swatch;
-            swatch += 1;
-        } else if g(r, "tag") == "field" && !field_done && !g(r, "tab_stop").is_empty() && g(r, "tab_stop") == "21" {
-            flags |= 4;
-            tag = 2;
-            field_done = true;
-        } else {
-            match g(r, "animation_name").as_str() {
-                "zui-spinner-turn" => tag = 3,
-                "zui-skeleton-pulse" => tag = 4,
-                "zui-progress-slide" => tag = 5,
-                "zui-otp-caret-blink" => tag = 6,
-                _ => {}
-            }
-            if tag != 0 {
-                flags |= 4;
-            }
+        let gr = |c: &str| g(r, c);
+        tag = tagger(&gr, &mut st);
+        if tag != 0 {
+            flags |= 4; // T_HOOK
         }
         writeln!(
             out,
@@ -136,6 +171,6 @@ fn main() {
         n += 1;
     }
     writeln!(out, "];").unwrap();
-    writeln!(out, "pub const GALLERY_NODES: usize = {n};").unwrap();
-    std::fs::write(format!("{}/gallery_nodes.rs", std::env::var("OUT_DIR").unwrap()), out).unwrap();
+    writeln!(out, "pub const {name}_NODES: usize = {n};").unwrap();
+    out
 }

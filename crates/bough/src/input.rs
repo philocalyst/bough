@@ -167,14 +167,13 @@ pub(crate) struct Act {
     pub scroll: u32,
     /// `Input::fields` index, or NONE.
     pub field: u32,
-    /// Tooltip: its clip id and the rect it shows (0: none).
-    pub tip: u16,
-    pub tip_rect: NRect,
+    /// `Input::tips` index, or NONE.
+    pub tip: u32,
 }
 
 impl Act {
     fn new(handle: Handle) -> Act {
-        Act { handle, node: NONE, inst: NONE, hover_bg: None, base: 0, bordered: false, hovered: false, click: None, press: None, hover: None, key: None, drag: None, scroll: NONE, field: NONE, tip: 0, tip_rect: NRect::EMPTY }
+        Act { handle, node: NONE, inst: NONE, hover_bg: None, base: 0, bordered: false, hovered: false, click: None, press: None, hover: None, key: None, drag: None, scroll: NONE, field: NONE, tip: NONE }
     }
 }
 
@@ -242,9 +241,12 @@ pub struct Input {
     by_handle: Vec<u32>,
     pub(crate) scrollers: Vec<Scroller>,
     pub(crate) fields: Vec<Field>,
+    pub(crate) tips: Vec<Tip>,
     /// Scroll views (`template::scroll_y`) and the one whose content is being mounted.
     pub(crate) views: Vec<crate::template::ScrollView>,
     pub(crate) mounting_view: Option<u32>,
+    /// Wired clips (`template::clip_by`): (clip id, space, parent clip).
+    pub(crate) wclips: Vec<(u16, u16, u16)>,
     /// Handles of the hover chain (dispatch chain under the pointer), nearest first.
     hover: Vec<Handle>,
     cell: NRect,
@@ -278,8 +280,10 @@ impl Default for Input {
             by_handle: Vec::new(),
             scrollers: Vec::new(),
             fields: Vec::new(),
+            tips: Vec::new(),
             views: Vec::new(),
             mounting_view: None,
+            wclips: Vec::new(),
             hover: Vec::new(),
             cell: NRect::EMPTY,
             cell_epoch: 0,
@@ -506,18 +510,19 @@ unsafe fn patch_paint2<T: 'static, F: Fn(&T) -> (Color, Color) + Copy>(rt: &mut 
     }
 }
 
-/// Interaction ops on any element (they apply to its first record).
-pub trait Interact<V>: Element<V> + Sized {
+/// Interaction ops on any element (they apply to its first record). The owner type is inferred from
+/// where the element is mounted (and from the closures' argument types).
+pub trait Interact: Sized {
     /// Activation (a primary press and release on the element, zgui's / the DOM's click).
-    fn on_click<F: Fn(&mut V) + Copy + 'static>(self, f: F) -> On<Self, Click<F>> {
+    fn on_click<V, F: Fn(&mut V) + Copy + 'static>(self, f: F) -> On<Self, Click<F>> {
         On(self, Click(f))
     }
     /// The press itself.
-    fn on_press<F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Press<F>> {
+    fn on_press<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Press<F>> {
         On(self, Press(f))
     }
     /// Pointer enters (`ev.on`) or leaves the element.
-    fn on_hover<F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Hover<F>> {
+    fn on_hover<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Hover<F>> {
         On(self, Hover(f))
     }
     /// Background while hovered (`:hover { background }`): a paint write on crossing, no route.
@@ -526,7 +531,7 @@ pub trait Interact<V>: Element<V> + Sized {
     }
     /// Both colour words of the element (border and fill of a border box; the fill of a plain one) from one
     /// signal, hover-aware (see [`PaintOp`]).
-    fn paint_with<'a, T: 'static, F: Fn(&T) -> (Color, Color) + Copy + 'static>(self, sig: Wired<'a, T, V>, f: F) -> On<Self, PaintOp<'a, T, V, F>> {
+    fn paint_with<'a, T: 'static, V, F: Fn(&T) -> (Color, Color) + Copy + 'static>(self, sig: Wired<'a, T, V>, f: F) -> On<Self, PaintOp<'a, T, V, F>> {
         On(self, PaintOp { sig, f })
     }
     /// A tab stop (focus order is preorder).
@@ -534,19 +539,19 @@ pub trait Interact<V>: Element<V> + Sized {
         On(self, Focusable)
     }
     /// Keys while the element (or a descendant) has focus; a tab stop.
-    fn on_key<F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, OnKey<F>> {
+    fn on_key<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, OnKey<F>> {
         On(self, OnKey(f))
     }
     /// Pointer travel while pressed (capture: no hit test until release). `ev.dx/dy` since the press.
-    fn on_drag<F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Drag<F>> {
+    fn on_drag<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Drag<F>> {
         On(self, Drag(f))
     }
     /// The wheel over this element glides `sig` (points) within `0..=max`, `line` points per detent line.
-    fn scrolls(self, sig: Wired<'_, f32, V>, line: f32, max: f32) -> On<Self, Scrolls<'_, V>> {
+    fn scrolls<V>(self, sig: Wired<'_, f32, V>, line: f32, max: f32) -> On<Self, Scrolls<'_, V>> {
         On(self, Scrolls { sig, line, max })
     }
 }
-impl<V, E: Element<V>> Interact<V> for E {}
+impl<E> Interact for E {}
 
 /// Pointer-transparent subtree (carets, overlays, drag previews): every record it mounts is [`KF_NOHIT`].
 pub struct NoHit<E>(pub E);
@@ -563,40 +568,120 @@ impl<V, E: Element<V>> Element<V> for NoHit<E> {
     }
 }
 
-/// A tooltip: `content` is mounted once, pointer-transparent and hidden behind an empty clip; while the
-/// pointer is over `trigger` (its first record) the clip is set to `show` (points, window coordinates).
-/// Showing and hiding is one clip write (damage: the clip's xor), no mount and no rebuild.
-pub struct Tooltip<T, C> {
+/// A tooltip: a bubble (rounded box + one line of text) mounted once, pointer-transparent, hidden behind an
+/// empty clip. While the pointer is over `trigger` (its first record) the clip is the bubble's rect and the
+/// bubble fades in (alpha writes on its two records each tick, zgui's surface enter fade); leaving hides it
+/// at once (zgui: a tooltip taken down to show the next goes instantly). No mount, no rebuild.
+pub struct Tooltip<T> {
     trigger: T,
-    content: C,
-    show: [f32; 4],
+    text: String,
+    rect: [f32; 4],
+    style: TipStyle,
 }
-pub fn tooltip<T, C>(trigger: T, content: C, show: [f32; 4]) -> Tooltip<T, C> {
-    Tooltip { trigger, content, show }
+#[derive(Clone, Copy)]
+pub struct TipStyle {
+    pub bg: Color,
+    pub border: Color,
+    pub fg: Color,
+    pub size: f32,
+    pub radius: f32,
+    /// Fade-in seconds (0: instant).
+    pub fade: f32,
 }
-impl<V, T: Element<V>, C: Element<V>> Element<V> for Tooltip<T, C> {
+impl Default for TipStyle {
+    fn default() -> Self {
+        TipStyle { bg: Color::rgba(23, 23, 23, 255), border: Color::rgba(38, 38, 38, 255), fg: Color::rgba(250, 250, 250, 255), size: 12.0, radius: 6.0, fade: 0.150 }
+    }
+}
+pub fn tooltip<T>(trigger: T, text: impl Into<String>, rect: [f32; 4]) -> Tooltip<T> {
+    Tooltip { trigger, text: text.into(), rect, style: TipStyle::default() }
+}
+impl<T> Tooltip<T> {
+    pub fn style(mut self, s: TipStyle) -> Self {
+        self.style = s;
+        self
+    }
+}
+
+/// A mounted tooltip (`Input::tips`).
+pub(crate) struct Tip {
+    clip: u16,
+    rect: NRect,
+    bubble: Handle,
+    inst: u32,
+    label: Handle,
+    ti: u32,
+    style: TipStyle,
+    /// Current alpha (0..=1) and whether it is fading in.
+    alpha: f32,
+    fading: bool,
+}
+
+fn with_alpha(c: u32, a: f32) -> u32 {
+    (c & 0x00ff_ffff) | (((c >> 24) as f32 * a).round() as u32) << 24
+}
+
+/// Write tooltip `k`'s alpha into its bubble instance and label run header (paint writes).
+fn tip_alpha(rt: &mut Rt, k: usize, a: f32) {
+    let (inst, bh, lh, ti, st) = {
+        let t = &mut rt.input.tips[k];
+        t.alpha = a;
+        (t.inst, t.bubble, t.label, t.ti, t.style)
+    };
+    let p = rt.inst_mut(inst);
+    let old = pair(p.color, p.color2);
+    p.color = with_alpha(st.border.0, a);
+    p.color2 = with_alpha(st.bg.0, a);
+    let now = pair(p.color, p.color2);
+    if old != now {
+        rt.paint_write(bh, old, now);
+    }
+    if let crate::text::TShape::Label(lb) = &rt.texts[ti as usize].shape {
+        let run = lb.run as usize;
+        let old = rt.glyphs.runs[run].color;
+        let now = with_alpha(st.fg.0, a);
+        if old != now {
+            rt.glyphs.runs[run].color = now;
+            rt.paint_write(lh, old as u64, now as u64);
+        }
+    }
+}
+
+impl<V: 'static, T: Element<V>> Element<V> for Tooltip<T> {
     fn mount(self, m: &mut Mounter<'_, V>) {
+        use crate::elem::{quad, text};
         let (before, nodes_before) = (m.recs.len(), m.scope.nodes.len());
         self.trigger.mount(m);
         let a = act_for(m, before, nodes_before, 0);
-        // hidden: an empty clip (a fresh id: tooltips never share their clip)
         let s = m.rt.scale;
         let id = m.rt.bough.new_clip(NRect::EMPTY);
-        let [x, y, w, h] = self.show;
-        let r = NRect::new((x * s).floor() as i32, (y * s).floor() as i32, ((x + w) * s).ceil() as i32, ((y + h) * s).ceil() as i32);
-        {
-            let act = &mut m.rt.input.acts[a as usize];
-            act.tip = id;
-            act.tip_rect = r;
-        }
+        let [x, y, w, h] = self.rect;
+        let o = m.rt.space(m.space);
+        let r = NRect::new((o[0] + (m.ox + x) * s).floor() as i32, (o[1] + (m.oy + y) * s).floor() as i32, (o[0] + (m.ox + x + w) * s).ceil() as i32, (o[1] + (m.oy + y + h) * s).ceil() as i32);
         let prev = m.clip;
         m.clip = id;
-        let cb = m.recs.len();
-        self.content.mount(m);
-        for r in &mut m.recs[cb..] {
-            r.kind |= KF_NOHIT;
+        let st = self.style;
+        // the bubble and its label, transparent until shown; both get handles (their paint is written)
+        let b = m.recs.len();
+        quad(x, y, w, h).bg(Color(with_alpha(st.bg.0, 0.0))).rounded(st.radius).border(1.0, Color(with_alpha(st.border.0, 0.0))).mount(m);
+        let bubble = m.rt.bough.new_handle();
+        m.recs[b].handle = bubble.idx;
+        let inst = m.recs[b].payload;
+        let t = m.recs.len();
+        let tn = m.scope.nodes.len();
+        let lh = (st.size * 1.4).ceil();
+        text(self.text).at(x + 8.0, y + (h - lh) * 0.5).size(st.size).line_height(lh).color(Color(with_alpha(st.fg.0, 0.0))).mount(m);
+        let label = m.rt.bough.new_handle();
+        m.recs[t].handle = label.idx;
+        let ti = m.scope.nodes[tn..].iter().map(|&n| m.rt.nodes[n as usize].text).find(|&t| t != NONE).expect("tooltip label");
+        m.rt.texts[ti as usize].handle = label;
+        for rec in &mut m.recs[b..] {
+            rec.kind |= KF_NOHIT;
         }
         m.clip = prev;
+        let k = m.rt.input.tips.len() as u32;
+        m.rt.input.tips.push(Tip { clip: id, rect: r, bubble, inst, label, ti, style: st, alpha: 0.0, fading: false });
+        m.rt.input.acts[a as usize].tip = k;
     }
 }
 
@@ -888,8 +973,20 @@ impl<V: View> App<V> {
             }
             ran = true;
         }
-        if act.tip != 0 {
-            self.rt.bough.set_clip_rect(act.tip, if on { act.tip_rect } else { NRect::EMPTY });
+        if act.tip != NONE {
+            let k = act.tip as usize;
+            let (clip, rect, fade) = {
+                let t = &self.rt.input.tips[k];
+                (t.clip, t.rect, t.style.fade)
+            };
+            self.rt.bough.set_clip_rect(clip, if on { rect } else { NRect::EMPTY });
+            if on && fade > 0.0 {
+                self.rt.input.tips[k].fading = true;
+                tip_alpha(&mut self.rt, k, 0.0);
+            } else {
+                self.rt.input.tips[k].fading = false;
+                tip_alpha(&mut self.rt, k, if on { 1.0 } else { 0.0 });
+            }
             ran = true;
         }
         if let Some(r) = act.hover {
@@ -1032,7 +1129,7 @@ impl<V: View> App<V> {
 
     /// Is a glide (or any input animation) running?
     pub fn animating(&self) -> bool {
-        self.rt.input.scrollers.iter().any(|s| s.glide.is_some())
+        self.rt.input.scrollers.iter().any(|s| s.glide.is_some()) || self.rt.input.tips.iter().any(|t| t.fading)
     }
 
     /// Advance input animations by `dt` seconds (glides write their scroll signals). Returns whether any
@@ -1052,6 +1149,15 @@ impl<V: View> App<V> {
             // SAFETY: as in `wheel`.
             let sig = unsafe { &mut *(o.add(s.off as usize) as *mut Signal<f32>) };
             sig.set(y);
+        }
+        for k in 0..self.rt.input.tips.len() {
+            let t = &self.rt.input.tips[k];
+            if !t.fading {
+                continue;
+            }
+            let a = (t.alpha + dt / t.style.fade).min(1.0);
+            self.rt.input.tips[k].fading = a < 1.0;
+            tip_alpha(&mut self.rt, k, a);
         }
         self.settle_input();
         true

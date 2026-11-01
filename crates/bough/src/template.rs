@@ -53,6 +53,8 @@ pub enum Hooked {
     Node,
     /// The hook mounted the node and its whole subtree.
     Subtree,
+    /// The hook mounted the node; its children are clipped to this clip id (a `wired_clip`).
+    NodeClip(u16),
 }
 
 /// Mounts application-owned nodes (`T_HOOK`) with typed builders. The mounter is at the node's depth, in
@@ -75,6 +77,10 @@ impl<V> Mounter<'_, V> {
     }
     pub fn set_depth(&mut self, d: u16) {
         self.depth = d;
+    }
+    /// A paint-less box record at the current depth (a template node a hook mounts as structure only).
+    pub fn push_box(&mut self) {
+        self.recs.push(RecordInit { depth: self.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: 0, clip: self.clip });
     }
 }
 
@@ -108,6 +114,10 @@ impl<V: 'static> Element<V> for Template<V> {
                     continue;
                 }
                 Hooked::Node => {}
+                Hooked::NodeClip(id) => {
+                    clips.push((n.depth, id));
+                    continue;
+                }
                 Hooked::Default => mount_node(m, n),
             }
             if n.flags & T_FOCUS != 0 && m.recs.len() > before {
@@ -274,5 +284,160 @@ impl<V: 'static, C: Element<V>> Element<V> for ScrollY<'_, V, C> {
         m.rt.input.mounting_view = Some(v);
         self.content.mount(m);
         (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view) = saved;
+    }
+}
+
+// =============================================================================== wired clips and port lists
+
+/// Children clipped to a rect that a signal moves: `f(&value)` gives (x, y, w, h) points in the current
+/// space. A new value is one clip write (damage: the old and new clip's xor).
+pub struct ClipBy<'a, T, V, F, C> {
+    sig: Wired<'a, T, V>,
+    f: F,
+    ch: C,
+}
+pub fn clip_by<'a, T, V, F: Fn(&T) -> [f32; 4] + Copy + 'static, C>(sig: Wired<'a, T, V>, f: F, ch: C) -> ClipBy<'a, T, V, F, C> {
+    ClipBy { sig, f, ch }
+}
+
+/// # Safety
+/// Wire contract: `sig` is a `Signal<T>`; the recipe holds an `F`; `w.node` is the clip index in `Input::clips`.
+unsafe fn patch_clip_by<T: 'static, F: Fn(&T) -> [f32; 4] + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    // SAFETY: see the function contract.
+    let s = unsafe { &*(sig as *const Signal<T>) };
+    let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
+    let (id, space, parent) = rt.input.wclips[w.node as usize];
+    let r = clip_px(rt, space, f(s), parent);
+    rt.bough.set_clip_rect(id, r);
+}
+
+fn clip_px(rt: &Rt, space: u16, r: [f32; 4], parent: u16) -> NRect {
+    let (s, o) = (rt.scale, rt.space(space));
+    let a = NRect::new((o[0] + r[0] * s).floor() as i32, (o[1] + r[1] * s).floor() as i32, (o[0] + (r[0] + r[2]) * s).ceil() as i32, (o[1] + (r[1] + r[3]) * s).ceil() as i32);
+    a.intersect(rt.bough.clip_rect(parent)).canon()
+}
+
+/// A clip id whose rect `f(&value)` (points, current space, inside the current clip) follows `sig`.
+pub fn wired_clip<T: 'static, V, F: Fn(&T) -> [f32; 4] + Copy + 'static>(m: &mut Mounter<'_, V>, sig: Wired<'_, T, V>, f: F) -> u16 {
+    let prev = m.clip;
+    let r = clip_px(m.rt, m.space, f(sig.get()), prev);
+    let id = m.rt.bough.new_clip(r);
+    let k = m.rt.input.wclips.len() as u32;
+    m.rt.input.wclips.push((id, m.space, prev));
+    let mut recipe = [0u8; 16];
+    const { assert!(size_of::<F>() <= 16, "clip closure: at most 16 bytes of captures") };
+    // SAFETY: size_of::<F>() <= 16 (checked above); unaligned write into a byte array.
+    unsafe { std::ptr::write_unaligned(recipe.as_mut_ptr() as *mut F, f) };
+    m.wire(&sig, patch_clip_by::<T, F>, k, recipe);
+    id
+}
+
+impl<'a, T: 'static, V, F: Fn(&T) -> [f32; 4] + Copy + 'static, C: Element<V>> Element<V> for ClipBy<'a, T, V, F, C> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        let prev = m.clip;
+        m.clip = wired_clip(m, self.sig, self.f);
+        self.ch.mount(m);
+        m.clip = prev;
+    }
+}
+
+/// A fixed-row virtual list whose port's top edge a signal moves (a resizable panel's content): rows
+/// `count`, `row_h` points each, the port from `top` to `bottom` (points) at `x`, `w` wide. A new top
+/// edge moves the mounted rows (one space write per row, `scroll_run` over their records), moves the port
+/// clip, and mounts or unmounts the rows that entered or left the port. Scrolling is `scroll`.
+pub struct PortList<'a, V> {
+    scroll: Wired<'a, f32, V>,
+    top: Wired<'a, f32, V>,
+    x: f32,
+    w: f32,
+    bottom: f32,
+    row_h: f32,
+    count: usize,
+    row: fn(&V, usize, &mut Mounter<'_, V>),
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn port_list<'a, V>(scroll: Wired<'a, f32, V>, top: Wired<'a, f32, V>, x: f32, w: f32, bottom: f32, row_h: f32, count: usize, row: fn(&V, usize, &mut Mounter<'_, V>)) -> PortList<'a, V> {
+    PortList { scroll, top, x, w, bottom, row_h, count, row }
+}
+
+/// # Safety
+/// Wire contract: `sig` is a `Signal<f32>` (the port's top edge, points); `owner` is the region's owner.
+unsafe fn patch_port(rt: &mut Rt, w: &Wire, sig: *const u8, owner: *const u8) {
+    // SAFETY: see the function contract.
+    let top = **unsafe { &*(sig as *const Signal<f32>) };
+    let reg = w.node as usize;
+    let s = rt.scale;
+    let (old_y, clip, bottom_px, scroll_px) = {
+        let r = &rt.regions[reg];
+        (r.vp_y, r.clip, r.vp_y + r.port_h * s, r.scroll_px)
+    };
+    let new_y = (top * s).round();
+    if new_y == old_y {
+        return;
+    }
+    let dy = (new_y - old_y) as i32;
+    let old_vp = rt.regions[reg].vp;
+    let [x0, _, x1, _] = old_vp.to_xyxy();
+    let vp = NRect::new(x0, new_y as i32, x1, bottom_px as i32);
+    rt.bough.set_clip_rect(clip, vp);
+    {
+        let r = &mut rt.regions[reg];
+        r.vp_y = new_y;
+        r.vp = vp;
+        r.port_h = (bottom_px - new_y) / s;
+    }
+    // the mounted rows follow the port's top edge
+    let (base, nrec) = {
+        let r = &rt.regions[reg];
+        (r.base_pos, r.rows.iter().map(|x| x.nrec as usize).sum::<usize>())
+    };
+    for i in 0..rt.regions[reg].rows.len() {
+        let sp = rt.regions[reg].rows[i].space as usize;
+        rt.glyphs.spaces[sp][1] += dy;
+    }
+    rt.bough.scroll_run(base, nrec, 0, dy, old_vp.union(vp));
+    // rows that entered or left the port
+    // SAFETY: the region's row function was monomorphised for this owner (`region_mount` contract).
+    unsafe { rt.region_scroll(reg, owner, scroll_px / s) };
+}
+
+impl<'a, V: 'static> Element<V> for PortList<'a, V> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        let s = m.rt.scale;
+        let o = m.rt.space(m.space);
+        let top = *self.top.get();
+        let (vx, vy) = ((o[0] + (m.ox + self.x) * s).round(), (o[1] + (m.oy + top) * s).round());
+        let vb = (o[1] + (m.oy + self.bottom) * s).round();
+        let vp0 = NRect::new(vx as i32, vy as i32, (vx + self.w * s) as i32, vb as i32).intersect(m.rt.bough.clip_rect(m.clip)).canon();
+        // a clip of its own (it moves with the port)
+        let clip = m.rt.bough.new_clip(vp0);
+        let vp = m.rt.bough.clip_rect(clip);
+        let reg = m.rt.regions.len();
+        fn none(_: f32) -> std::ops::Range<usize> {
+            0..0
+        }
+        m.rt.regions.push(VRegion {
+            row_h: self.row_h * s,
+            vp_x: vx,
+            vp_y: vy,
+            clip,
+            vp,
+            depth: m.depth,
+            base_pos: m.recs.len(),
+            range: 0..0,
+            rows: Default::default(),
+            scroll_px: 0.0,
+            visible: none,
+            count: self.count,
+            port_h: (vb - vy) / s,
+            scale_pt: s,
+            mount_row: crate::elem::mount_row::<V>,
+            row_fn: self.row as usize,
+        });
+        m.wire(&self.scroll, crate::elem::patch_scroll, reg as u32, [0; 16]);
+        m.wire(&self.top, patch_port, reg as u32, [0; 16]);
+        // SAFETY: the owner pointer is the mounted owner (`App::new` / a row mount).
+        unsafe { m.rt.region_initial(reg, m.owner as *const u8, *self.scroll.get(), m.recs) };
     }
 }

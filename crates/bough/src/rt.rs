@@ -202,6 +202,20 @@ pub struct RowInfo {
     pub scope: Scope,
 }
 
+impl VRegion {
+    /// The rows a scroll offset (points) mounts.
+    #[inline]
+    pub fn range_at(&self, scroll_pt: f32) -> Range<usize> {
+        if self.count == 0 {
+            return (self.visible)(scroll_pt);
+        }
+        let row_pt = self.row_h / self.scale_pt;
+        let first = (scroll_pt / row_pt) as usize;
+        let end = ((scroll_pt + self.port_h) / row_pt).ceil() as usize;
+        first.saturating_sub(2)..end.saturating_add(2).min(self.count)
+    }
+}
+
 pub type RowMountFn = unsafe fn(&mut Rt, *const u8, usize, usize, &mut Vec<RecordInit>) -> RowInfo;
 
 pub struct VRegion {
@@ -217,6 +231,12 @@ pub struct VRegion {
     pub rows: VecDeque<RowInfo>,
     pub scroll_px: f32,
     pub visible: fn(f32) -> Range<usize>,
+    /// Port lists (`template::port_list`): row count and port height (points); the range is the rows
+    /// meeting the port, two rows of overscan each side. 0: `visible` decides.
+    pub count: usize,
+    pub port_h: f32,
+    /// Device px per point (`row_h` is in device px).
+    pub scale_pt: f32,
     pub(crate) mount_row: RowMountFn,
     /// The user's `fn(&V, usize, &mut Mounter<V>)`, type-erased (transmuted back by `mount_row`).
     pub(crate) row_fn: usize,
@@ -747,7 +767,7 @@ impl Rt {
     pub unsafe fn region_initial(&mut self, reg: usize, owner: *const u8, scroll_pt: f32, recs: &mut Vec<RecordInit>) {
         let r = &mut self.regions[reg];
         r.scroll_px = (scroll_pt * self.scale).round();
-        let range = (r.visible)(scroll_pt);
+        let range = r.range_at(scroll_pt);
         r.range = range.clone();
         let f = r.mount_row;
         for row in range {
@@ -771,7 +791,7 @@ impl Rt {
     /// As `region_initial`.
     pub unsafe fn region_scroll(&mut self, reg: usize, owner: *const u8, scroll_pt: f32) {
         let new_px = (scroll_pt * self.scale).round();
-        let new_range = (self.regions[reg].visible)(scroll_pt);
+        let new_range = self.regions[reg].range_at(scroll_pt);
         let (old_px, old_range) = (self.regions[reg].scroll_px, self.regions[reg].range.clone());
         if new_px == old_px && new_range == old_range {
             return;

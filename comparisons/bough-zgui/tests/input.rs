@@ -203,3 +203,39 @@ fn resize_relayout_is_pixel_exact() {
     }
 }
 
+
+#[test]
+fn shell_tooltips_and_dock_drag_are_pixel_exact() {
+    use bough_zgui::shell::Shell;
+    for ring in RINGS {
+        let app = app_ring(Shell::new(), config(WIDTH, HEIGHT), ring);
+        // a sweep of the head (fading tooltips handed over), a row's hover, then the dock dragged up and down
+        let mut app = run("shell", app, 12 * 3 + 4 + 22 + 2, |a, t| {
+            if t < 36 {
+                let k = t / 3;
+                match t % 3 {
+                    0 => a.pointer_move(25.0 + 38.0 * k as f32, 21.0),
+                    _ => {
+                        a.tick(1.0 / 60.0);
+                    }
+                }
+                return;
+            }
+            match t - 36 {
+                0 => a.pointer_move(800.0, 200.0),
+                1 => a.pointer_move(800.0, 692.5),
+                2 => a.pointer_down(800.0, 692.5, Button::Primary),
+                3 => a.pointer_move(800.0, 600.0),
+                k if k < 26 => a.pointer_move(800.0, 600.0 + (k as f32 - 3.0) * 7.0),
+                26 => a.pointer_up(800.0, 754.0, Button::Primary),
+                _ => a.pointer_leave(),
+            }
+        });
+        let (split, top) = (*app.owner.split, *app.owner.dock_top);
+        assert!(split > 692.0 && top == split + 1.0, "{split} {top}");
+        let mut fresh = Shell::new();
+        fresh.split = Signal::new(split);
+        fresh.dock_top = Signal::new(top);
+        same_as_fresh("shell", &mut app, App::new(fresh, config(WIDTH, HEIGHT), true));
+    }
+}
