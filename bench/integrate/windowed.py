@@ -48,8 +48,8 @@ def run(fw, scene, mode, seconds=10, t0=1.5, t1=9.0):
     ticks = out.strip().splitlines()[-1] if out.strip() else "?"
     return dict(fw=fw, scene=scene, mode=mode, cpu_pct=100 * cpu_ns / 1e9 / dt, instr_per_s=(b.ri_instructions - a.ri_instructions) / dt,
                 footprint_mb=b.ri_phys_footprint / 2**20, peak_mb=b.ri_lifetime_max_phys_footprint / 2**20,
-                resident_mb=b.ri_resident_size / 2**20, wakeups_per_s=(b.ri_pkg_idle_wkups - a.ri_pkg_idle_wkups) / dt, report=ticks)
+                resident_mb=b.ri_resident_size / 2**20, wakeups_per_s=(b.ri_pkg_idle_wkups - a.ri_pkg_idle_wkups) / dt, intr_wakeups_per_s=(b.ri_interrupt_wkups - a.ri_interrupt_wkups) / dt, report=ticks)
 
 if __name__ == "__main__":
     r = run(sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4]) if len(sys.argv) > 4 else 10)
-    print("{fw} {scene} {mode:7s} cpu {cpu_pct:6.2f}% of a core  instr/s {instr_per_s:14.0f}  footprint {footprint_mb:6.1f} MB (peak {peak_mb:6.1f})  rss {resident_mb:6.1f} MB  idle-wakeups/s {wakeups_per_s:6.1f}  {report}".format(**r), flush=True)
+    print("{fw} {scene} {mode:7s} cpu {cpu_pct:6.2f}% of a core  instr/s {instr_per_s:14.0f}  footprint {footprint_mb:6.1f} MB (peak {peak_mb:6.1f})  rss {resident_mb:6.1f} MB  idle-wakeups/s {wakeups_per_s:6.1f}  interrupt-wakeups/s {intr_wakeups_per_s:6.1f}  {report}".format(**r), flush=True)
