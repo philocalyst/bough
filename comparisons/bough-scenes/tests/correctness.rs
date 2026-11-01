@@ -182,3 +182,31 @@ fn micro_vscroll_is_pixel_exact_through_the_wrap() {
         || App::new(MicroScroll { scroll: Signal::new(*offs.last().unwrap()) }, micro_config("vscroll", 2.0), true),
     );
 }
+
+#[test]
+fn trim_to_purgeable_and_resume_is_pixel_exact() {
+    // offscreen the 4-slot ring is round-robin, so every slot holds pixels; a calm trim makes all but the
+    // displayed one purgeable-volatile; drawing on (slots made resident again, contents intact) stays exact
+    let mut work = Workload::from_env();
+    work.mode = Mode::Both;
+    let mut app = App::new(Lab::new(&work), lab_config(2.0), true);
+    app.frame();
+    let mut trimmed = 0;
+    for t in 1..=160 {
+        work.tick();
+        app.turn(|l| lab_publish(l, &work, Mode::Both));
+        let drew = app.frame();
+        if t == 60 || t == 120 {
+            assert!(app.needs_trim());
+            assert!(app.trim(false), "nothing was trimmed");
+            trimmed += 1;
+            assert!(!app.needs_trim());
+        }
+        if drew && t % 5 == 0 {
+            let (px, r) = (app.presented_pixels(), app.reference_pixels());
+            assert!(px == r, "tick {t}: presented != full redraw after a trim at {:?}", first_diff(&px, &r, 1920));
+        }
+    }
+    assert_eq!(trimmed, 2);
+    assert_eq!(app.surf_stats.purged, 0, "no memory pressure here: volatile surfaces keep their pixels");
+}

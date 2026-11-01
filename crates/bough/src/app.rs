@@ -73,6 +73,25 @@ pub struct App<V: View> {
     pub last_surface: usize,
     /// Pixels the last repair re-drew (rect area), for reports.
     pub repaired_px: u64,
+    pub surf_stats: SurfStats,
+    /// `frames` value when each ring slot was last drawn into.
+    last_use: Vec<u64>,
+    trim_mark: u64,
+}
+
+/// Surface ring counters (see `App::pick_surface`).
+#[derive(Default, Clone, Copy, Debug)]
+pub struct SurfStats {
+    /// Frames drawn into each ring slot.
+    pub uses: [u64; 8],
+    /// Frames that found every surface held by the compositor and waited for one.
+    pub waits: u64,
+    /// ... and gave up waiting (drew into the least recently drawn surface anyway).
+    pub forced: u64,
+    /// Surfaces found purged (volatile memory reclaimed) when made resident again.
+    pub purged: u64,
+    /// Trim passes that made at least one surface volatile.
+    pub trims: u64,
 }
 
 impl<V: View> App<V> {
@@ -121,6 +140,9 @@ impl<V: View> App<V> {
             frames: 0,
             last_surface: 0,
             repaired_px: 0,
+            surf_stats: SurfStats::default(),
+            last_use: vec![0; ring],
+            trim_mark: 0,
         }
     }
 
@@ -162,21 +184,20 @@ impl<V: View> App<V> {
             return false;
         }
         let n = self.ages.len();
-        #[allow(unused_mut)]
-        let mut idx = self.next_surf;
-        #[cfg(target_os = "macos")]
-        if let Some(g) = self.gpu.as_ref() {
-            for k in 0..n {
-                let c = (self.next_surf + k) % n;
-                if !g.is_in_use(c) {
-                    idx = c;
-                    break;
-                }
-            }
-        }
+        let idx = self.pick_surface();
         self.next_surf = (idx + 1) % n;
         let epoch = self.rt.bough.epoch();
         let (w, h) = (self.rt.win_w, self.rt.win_h);
+        #[cfg(target_os = "macos")]
+        if let Some(g) = self.gpu.as_ref() {
+            // a surface trimmed while calm may have been purged: its contents are gone, repaint it whole
+            if g.make_resident(idx) {
+                self.ages[idx] = None;
+                self.surf_stats.purged += 1;
+            }
+        }
+        self.surf_stats.uses[idx.min(7)] += 1;
+        self.last_use[idx] = self.frames;
         let age = self.ages[idx].map(|l| epoch - l);
         let full = !matches!(age, Some(a) if a <= bough_core::damage::RING as u32);
         let bbox;
@@ -219,7 +240,72 @@ impl<V: View> App<V> {
         self.ages[idx] = Some(epoch);
         self.last_surface = idx;
         self.frames += 1;
+
         true
+    }
+
+    /// Choose the ring surface for the next frame. Windowed (surfaces are published to the layer): the
+    /// lowest-indexed surface the compositor does not hold, among the first two; a third (fourth) slot
+    /// is only written if the compositor has held the others for 8 (16) ms. Slots contention never
+    /// requires are never written, so they cost nothing (an IOSurface is unbacked until first written):
+    /// the 4-slot ring costs what the 2 (rarely 3) in use cost. If nothing frees up in 16 ms, take the
+    /// surface drawn longest ago. Offscreen: round-robin over the whole ring (nothing holds a surface).
+    fn pick_surface(&mut self) -> usize {
+        let n = self.ages.len();
+        #[cfg(target_os = "macos")]
+        if let Some(g) = self.gpu.as_ref().filter(|g| g.publish) {
+            for spin in 0..80 {
+                let allowed = (2 + spin / 40).min(n);
+                if let Some(c) = (0..allowed).find(|&c| !g.is_in_use(c)) {
+                    if spin > 0 {
+                        self.surf_stats.waits += 1;
+                    }
+                    return c;
+                }
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+            self.surf_stats.forced += 1;
+            return (0..n).min_by_key(|&c| self.ages[c].map_or(0, |e| e + 1)).unwrap();
+        }
+        self.next_surf % n
+    }
+
+    /// Release what a calm window does not need: every surface except the one on screen becomes
+    /// purgeable-volatile (its pages leave the footprint and the system may reclaim them; a purged
+    /// surface is repainted whole when next used). Call from a timer once frames have stopped;
+    /// returns whether anything was trimmed. Surfaces the compositor still holds are left alone.
+    pub fn trim(&mut self, active: bool) -> bool {
+        #[cfg(target_os = "macos")]
+        if let Some(g) = self.gpu.as_mut() {
+            if !active {
+                g.sync();
+            }
+            // while frames keep coming only slots unused for a while are released (contention may need
+            // the others again within a frame or two); once calm, everything but the displayed surface
+            let quiet = if active { 8 } else { 0 };
+            let (frames, last_use) = (self.frames, &self.last_use);
+            let n = g.trim_where(|i| i != self.last_surface && frames - last_use[i] >= quiet);
+            if n > 0 {
+                self.surf_stats.trims += 1;
+            }
+            self.trim_mark = self.frames;
+            return n > 0;
+        }
+        false
+    }
+
+    /// True if some surface other than the one on screen holds written pixels and is not yet volatile.
+    pub fn needs_trim(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        if let Some(g) = self.gpu.as_ref() {
+            return (0..self.ages.len()).any(|i| i != self.last_surface && self.ages[i].is_some() && !g.ring[i].volatile.get());
+        }
+        false
+    }
+
+    /// Frames presented so far (the host's trim timer compares this across ticks).
+    pub fn frames_presented(&self) -> u64 {
+        self.frames
     }
 
     /// Cull the bough against `bbox` and expand the surviving records' instance runs, in paint

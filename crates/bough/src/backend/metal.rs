@@ -24,6 +24,8 @@ static METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.metall
 pub struct Surface {
     pub io: CFRetained<IOSurfaceRef>,
     pub tex: Tex,
+    /// Marked purgeable-volatile by `trim_except` (must be made resident before drawing).
+    pub volatile: std::cell::Cell<bool>,
 }
 
 pub struct Metal {
@@ -69,7 +71,10 @@ fn make_iosurface(w: usize, h: usize) -> CFRetained<IOSurfaceRef> {
 impl Metal {
     pub fn new(w: usize, h: usize, scale: f64, ring: usize) -> Metal {
         let device = MTLCreateSystemDefaultDevice().expect("no Metal device");
-        let queue = device.newCommandQueue().expect("queue");
+        let queue = match std::env::var("BOUGH_MAXCB").ok().and_then(|v| v.parse::<usize>().ok()) {
+            Some(n) => device.newCommandQueueWithMaxCommandBufferCount(n).expect("queue"),
+            None => device.newCommandQueue().expect("queue"),
+        };
         let data = DispatchData::from_static_bytes(METALLIB);
         let lib = device.newLibraryWithData_error(&data).expect("metallib load");
         let vs = lib.newFunctionWithName(ns_string!("vs_main")).unwrap();
@@ -156,7 +161,7 @@ impl Metal {
             d.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
             d.setStorageMode(MTLStorageMode::Shared);
             let tex = device.newTextureWithDescriptor_iosurface_plane(&d, &io, 0).expect("iosurface texture");
-            Surface { io, tex }
+            Surface { io, tex, volatile: Default::default() }
         };
         let ring: Vec<Surface> = (0..ring).map(|_| mk_surface()).collect();
         let layer = CALayer::new();
@@ -217,6 +222,35 @@ impl Metal {
 
     pub fn is_in_use(&self, i: usize) -> bool {
         self.ring[i].io.is_in_use()
+    }
+
+    /// Make ring surface `i` non-volatile before drawing; true if the system had purged it meanwhile
+    /// (its contents are undefined).
+    pub fn make_resident(&self, i: usize) -> bool {
+        if !self.ring[i].volatile.get() {
+            return false;
+        }
+        let mut old = 0u32;
+        unsafe { self.ring[i].io.set_purgeable(0, &mut old) };
+        self.ring[i].volatile.set(false);
+        old == 2
+    }
+
+    /// Mark every surface `want(i)` selects purgeable-volatile, unless the compositor holds it.
+    /// Returns how many surfaces became volatile.
+    pub fn trim_where(&mut self, want: impl Fn(usize) -> bool) -> usize {
+        let mut n = 0;
+        for (i, s) in self.ring.iter().enumerate() {
+            if !want(i) || s.volatile.get() || s.io.is_in_use() {
+                continue;
+            }
+            let mut old = 0u32;
+            if unsafe { s.io.set_purgeable(1, &mut old) } == 0 {
+                s.volatile.set(true);
+                n += 1;
+            }
+        }
+        n
     }
 
     /// Upload the glyph atlas if it changed since the last upload.
@@ -311,7 +345,7 @@ impl Metal {
             d.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
             d.setStorageMode(MTLStorageMode::Shared);
             let tex = self.device.newTextureWithDescriptor_iosurface_plane(&d, &io, 0).expect("scratch");
-            self.scratch = Some(Surface { io, tex });
+            self.scratch = Some(Surface { io, tex, volatile: Default::default() });
         }
         let tex = self.scratch.as_ref().unwrap().tex.clone();
         let (publish, full) = (self.publish, true);

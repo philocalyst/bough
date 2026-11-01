@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Windowed adapters, 10 s runs: process CPU time per second, retired instructions per second and
 phys_footprint, sampled from outside with proc_pid_rusage(RUSAGE_INFO_V4) at t=1.5 s and t=9 s
-(startup and shutdown excluded). Usage: windowed.py <bough|zgx> <mode> [seconds=10]"""
+(startup and shutdown excluded). Usage: windowed.py <bough|zgx> <scene: heavy|lab|animate|blink> <mode> [seconds=10]
+(mode is ignored by animate and blink). The adapter's own report line (ticks / animation_frames fps / blink_frames)
+is printed last."""
 import ctypes, os, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-BIN = {"bough": f"{ROOT}/target/dist/heavy_workload",
-       "zgx": "/Users/mileswirht/projects/_ref/zgx/target/dist/examples/heavy_workload"}
+ZGXBIN = "/Users/mileswirht/projects/_ref/zgx/target/dist/examples"
+BIN = {("bough", "heavy"): f"{ROOT}/target/dist/heavy_workload", ("zgx", "heavy"): f"{ZGXBIN}/heavy_workload",
+       ("bough", "lab"): f"{ROOT}/target/dist/lab_workload", ("zgx", "lab"): f"{ZGXBIN}/component_workload",
+       ("bough", "animate"): f"{ROOT}/target/dist/animate_workload", ("zgx", "animate"): f"{ZGXBIN}/animation_workload",
+       ("bough", "blink"): f"{ROOT}/target/dist/blink_workload", ("zgx", "blink"): f"{ZGXBIN}/blink_workload"}
 FONT = "/Users/mileswirht/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf"
 
 class V4(ctypes.Structure):
@@ -30,20 +35,21 @@ def snap(pid):
     assert libc.proc_pid_rusage(pid, 4, ctypes.byref(r)) == 0
     return r
 
-def run(fw, mode, seconds=10, t0=1.5, t1=9.0):
+def run(fw, scene, mode, seconds=10, t0=1.5, t1=9.0):
     env = dict(os.environ, ZGX_MODE=mode, ZGX_SECONDS=str(seconds), ZGX_FONT_FILE=FONT)
     start = time.time()
-    p = subprocess.Popen([BIN[fw]], env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    p = subprocess.Popen([BIN[(fw, scene)]], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     time.sleep(t0 - (time.time() - start)); a = snap(p.pid); ta = time.time()
     time.sleep(max(0, t1 - (time.time() - start))); b = snap(p.pid); tb_ = time.time()
-    out = p.communicate()[0]
+    out, err = p.communicate()
+    out = "\n".join(l for l in (out + "\n" + err).splitlines() if l.startswith("{") or "frames=" in l or "ticks" in l)
     cpu_ns = ((b.ri_user_time + b.ri_system_time) - (a.ri_user_time + a.ri_system_time)) * tb.numer / tb.denom
     dt = tb_ - ta
     ticks = out.strip().splitlines()[-1] if out.strip() else "?"
-    return dict(fw=fw, mode=mode, cpu_pct=100 * cpu_ns / 1e9 / dt, instr_per_s=(b.ri_instructions - a.ri_instructions) / dt,
+    return dict(fw=fw, scene=scene, mode=mode, cpu_pct=100 * cpu_ns / 1e9 / dt, instr_per_s=(b.ri_instructions - a.ri_instructions) / dt,
                 footprint_mb=b.ri_phys_footprint / 2**20, peak_mb=b.ri_lifetime_max_phys_footprint / 2**20,
                 resident_mb=b.ri_resident_size / 2**20, wakeups_per_s=(b.ri_pkg_idle_wkups - a.ri_pkg_idle_wkups) / dt, report=ticks)
 
 if __name__ == "__main__":
-    r = run(sys.argv[1], sys.argv[2], float(sys.argv[3]) if len(sys.argv) > 3 else 10)
-    print("{fw} {mode:7s} cpu {cpu_pct:6.2f}% of a core  instr/s {instr_per_s:14.0f}  footprint {footprint_mb:6.1f} MB (peak {peak_mb:6.1f})  rss {resident_mb:6.1f} MB  idle-wakeups/s {wakeups_per_s:6.1f}  {report}".format(**r), flush=True)
+    r = run(sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4]) if len(sys.argv) > 4 else 10)
+    print("{fw} {scene} {mode:7s} cpu {cpu_pct:6.2f}% of a core  instr/s {instr_per_s:14.0f}  footprint {footprint_mb:6.1f} MB (peak {peak_mb:6.1f})  rss {resident_mb:6.1f} MB  idle-wakeups/s {wakeups_per_s:6.1f}  {report}".format(**r), flush=True)

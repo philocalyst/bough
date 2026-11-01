@@ -22,6 +22,11 @@ fn main() {
     let mut work = Workload::from_env();
     work.mode = mode;
     let mut app = App::new(Lab::new(&work), lab_config(scale), render);
+    let stages = std::env::var_os("MEMSTAGES").is_some();
+    let mb = || bough_metal::perf::snap().footprint as f64 / 1048576.0;
+    if stages {
+        println!("after App::new: {:.1} MB", mb());
+    }
     let t0 = bough_metal::perf::snap();
     let start = std::time::Instant::now();
     let mut frames = 0u64;
@@ -31,6 +36,11 @@ fn main() {
             app.turn(|l| lab_publish(l, &work, mode));
         }
         frames += app.frame() as u64;
+        #[cfg(target_os = "macos")]
+        if stages && render && tick < 6 {
+            app.gpu.as_mut().unwrap().sync();
+            println!("after frame {tick} (synced): {:.1} MB", mb());
+        }
         #[cfg(target_os = "macos")]
         if render && tick % 60 == 0 {
             app.gpu.as_mut().unwrap().sync();
