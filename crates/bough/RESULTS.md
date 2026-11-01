@@ -1,5 +1,11 @@
 # bough façade: heavy, lab, animate, blink and micro_bench against zgx
 
+> **Superseded by the fused system (branch `fusion`, see `STATUS.md` at the repo root).** This file records the
+> integrate branch's façade: a render-pass presenter, its own 48-byte glyph instances, a 2-surface skip-and-retry ring.
+> All of those are replaced: the presenter is bough-metal's fused compute repair over one shared region, text is
+> bough-text round 2 in that region, and the ring is content-addressed and sized by contention, with no frame ever
+> skipped. The numbers below are the pre-fusion baseline the fused numbers are compared with.
+
 `crates/bough` (the public façade) + two comparison crates on the `integrate` worktree: `comparisons/bough-heavy` (zgx's *heavy* dashboard) and
 `comparisons/bough-scenes` (the rest of zgx's comparison scenes that need no general layout engine: **lab** = `component_workload`, **animate**,
 **blink**, and `micro_bench`'s **state** and **vscroll-fixed**; windowed adapters, headless adapters, correctness suite). Apple M3 Pro, macOS 15.7,
