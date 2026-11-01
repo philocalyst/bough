@@ -35,3 +35,8 @@ same input.
 | parley | `Cargo.toml` | `fontique`, `harfrust`, `skrifa` dependencies take `path = "../<crate>"` | use the vendored forks |
 | parley, fontique, harfrust | `src/lib.rs` | `#![allow(deprecated)]` | newer semver-compatible deps (parlance 0.1.1, icu_properties 2.4) deprecate APIs these releases call; behaviour unchanged |
 | harfrust | `src/hb/face.rs` | `#[allow(dead_code)]` on `pub fn shape` | nightly flags it unused in this build |
+| parley | `src/bough/` (new) | bough-text's `script.rs` (+ `script/pairfast.rs`), `shape.rs`, `slots.rs` moved here verbatim (paths `crate::` → `super::`, `std` prelude imports, `tokenize`/`load_partial` public, `window::slots` as `slots::hybrid`); bough-text re-exports them | the grafts run inside parley's pipeline |
+| parley | `Cargo.toml` | `ttf-parser` 0.25 dependency | the table builder (`bough/script.rs`) reads GSUB/GPOS/GDEF/HVAR through it (port to read-fonts: not done) |
+| parley | `src/layout/data.rs` | `push_run` → `push_shaped_run` over any `ShapedGlyph` stream; `process_clusters` generic over it | **graft 1**: harfrust's buffer and bough's table feed the same cluster code |
+| parley | `src/shape/mod.rs` | `ShapeContext.fast`; in `shape_item`, an LTR Latin segment with no features and no locale goes to `bough::fast` first (table accepts → `push_shaped_run`, else harfrust) | **graft 1**: the shaping fast path |
+| parley | `src/bough/fast.rs` (new) | table cache per font blob / face / user-space variations (+ harfrust's normalized coords), AAT `trak` constant per size read from harfrust | **graft 1** |

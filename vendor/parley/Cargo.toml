@@ -118,6 +118,15 @@ version = "0.11.1"
 features = ["baked"]
 default-features = false
 
+[dependencies.ttf-parser]
+version = "0.25"
+features = [
+    "std",
+    "opentype-layout",
+    "variable-fonts",
+]
+default-features = false
+
 [dependencies.skrifa]
 path = "../skrifa"
 version = "0.44.0"

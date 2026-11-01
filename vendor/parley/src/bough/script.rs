@@ -34,6 +34,8 @@
 //! language tag (or one for which the font's `latn` default language system applies), no
 //! user features, no variations, no letter spacing.
 
+use std::prelude::rust_2024::*;
+use std::{format, vec};
 use std::collections::BTreeSet;
 use ttf_parser::gdef::GlyphClass;
 use ttf_parser::gpos::{PairAdjustment, PositioningSubtable, ValueRecord};

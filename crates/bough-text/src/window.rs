@@ -82,20 +82,7 @@ impl GlyphPool {
     }
 }
 
-/// The hybrid slot kernel: scalar below 16 bytes, NEON from 16.
-///
-/// # Safety
-/// `s` ASCII; `xp`/`ep` valid for `s.len().next_multiple_of(16)` writes.
-#[inline(always)]
-pub unsafe fn slots(sh: &Shaper, s: &[u8], next: u8, x0: i32, xp: *mut i32, ep: *mut u16) -> (i32, u32) {
-    unsafe {
-        #[cfg(target_arch = "aarch64")]
-        if s.len() >= 16 {
-            return crate::shape::simd_slots(sh.dense(), s, next, x0, xp, ep);
-        }
-        crate::shape::scalar_slots(sh.dense(), s, next, x0, xp, ep)
-    }
-}
+pub use crate::slots::hybrid as slots;
 
 /// Greedy word wrap over shaped slots (`text[i]` is slot `i`): appends the slot index where
 /// each line starts. Same rule as `wrap::wrap_greedy`: break after spaces, a line's width is

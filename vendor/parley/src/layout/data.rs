@@ -394,6 +394,40 @@ impl<B: Brush> LayoutData<B> {
         text_range: Range<usize>,       // The text range this run covers
         coords: &[harfrust::NormalizedCoord],
     ) {
+        let infos = glyph_buffer.glyph_infos();
+        let positions = glyph_buffer.glyph_positions();
+        let glyphs = infos.iter().zip(positions).map(|(i, p)| ShapedGlyph {
+            id: i.glyph_id,
+            cluster: i.cluster,
+            x_advance: p.x_advance,
+            x_offset: p.x_offset,
+            y_offset: p.y_offset,
+        });
+        self.push_shaped_run(
+            font, font_size, font_attrs, synthesis, glyphs, bidi_level, style_index, word_spacing,
+            letter_spacing, source_text, char_infos, text_range, coords,
+        );
+    }
+
+    /// `push_run` over any glyph stream (bough graft 1: harfrust's buffer, or bough's table for covered text),
+    /// so both go through the same cluster code.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn push_shaped_run<I: Iterator<Item = ShapedGlyph>>(
+        &mut self,
+        font: FontData,
+        font_size: f32,
+        font_attrs: fontique::Attributes,
+        synthesis: fontique::Synthesis,
+        glyphs_in: I,
+        bidi_level: u8,
+        style_index: u16,
+        word_spacing: f32,
+        letter_spacing: f32,
+        source_text: &str,
+        char_infos: &[(CharInfo, u16)], // From text analysis
+        text_range: Range<usize>,       // The text range this run covers
+        coords: &[harfrust::NormalizedCoord],
+    ) {
         let coords_start = self.coords.len();
         self.coords.extend(coords.iter().map(|c| c.to_bits()));
         let coords_end = self.coords.len();
@@ -476,11 +510,10 @@ impl<B: Brush> LayoutData<B> {
         // `HarfRust` returns glyphs in visual order, so we need to process them as such while
         // maintaining logical ordering of clusters.
 
-        let glyph_infos = glyph_buffer.glyph_infos();
-        if glyph_infos.is_empty() {
+        let mut glyphs_in = glyphs_in.peekable();
+        if glyphs_in.peek().is_none() {
             return;
         }
-        let glyph_positions = glyph_buffer.glyph_positions();
         let scale_factor = font_size / units_per_em;
         let cluster_range_start = self.clusters.len();
         let is_rtl = bidi_level & 1 == 1;
@@ -490,8 +523,7 @@ impl<B: Brush> LayoutData<B> {
                 &mut self.clusters,
                 &mut self.glyphs,
                 scale_factor,
-                glyph_infos,
-                glyph_positions,
+                &mut glyphs_in,
                 char_infos,
                 source_text.char_indices(),
             );
@@ -501,8 +533,7 @@ impl<B: Brush> LayoutData<B> {
                 &mut self.clusters,
                 &mut self.glyphs,
                 scale_factor,
-                glyph_infos,
-                glyph_positions,
+                &mut glyphs_in,
                 char_infos,
                 source_text.char_indices().rev(),
             );
@@ -648,13 +679,23 @@ impl<B: Brush> LayoutData<B> {
 /// * `char_infos` - Character information from text analysis, indexed by cluster ID.
 /// * `char_indices_iter` - Iterator over (`byte_offset`, `char`) pairs from the source text.
 ///   Should be in logical order (forward for LTR, reverse for RTL).
-fn process_clusters<I: Iterator<Item = (usize, char)>>(
+/// One shaped glyph as `process_clusters` reads it: harfrust's `GlyphInfo` + `GlyphPosition` fields (font units,
+/// `cluster` = the logical char index). bough graft 1 produces these from its table for covered text.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ShapedGlyph {
+    pub(crate) id: u32,
+    pub(crate) cluster: u32,
+    pub(crate) x_advance: i32,
+    pub(crate) x_offset: i32,
+    pub(crate) y_offset: i32,
+}
+
+fn process_clusters<I: Iterator<Item = (usize, char)>, G: Iterator<Item = ShapedGlyph>>(
     direction: Direction,
     clusters: &mut Vec<ClusterData>,
     glyphs: &mut Vec<Glyph>,
     scale_factor: f32,
-    glyph_infos: &[harfrust::GlyphInfo],
-    glyph_positions: &[harfrust::GlyphPosition],
+    glyphs_in: &mut core::iter::Peekable<G>,
     char_infos: &[(CharInfo, u16)],
     char_indices_iter: I,
 ) -> f32 {
@@ -662,7 +703,7 @@ fn process_clusters<I: Iterator<Item = (usize, char)>>(
     let mut cluster_start_char = char_indices_iter.next().unwrap();
     let mut total_glyphs: u32 = 0;
     let mut cluster_glyph_offset: u32 = 0;
-    let start_cluster_id = glyph_infos.first().unwrap().cluster;
+    let start_cluster_id = glyphs_in.peek().unwrap().cluster;
     let mut cluster_id = start_cluster_id;
     let mut char_info = char_infos[cluster_id as usize];
     let mut run_advance = 0.0;
@@ -707,7 +748,8 @@ fn process_clusters<I: Iterator<Item = (usize, char)>>(
         Direction::Rtl => char_infos.len() as u32,
     };
 
-    for (glyph_info, glyph_pos) in glyph_infos.iter().zip(glyph_positions.iter()) {
+    for sg in glyphs_in {
+        let (glyph_info, glyph_pos) = (&sg, &sg);
         // Flush previous cluster if we've reached a new cluster
         if cluster_id != glyph_info.cluster {
             run_advance += cluster_advance;
@@ -780,7 +822,7 @@ fn process_clusters<I: Iterator<Item = (usize, char)>>(
         }
 
         let glyph = Glyph {
-            id: glyph_info.glyph_id,
+            id: glyph_info.id,
             style_index: char_info.1,
             x: (glyph_pos.x_offset as f32) * scale_factor,
             // Convert from font space (Y-up) to layout space (Y-down)

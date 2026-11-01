@@ -8,6 +8,7 @@
 //! small arrays, so a pair costs a few loads instead of a lookup walk. Same answers, same order of
 //! precedence: within a lookup the first subtable that applies decides; across lookups the
 //! adjustments add; an unsupported value record makes the pair a trigger (`None`).
+use std::vec;
 use super::*;
 
 pub(super) struct PairTable {

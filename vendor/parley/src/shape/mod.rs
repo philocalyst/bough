@@ -33,6 +33,11 @@ pub(crate) struct ShapeContext {
     unicode_buffer: Option<harfrust::UnicodeBuffer>,
     features: Vec<harfrust::Feature>,
     char_cluster: CharCluster,
+    /// bough graft 1: the table shaper for covered font segments, and its variation scratch.
+    #[cfg(feature = "std")]
+    fast: crate::bough::fast::FastShaper,
+    #[cfg(feature = "std")]
+    fast_vars: Vec<harfrust::Variation>,
 }
 
 impl Default for ShapeContext {
@@ -45,6 +50,10 @@ impl Default for ShapeContext {
             unicode_buffer: Some(harfrust::UnicodeBuffer::new()),
             features: Vec::new(),
             char_cluster: CharCluster::default(),
+            #[cfg(feature = "std")]
+            fast: Default::default(),
+            #[cfg(feature = "std")]
+            fast_vars: Vec::new(),
         }
     }
 }
@@ -369,6 +378,51 @@ fn shape_item<'a, B: Brush>(
         // Shape the entire segment text including newlines
         // The line breaking algorithm will handle newlines automatically
 
+        // bough graft 1: a left-to-right Latin segment with the default features and no language is shaped by
+        // bough's table when it accepts the text (the same glyph stream harfrust would produce).
+        #[cfg(feature = "std")]
+        if item.level & 1 == 0
+            && item.locale.is_none()
+            && item.script == Script::Latin
+            && rcx.features(item.features).is_none_or(|f| f.is_empty())
+        {
+            scx.fast_vars.clear();
+            scx.fast_vars.extend(variations_iter(&font.font.synthesis, rcx.variations(item.variations)));
+            if scx.fast.shape(
+                font.font.blob.id(),
+                font.font.index,
+                font.font.blob.as_ref(),
+                &scx.fast_vars,
+                segment_text,
+                item.size,
+            ) {
+                let char_start = char_range.start + item_text[..segment_start_offset].chars().count();
+                let segment_char_start = char_start - char_range.start;
+                let segment_char_count = segment_text.chars().count();
+                let segment_infos =
+                    &item_infos[segment_char_start..(segment_char_start + segment_char_count)];
+                layout.data.push_shaped_run(
+                    FontData::new(font.font.blob.clone(), font.font.index),
+                    item.size,
+                    font.attrs,
+                    font.font.synthesis,
+                    scx.fast.glyphs(segment_text),
+                    item.level,
+                    item.style_index,
+                    item.word_spacing,
+                    item.letter_spacing,
+                    segment_text,
+                    segment_infos,
+                    (text_range.start + segment_start_offset)..(text_range.start + segment_end_offset),
+                    scx.fast.coords(),
+                );
+                crate::bough::count_segment(true);
+                continue;
+            }
+        }
+
+        #[cfg(feature = "std")]
+        crate::bough::count_segment(false);
         // TODO: How do we want to handle errors like this?
         let font_ref =
             harfrust::FontRef::from_index(font.font.blob.as_ref(), font.font.index).unwrap();

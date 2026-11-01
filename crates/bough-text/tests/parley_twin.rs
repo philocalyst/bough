@@ -33,7 +33,9 @@ fn exhaustive_pairs() {
             t.check(&Case::plain(&s, SANS, 14.0, None));
         }
     }
-    eprintln!("exhaustive pairs: {} cases equal", t.cases);
+    let [h, f] = bough_text::parley::bough::segments();
+    eprintln!("exhaustive pairs: {} cases equal; font segments: {f} by the table, {h} by harfrust", t.cases);
+    assert!(f > 2 * h, "the table must shape most covered pairs");
 }
 
 /// Every string of up to five characters over an alphabet of ligature letters, break classes and Latin-1, at two
@@ -146,7 +148,9 @@ fn text_bench_paragraphs() {
         t.check(&rich_case(&text[..end], &r, Some(736.0)));
         end += 6 * 17;
     }
-    eprintln!("text_bench: {} cases equal", t.cases);
+    let [h, f] = bough_text::parley::bough::segments();
+    eprintln!("text_bench: {} cases equal; font segments: {f} by the table, {h} by harfrust", t.cases);
+    assert!(f > 0 && h < f / 50, "text_bench's segments are all covered");
 }
 
 fn rng(seed: &mut u64) -> u64 {
@@ -180,7 +184,8 @@ fn random_mixed() {
         };
         t.check(&Case::plain(&s, SANS, 14.0, w));
     }
-    eprintln!("random mixed: {} cases equal", t.cases);
+    let [h, f] = bough_text::parley::bough::segments();
+    eprintln!("random mixed: {} cases equal; font segments: {f} by the table, {h} by harfrust", t.cases);
 }
 
 /// Style variants the shaping fast path must refuse (features, locale) or that act after shaping (spacing), sizes,
@@ -230,5 +235,6 @@ fn variable_font() {
             t.check(&c);
         }
     }
-    eprintln!("variable font: {} cases equal", t.cases);
+    let [h, f] = bough_text::parley::bough::segments();
+    eprintln!("variable font: {} cases equal; font segments: {f} by the table, {h} by harfrust", t.cases);
 }

@@ -30,8 +30,10 @@
 //! a codepoint beyond Latin-1) shows up as a trigger or a refusal bit of its chunk: ligature text is redone by
 //! the scalar byte-slot tokenizer ([`token_slots_scalar`], same output), anything else is refused.
 
-use crate::script::{TokenTable, TOK_PH};
-use crate::shape::Shaper;
+use std::prelude::rust_2024::*;
+use std::vec;
+use super::script::{TokenTable, TOK_PH};
+use super::shape::Shaper;
 
 /// Why [`any_slots`] could not shape a text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,7 +137,7 @@ pub unsafe fn any_slots(sh: &Shaper, s: &[u8], x_base: i32, xp: *mut i32, ep: *m
         if !s.is_ascii() {
             return Err(Refusal::Uncovered);
         }
-        let (w, acc) = unsafe { crate::window::slots(sh, s, 0, x_base, xp, ep) };
+        let (w, acc) = unsafe { super::slots::hybrid(sh, s, 0, x_base, xp, ep) };
         return if acc & 0x8000 == 0 { Ok((w, false)) } else { Err(Refusal::Uncovered) };
     };
     #[cfg(target_arch = "aarch64")]
@@ -150,7 +152,7 @@ pub unsafe fn any_slots(sh: &Shaper, s: &[u8], x_base: i32, xp: *mut i32, ep: *m
     }
     // Short texts: the scalar ASCII loop when ASCII without a trigger, else the scalar byte-slot tokenizer.
     if s.is_ascii() {
-        let (w, acc) = unsafe { crate::shape::scalar_slots(sh.dense(), s, 0, x_base, xp, ep) };
+        let (w, acc) = unsafe { super::shape::scalar_slots(sh.dense(), s, 0, x_base, xp, ep) };
         if acc & 0x8000 == 0 {
             return Ok((w, false));
         }
@@ -215,7 +217,7 @@ unsafe fn neon_any(dense: &[u16], tt: &TokenTable, s: &[u8], x_base: i32, xp: *m
                 (vld1q_u8(p), vld1q_u8(p.add(1)), vld1q_u8(p.add(2)), vld1q_u8(p.add(3)))
             } else {
                 let p = s.as_ptr().add(i);
-                let (lo, hi) = if rem > 16 { (vld1q_u8(p), crate::shape::load_partial(p.add(16), rem - 16)) } else { (crate::shape::load_partial(p, rem), vdupq_n_u8(0)) };
+                let (lo, hi) = if rem > 16 { (vld1q_u8(p), super::shape::load_partial(p.add(16), rem - 16)) } else { (super::shape::load_partial(p, rem), vdupq_n_u8(0)) };
                 (lo, vextq_u8::<1>(lo, hi), vextq_u8::<2>(lo, hi), vextq_u8::<3>(lo, hi))
             };
             let valid = vcltq_u8(iota, vdupq_n_u8(if rem >= 16 { 16 } else { rem as u8 }));
@@ -313,4 +315,19 @@ pub fn compact(tt: &TokenTable, x: &[i32], ent: &[u16], width: i32) -> (Vec<u16>
         cl.push(i as u32);
     }
     (gid, xs, cl, width)
+}
+
+/// The hybrid slot kernel: scalar below 16 bytes, NEON from 16 (bough-text's `window::slots`).
+///
+/// # Safety
+/// `s` ASCII; `xp`/`ep` valid for `s.len().next_multiple_of(16)` writes.
+#[inline(always)]
+pub unsafe fn hybrid(sh: &Shaper, s: &[u8], next: u8, x0: i32, xp: *mut i32, ep: *mut u16) -> (i32, u32) {
+    unsafe {
+        #[cfg(target_arch = "aarch64")]
+        if s.len() >= 16 {
+            return super::shape::simd_slots(sh.dense(), s, next, x0, xp, ep);
+        }
+        super::shape::scalar_slots(sh.dense(), s, next, x0, xp, ep)
+    }
 }

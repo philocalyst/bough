@@ -1,6 +1,8 @@
 //! The fast shapers: NEON table lookup + SIMD prefix sum, and a scalar twin.
 
-use crate::script::{SimpleScript, TRIG, TokenTable, TOK_PAD};
+use std::prelude::rust_2024::*;
+use std::vec;
+use super::script::{SimpleScript, TRIG, TokenTable, TOK_PAD};
 
 /// A shaped run in font design units. Everything is an exact integer; the pixel scale is
 /// applied only when instances are generated (`scale = size / upem`).
@@ -515,7 +517,7 @@ impl Shaper {
 /// past `p + rem`. Overlapping loads, no memory round trip for the combine.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-pub(crate) unsafe fn load_partial(p: *const u8, rem: usize) -> core::arch::aarch64::uint8x16_t {
+pub unsafe fn load_partial(p: *const u8, rem: usize) -> core::arch::aarch64::uint8x16_t {
     use core::arch::aarch64::*;
     unsafe {
         if rem >= 8 {
@@ -556,7 +558,7 @@ pub(crate) unsafe fn load_partial(p: *const u8, rem: usize) -> core::arch::aarch
 /// # Safety
 /// `tok` and `cl` must be valid for `s.len()` writes; `s` must be valid UTF-8.
 #[inline]
-pub(crate) unsafe fn tokenize(tt: &TokenTable, s: &[u8], tok: *mut u16, cl: *mut u32) -> Option<usize> {
+pub unsafe fn tokenize(tt: &TokenTable, s: &[u8], tok: *mut u16, cl: *mut u32) -> Option<usize> {
     let n = s.len();
     let (mut i, mut j) = (0usize, 0usize);
     unsafe {

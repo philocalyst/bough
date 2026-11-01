@@ -124,6 +124,9 @@ mod resolve;
 mod shape;
 mod util;
 
+/// bough's grafts (vendor/README.md): bough-text's table shaper and retained mechanisms inside parley's pipeline.
+#[cfg(feature = "std")]
+pub mod bough;
 pub mod editing;
 pub mod layout;
 pub mod setting;
