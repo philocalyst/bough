@@ -19,16 +19,12 @@ lto = "fat"
 codegen-units = 1
 
 # Vendored GPU and windowing stack (vendor/README.md: versions, provenance, local changes). Every crate in the graph
-# that names one of these resolves to the vendored copy.
+# that names one of these resolves to the vendored copy. (wgpu, wgpu-core, winit are vendored too; their patch lines
+# join when a crate first uses them, so cargo does not warn about unused patches.)
 [patch.crates-io]
-wgpu = { path = "vendor/wgpu" }
-wgpu-core = { path = "vendor/wgpu-core" }
 wgpu-hal = { path = "vendor/wgpu-hal" }
 wgpu-types = { path = "vendor/wgpu-types" }
 naga = { path = "vendor/naga" }
-wgpu-naga-bridge = { path = "vendor/wgpu-naga-bridge" }
-wgpu-core-deps-apple = { path = "vendor/wgpu-core-deps-apple" }
-winit = { path = "vendor/winit" }
 
 # wgsl-rs, vendored with subgroup operations added (vendor/README.md).
 [patch."https://github.com/schell/wgsl-rs"]

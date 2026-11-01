@@ -45,6 +45,12 @@ mirrored.
 * **Write rule:** the CPU writes the region only after `Fused::sync()` (one frame in flight; in the pre-armed stream,
   before the frame's event release).
 
+**bough-gpu (round 4, wgpu-hal):** the same region, header, bind table and slots. Kernels are wgsl-rs
+(`crates/bough-gpu/src/shaders`) with one layout: group 0 = `POOL` (region, binding 0), `BINS` (1), `COUNTS` (2), and
+textures `T0..T3` (3..6), `R0..R3` (7..10), `ATLAS` (11), which build.rs's transform reads from `FBind` instead of
+binding them; group 1 = `SLOT` (uniform: x = the slot's byte offset). Metal indices: buffers 0, 1, 2, slot 3, naga's
+sizes buffer 4 (crates/bough-gpu/RESULTS.md).
+
 ---
 
 This is what the presenter's GPU passes read, byte for byte. bough-core (pages, directory, damage) and bough-text
