@@ -898,23 +898,21 @@ pub(crate) fn retext_simple<B: Brush>(
         }
         let classes = crate::analysis::simple_classes(analysis_data_sources);
         let b = text.as_bytes();
-        let mut k = 0;
-        while k < b.len() {
-            let (cp, n) = match b[k] {
-                c if c < 0x80 => (c, 1),
-                0xC2 if k + 1 < b.len() => (b[k + 1], 2),
-                0xC3 if k + 1 < b.len() => (b[k + 1] + 0x40, 2),
-                _ => return false,
-            };
-            if classes[cp as usize] == 0 {
-                return false;
-            }
-            k += n;
+        if !crate::bough::fast::maybe_covered(b) {
+            return false;
+        }
+        let mut cps = mem::take(&mut scx.props);
+        crate::bough::breaks::decode(b, &mut cps);
+        let mut reject = 0u8;
+        for &cp in &cps {
+            reject |= (classes[cp as usize] == 0) as u8;
         }
         let (id, index, data) = (key.font.data.id(), key.font.index, key.font.data.clone());
-        if !scx.fast.covers(id, index, data.as_ref(), &key.vars, text)
+        if reject != 0
+            || !scx.fast.covers_cps(id, index, data.as_ref(), &key.vars, &cps)
             || !scx.fast.shape_seg(0, id, index, data.as_ref(), &key.vars, text, key.size)
         {
+            scx.props = cps;
             return false;
         }
         let d = &mut layout.data;
@@ -930,8 +928,7 @@ pub(crate) fn retext_simple<B: Brush>(
         d.lines.clear();
         d.line_items.clear();
         let mut bounds = mem::take(&mut scx.bounds);
-        let mut props = mem::take(&mut scx.props);
-        crate::bough::breaks::boundaries(b, &mut bounds, &mut props);
+        crate::bough::breaks::boundaries_cps(&cps, &mut bounds);
         let (slots, coords) = scx.fast.seg(0);
         let mut ordinal = 0usize;
         let style = key.style_index;
@@ -953,7 +950,7 @@ pub(crate) fn retext_simple<B: Brush>(
             &mut |_| style,
         );
         scx.bounds = bounds;
-        scx.props = props;
+        scx.props = cps;
         d.finish();
         crate::bough::count_segment(true);
         true

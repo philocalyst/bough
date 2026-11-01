@@ -116,6 +116,19 @@ impl FastShaper {
         true
     }
 
+    /// `covers` over already decoded Latin-1 codepoints (graft 6's single decode pass).
+    pub(crate) fn covers_cps(&mut self, blob: u64, index: u32, data: &[u8], vars: &[harfrust::Variation], cps: &[u8]) -> bool {
+        let i = self.entry(blob, index, data, vars);
+        let Some(sh) = self.tables[i].shaper.as_deref() else { return false };
+        let w = sh.script.covered.0;
+        // Branch-free: OR together "not covered" over every codepoint.
+        let mut miss = 0u64;
+        for &cp in cps {
+            miss |= !(w[(cp >> 6) as usize] >> (cp & 63)) & 1;
+        }
+        miss == 0
+    }
+
     /// Shapes `text` with the table of this font instance. `false` sends the segment to harfrust.
     pub(crate) fn shape(&mut self, blob: u64, index: u32, data: &[u8], vars: &[harfrust::Variation], text: &str, size: f32) -> bool {
         if !latin1_only(text.as_bytes()) {

@@ -34,6 +34,30 @@ fn main() {
             c
         }),
     ];
+    if std::env::var("SPIN_RETEXT").is_ok() {
+        let c = Case::plain(&log, "DejaVu Sans", 12.0, None);
+        let mut l = g.layout(&c);
+        let t = std::time::Instant::now();
+        while t.elapsed().as_secs() < 14 {
+            for _ in 0..1000 {
+                assert!(l.retext(&mut g.lcx, &log));
+            }
+        }
+        return;
+    }
+    if std::env::var("RETEXT").is_ok() {
+        for (t, sz) in [("-12.34", 11.0), ("17.85", 11.0), (log.as_str(), 12.0)] {
+            let c = Case::plain(t, "DejaVu Sans", sz, None);
+            let mut l = g.layout(&c);
+            let r = meter::count(30, || {
+                assert!(l.retext(&mut g.lcx, t));
+            });
+            let b = meter::count(30, || l.break_all_lines(None));
+            let a = meter::count(30, || l.align(parley::Alignment::Start, parley::AlignmentOptions::default()));
+            println!("{:>8} B: retext {:.0}, break {:.0}, align {:.0}", t.len(), r.instr, b.instr, a.instr);
+        }
+        return;
+    }
     if std::env::var("PATHS").is_ok() {
         for t in ["12.34", "-5.67", "12,345 req/s", "Throughput", "45%", &log] {
             let (a0, s0) = (bough_text::parley::bough::analyses(), bough_text::parley::bough::segments());

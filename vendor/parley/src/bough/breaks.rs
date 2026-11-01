@@ -32,7 +32,11 @@ pub(crate) struct Machine {
 impl Machine {
     fn new(data: &RuleBreakData<'_>) -> Self {
         let n = data.property_count as usize;
-        let state = (0..n * n).map(|i| data.break_state_table.get(i).unwrap_or(BreakState::Keep)).collect();
+        // 256 rows (any `u8` left state) x n columns (every right property and sot/eot is < n), so a lookup is in
+        // bounds without a check; rows past the data are Keep, as `get_break_state_from_table`'s fallback.
+        let state = (0..256 * n)
+            .map(|i| if i < n * n { data.break_state_table.get(i).unwrap_or(BreakState::Keep) } else { BreakState::Keep })
+            .collect();
         let mut prop = [0u8; 256];
         for (cp, p) in prop.iter_mut().enumerate() {
             *p = data.property_table.get32(cp as u32);
@@ -42,8 +46,9 @@ impl Machine {
 
     #[inline(always)]
     fn st(&self, l: u8, r: u8) -> BreakState {
-        // Out-of-range indices fall back to Keep, as `get_break_state_from_table` does.
-        self.state.get(l as usize * self.n + r as usize).copied().unwrap_or(BreakState::Keep)
+        debug_assert!((r as usize) < self.n);
+        // SAFETY: `state` has 256 rows of `n` entries and `r < n` (a break property, sot or eot of the data).
+        unsafe { *self.state.get_unchecked(l as usize * self.n + r as usize) }
     }
 
     /// UAX #14 over `cps` (one Latin-1 codepoint per character): calls `brk(i)` for every internal break position `i`
@@ -51,7 +56,8 @@ impl Machine {
     /// branches Latin-1 cannot reach.
     pub(crate) fn line(&self, cps: &[u8], mut brk: impl FnMut(usize)) {
         let n = cps.len();
-        let p = |i: usize| self.prop[cps[i] as usize];
+        // SAFETY (both closures): callers index below `n = cps.len()`.
+        let p = |i: usize| self.prop[unsafe { *cps.get_unchecked(i) } as usize];
         let mut i = 0;
         'a: loop {
             if i + 1 >= n {
@@ -115,7 +121,8 @@ impl Machine {
     /// when the start-of-text rule breaks), in order. `RuleBreakIterator::next` without the complex branches.
     pub(crate) fn word(&self, cps: &[u8], mut brk: impl FnMut(usize)) {
         let n = cps.len();
-        let p = |i: usize| self.prop[cps[i] as usize];
+        // SAFETY (both closures): callers index below `n = cps.len()`.
+        let p = |i: usize| self.prop[unsafe { *cps.get_unchecked(i) } as usize];
         if n == 0 {
             return;
         }
@@ -200,8 +207,15 @@ pub(crate) fn machines() -> &'static Machines {
 /// (an internal line break before the character), 1 = word (a word boundary at the character), 0 = none.
 /// `cps` is scratch for the per-character codepoints.
 pub(crate) fn boundaries(text: &[u8], out: &mut Vec<u8>, cps: &mut Vec<u8>) {
-    let m = machines();
+    decode(text, cps);
+    boundaries_cps(cps, out);
+}
+
+/// The Latin-1 codepoints of a covered text, one per character.
+#[inline]
+pub(crate) fn decode(text: &[u8], cps: &mut Vec<u8>) {
     cps.clear();
+    cps.reserve(text.len());
     let mut k = 0;
     while k < text.len() {
         let (cp, len) = match text[k] {
@@ -212,6 +226,11 @@ pub(crate) fn boundaries(text: &[u8], out: &mut Vec<u8>, cps: &mut Vec<u8>) {
         cps.push(cp);
         k += len;
     }
+}
+
+/// `boundaries` over already decoded codepoints.
+pub(crate) fn boundaries_cps(cps: &[u8], out: &mut Vec<u8>) {
+    let m = machines();
     out.clear();
     out.resize(cps.len(), 0);
     m.word.word(cps, |i| out[i] = 1);

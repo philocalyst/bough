@@ -578,7 +578,38 @@ impl<B: Brush> LayoutData<B> {
         // The previous cluster's full advance is added when the next one starts (upstream adds every cluster but
         // the last).
         let mut pending: Option<f32> = None;
-        for k in 0..n {
+        self.clusters.reserve(bytes.len());
+        if slots.cluster.is_none() {
+            // ASCII through the dense kernels: one glyph per byte, no ligature, every glyph inline. The same values
+            // as the general loop below, written without its per-cluster character walk.
+            let base = *ordinal;
+            debug_assert!(n == bytes.len() && bounds.len() >= base + n);
+            for k in 0..n {
+                let x_advance = if k + 1 < n { slots.x[k + 1] } else { slots.width } - slots.x[k] + slots.track;
+                let advance = (x_advance as f32) * scale_factor;
+                if let Some(a) = pending.take() {
+                    run_advance += a;
+                }
+                pending = Some(advance);
+                let boundary = match bounds[base + k] {
+                    2 => Boundary::Line,
+                    1 => Boundary::Word,
+                    _ => Boundary::None,
+                };
+                self.clusters.push(ClusterData {
+                    info: ClusterInfo::new(boundary, bytes[k] as char),
+                    flags: 0,
+                    style_index: style_of(text_range.start + k),
+                    glyph_len: 0xFF,
+                    text_len: 1,
+                    glyph_offset: slots.gid[k] as u32,
+                    text_offset: k as u16,
+                    advance,
+                });
+            }
+            *ordinal = base + n;
+        }
+        for k in 0..if slots.cluster.is_none() { 0 } else { n } {
             let c0 = slots.cluster.map_or(k, |c| c[k] as usize);
             let c1 = if k + 1 < n { slots.cluster.map_or(k + 1, |c| c[k + 1] as usize) } else { bytes.len() };
             let x_advance = if k + 1 < n { slots.x[k + 1] } else { slots.width } - slots.x[k] + slots.track;
