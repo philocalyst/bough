@@ -424,6 +424,75 @@ impl Bough {
     pub fn damage_inside(&mut self, r: NRect) {
         self.ring.add_inside(r);
     }
+    /// The general rule for a geometry change of a box primitive (DESIGN §2; bough-metal RESULTS Part IV): a
+    /// pixel's value depends on edge `e` only within `band` of it, so the pixels that can change are the bands
+    /// around the edges that **moved**, never `old ∪ new`. For each lane `i` set in `moved` (bit 0 = x0,
+    /// 1 = y0, 2 = x1, 3 = y1) this marks the strip `[min(old_i, new_i) - band, max(old_i, new_i) + band)`
+    /// across the union of both inks' perpendicular extent, clipped to clip `clip` (0: none). `old` / `new`
+    /// are the primitive's inks (outward-rounded, margin included); `band` is the kind's edge influence +
+    /// margin + 1 (rounding slack). Only the writer knows which edges moved at sub-pixel resolution, so it
+    /// passes them. Up to 4 strips: a bar that grows marks the strip between its old and new top, not the bar.
+    #[inline]
+    pub fn damage_edges(&mut self, old: NRect, new: NRect, moved: u8, band: i16, clip: u16) {
+        if moved == 0 {
+            return;
+        }
+        let (old, new) = (old.canon(), new.canon());
+        let ([ox0, oy0, ox1, oy1], [nx0, ny0, nx1, ny1]) = (old.to_xyxy(), new.to_xyxy());
+        // the perpendicular extent: both inks (an empty side contributes nothing; its lanes are meaningless)
+        let (ux0, uy0, ux1, uy1) = match (old.is_empty(), new.is_empty()) {
+            (true, true) => return,
+            (true, false) => (nx0, ny0, nx1, ny1),
+            (false, true) => (ox0, oy0, ox1, oy1),
+            _ => (ox0.min(nx0), oy0.min(ny0), ox1.max(nx1), oy1.max(ny1)),
+        };
+        if old.is_empty() || new.is_empty() {
+            // appearing or vanishing: everything it covers changes
+            let r = self.clipped(NRect::new(ux0, uy0, ux1, uy1), clip);
+            self.ring.add(r);
+            return;
+        }
+        let b = band as i32;
+        let strip = |lo: i32, hi: i32| (lo.min(hi) - b, lo.max(hi) + b);
+        let mut strips = [NRect::EMPTY; 4];
+        if moved & 1 != 0 {
+            let (a, z) = strip(ox0, nx0);
+            strips[0] = NRect::new(a, uy0, z, uy1);
+        }
+        if moved & 2 != 0 {
+            let (a, z) = strip(oy0, ny0);
+            strips[1] = NRect::new(ux0, a, ux1, z);
+        }
+        if moved & 4 != 0 {
+            let (a, z) = strip(ox1, nx1);
+            strips[2] = NRect::new(a, uy0, z, uy1);
+        }
+        if moved & 8 != 0 {
+            let (a, z) = strip(oy1, ny1);
+            strips[3] = NRect::new(ux0, a, ux1, z);
+        }
+        for r in strips {
+            if !r.is_empty() {
+                let r = self.clipped(r, clip);
+                self.ring.add(r);
+            }
+        }
+    }
+    /// `set_ink_handle` for a box primitive whose geometry changed: the record's ink becomes `ink` and the
+    /// damage is [`Bough::damage_edges`] of its old and new ink (`moved`, `band` as there), not old ∪ new.
+    pub fn set_ink_handle_edges(&mut self, h: Handle, ink: NRect, moved: u8, band: i16) -> bool {
+        let Some((d, s)) = self.handle_loc(h) else { return false };
+        let p = self.page(d);
+        let (old, clip) = (p.abs(p.ink[s]), p.clip[s]);
+        self.set_ink_at(d, s, ink, false);
+        self.damage_edges(old, ink, moved, band, clip);
+        true
+    }
+    /// The clip id of a handle's record (0: unclipped).
+    pub fn clip_of_handle(&self, h: Handle) -> Option<u16> {
+        let (d, s) = self.handle_loc(h)?;
+        Some(self.page(d).clip[s])
+    }
     /// Mark the symmetric difference `old XOR new` (as at most 8 strips).
     #[inline]
     pub fn damage_xor(&mut self, old: NRect, new: NRect) {

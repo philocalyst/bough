@@ -27,6 +27,7 @@ fn main() {
     let start = std::time::Instant::now();
     let mut warm = (t0.instrs, 0usize, [0u64; 5], 0u64);
     let mut frames = 0u64;
+    let mut tiles = 0u64;
     for tick in 0..ticks {
         if tick == 60 {
             warm = (bough_metal::perf::snap().instrs, tick, app.prof.acc, frames);
@@ -36,6 +37,9 @@ fn main() {
             app.turn(|d| publish(d, &work, mode));
         }
         frames += app.frame() as u64;
+        if tick >= 60 {
+            tiles += app.repaired_tiles as u64;
+        }
         #[cfg(target_os = "macos")]
         if render && tick % 60 == 0 {
             // a window presents every frame; here the GPU is only settled now and then
@@ -49,7 +53,7 @@ fn main() {
     let t1 = bough_metal::perf::snap();
     let measured = ticks.saturating_sub(60).max(1) as f64;
     println!(
-        "{mode:?} render={render}: {:.4} ms/tick, frames presented {frames}/{ticks}, instr/tick (after 60 warm-up ticks) {:.0}, ri_instructions total {}, footprint {:.1} MB, fallbacks {}, wires run {}, text set {}, rows mounted {}",
+        "{mode:?} render={render}: {:.4} ms/tick, frames presented {frames}/{ticks}, instr/tick (after 60 warm-up ticks) {:.0}, ri_instructions total {}, footprint {:.1} MB, fallbacks {}, wires run {}, text set {}, rows mounted {}, repaired tiles/frame {:.1} (ring {})",
         start.elapsed().as_secs_f64() * 1e3 / ticks as f64,
         (t1.instrs - warm.0) as f64 / measured,
         t1.instrs,
@@ -58,6 +62,8 @@ fn main() {
         app.rt.ctr.wires_run,
         app.rt.ctr.text_set,
         app.rt.ctr.rows_mounted,
+        tiles as f64 / measured,
+        env("BOUGH_RING", 0usize),
     );
     if phases {
         let n = measured;

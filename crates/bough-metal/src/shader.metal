@@ -1127,15 +1127,62 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
     }
 }
 
+// Staged record, EDGE FORM: the geometry is kept as its four edges `b` (x0, y0, x1, y1), never as centre and
+// half size, and every distance is taken to an edge directly (`max(c - b1, b0 - c)`). With the façade's
+// geometry on a 1/256-px grid every one of these differences is exact in f32, so a pixel's value depends
+// bit for bit only on the edges within its influence band: an edge that did not move leaves every pixel
+// outside the moved edges' bands unchanged, which is what lets the CPU damage only those bands
+// (bough-core `damage_edges`, RESULTS Part IV).
+struct FRec {
+    float4 q;          // clip-clamped coverage window incl. AA margin (pixel-centre test)
+    float4 core;       // pixel centres inside `core` take `cv` with no per-pixel work (coverage provably 1)
+    float4 b;          // geometry edges x0, y0, x1, y1 (unclamped)
+    half4 cv;
+    half4 pm;          // premultiplied colour, unpacked once per record (not per pixel)
+    half4 pm2;
+    float radius, bw;
+    ushort2 uv;
+    ushort kind, pad;
+};
+
+// Rounded-box SDF in edge form (== sd_rbox(c - centre, half, r) mathematically).
+static float f_sd(float2 c, float4 b, float r) {
+    float2 q = max(c - b.zw, b.xy - c) + r;
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+
+static half4 f_shade(threadgroup const FRec& r, float2 c, texture2d<float> atlas) {
+    if (!(c.x >= r.q.x && c.x < r.q.z && c.y >= r.q.y && c.y < r.q.w)) return half4(0.0h);
+    switch (r.kind) {
+    case 0:
+        return r.pm;
+    case 1: {
+        float d = f_sd(c, r.b, r.radius);
+        return r.pm * half(clamp(0.5 - d, 0.0, 1.0)); }
+    case 2: {
+        float d = f_sd(c, r.b, r.radius);
+        float outer = clamp(0.5 - d, 0.0, 1.0);
+        float inner = clamp(0.5 - (d + r.bw), 0.0, 1.0);
+        return r.pm * half(max(outer - inner, 0.0)) + r.pm2 * half(inner); }
+    default: {
+        float2 t = c - r.b.xy;
+        half cov = 0.0h;
+        if (all(t >= 0.0) && all(t < r.b.zw - r.b.xy)) {
+            cov = half(atlas.read(uint2(float2(r.uv)) + uint2(t)).r);
+        }
+        return r.pm * cov; }
+    }
+}
+
 // Solid quads are pixel-exact (no AA margin); the others carry a 1 px margin for their SDF edge.
-static bool f_stage_rec(device const FInst& in, float2 off, float4 cl, uint2 o, thread TgRec& r, thread bool& cover) {
+static bool f_stage_rec(device const FInst& in, float2 off, float4 cl, uint2 o, thread FRec& r, thread bool& cover) {
     float2 p0 = in.pos + off;
+    float2 p1 = p0 + in.size;
     float m = in.kind == 0 ? 0.0 : 1.0;
     float2 qa = clamp(p0 - m, cl.xy, cl.zw);
-    float2 qb = clamp(p0 + in.size + m, cl.xy, cl.zw);
+    float2 qb = clamp(p1 + m, cl.xy, cl.zw);
     r.q = float4(qa, qb);
-    r.half_ = in.size * 0.5;
-    r.centre = p0 + r.half_;
+    r.b = float4(p0, p1);
     half4 c1 = half4(unpack(in.color)), c2 = half4(unpack(in.color2));
     r.pm = half4(c1.rgb * c1.a, c1.a);
     r.pm2 = half4(c2.rgb * c2.a, c2.a);
@@ -1144,7 +1191,7 @@ static bool f_stage_rec(device const FInst& in, float2 off, float4 cl, uint2 o, 
     r.uv = in.uv.xy;
     r.kind = in.kind;
     float k = in.kind == 1 ? max(in.radius, 0.5) + 1.0 : max(in.radius, 0.5 + in.bw) + 1.0;
-    float4 cb = float4(r.centre - (r.half_ - k), r.centre + (r.half_ - k));
+    float4 cb = float4(p0 + k, p1 - k);
     cb = float4(max(cb.xy, qa), min(cb.zw, qb));
     r.core = in.kind == 0 ? float4(qa, qb) : (in.kind == 3 ? float4(0.0) : cb);
     r.cv = in.kind == 2 ? r.pm2 : r.pm;
@@ -1153,7 +1200,7 @@ static bool f_stage_rec(device const FInst& in, float2 off, float4 cl, uint2 o, 
     return qa.x < qb.x && qa.y < qb.y;
 }
 
-static bool f_stage_glyph(device const uchar* pool, device const FHdr& h, uint run, uint slot, float4 cl, thread TgRec& r) {
+static bool f_stage_glyph(device const uchar* pool, device const FHdr& h, uint run, uint slot, float4 cl, thread FRec& r) {
     float2 p0, size;
     uint color;
     ushort2 uv;
@@ -1161,8 +1208,7 @@ static bool f_stage_glyph(device const uchar* pool, device const FHdr& h, uint r
     float2 qa = clamp(p0 - 1.0, cl.xy, cl.zw);
     float2 qb = clamp(p0 - 1.0 + (size + 2.0), cl.xy, cl.zw);
     r.q = float4(qa, qb);
-    r.half_ = size * 0.5;
-    r.centre = p0 + r.half_;
+    r.b = float4(p0, p0 + size);
     half4 c1 = half4(unpack(color));
     r.pm = half4(c1.rgb * c1.a, c1.a);
     r.pm2 = half4(0.0h);
@@ -1213,13 +1259,13 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
     float4 blk = float4(c00, c00 + 1.0);
     threadgroup uint sgc[8];
     threadgroup uint flo[8];
-    threadgroup TgRec rec[128];
+    threadgroup FRec rec[128];
     half4 acc[4] = { half4(0.0h), half4(0.0h), half4(0.0h), half4(0.0h) };
     device const uint4* bin = bins + tile.y * h.bin_cap;
     uint nb = atomic_load_explicit(fb.counts + tile.y, memory_order_relaxed);
     for (uint b0 = 0; b0 < nb; b0 += 128) {
         bool rh = false, cover = false;
-        TgRec r;
+        FRec r;
         uint bi = b0 + li;
         if (li < 128 && bi < nb) {
             uint4 en = bin[bi];
@@ -1245,7 +1291,7 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
         for (uint s2 = 0; s2 < 8; s2++) k0 = max(k0, flo[s2]);
         k0 = k0 > 0 ? k0 - 1u : 0u;
         for (uint k = k0; k < nr; k++) {
-            threadgroup const TgRec& rr = rec[k];
+            threadgroup const FRec& rr = rec[k];
             if (rr.q.x > blk.z || rr.q.z <= blk.x || rr.q.y > blk.w || rr.q.w <= blk.y) continue;
             if (blk.x >= rr.core.x && blk.z < rr.core.z && blk.y >= rr.core.y && blk.w < rr.core.w) {
                 half4 cv = rr.cv;
@@ -1253,7 +1299,7 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
                 continue;
             }
             for (uint j = 0; j < 4; j++) {
-                half4 sh = shade_h(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas);
+                half4 sh = f_shade(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas);
                 acc[j] = sh + acc[j] * (1.0h - sh.a);
             }
         }
