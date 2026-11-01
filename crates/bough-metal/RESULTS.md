@@ -350,3 +350,344 @@ $X/latency c 300 3 1                          # presentedTime latency: kind fram
 $X/floor                                      # bare Metal submission floor
 ```
 Note: building adds the objc2 dependency tree to the workspace `Cargo.lock` (untracked, not committed here).
+
+---
+
+# Part II: Opus iteration (reformulation attempts, 2026-11-01)
+
+Same machine, same scene and the same byte-exact oracle. The machine was **loaded** throughout: load average 40-60
+from parallel agents, and ioreg "Device Utilization" ~50 % from other processes. Instruction counts are what to
+trust; GPU ms and CPU us are noisy. Each process-wide figure was repeated (alternating runs) and moved ±1-2 %
+between repeats of the same scenario order, but up to ±15 % between different scenario orders (see 12.9). New
+code: `src/v2.rs` (presenter with switchable mechanisms), the `cs_repair` and `vs_vclip` shaders, Zobrist tile
+hashes in `src/scene.rs`, and the examples `lab`, `publish`, `gpumodes`, `vclip_test`. Raw data: `results/v2/`.
+
+## 12.0 Harness fixes (before any attempt)
+
+The prototype's "process instr/tick" bracketed every tick with 3-4 `proc_pid_rusage` snaps (5-7 K each), which
+inflated it by ~20 K. The prototype's 60 K "idle tick" was about one third measurement. `examples/lab.rs` measures
+as follows instead:
+
+* **process-wide instr / frame** = `ri_instructions` delta over a whole scenario / frames. The only snaps are at
+  scenario boundaries. Everything is included: link, Metal threads, CA, kernel time on our behalf, and the tiny
+  bookkeeping.
+* **main-thread in-tick** = `thread_selfcounts` (libsystem_kernel; 1.45 K per call vs 5.1 K, overhead subtracted).
+* **publish-thread instr** = `thread_selfcounts` inside the publish itself (whichever thread commits).
+* **idle**: the window starts when the display link actually pauses, and the per-thread snapshot is taken before
+  the snap.
+* **present→commit latency**: `CACurrentMediaTime` at `present()` → after `CATransaction commit` of that frame.
+* Scenarios: idle, one-colour, scatter-80, scroll-400, full, plus **toggle** (one instance alternates A/B every tick:
+  caret, hover) and **sparse** (one colour change every 100 ms from a timer, i.e. input-like). 1.4 s each, one
+  process per strategy, ≤ 11 s per window.
+* **WindowServer CPU could not be measured.** `proc_pid_rusage(WindowServer)` returns EPERM; `ps -o time` and `top`
+  need an entitlement (also outside the sandbox); system-wide CPU and GPU counters are swamped by the load above.
+  Compositor cost is inferred from our own side only.
+
+The prototype winner (b-h) re-measured in this harness is the **"before"** column everywhere below.
+
+## 12.1 Attempt A: idle = zero (KEPT)
+
+* **Rule bent:** "the display link ticks; each tick checks for work". **Representation:** damage *arms* the link.
+  The tick that finds no damage and no pending frame calls `[link setPaused:YES]`; a damaging write (event, timer)
+  calls `setPaused:NO`.
+
+| idle, 8 s window (`results/v2/lab_idle8_*.txt`) | instr/s | wakeups/s | CPU ms/s |
+|---|---|---|---|
+| before: link running (b-h) | 5,250,103 | 120.8 | 3.8 |
+| **after: link paused** | **104,804** | **1.5** | **0.1** |
+
+* That is 50x fewer instructions and 80x fewer wakeups. 0.1 ms CPU/s = 0.01 % of a core, which shows as 0.0 %
+  like zgx.
+* The residue (1.5 wakeups/s) is AppKit's NSEventThread, one Metal housekeeping thread and the scenario-ending
+  timer. Nothing of ours runs.
+* 1.4-s windows read 0.15-0.39 M instr/s because fixed costs are amortised over less time.
+
+## 12.2 Attempt B: present from the event, not from a tick (KEPT)
+
+* **Rule bent:** "frames are produced in display-link callbacks". **Representation:** a sparse change runs the
+  whole frame (sync, repair, commit) inside the event handler that caused it. The link stays paused, and the commit
+  lands on the next vsync anyway.
+
+| sparse: 1 colour change per 100 ms, cost per change (`results/v2/sparse_isolation.txt`) | process instr |
+|---|---|
+| before: b-h, link always running (~12 idle ticks per change) | 973,252 |
+| link pause + wake the link per change (b-h `--pause`) | 665,213 |
+| **direct present from the event** (`cs:h:free:4 --pause --direct`) | **358,872** |
+
+Waking a paused CADisplayLink for one frame costs ~300 K (link restart, 2 ticks, 6.5 wakeups per change) compared
+with presenting right away.
+
+## 12.3 Attempt C: the Core Animation commit (floor measured; nothing below ~80 K exists in public API)
+
+`examples/publish.rs` puts a *new* surface on screen once per tick with no GPU work at all. All surfaces hold
+identical pixels, so nothing flickers. Process cost is net of a bare display-link tick (`results/v2/publish_*.txt`).
+
+| publish mechanism | committing-thread instr | process instr / publish | verdict |
+|---|---|---|---|
+| bare CADisplayLink tick (reference) | - | 44.9-46.6 K (whole tick) | - |
+| `CATransaction` + `setContents:` new IOSurface, **main thread** | 78-85 K | **+87-105 K** | cheapest real swap |
+| same, implicit transaction (run-loop flush) | 7 K + flush | +102 K | same |
+| same, background serial queue (what b-h does in its completion handler) | 79 K | +131 K | +30 K for the hop |
+| `setContents:` the SAME surface (no change) | 34 K | +41-59 K | fixed cost of any commit |
+| `setContentsChanged` (no swap) | 76 K | +97 K | no cheaper than a swap |
+| hidden-flip between 4 layers with fixed contents | 56 K | +76 K | **REJECTED: unsafe** (below) |
+| 8x6 grid of 240-px tile layers, change 1 tile | 102 K | +145-160 K | REJECTED |
+| same grid, change all 48 | 1.78 M | +1.81 M | REJECTED (~37 K per changed layer) |
+| CAMetalLayer `nextDrawable` + clear + `presentDrawable` | 104 K | +668 K | REJECTED |
+| CAMetalDisplayLink (macOS 14) drawables | 63 K | +700 K | REJECTED |
+| AVSampleBufferDisplayLayer + CMSampleBuffer(IOSurface), display-immediately | 27 K | +292 K + a CoreMedia converter thread (60 us) | REJECTED |
+| borderless window (3 layers instead of 27) | 78 K | +99 K | no effect: the commit does not walk unchanged chrome |
+
+* **Hidden-flip is unsafe by construction.** With 4 layers holding fixed contents, the compositor keeps *all four*
+  surfaces `IOSurfaceIsInUse` permanently (in-use histogram 16/16 samples at 4/4). With a contents swap it holds
+  2-3. So no public signal ever says when a hidden layer's surface may be redrawn, and the variant is rejected even
+  though it is 25 K cheaper.
+* **Multiple small layers for independent regions** (invention candidate, measured): the commit costs ~37 K per
+  changed layer and +0.5 K per layer present. Damage spread over many tiles (scatter, scroll) becomes 0.5-1.8 M per
+  frame. REJECTED. Its potential compositor-side win could not be measured (12.0).
+* **Where to commit** (full pipeline, compute raster, 4-ring; `results/v2/lab_cs_*`):
+
+| publish site | one-colour process instr | present→commit | verdict |
+|---|---|---|---|
+| CATransaction on Metal's completion thread (`h`) | 388-402 K | 0.34-0.40 ms | **KEPT** |
+| completion thread → `dispatch_async(main)` → main commits (`hm`) | 439 K | 0.35 ms | rejected (+45 K) |
+| main thread at the next tick, completion polled (`nt`) | 395 K | 8.33 ms | rejected (no saving, +1 frame) |
+| main-queue one-shot 0.3 ms after submit, re-polls every 0.25 ms (`tp`) | 530 K | 0.6-2.3 ms | rejected (2-3 extra wakeups/frame) |
+
+The microbench's "main is 30 K cheaper than a background commit" disappears in the real pipeline: Metal's
+completion thread wakes for every command buffer anyway, so the handler adds only the commit. **Conclusion: a
+publish costs ≥ ~80 K on the committing thread plus ~20 K elsewhere, whichever public route is used. Core
+Animation's commit cannot be removed, only kept off the main thread and done once per frame.**
+
+## 12.4 Attempt D: compute tile repair (KEPT as the raster)
+
+* **Rule bent:** "pixels come from the rasterizer inside a render pass". **Representation:** the damage plane *is*
+  the dispatch.
+  * Each damaged 16x16 tile is one 256-thread threadgroup.
+  * The kernel culls the instance array itself in two levels:
+    1. one thread per 64-instance page tests the Bough's page ink summary (mirrored into the pool);
+    2. the surviving pages are processed 4 at a time (256 instances), compacted in paint order with
+       `simd_prefix_exclusive_sum`. The culling thread stages each hit instance's derived record (clip-clamped quad,
+       centre, colours) in threadgroup memory.
+  * Every pixel blends the staged records in registers and is written exactly once into the IOSurface texture: no
+    load action, no store of untouched pixels, no stencil, no rasterizer.
+  * The CPU no longer extracts rects, culls a draw list or writes stencil rects. It only lists tile indices into a
+    frame slot, or sets a `full` flag.
+* Iterations of the kernel (headless, GPU ms full / scroll):
+  * v1 flat scan: 0.949 / 0.299
+  * \+ page cull: 0.656 / 0.173
+  * \+ staged records: **0.511 / 0.177** (`results/v2/gpumodes*.txt`)
+
+Head-to-head on identical damage (`examples/gpumodes.rs`, headless, IOSurface target, modes interleaved per
+iteration, 300 iterations; `results/v2/gpumodes_rec.txt`). Each cell is CPU instr (main thread: region build +
+cull + encode + commit) / GPU ms median:
+
+| damage (16-px tiles, age-3 union) | bbox | stencil (prototype) | vclip (12.5) | **compute** |
+|---|---|---|---|---|
+| one colour (18) | 85 K / 0.198 | 89 K / 0.065 | 104 K / 0.018 | **42 K / 0.011** |
+| scatter-80 (2,332) | 141 K / 0.286 | 146 K / 0.175 | 211 K / 0.192 | **78 K / 0.159** |
+| scroll 400 px (2,375) | 71 K / **0.106** | 71 K / 0.105 | 84 K / 0.139 | 78 K / 0.177 |
+| full (10,800) | 53 K / **0.237** | 53 K / 0.236 | 53 K / 0.236 | **40 K** / 0.511 |
+
+* Compute has the lowest CPU at every damage size, and the lowest GPU for small and medium damage.
+* **It loses the GPU at large damage: 1.7x at scroll, 2.2x at full** (at display cadence and DVFS clocks: 0.5 vs
+  0.35 ms and 1.2-1.4 vs 0.6 ms). Per the method this is a recorded losing regime, not a reason for a second path.
+  The fix is structural (12.11 #1).
+* Windowed (`cs:h:rr:3`, everything else as b-h): one colour 482 K → **388 K** process, in-tick 83 K → 47 K.
+* **phys_footprint 159 → 122 MB**: no render pass is ever encoded. The cause was not isolated; most likely the
+  tiler's parameter buffer is never allocated.
+
+## 12.5 Attempt E: vertex-clipped instance stream, "format C on the GPU" (damage-lab follow-up; reference path)
+
+* **Rule bent:** "the CPU splits primitives into damaged runs" (damage lab §5.4). **Representation:**
+  * The 16-px plane (90 rows x 128 bits) goes into the pool.
+  * The CPU emits only `(instance | first-row << 16)` entries, one per 8 tile rows of an instance that meet damage
+    in its x-span.
+  * One draw of `entries x 32` sub-quads. Sub-quad (r, k) = the instance quad ∩ tile row r ∩ the k-th damaged run
+    of that row inside the instance's span. Runs are found by bit scan in `vs_vclip`; missing rows/runs are
+    degenerate. `loadAction = Load`; no stencil, no scissor.
+* **Two exactness rules found by the oracle** (`examples/vclip_test.rs` checks inside/outside the plane separately):
+  1. **A repair superset must be a function of the tile, never of the instance.** The first version merged a
+     row's extra runs per instance, so a panel repainted gap tiles that the button above it did not. That produced
+     80,638 bad pixels outside the plane. Fix: the CPU canonicalises each *row* to ≤ 4 runs (fills the smallest
+     gaps); the cull and the shader read the same canonical plane.
+  2. **Interpolated varyings are not split-invariant.** The fragment shader's `local` was an interpolated varying.
+     It is now `position.xy - centre` with `centre` flat, exact for any split, and all render modes use it.
+* Result: the lab's prediction holds on this GPU. One-colour GPU time is **0.018 ms vs 0.065 (stencil) vs 0.198
+  (bbox)**, because only damaged hardware tiles are touched.
+* But the row walk costs CPU: 104-211 K vs 89-146 K for stencil. Compute beats it on both axes at small damage
+  and on CPU everywhere. Windowed `vc:h:rr:3`: 492 K one colour, 546 K scatter (b-h: 479 K, 475 K).
+* Verdict: **best render-pass path, not kept as the raster.** It stays in the code as the render-pipeline
+  reference, and as the fallback design if compute's large-damage gap cannot be closed.
+
+## 12.6 Attempt F: 4th surface chosen by `IOSurfaceIsInUse` (KEPT; ring safety)
+
+* Rule: target ≠ `shown` (the surface last handed to the compositor) ∧ `!IOSurfaceIsInUse(target)`, else defer the
+  frame and retry next tick.
+* **Proof:**
+  * Only `shown` can go from not-in-use to in-use, because we publish nothing else.
+  * A surface that is neither `shown` nor in use at selection therefore stays unused until we publish it, and we
+    publish it only after its GPU work completes.
+  * Every other surface the compositor has seen was superseded by a later commit it has processed (it displayed
+    it). If the compositor still reads such a surface, `IOSurfaceIsInUse` says so.
+* **Measured:** over all v2 lab runs, **≈12,300 GPU frames + ≈1,300 GPU-skipped publishes: 0 drawn into an in-use
+  surface, 0 deferred.** A free candidate was nearly always available (histograms typically
+  `[0, 0, 570-720, 170-320, 1]`).
+* The prototype's 3-ring round robin drew into an in-use surface in 0-3 of ~885 frames per run (`use_hist` bit 0).
+* **Two confounders:**
+  * During the completion handler, Metal itself still holds the surface, so a publish-time check reads "in use"
+    (5-28 per run, Handler mode only; 0 with next-tick publish).
+  * Pre-armed batches (12.8) hold use counts on all bound surfaces. That gives false positives, which are safe.
+* Cost: +11 MB (44 MB of surfaces).
+
+## 12.7 Attempt G (invention 1): content-addressed surfaces, Zobrist tile hashes (KEPT)
+
+* **Rule bent:** "damage is a change history; a surface of age a must repaint OR(age)". **Representation:** the
+  scene keeps, per 16-px tile, a 64-bit hash (XOR of a hash of each touching instance's full drawing state). Each
+  surface keeps the hash vector it was drawn at.
+  * If a free surface already holds every pixel of the current state, it is published and **the GPU is skipped**.
+  * If the surface on screen holds it, **nothing at all happens**.
+  * Colour changes are exactly reversible (XOR out the old state, XOR in the new).
+* **Three iterations, recorded:**
+  1. Hashing every moved instance on space changes, with a "fewest differing tiles" pick: toggle won, but the tax
+     was +290 K/frame on scroll and +110 K on scatter, which breaks the "same mechanism cheapest in the simple
+     case" rule.
+  2. **Geometry is salted, not hashed.** A move XORs fresh random values into the damaged tiles: one value for the
+     old bounds and a different one for the new, so tiles in both still change. Cost is O(damaged tiles), never
+     O(instances). A move-and-back is no longer recognised; colour toggles still are. The pick became an
+     early-exit "does any surface hold *all* of it".
+  3. The target's repair set is the plain history union, with no per-tile hash filter (that filter cost ~35 instr
+     per damaged tile). Keeping a surface's hashes in sync is a row-span `memcpy`: tiles in the span but outside
+     the repair set already hold equal hashes, by invariant.
+* After iteration 3 (full scenario order, 2 runs): **toggle 331 K → 159-162 K per frame** (GPU skipped in 164/168
+  frames; −58 % vs b-h's 378 K). The other scenarios are within ±7 % of the same config without hashing
+  (`results/v2/final_*`).
+* Exact (0 mismatches) and sabotage-detected (63/79 frames fail with ages one epoch too young). Collision
+  probability is 2^-64 per tile comparison.
+* The damage lab's `sig32` note predicted exactly this niche (oscillation inside the age window). The salted form
+  is how it stops taxing everything else.
+
+## 12.8 Attempt H (invention 2): pre-armed command stream released by a shared event (KEPT as throughput mode)
+
+* **Rule bent:** "a frame's command buffer is encoded and committed at frame time". **Representation:** the compute
+  kernel reads its target index and tile count from the pool, so the command stream is constant.
+  * K frames are pre-encoded into one command buffer, each as `wait(ev ≥ 2f−1)`, indirect dispatch from slot
+    f%2, `signal(ev = 2f)`.
+  * A frame is then: write the tile list and target into the slot, then `ev.signaledValue = 2f−1` (one message).
+  * The next batch is encoded once per K frames.
+* **Main thread:** in-tick 47 K → **22-24 K**.
+* **Process-wide depends entirely on how GPU completion is observed:**
+
+| completion observed by | one-colour process instr | present→commit |
+|---|---|---|
+| `notifyListener:atValue:` + commit on the listener thread (`arm8:h`) | 388 K (= compute + handler) | 0.41 ms |
+| main-queue timer poll (`arm32:tp`) | 484 K | 0.6 ms |
+| **the next display-link tick polls `signaledValue`** (`arm8/32:nt`) | **274-278 K** (short order), 343 K (full order) | 8.33 ms |
+
+* **Finding:** Metal's per-frame floor is **per command buffer**. One of the two ~60-us Metal threads disappears
+  from the per-thread profile with batching. Being told "the GPU is done" costs ~60 K process-wide whichever way it
+  is delivered (completion thread, listener, timer). The only free observer is a tick that happens anyway, at +1
+  frame of latency.
+* So this is the right mode for continuous animations whose frames are not input-driven (−7..−18 % vs the
+  interactive mode), and the wrong one for input.
+* It also makes `IOSurfaceIsInUse` over-report (12.6).
+* Metal never aborted a batch that waited on its event for seconds: 0 batch errors, including the 1.4-s idle
+  phases.
+
+## 12.9 Observed regime (not explained): the first GPU submissions after a GPU-silent stretch
+
+* After the toggle scenario (1.4 s of CA-only frames, zero GPU submissions), the following sparse changes cost
+  0.95-1.3 M each instead of ~360 K. A Metal driver thread spent 185-340 us per change instead of ~65, and in one
+  run our own main-thread and commit work doubled too.
+* Reproduced 4/4 times after toggle and 0/3 times after one-colour or full (`results/v2/sparse_isolation.txt`).
+* It matters for "idle = zero": the price of idling may be paid at the next wake. **Next measurement:** cost and
+  latency of the first 10 frames after N seconds of GPU silence.
+
+## 12.10 Before / after (same harness, same scene; before = b-h, after = recommended design)
+
+* **after** = compute repair + completion-handler commit + content-addressed 4-ring + link paused when idle +
+  direct present from events (`lab --strategy cs:h:z:4 --pause --direct`).
+* Two alternating runs each (`results/v2/final_{1..4}_*.txt`); ranges are the two runs. GPU ms are display-cadence
+  medians.
+* zgx-like control (a) in the same harness for scale (`final_5_a.txt`).
+
+| scenario | before: process instr/frame (in-tick, GPU ms) | **after: process instr/frame** (in-tick, GPU ms) | Δ process | control (a) |
+|---|---|---|---|---|
+| **idle** (8 s) | 5.25 M instr/s, 120.8 wakeups/s, 3.8 ms CPU/s | **0.105 M instr/s, 1.5 wakeups/s, 0.1 ms CPU/s** | **−98 %** | 5.85 M/s |
+| one colour | 482-488 K (83 K, 0.12-0.15) | **400-402 K** (51.5 K, 0.031-0.033) | −17 % | 926 K |
+| 80 scattered | 474-475 K (155 K, 0.35-0.43) | **420-422 K** (137 K, 0.53-0.59) | −11 % | 888 K |
+| scroll 400 px | 446-447 K (127 K, 0.34-0.35) | **434-435 K** (147 K, 0.51-0.57) | −3 % | 887 K |
+| full redraw | 377-379 K (59 K, 0.61) | **348-350 K** (63 K, 1.20-1.37) | −8 % | 798 K |
+| toggle A/B (caret, hover) | 378-379 K (60 K) | **159-160 K** (90 K = commit on main; GPU skipped) | **−58 %** | 804 K |
+| sparse 10/s (per change, isolated order) | 973 K | **359-363 K** | **−63 %** | 1.43 M |
+| phys_footprint | 159 MB | **133 MB** (4 surfaces; 122 MB with 3) | −16 % | 241 MB |
+| frame interval (tick) med / p99 | 8.33 / 8.33 | 8.33 / 8.33 (commit interval p99 8.6-9.0) | = | 8.33 / 14.5 |
+| present → commit | (prototype: tick → GPU done 0.44 ms) | 0.38-0.40 ms one colour, 1.5-1.7 ms full | | |
+
+* Throughput mode (`arm32:nt:z:4`, +8.33 ms of latency), full order: 343 / 365 / 377 / 325 K and toggle 166 K;
+  274-278 K one colour in a short order.
+* **Where one colour change's 400 K goes now:**
+  * our main thread 51 K (sync poll, scene write, pick, tile list, 10 messages)
+  * the CA commit on the completion thread 84 K
+  * the display-link tick ~45 K
+  * two Metal driver threads, ~60 us CPU each, most of the remaining ~220 K
+* **Our own code is 13 % of the frame. The rest is OS and driver**, which is why continuous scenarios moved only
+  3-17 % while idle, toggle and sparse (where whole stages vanish) moved 58-98 %.
+
+## 12.11 Recommended presenter design and its per-frame call sequence
+
+* One mechanism for all damage sizes. A frame is triggered by a display-link tick while something animates, or
+  directly by the event that damaged the scene; the link is paused otherwise.
+* Surfaces: 4 IOSurface-backed BGRA8 textures (`RenderTarget|ShaderRead|ShaderWrite`) and one plain `CALayer`.
+
+```
+tick (or event handler), main thread
+ 0 [prevCmd status]                         poll; waitUntilCompleted only if the GPU is late (1 msg)
+   scene writes: 4 B per colour + Zobrist delta XOR into <= 4 tile hashes; moves: one salt XOR per damaged tile
+   epoch = hist.push(acc)                   (16-epoch ring of 16-px tile planes)
+   pick: zero_diff(shown)?                  -> return: NOTHING else happens (no GPU, no CA)
+         for s in free (s != shown && !IOSurfaceIsInUse(s)):    <= 3 IOSurfaceIsInUse calls
+             zero_diff(s)? -> publish s (4 CA msgs on main), no GPU, done
+         target = first free (none free -> defer, retry next tick)
+   plane = OR(hist since target.epoch); write tile list (or `full` flag) into pool slot f%2
+ 1 [queue commandBuffer]
+ 2 [cmd computeCommandEncoder]
+ 3 [enc setComputePipelineState: cs_repair]
+ 4 [enc setBuffer: pool offset:0 atIndex:0]          (header, spaces, clips, pages, instances, slots)
+ 5 [enc setBytes: &slotOffset length:4 atIndex:1]
+ 6 [enc setTextures: {atlas, target x4} withRange:0..5]
+ 7 [enc dispatchThreadgroups:(ntiles,1,1) threadsPerThreadgroup:(16,16,1)]
+ 8 [enc endEncoding]
+ 9 [cmd addCompletedHandler: ^publish]
+10 [cmd commit]                                      => 10 messages; in-tick 47-52 K instr (one colour)
+   nothing damaged and nothing pending -> [link setPaused:YES]
+Metal completion thread (^publish)
+11 [CATransaction begin]  12 [CATransaction setDisableActions:YES]
+13 [layer setContents: target.iosurface]  14 [CATransaction commit]   => ~84 K instr
+```
+
+Next structural steps, in order:
+
+1. **Close compute's large-damage GPU gap** (scroll 1.7x, full 2.2x vs the rasterizer). Use 32x32 threadgroup
+   tiles at 4 pixels per thread, which amortises the two-level cull 4x and matches the hardware tile (damage-lab
+   §1.4), with a per-tile-row binning pass once per frame. The target is the render path's 0.24 ms full.
+2. **One publish trigger that is free.** Use the throughput mode's observer (the next tick) only while the link is
+   running anyway, and the completion handler otherwise. Make that a property of the scheduler, not a branch in
+   the presenter. Measure input-to-photon with it.
+3. **Explain 12.9** (the first submissions after GPU silence), and try Metal 4 command allocators and residency
+   sets (macOS 26) against the ~60 K per-command-buffer floor that now dominates.
+
+Reproduce (in addition to section 11):
+
+```
+X=$CARGO_TARGET_DIR/release/examples
+$X/correctness 200 a,b,bs,bh,c,vc:h:rr:3,vc:nt:free:4,cs:nt:z:4,arm8:nt:free:4 bbox,stencil   # 0 mismatches
+$X/correctness 120 cs:h:z:4,arm32:nt:z:4,vc:h:free:4 bbox --window                           # windowed, 0
+BOUGH_SABOTAGE=1 $X/correctness 100 cs:h:z:4 bbox                                             # must FAIL
+$X/vclip_test                                       # vclip inside/outside-plane proof, 6 cases
+$X/gpumodes 300                                     # bbox | stencil | vclip | compute head-to-head
+$X/publish 1.1 tick-only,main-explicit,bg-explicit,hidden-flip,grid-1,metal-layer,avsbdl   # CA floor
+$X/lab --strategy bh                                # before
+$X/lab --strategy cs:h:z:4 --pause --direct         # after (raster:publish:pick:n; rp|vc|cs|armK : h|hm|nt|tp : rr|free|z : 3|4)
+$X/lab --strategy cs:h:z:4 --pause --scn idle --secs 8
+```

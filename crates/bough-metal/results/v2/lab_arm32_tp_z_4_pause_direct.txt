@@ -1,0 +1,22 @@
+
+### strategy `arm32:tp:z:4` damage-mode `stencil` link-pause true
+
+| scenario | frames | process instr / frame | main-thread in-tick instr (med) | publish-thread instr / publish | GPU ms med / p99 | tick interval med / p99 | publish interval med / p99 | present->publish-commit ms med | CPU us / frame (all threads) | wakeups / frame |
+|---|---|---|---|---|---|---|---|---|---|---|
+| idle | 1 ticks in 1.40 s | **147349 instr/s** | NaN (tick body) | - | - | - | - | - | 0.1 ms CPU/s | 3.6 wakeups/s |
+| one-colour | 168 | **484244** | 22172 | 86957 | NaN / NaN | 8.33 / 8.33 | 8.33 / 9.62 | 0.61 | 232.1 | 2.15 |
+| scatter-80 | 168 | **566551** | 108895 | 85599 | NaN / NaN | 8.33 / 8.33 | 8.34 / 9.61 | 1.80 | 246.3 | 2.68 |
+| scroll-400 | 169 | **571661** | 117732 | 85907 | NaN / NaN | 8.33 / 8.33 | 8.34 / 9.62 | 1.45 | 231.3 | 2.61 |
+| full | 169 | **614175** | 34409 | 86105 | NaN / NaN | 8.33 / 8.33 | 8.34 / 9.60 | 2.33 | 275.0 | 3.36 |
+| toggle | 168 | **169171** | 90406 | 84551 | NaN / NaN | 8.33 / 8.33 | 8.33 / 8.37 | 2.03 | 103.1 | 1.05 |
+| sparse (13 changes, 14 ticks) | 13 | **1176546** | 21857 | 84989 | NaN / NaN | NaN / NaN | NaN / NaN | 1.37 | 480.8 | 7.46 |
+
+threads [idle] (us per run): main#259 160.0us
+threads [one-colour] (us per frame): main#259 128.0us, ?#8707 74.6us, ?#5123 22.3us, ?#40987 7.2us, com.apple.NSEventThread#39691 0.1us
+threads [scatter-80] (us per frame): main#259 152.3us, ?#8707 57.0us, ?#5123 37.1us, ?#40987 0.1us
+threads [scroll-400] (us per frame): main#259 137.6us, ?#8707 56.2us, ?#40987 27.6us, ?#5123 10.1us
+threads [full] (us per frame): main#259 151.3us, ?#8707 76.1us, ?#40987 47.8us, ?#5123 0.2us
+threads [toggle] (us per frame): main#259 92.9us, ?#40987 5.4us, ?#5123 3.3us, ?#8707 1.7us
+threads [sparse] (us per frame): main#259 264.7us, ?#8707 188.8us, ?#40987 20.1us, ?#5123 9.5us
+memory: RSS 30.4 MB, phys_footprint 137.5 MB, MTLDevice.currentAllocatedSize 46.3 MB, surfaces 44.2 MB
+[arm32:tp:z:4] content evals 2465 (whole-plane 0), gpu frames 721, tiles/frame 4086.9, skipped-gpu 164, skipped-all 0, deferred (no free surface) 0, drawn-while-in-use 0, published-while-in-use 8, free-candidates hist [0, 1, 718, 165, 1], armed batch errors 0

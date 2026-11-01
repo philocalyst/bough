@@ -1,0 +1,22 @@
+
+### strategy `cs:h:z:4` damage-mode `stencil` link-pause true
+
+| scenario | frames | process instr / frame | main-thread in-tick instr (med) | publish-thread instr / publish | GPU ms med / p99 | tick interval med / p99 | publish interval med / p99 | present->publish-commit ms med | CPU us / frame (all threads) | wakeups / frame |
+|---|---|---|---|---|---|---|---|---|---|---|
+| idle | 1 ticks in 1.40 s | **386825 instr/s** | NaN (tick body) | - | - | - | - | - | 0.3 ms CPU/s | 4.3 wakeups/s |
+| one-colour | 168 | **403985** | 51466 | 85489 | 0.037 / 0.265 | 8.33 / 8.33 | 8.33 / 8.60 | 0.39 | 242.1 | 1.02 |
+| scatter-80 | 169 | **423715** | 137669 | 85182 | 0.586 / 1.169 | 8.33 / 8.33 | 8.35 / 8.80 | 0.90 | 232.9 | 1.01 |
+| scroll-400 | 168 | **435578** | 146695 | 85691 | 0.569 / 1.053 | 8.33 / 8.33 | 8.34 / 8.86 | 0.88 | 204.2 | 1.01 |
+| full | 169 | **350999** | 63259 | 84945 | 1.361 / 2.817 | 8.33 / 8.33 | 8.37 / 9.18 | 1.64 | 173.4 | 1.01 |
+| toggle | 168 | **335184** | 46963 | 85260 | 0.029 / 0.191 | 8.33 / 8.33 | 8.33 / 8.53 | 0.27 | 164.4 | 1.01 |
+| sparse (13 changes, 1 ticks) | 13 | **363352** | 51095 | 84633 | 0.017 / 0.017 | NaN / NaN | NaN / NaN | 0.36 | 185.9 | 1.46 |
+
+threads [idle] (us per run): main#259 198.0us, ?#8707 134.0us, ?#5123 79.0us, ?#35355 60.0us
+threads [one-colour] (us per frame): ?#35355 96.4us, main#259 77.5us, ?#8707 68.3us, com.apple.NSEventThread#36363 0.1us
+threads [scatter-80] (us per frame): main#259 89.6us, ?#35355 81.2us, ?#8707 62.3us
+threads [scroll-400] (us per frame): main#259 74.1us, ?#8707 60.6us, ?#17667 27.3us
+threads [full] (us per frame): ?#17667 61.3us, main#259 59.7us, ?#8707 52.5us
+threads [toggle] (us per frame): ?#17667 57.7us, main#259 55.7us, ?#8707 51.2us
+threads [sparse] (us per frame): main#259 72.6us, ?#17667 66.8us, ?#8707 49.1us
+memory: RSS 27.9 MB, phys_footprint 133.5 MB, MTLDevice.currentAllocatedSize 46.3 MB, surfaces 44.2 MB
+[cs:h:z:4] content evals 2773 (whole-plane 0), gpu frames 885, tiles/frame 3330.8, skipped-gpu 0, skipped-all 0, deferred (no free surface) 0, drawn-while-in-use 0, published-while-in-use 28, free-candidates hist [0, 0, 575, 309, 1], armed batch errors 0

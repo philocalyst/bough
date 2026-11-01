@@ -69,6 +69,18 @@ impl Host {
         }
         CATransaction::commit();
     }
+    /// Number of CALayers in the window's whole tree (theme frame and all), i.e. what one commit may visit.
+    pub fn layer_census(&self) -> usize {
+        fn count(l: &CALayer) -> usize {
+            1 + unsafe { l.sublayers() }.map(|s| s.iter().map(|c| count(&c)).sum()).unwrap_or(0)
+        }
+        let cv = self.window.contentView().unwrap();
+        let mut top: Retained<NSView> = cv;
+        while let Some(s) = unsafe { top.superview() } {
+            top = s;
+        }
+        top.layer().map(|l| count(&l)).unwrap_or(0)
+    }
     pub fn scale(&self) -> f64 {
         self.window.backingScaleFactor()
     }
@@ -87,7 +99,7 @@ pub fn run(title: &str, f: impl FnMut(&Host, &CADisplayLink) + 'static) -> ! {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
             rect,
-            NSWindowStyleMask::Titled | NSWindowStyleMask::Closable,
+            if std::env::var_os("BOUGH_BORDERLESS").is_some() { NSWindowStyleMask::Borderless } else { NSWindowStyleMask::Titled | NSWindowStyleMask::Closable },
             NSBackingStoreType::Buffered,
             false,
         )

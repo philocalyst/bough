@@ -1,0 +1,16 @@
+
+### strategy `arm8:nt:free:4` damage-mode `stencil` link-pause true
+
+| scenario | frames | process instr / frame | main-thread in-tick instr (med) | publish-thread instr / publish | GPU ms med / p99 | tick interval med / p99 | publish interval med / p99 | present->publish-commit ms med | CPU us / frame (all threads) | wakeups / frame |
+|---|---|---|---|---|---|---|---|---|---|---|
+| one-colour | 167 | **274243** | 97098 | 83556 | NaN / NaN | 8.33 / 8.33 | 8.33 / 8.38 | 8.33 | 170.9 | 1.01 |
+| scatter-80 | 169 | **336398** | 152148 | 83749 | NaN / NaN | 8.33 / 8.33 | 8.33 / 8.43 | 8.32 | 175.8 | 1.01 |
+| full | 168 | **318714** | 98482 | 83863 | NaN / NaN | 8.33 / 8.33 | 8.33 / 8.40 | 8.33 | 188.9 | 1.01 |
+| toggle | 169 | **275376** | 95199 | 83643 | NaN / NaN | 8.33 / 8.33 | 8.33 / 8.37 | 8.33 | 165.5 | 1.02 |
+
+threads [one-colour] (us per frame): main#259 104.3us, ?#16903 55.1us, ?#45059 11.7us
+threads [scatter-80] (us per frame): main#259 107.8us, ?#16903 57.1us, ?#10499 5.8us, ?#45059 5.2us, com.apple.NSEventThread#35619 0.1us
+threads [full] (us per frame): main#259 105.5us, ?#16903 71.9us, ?#45059 8.4us, ?#10499 3.3us
+threads [toggle] (us per frame): main#259 100.7us, ?#16903 52.8us, ?#5635 7.0us, ?#45059 1.3us
+memory: RSS 28.7 MB, phys_footprint 134.3 MB, MTLDevice.currentAllocatedSize 46.3 MB, surfaces 44.2 MB
+[arm8:nt:free:4] content evals 703 (whole-plane 0), gpu frames 703, tiles/frame 3607.0, skipped-gpu 0, skipped-all 0, deferred (no free surface) 0, drawn-while-in-use 0, published-while-in-use 0, free-candidates hist [0, 57, 644, 1, 1], armed batch errors 0

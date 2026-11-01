@@ -119,6 +119,16 @@ pub trait Presenter {
     fn last_surface_id(&self) -> usize {
         0
     }
+    /// Called at the start of every tick (before the scene update): publish a finished frame, retry a deferred one.
+    fn poll(&mut self, _e: &mut Engine) {}
+    /// True while the presenter still needs ticks with no new damage (unpublished or deferred frame).
+    fn busy(&self) -> bool {
+        false
+    }
+    /// From-scratch full redraw of the current scene through this presenter's own raster mechanism.
+    fn reference(&self, e: &Engine) -> Vec<u8> {
+        e.gpu.reference(&e.scene)
+    }
 }
 
 fn wait(cmd: &Cmd) {

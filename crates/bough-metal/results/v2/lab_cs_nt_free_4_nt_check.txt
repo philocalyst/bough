@@ -1,0 +1,16 @@
+
+### strategy `cs:nt:free:4` damage-mode `stencil` link-pause true
+
+| scenario | frames | process instr / frame | main-thread in-tick instr (med) | publish-thread instr / publish | GPU ms med / p99 | tick interval med / p99 | publish interval med / p99 | present->publish-commit ms med | CPU us / frame (all threads) | wakeups / frame |
+|---|---|---|---|---|---|---|---|---|---|---|
+| one-colour | 167 | **335949** | 134109 | 83923 | 0.031 / 0.292 | 8.33 / 8.33 | 8.33 / 8.36 | 8.33 | 193.8 | 1.01 |
+| scatter-80 | 169 | **388087** | 188244 | 84586 | 0.551 / 0.966 | 8.33 / 8.33 | 8.33 / 8.39 | 8.32 | 200.0 | 1.01 |
+| full | 169 | **336814** | 135406 | 83967 | 1.324 / 2.732 | 8.33 / 8.33 | 8.33 / 8.37 | 8.33 | 187.8 | 1.01 |
+| toggle | 168 | **335106** | 132321 | 84269 | 0.029 / 0.152 | 8.33 / 8.33 | 8.33 / 8.38 | 8.33 | 198.8 | 1.01 |
+
+threads [one-colour] (us per frame): main#259 111.5us, ?#4867 41.5us, ?#34823 41.0us
+threads [scatter-80] (us per frame): main#259 119.4us, ?#4867 45.9us, ?#34823 34.9us, com.apple.NSEventThread#38151 0.1us
+threads [full] (us per frame): main#259 108.1us, ?#34823 41.6us, ?#4867 38.2us
+threads [toggle] (us per frame): main#259 118.0us, ?#45059 25.7us, ?#10499 22.2us
+memory: RSS 34.3 MB, phys_footprint 132.7 MB, MTLDevice.currentAllocatedSize 46.3 MB, surfaces 44.2 MB
+[cs:nt:free:4] content evals 703 (whole-plane 0), gpu frames 703, tiles/frame 3622.3, skipped-gpu 0, skipped-all 0, deferred (no free surface) 0, drawn-while-in-use 0, published-while-in-use 0, free-candidates hist [0, 61, 640, 1, 1], armed batch errors 0

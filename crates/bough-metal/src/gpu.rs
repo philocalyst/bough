@@ -98,10 +98,17 @@ impl Prof {
 }
 
 pub struct Gpu {
+    pub lib: Retained<ProtocolObject<dyn MTLLibrary>>,
     pub prof: Prof,
     pub device: Dev,
     pub queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    /// second queue for readback/reference work, so it never queues behind a pre-armed (event-waiting) batch
+    pub aux: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    pub pso_cs: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pso_main: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    pso_vclip: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    /// entries emitted by the last vclip cull (diagnostic)
+    pub vclip_entries: Cell<usize>,
     pso_main_st: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     pso_stencil: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     ds_write: Retained<ProtocolObject<dyn MTLDepthStencilState>>,
@@ -122,6 +129,46 @@ pub struct Gpu {
     pub draws: Cell<u32>,
 }
 
+/// Runs per tile row the vertex-clipped stream draws (must match `VK` in shader.metal).
+pub const VK: u32 = 4;
+
+/// Fill the smallest gaps of a 128-tile row until it has at most `k` runs of set bits. The result depends only on
+/// the row, so every instance sees the same superset (which keeps the repair exact).
+#[inline]
+pub fn canon_row(mut b: u128, k: u32) -> u128 {
+    while (b & !(b << 1)).count_ones() > k {
+        let (mut best_len, mut best_at) = (u32::MAX, 0u32);
+        let mut pos = b.trailing_zeros();
+        loop {
+            let end = pos + (b >> pos).trailing_ones();
+            if end >= 128 || (b >> end) == 0 {
+                break;
+            }
+            let next = end + (b >> end).trailing_zeros();
+            if next - end < best_len {
+                best_len = next - end;
+                best_at = end;
+            }
+            pos = next;
+        }
+        b |= ((1u128 << best_len) - 1) << best_at;
+    }
+    b
+}
+
+/// Bits [a, b) of the 64-bit word starting at tile `base`.
+#[inline]
+fn span64(a: u32, b: u32, base: u32) -> u64 {
+    let (s, e) = (a.max(base), b.min(base + 64));
+    if s >= e {
+        0
+    } else if e - s == 64 {
+        !0
+    } else {
+        ((1u64 << (e - s)) - 1) << (s - base)
+    }
+}
+
 fn ms(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1e3
 }
@@ -132,6 +179,7 @@ impl Gpu {
         let t = Instant::now();
         let device = MTLCreateSystemDefaultDevice().expect("no Metal device");
         let queue = device.newCommandQueue().expect("queue");
+        let aux = device.newCommandQueue().expect("aux queue");
         times.device_ms = ms(t);
 
         let t = Instant::now();
@@ -151,9 +199,10 @@ impl Gpu {
         let vs = lib.newFunctionWithName(ns_string!("vs_main")).unwrap();
         let fs = lib.newFunctionWithName(ns_string!("fs_main")).unwrap();
         let vs_r = lib.newFunctionWithName(ns_string!("vs_rects")).unwrap();
-        let mk = |stencil: bool| {
+        let vs_c = lib.newFunctionWithName(ns_string!("vs_vclip")).unwrap();
+        let mk2 = |vsf: &ProtocolObject<dyn MTLFunction>, stencil: bool| {
             let d = MTLRenderPipelineDescriptor::new();
-            d.setVertexFunction(Some(&vs));
+            d.setVertexFunction(Some(vsf));
             d.setFragmentFunction(Some(&fs));
             let ca = unsafe { d.colorAttachments().objectAtIndexedSubscript(0) };
             ca.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
@@ -167,8 +216,10 @@ impl Gpu {
             }
             device.newRenderPipelineStateWithDescriptor_error(&d).expect("pso")
         };
+        let mk = |stencil: bool| mk2(&vs, stencil);
         let pso_main = mk(false);
         let pso_main_st = mk(true);
+        let pso_vclip = mk2(&vs_c, false);
         let pso_stencil = {
             let d = MTLRenderPipelineDescriptor::new();
             d.setVertexFunction(Some(&vs_r));
@@ -195,6 +246,8 @@ impl Gpu {
             d.setBackFaceStencil(Some(&sd));
             device.newDepthStencilStateWithDescriptor(&d).expect("ds")
         };
+        let cs = lib.newFunctionWithName(ns_string!("cs_repair")).unwrap();
+        let pso_cs = device.newComputePipelineStateWithFunction_error(&cs).expect("pso cs");
         let ds_write = ds(true);
         let ds_test = ds(false);
         times.pipelines_ms = ms(t);
@@ -243,9 +296,14 @@ impl Gpu {
         let c0_stencil = mkc0(&pd_stencil);
 
         Gpu {
+            lib,
             device,
             queue,
+            aux,
+            pso_cs,
             pso_main,
+            pso_vclip,
+            vclip_entries: Cell::new(0),
             pso_main_st,
             pso_stencil,
             ds_write,
@@ -269,7 +327,7 @@ impl Gpu {
     pub fn new_texture(&self, storage: MTLStorageMode, framebuffer_readable: bool) -> Tex {
         let d = unsafe { MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(MTLPixelFormat::BGRA8Unorm, W as usize, H as usize, false) };
         d.setStorageMode(storage);
-        d.setUsage(MTLTextureUsage::RenderTarget | if framebuffer_readable { MTLTextureUsage::ShaderRead } else { MTLTextureUsage::empty() });
+        d.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderWrite | if framebuffer_readable { MTLTextureUsage::ShaderRead } else { MTLTextureUsage::empty() });
         self.device.newTextureWithDescriptor(&d).expect("texture")
     }
 
@@ -396,11 +454,166 @@ impl Gpu {
         draws
     }
 
+    /// Vertex-clipped repair (format C expanded on the GPU): upload the 16-px plane, cull instances against it
+    /// (entry = instance | first-row << 16 per 8 tile rows that meet damage in the instance's x-span), one draw of
+    /// entries x 32 sub-quads, loadAction = Load, no stencil, no scissor.
+    pub fn encode_vclip(&self, cmd: &Cmd, target: &Tex, scene: &Scene, p: &crate::damage::Plane) -> u32 {
+        use crate::damage::TY;
+        let pl = unsafe { self.pool_ptr.add(PLANE_OFF) as *mut [u64; 2] };
+        unsafe { std::ptr::write_bytes(pl, 0, TY) };
+        if !p.any {
+            return 0;
+        }
+        let (r0, r1) = (p.r0 as usize, p.r1 as usize);
+        let mut xo = [0u64; 2];
+        let mut rows = [[0u64; 2]; TY];
+        for y in r0..=r1 {
+            let b = canon_row((p.rows[y][0] as u128) | (p.rows[y][1] as u128) << 64, VK);
+            rows[y] = [b as u64, (b >> 64) as u64];
+            unsafe { *pl.add(y) = rows[y] };
+            xo[0] |= rows[y][0];
+            xo[1] |= rows[y][1];
+        }
+        let lo_t = if xo[0] != 0 { xo[0].trailing_zeros() } else { 64 + xo[1].trailing_zeros() } as i32;
+        let hi_t = if xo[1] != 0 { 128 - xo[1].leading_zeros() } else { 64 - xo[0].leading_zeros() } as i32;
+        let bb = IRect::new(lo_t * 16, r0 as i32 * 16, hi_t * 16, (r1 as i32 + 1) * 16);
+        self.prof.mark(0);
+        let lp = scene.list_ptr();
+        let mut o = 0usize;
+        for (pg, pi) in scene.page_ink.iter().enumerate().take((scene.n + 63) / 64) {
+            if pi.is_empty() || !pi.overlaps(&bb) {
+                continue;
+            }
+            let (lo, hi) = (pg * 64, ((pg + 1) * 64).min(scene.n));
+            for i in lo..hi {
+                let k = scene.ink[i];
+                if k.is_empty() || !k.overlaps(&bb) {
+                    continue;
+                }
+                let (tx0, tx1) = ((k.x0 >> 4) as u32, (((k.x1 - 1) >> 4) + 1) as u32); // [tx0, tx1)
+                let m0 = span64(tx0, tx1, 0);
+                let m1 = span64(tx0, tx1, 64);
+                let (ty0, ty1) = ((k.y0 >> 4) as usize, ((k.y1 - 1) >> 4) as usize);
+                let mut c = ty0;
+                while c <= ty1 {
+                    let (a, b) = (c.max(r0), (c + 7).min(ty1).min(r1));
+                    let mut hit = false;
+                    let mut y = a;
+                    while y <= b && !hit {
+                        hit = rows[y][0] & m0 | rows[y][1] & m1 != 0;
+                        y += 1;
+                    }
+                    if hit {
+                        unsafe { *lp.add(o) = i as u32 | (c as u32) << 16 };
+                        o += 1;
+                    }
+                    c += 8;
+                }
+            }
+        }
+        self.vclip_entries.set(o);
+        self.prof.mark(1);
+        self.c0_plain.setTexture(Some(target));
+        let mut ll = self.last_load.get();
+        if ll[0] != 1 {
+            self.c0_plain.setLoadAction(MTLLoadAction::Load);
+            ll[0] = 1;
+            self.last_load.set(ll);
+            self.bump(1);
+        }
+        let enc = cmd.renderCommandEncoderWithDescriptor(&self.pd_plain).expect("encoder");
+        unsafe {
+            enc.setRenderPipelineState(&self.pso_vclip);
+            enc.setVertexBuffer_offset_atIndex(Some(&self.pool), 0, 0);
+            enc.setFragmentTexture_atIndex(Some(&self.atlas), 0);
+            if o > 0 {
+                enc.drawPrimitives_vertexStart_vertexCount_instanceCount(MTLPrimitiveType::TriangleStrip, 0, 4, o * 32);
+            }
+        }
+        enc.endEncoding();
+        self.bump(7);
+        self.prof.mark(2);
+        self.draws.set(self.draws.get() + 1);
+        1
+    }
+
+    /// Write a tile list into frame slot `slot` (header: indirect args, target, count). Returns the slot's pool offset.
+    pub fn write_slot(&self, slot: usize, target: u32, tiles: &[u32]) -> usize {
+        self.write_slot_ex(slot, target, tiles, false)
+    }
+
+    /// `full`: dispatch every tile (threadgroup index = tile), no list is written.
+    pub fn write_slot_ex(&self, slot: usize, target: u32, tiles: &[u32], full: bool) -> usize {
+        let off = FRAME_OFF + slot * SLOT_BYTES;
+        if full {
+            unsafe {
+                let h = self.pool_ptr.add(off) as *mut u32;
+                let n = (crate::damage::TX * crate::damage::TY) as u32;
+                *h = n;
+                *h.add(1) = 1;
+                *h.add(2) = 1;
+                *h.add(3) = target;
+                *h.add(4) = n;
+                *h.add(5) = 1;
+            }
+            return off;
+        }
+        debug_assert!(32 + tiles.len() * 4 <= SLOT_BYTES);
+        unsafe {
+            let h = self.pool_ptr.add(off) as *mut u32;
+            *h = tiles.len() as u32;
+            *h.add(1) = 1;
+            *h.add(2) = 1;
+            *h.add(3) = target;
+            *h.add(4) = tiles.len() as u32;
+            *h.add(5) = 0;
+            std::ptr::copy_nonoverlapping(tiles.as_ptr(), self.pool_ptr.add(off + 32) as *mut u32, tiles.len());
+        }
+        off
+    }
+
+    /// Encode one compute tile repair: textures = [atlas, t0..t3]; the kernel picks t[target] from the slot.
+    /// `indirect` reads the threadgroup count from the slot (constant command stream); otherwise it is immediate.
+    pub fn encode_compute(&self, cmd: &ProtocolObject<dyn MTLCommandBuffer>, slot_off: usize, targets: [&Tex; 4], ntiles: usize, indirect: bool) {
+        let enc = cmd.computeCommandEncoder().expect("compute encoder");
+        enc.setComputePipelineState(&self.pso_cs);
+        let off = slot_off as u32;
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(&self.pool), 0, 0);
+            enc.setBytes_length_atIndex(NonNull::new(&off as *const u32 as *mut _).unwrap(), 4, 1);
+            let texs: [*const ProtocolObject<dyn MTLTexture>; 5] = [
+                Retained::as_ptr(&self.atlas), Retained::as_ptr(targets[0]), Retained::as_ptr(targets[1]), Retained::as_ptr(targets[2]), Retained::as_ptr(targets[3]),
+            ];
+            enc.setTextures_withRange(NonNull::new(texs.as_ptr() as *mut _).unwrap(), objc2_foundation::NSRange::new(0, 5));
+            let tg = MTLSize { width: 16, height: 16, depth: 1 };
+            if indirect {
+                enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, slot_off, tg);
+            } else {
+                enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: ntiles, height: 1, depth: 1 }, tg);
+            }
+        }
+        enc.endEncoding();
+        self.bump(6);
+    }
+
+    /// Full-redraw reference through the COMPUTE kernel (all tiles), returned as bytes.
+    pub fn reference_compute(&self) -> Vec<u8> {
+        let tex = self.new_texture(MTLStorageMode::Shared, true);
+        // the reference walks an explicit list (not the `full` flag), so the flag path is itself under test
+        let all: Vec<u32> = (0..crate::damage::TY as u32).flat_map(|y| (0..crate::damage::TX as u32).map(move |x| y << 16 | x)).collect();
+        let off = self.write_slot(2, 0, &all);
+        let cmd = self.aux.commandBuffer().unwrap();
+        self.encode_compute(&cmd, off, [&tex, &tex, &tex, &tex], all.len(), false);
+        cmd.commit();
+        cmd.waitUntilCompleted();
+        self.read_texture(&tex)
+    }
+
     /// Readback helper: copy a texture into a fresh shared buffer (tight pitch). Waits for completion.
     pub fn read_texture(&self, tex: &Tex) -> Vec<u8> {
         let n = W as usize * 4 * H as usize;
         let buf = self.device.newBufferWithLength_options(n, MTLResourceOptions::StorageModeShared).unwrap();
-        let cmd = self.queue.commandBuffer().unwrap();
+        let cmd = self.aux.commandBuffer().unwrap();
         let blit = cmd.blitCommandEncoder().unwrap();
         unsafe {
             blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
@@ -419,7 +632,7 @@ impl Gpu {
     /// Full-redraw reference of the current scene into a private scratch texture, returned as bytes.
     pub fn reference(&self, scene: &Scene) -> Vec<u8> {
         let tex = self.new_texture(MTLStorageMode::Shared, true);
-        let cmd = self.queue.commandBuffer().unwrap();
+        let cmd = self.aux.commandBuffer().unwrap();
         let mut full = Region::full();
         full.set_full();
         self.encode_repair(&cmd, &tex, scene, &full, DamageMode::Bbox);

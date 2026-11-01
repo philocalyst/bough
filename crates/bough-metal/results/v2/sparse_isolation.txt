@@ -1,0 +1,18 @@
+== one-colour,sparse
+| sparse (13 changes, 1 ticks) | 13 | **362989** | 51408 | 85862 | 0.030 / 0.030 | NaN / NaN | NaN / NaN | 0.39 | 207.1 | 1.54 |
+threads [sparse] (us per frame): main#259 83.5us, ?#10243 69.5us, ?#40455 54.8us, com.apple.NSEventThread#40203 1.4us
+== full,sparse
+| sparse (13 changes, 1 ticks) | 13 | **370980** | 52065 | 88231 | 1.141 / 1.141 | NaN / NaN | NaN / NaN | 0.48 | 253.0 | 1.54 |
+threads [sparse] (us per frame): ?#36103 112.8us, main#259 93.3us, ?#17411 47.5us, com.apple.NSEventThread#36363 1.5us
+== toggle,sparse
+| sparse (13 changes, 1 ticks) | 13 | **1298783** | 124303 | 152634 | 0.036 / 0.036 | NaN / NaN | NaN / NaN | 0.80 | 694.2 | 1.62 |
+threads [sparse] (us per frame): ?#24095 338.5us, main#259 227.1us, ?#26395 119.7us, com.apple.NSEventThread#39179 13.0us
+== scroll-400,full,toggle,sparse
+| sparse (13 changes, 1 ticks) | 13 | **982065** | 51758 | 86316 | 1.227 / 1.227 | NaN / NaN | NaN / NaN | 0.38 | 364.5 | 1.62 |
+threads [sparse] (us per frame): main#259 97.8us, ?#35099 43.9us, ?#8707 21.5us
+== bh
+| sparse (13 changes, 169 ticks) | 13 | **973252** | 84402 | - | 0.314 / 1.068 | NaN / NaN | NaN / NaN | NaN | 732.0 | 14.15 |
+== bh --pause
+| sparse (13 changes, 14 ticks) | 13 | **665213** | 84813 | - | 0.222 / 1.011 | NaN / NaN | NaN / NaN | NaN | 471.4 | 6.54 |
+== cs:h:free:4 --pause --direct
+| sparse (13 changes, 1 ticks) | 13 | **358872** | 47526 | 85402 | 0.034 / 0.034 | NaN / NaN | NaN / NaN | 0.39 | 216.4 | 1.54 |

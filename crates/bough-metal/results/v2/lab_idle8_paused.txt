@@ -1,0 +1,10 @@
+
+### strategy `cs:h:z:4` damage-mode `stencil` link-pause true
+
+| scenario | frames | process instr / frame | main-thread in-tick instr (med) | publish-thread instr / publish | GPU ms med / p99 | tick interval med / p99 | publish interval med / p99 | present->publish-commit ms med | CPU us / frame (all threads) | wakeups / frame |
+|---|---|---|---|---|---|---|---|---|---|---|
+| idle | 1 ticks in 8.00 s | **104804 instr/s** | NaN (tick body) | - | - | - | - | - | 0.1 ms CPU/s | 1.5 wakeups/s |
+
+threads [idle] (us per run): main#259 283.0us, ?#5635 100.0us, ?#8451 30.0us, com.apple.NSEventThread#37131 25.0us
+memory: RSS 26.4 MB, phys_footprint 69.7 MB, MTLDevice.currentAllocatedSize 46.3 MB, surfaces 44.2 MB
+[cs:h:z:4] content evals 44 (whole-plane 0), gpu frames 30, tiles/frame 9450.6, skipped-gpu 0, skipped-all 0, deferred (no free surface) 0, drawn-while-in-use 0, published-while-in-use 1, free-candidates hist [0, 0, 28, 1, 1], armed batch errors 0

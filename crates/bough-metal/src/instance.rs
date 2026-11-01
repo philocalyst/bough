@@ -40,6 +40,12 @@ pub struct Hdr {
     pub rects_off: u32,
     pub inst_off: u32,
     pub list_off: u32,
+    /// instance count (read by the compute repair kernel, which culls the whole array itself)
+    pub n_inst: u32,
+    /// 16-px damage plane for the vertex-clipped stream: 90 rows x 16 B
+    pub plane_off: u32,
+    /// per-64-instance page ink unions (int4 x0,y0,x1,y1; empty = x0 > x1): the compute kernel's first-level cull
+    pub pages_off: u32,
 }
 
 pub const MAX_INST: usize = 4096;
@@ -51,10 +57,19 @@ pub const MAX_LIST: usize = 256 * 1024;
 pub const SPACES_OFF: usize = 256;
 pub const CLIPS_OFF: usize = SPACES_OFF + MAX_SPACES * 8;
 pub const RECTS_OFF: usize = CLIPS_OFF + MAX_CLIPS * 16;
+pub const PLANE_OFF: usize = 12288;
+pub const PAGES_OFF: usize = 13824;
 pub const INST_OFF: usize = 16384;
 pub const LIST_OFF: usize = INST_OFF + MAX_INST * 48;
-pub const POOL_BYTES: usize = LIST_OFF + MAX_LIST * 4;
-const _: () = assert!(RECTS_OFF + MAX_RECTS * 16 <= INST_OFF);
+/// Frame slots for the compute repair: 32-B header (indirect args, target, ntiles) + tile list (u32 (ty<<16)|tx).
+pub const FRAME_OFF: usize = LIST_OFF + MAX_LIST * 4;
+pub const SLOT_BYTES: usize = 64 * 1024;
+pub const N_SLOTS: usize = 3; // two frame slots (parity) + one for the full-redraw reference
+pub const POOL_BYTES: usize = FRAME_OFF + N_SLOTS * SLOT_BYTES;
+pub const HDR_N_INST_OFF: usize = 28;
+const _: () = assert!(RECTS_OFF + MAX_RECTS * 16 <= PLANE_OFF);
+const _: () = assert!(PLANE_OFF + 90 * 16 <= PAGES_OFF);
+const _: () = assert!(PAGES_OFF + (MAX_INST / 64) * 16 <= INST_OFF);
 
 /// Integer pixel rectangle, half-open [x0,x1) x [y0,y1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]

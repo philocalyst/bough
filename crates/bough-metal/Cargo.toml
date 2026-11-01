@@ -27,3 +27,11 @@ name = "floor"
 name = "probe"
 [[example]]
 name = "latency"
+[[example]]
+name = "publish"
+[[example]]
+name = "vclip_test"
+[[example]]
+name = "gpumodes"
+[[example]]
+name = "lab"

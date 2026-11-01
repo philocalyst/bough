@@ -70,6 +70,13 @@ pub struct Scene {
     pub table_clip: IRect,
     pub bg_inst: u32,
     pub acc: Plane,
+    /// Content-addressed damage (Zobrist): per 16x16 tile, XOR of a 64-bit hash of the full drawing state of every
+    /// instance whose ink touches the tile. Two scene states with equal tile hash draw identical tile pixels
+    /// (up to a 2^-64 collision). Empty = off.
+    pub zob: Vec<u64>,
+    /// bumped by `invalidate_all` (atlas/global change): a surface drawn under another salt matches nothing.
+    pub salt: u64,
+    zseed: u64,
     pub scroll_y: f32,
     pub dirty_count: u64,
 }
@@ -89,6 +96,9 @@ impl Scene {
             table_clip: IRect::EMPTY,
             bg_inst: 0,
             acc: Plane::new(),
+            zob: Vec::new(),
+            salt: 1,
+            zseed: 0x1234_5678,
             scroll_y: 0.0,
             dirty_count: 0,
         };
@@ -105,6 +115,9 @@ impl Scene {
             rects_off: RECTS_OFF as u32,
             inst_off: INST_OFF as u32,
             list_off: LIST_OFF as u32,
+            n_inst: 0,
+            plane_off: PLANE_OFF as u32,
+            pages_off: PAGES_OFF as u32,
         };
         unsafe { (self.pool as *mut Hdr).write(h) };
         for s in 0..MAX_SPACES {
@@ -112,6 +125,9 @@ impl Scene {
         }
         for c in 0..MAX_CLIPS {
             self.set_clip(c, IRect::FULL);
+        }
+        for pg in 0..MAX_INST / 64 {
+            self.mirror_page(pg);
         }
     }
 
@@ -156,11 +172,21 @@ impl Scene {
         let i = self.n;
         *self.inst(i) = it;
         self.n += 1;
+        unsafe { *(self.pool.add(HDR_N_INST_OFF) as *mut u32) = self.n as u32 };
         let ink = self.compute_ink(i);
         self.ink.push(ink);
         let pg = &mut self.page_ink[i / 64];
         *pg = pg.union(&ink);
+        self.mirror_page(i / 64);
         i
+    }
+
+    /// Mirror page_ink[pg] into the pool for the GPU (empty pages become x0 > x1).
+    #[inline]
+    fn mirror_page(&self, pg: usize) {
+        let r = self.page_ink[pg];
+        let v = if r.is_empty() { [1, 1, 0, 0] } else { [r.x0, r.y0, r.x1, r.y1] };
+        unsafe { *((self.pool.add(PAGES_OFF) as *mut [i32; 4]).add(pg)) = v };
     }
 
     fn rect(&mut self, space: u16, x: f32, y: f32, w: f32, h: f32, color: u32) -> usize {
@@ -289,6 +315,7 @@ impl Scene {
                 }
             }
             self.page_ink[pg] = u;
+            self.mirror_page(pg);
         }
     }
 
@@ -303,19 +330,34 @@ impl Scene {
     /// Change one instance's colour: old ink == new ink, damage once.
     #[inline]
     pub fn set_color(&mut self, i: usize, c: u32) {
-        self.inst(i).color = c;
         let r = self.ink[i];
+        if self.zob.is_empty() {
+            self.inst(i).color = c;
+        } else {
+            let zo = self.zval(i);
+            self.inst(i).color = c;
+            let zn = self.zval(i);
+            self.zapply(r, zo ^ zn);
+        }
         self.dmg(r);
     }
 
     /// Move/resize an instance in its space: damage old and new ink.
     pub fn set_geom(&mut self, i: usize, pos: [f32; 2], size: [f32; 2]) {
         let old = self.ink[i];
+        if !self.zob.is_empty() {
+            let z = self.zval(i);
+            self.zapply(old, z);
+        }
         let it = self.inst(i);
         it.pos = pos;
         it.size = size;
         let new = self.compute_ink(i);
         self.ink[i] = new;
+        if !self.zob.is_empty() {
+            let z = self.zval(i);
+            self.zapply(new, z);
+        }
         self.refresh_pages(i, i + 1);
         self.dmg(old);
         self.dmg(new);
@@ -325,6 +367,7 @@ impl Scene {
     pub fn set_space(&mut self, s: u16, off: [f32; 2]) {
         let (a, b) = self.space_run[s as usize];
         let mut old = IRect::EMPTY;
+        let z_on = !self.zob.is_empty();
         for i in a..b {
             old = old.union(&self.ink[i]);
         }
@@ -336,11 +379,23 @@ impl Scene {
             new = new.union(&k);
         }
         self.refresh_pages(a, b);
+        // Geometry is SALTED, not hashed: every tile the move damages gets a fresh random XOR (distinct values for
+        // the old and the new bounds, so tiles in both still change). Equal tile hash then means "no geometry event
+        // and the same content" (a move-and-back is simply not recognised), at O(damaged tiles), never O(instances).
         if s == self.table_space {
             // scrolling inside a clip: damage is just the viewport
             let c = self.table_clip;
+            if z_on {
+                let r = self.fresh();
+                self.zapply(c, r);
+            }
             self.dmg(c);
         } else {
+            if z_on {
+                let (r1, r2) = (self.fresh(), self.fresh());
+                self.zapply(old, r1);
+                self.zapply(new, r2);
+            }
             self.dmg(old);
             self.dmg(new);
         }
@@ -348,7 +403,66 @@ impl Scene {
 
     pub fn invalidate_all(&mut self) {
         self.acc.add_full();
+        self.salt += 1;
         self.dirty_count += 1;
+    }
+
+    // ---------------------------------------------------------------- Zobrist tile hashes
+
+    #[inline]
+    fn fresh(&mut self) -> u64 {
+        self.zseed = self.zseed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.zseed;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    pub fn enable_zobrist(&mut self) {
+        self.zob = vec![0u64; crate::damage::TX * crate::damage::TY];
+        for i in 0..self.n {
+            let z = self.zval(i);
+            self.zapply(self.ink[i], z);
+        }
+    }
+
+    /// 64-bit hash of everything that decides instance i's pixels (index = paint order, absolute position,
+    /// size, colours, shape params, atlas rect, clip).
+    #[inline]
+    pub fn zval(&self, i: usize) -> u64 {
+        #[inline(always)]
+        fn mix(h: u64, v: u64) -> u64 {
+            let h = (h ^ v).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            h ^ (h >> 29)
+        }
+        let it = self.inst(i);
+        let off = self.space(it.space as usize);
+        let c = unsafe { *((self.pool.add(CLIPS_OFF) as *const [u64; 2]).add(it.ext as usize)) };
+        let px = (it.pos[0] + off[0]).to_bits() as u64 | ((it.pos[1] + off[1]).to_bits() as u64) << 32;
+        let sz = it.size[0].to_bits() as u64 | (it.size[1].to_bits() as u64) << 32;
+        let uv = it.uv[0] as u64 | (it.uv[1] as u64) << 16 | (it.uv[2] as u64) << 32 | (it.uv[3] as u64) << 48;
+        let mut h = mix(0x5bd1_e995 ^ i as u64, it.color as u64 | (it.color2 as u64) << 32);
+        h = mix(h, px);
+        h = mix(h, sz);
+        h = mix(h, it.radius.to_bits() as u64 | (it.bw.to_bits() as u64) << 32 | (it.kind as u64) << 31);
+        h = mix(h, uv);
+        h = mix(h, c[0]);
+        h = mix(h, c[1]);
+        mix(h, 0x2545_F491_4F6C_DD1D)
+    }
+
+    #[inline]
+    fn zapply(&mut self, ink: IRect, v: u64) {
+        if ink.is_empty() {
+            return;
+        }
+        let (tx0, tx1) = ((ink.x0 / 16) as usize, ((ink.x1 - 1) / 16) as usize);
+        let (ty0, ty1) = ((ink.y0 / 16) as usize, ((ink.y1 - 1) / 16) as usize);
+        for ty in ty0..=ty1 {
+            for h in &mut self.zob[ty * crate::damage::TX + tx0..=ty * crate::damage::TX + tx1] {
+                *h ^= v;
+            }
+        }
     }
 
     pub fn set_background(&mut self, c: u32) {

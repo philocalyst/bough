@@ -78,7 +78,7 @@ impl Run {
             "bs" => Box::new(IoRing::new(&e, 3, PublishSync::Scheduled)),
             "bh" => Box::new(IoRing::new(&e, 3, PublishSync::Handler)),
             "c" => Box::new(MetalAge::new(&e, false, DrawableId::IOSurface)),
-            _ => panic!("strategy"),
+            s => Box::new(bough_metal::v2::V2::new(&mut e, bough_metal::v2::Spec::parse(s).expect("strategy: a|b|bs|bh|c|raster:publish:pick:n"))),
         };
         Run { strategy: strategy.into(), mode, e, p, rng: Rng(0x1234_5678_9abc_def1 ^ (mode as u64 + 1) * 77), f: 0, frames, presented: 0, bad: 0, full_repairs: 0, t0: Instant::now() }
     }
@@ -86,6 +86,7 @@ impl Run {
     fn step(&mut self) -> bool {
         let (e, p, rng) = (&mut self.e, &mut self.p, &mut self.rng);
         p.sync();
+        p.poll(e);
         random_ops(e, rng);
         if e.frame(&mut **p).is_some() {
             self.presented += 1;
@@ -94,7 +95,7 @@ impl Run {
             }
             p.sync();
             let got = p.presented_pixels(e);
-            let want = e.gpu.reference(&e.scene);
+            let want = p.reference(e);
             if let Some((n, x, y)) = diff(&got, &want) {
                 self.bad += 1;
                 if self.bad <= 3 {
@@ -106,6 +107,10 @@ impl Run {
         self.f >= self.frames
     }
     fn report(&self) {
+        let d = self.p.diag();
+        if !d.is_empty() && self.strategy.contains(':') {
+            println!("    {d}");
+        }
         println!("{:<8} {:<14} {:>9} {:>9} {:>11} {:>8.1}", self.strategy, self.mode.name(), self.presented, self.bad, self.full_repairs, self.t0.elapsed().as_secs_f64());
     }
 }

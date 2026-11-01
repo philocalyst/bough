@@ -1,0 +1,12 @@
+thread_selfcounts overhead 1455 instr (subtracted); display link 8.33 ms
+
+| variant | ticks | main-thread instr/tick med | publish-thread instr | process instr/tick | process minus tick-only | wakeups/s | in-use count hist (0..4 of 4 big surfaces) | CPU us/tick by thread |
+|---|---|---|---|---|---|---|---|---|
+| tick-only | 132 | 107 | - | 44955 | 0  | 120 | [0, 0, 0, 0, 16] | main#259 30.0us, com.apple.NSEventThread#35087 0.4us |
+| main-explicit | 132 | 79484 | - | 145133 | 100179  | 121 | [0, 0, 0, 0, 16] | main#259 75.0us, ?#40219 7.6us, com.apple.NSEventThread#35087 0.2us |
+| main-implicit | 132 | 6914 | - | 147435 | 102480  | 120 | [0, 0, 0, 0, 16] | main#259 73.8us, ?#40219 7.1us |
+| bg-explicit | 132 | 8159 | 78673 | 175585 | 130630  | 121 | [0, 0, 0, 0, 16] | main#259 30.1us, ?#6403 28.2us, ?#40219 28.2us |
+| same-contents | 132 | 34099 | - | 103901 | 58946  | 124 | [0, 0, 0, 0, 16] | main#259 46.4us, ?#10499 6.6us, ?#6403 0.7us |
+| contents-changed | 131 | 75985 | - | 141476 | 96521  | 120 | [0, 0, 0, 0, 16] | main#259 69.3us, ?#6403 7.3us |
+
+phys_footprint 82.9 MB

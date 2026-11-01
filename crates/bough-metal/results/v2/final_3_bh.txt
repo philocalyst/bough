@@ -1,0 +1,22 @@
+
+### strategy `b-iosurface-handler` damage-mode `stencil` link-pause false
+
+| scenario | frames | process instr / frame | main-thread in-tick instr (med) | publish-thread instr / publish | GPU ms med / p99 | tick interval med / p99 | publish interval med / p99 | present->publish-commit ms med | CPU us / frame (all threads) | wakeups / frame |
+|---|---|---|---|---|---|---|---|---|---|---|
+| idle | 168 ticks in 1.40 s | **5550298 instr/s** | NaN (tick body) | - | - | - | - | - | 4.5 ms CPU/s | 121.1 wakeups/s |
+| one-colour | 168 | **487929** | 83673 | - | 0.151 / 1.002 | 8.33 / 8.33 | NaN / NaN | NaN | 250.2 | 1.02 |
+| scatter-80 | 169 | **475229** | 155194 | - | 0.349 / 1.023 | 8.33 / 8.33 | NaN / NaN | NaN | 215.8 | 1.01 |
+| scroll-400 | 168 | **445933** | 126547 | - | 0.350 / 1.061 | 8.33 / 8.33 | NaN / NaN | NaN | 201.3 | 1.01 |
+| full | 168 | **377335** | 59089 | - | 0.605 / 1.226 | 8.33 / 8.33 | NaN / NaN | NaN | 210.5 | 1.01 |
+| toggle | 169 | **379127** | 60054 | - | 0.057 / 1.039 | 8.33 / 8.33 | NaN / NaN | NaN | 208.3 | 1.01 |
+| sparse (13 changes, 169 ticks) | 13 | **970589** | 85250 | - | 0.250 / 1.014 | NaN / NaN | NaN / NaN | NaN | 605.3 | 14.08 |
+
+threads [idle] (us per run): main#259 5985.0us, ?#8707 186.0us, ?#3843 123.0us
+threads [one-colour] (us per frame): ?#8707 92.5us, main#259 82.0us, ?#3843 75.8us, com.apple.NSEventThread#40463 0.1us
+threads [scatter-80] (us per frame): main#259 87.5us, ?#3843 68.0us, ?#8707 60.5us
+threads [scroll-400] (us per frame): main#259 74.7us, ?#3843 65.9us, ?#35867 25.4us
+threads [full] (us per frame): main#259 74.1us, ?#3843 71.4us, ?#35867 65.3us
+threads [toggle] (us per frame): ?#3843 72.7us, main#259 71.3us, ?#35867 64.5us
+threads [sparse] (us per frame): main#259 458.1us, ?#3843 83.8us, ?#35867 65.4us
+memory: RSS 27.8 MB, phys_footprint 159.2 MB, MTLDevice.currentAllocatedSize 35.7 MB, surfaces 33.2 MB
+IOSurfaceIsInUse before each present, histogram by bit pattern (bit0 = surface about to be drawn, bit1 = next, bit2 = the one presented last frame): [1, 0, 0, 0, 102, 1, 781, 0]; skips 0

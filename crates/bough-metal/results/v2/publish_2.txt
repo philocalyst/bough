@@ -1,0 +1,13 @@
+thread_selfcounts overhead 1455 instr (subtracted); display link 8.33 ms
+
+| variant | ticks | main-thread instr/tick med | publish-thread instr | process instr/tick | process minus tick-only | wakeups/s | in-use count hist (0..4 of 4 big surfaces) | CPU us/tick by thread |
+|---|---|---|---|---|---|---|---|---|
+| tick-only | 131 | 107 | - | 45361 | 0  | 120 | [0, 0, 0, 0, 16] | main#259 25.7us, ?#10243 0.4us, com.apple.NSEventThread#39439 0.4us |
+| hidden-flip | 131 | 55883 | - | 121795 | 76435  | 121 | [0, 0, 0, 0, 16] | main#259 58.4us, ?#10243 7.3us, com.apple.NSEventThread#39439 0.2us |
+| grid-1 | 132 | 101835 | - | 190219 | 144858  | 120 | [16, 0, 0, 0, 0] | main#259 84.3us, ?#10243 7.6us |
+| grid-48 | 131 | 1775453 | - | 1855105 | 1809744  | 121 | [16, 0, 0, 0, 0] | main#259 229.6us, ?#10243 6.7us |
+| metal-layer | 132 | 104147 | - | 713043 | 667682  | 124 | [0, 0, 0, 0, 16] | main#259 89.6us, ?#35099 73.8us, ?#10243 68.5us, ?#5891 63.6us, ?#1703 0.1us |
+| metal-display-link | 132 | 62760 | - | 745175 | 699815 (CADisplayLink kept running: subtract tick-only) | 123 | [0, 0, 0, 0, 16] | main#259 91.3us, ?#10243 73.5us, ?#35099 68.6us, ?#5891 62.8us, ?#47083 0.4us |
+| avsbdl | 131 | 26512 | - | 337428 | 292068  | 175 | [0, 0, 0, 0, 17] | com.apple.coremedia.videomediaconverter#46655 60.3us, main#259 51.6us, com.apple.coremedia.imagequeue.coreanimation.common#46399 17.6us, ?#5891 17.5us, ?#35099 9.6us |
+
+phys_footprint 153.4 MB

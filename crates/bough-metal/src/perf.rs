@@ -53,6 +53,10 @@ pub struct Snap {
     pub cpu_ns: u64,
     pub rss: u64,
     pub footprint: u64,
+    /// package-idle + interrupt wakeups (process lifetime)
+    pub wakeups: u64,
+    /// CPU time other processes billed to us (vouchers), ns
+    pub billed_ns: u64,
 }
 
 pub fn snap() -> Snap {
@@ -66,7 +70,30 @@ pub fn snap() -> Snap {
         cpu_ns: (r.ri_user_time + r.ri_system_time) * tb.0 / tb.1,
         rss: r.ri_resident_size,
         footprint: r.ri_phys_footprint,
+        wakeups: r.ri_pkg_idle_wkups + r.ri_interrupt_wkups,
+        billed_ns: r.ri_billed_system_time * tb.0 / tb.1,
     }
+}
+
+unsafe extern "C" {
+    fn thread_selfcounts(kind: libc::c_int, buf: *mut u64, nbytes: usize) -> libc::c_int;
+}
+
+/// Retired instructions of the CALLING THREAD (libsystem_kernel `thread_selfcounts`, ~1.4 K instr per call,
+/// 4x cheaper than `proc_pid_rusage`). Used for in-tick and per-thread (completion handler) attribution.
+#[inline]
+pub fn tinstr() -> u64 {
+    let mut b = [0u64; 2];
+    unsafe { thread_selfcounts(1, b.as_mut_ptr(), 16) };
+    b[0]
+}
+
+/// Cost of one `tinstr()` call (subtract once from a bracketed delta).
+pub fn tinstr_overhead() -> u64 {
+    let _ = tinstr();
+    let mut v: Vec<u64> = (0..200).map(|_| { let a = tinstr(); let b = tinstr(); b - a }).collect();
+    v.sort();
+    v[v.len() / 2]
 }
 
 fn timebase() -> (u64, u64) {
