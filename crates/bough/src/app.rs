@@ -67,6 +67,7 @@ pub struct App<V: View> {
     ages: Vec<Option<u32>>,
     next_surf: usize,
     rects: Vec<[i32; 4]>,
+    rect_scratch: crate::repair::RectScratch,
     pub prof: Prof,
     pub frames: u64,
     pub last_surface: usize,
@@ -114,6 +115,7 @@ impl<V: View> App<V> {
             ages: vec![None; ring],
             next_surf: 0,
             rects: Vec::with_capacity(MAX_RECTS),
+            rect_scratch: Default::default(),
             prof: Prof::new(),
             frames: 0,
             last_surface: 0,
@@ -168,7 +170,7 @@ impl<V: View> App<V> {
         } else {
             let rt = &mut self.rt;
             rt.bough.repair_into(age.unwrap(), &mut rt.plane);
-            rects_from_plane(&rt.plane, w, h, MAX_RECTS, &mut self.rects);
+            rects_from_plane(&rt.plane, w, h, MAX_RECTS, &mut self.rect_scratch, &mut self.rects);
             // cull against the bounding box of the *tile-rounded* rects (the stencil repaints whole
             // tiles, so records whose ink lies in a repainted tile fringe must be drawn too)
             let mut u = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];

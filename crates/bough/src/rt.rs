@@ -84,6 +84,9 @@ pub struct Node {
     pub series: Vec<f32>,
     pub series_key: u64,
     pub series_ok: bool,
+    /// Multi-line text: the previous lines' shaped instances (a streaming log scrolls by one line
+    /// per update, so every unchanged line is re-used at a new baseline instead of re-shaped).
+    pub lines: Vec<(String, f32, Vec<Instance>)>,
 }
 
 impl Node {
@@ -111,6 +114,7 @@ impl Node {
             series: Vec::new(),
             series_key: 0,
             series_ok: false,
+            lines: Vec::new(),
         }
     }
 }
@@ -343,6 +347,8 @@ impl Rt {
             n.text = old;
             n.text.clear();
             n.series = std::mem::take(&mut self.nodes[i as usize].series);
+            n.lines = std::mem::take(&mut self.nodes[i as usize].lines);
+            n.lines.clear();
             self.nodes[i as usize] = n;
             i
         } else {
@@ -447,9 +453,36 @@ impl Rt {
         let text = std::mem::take(&mut self.nodes[node as usize].text);
         self.text.scratch.clear();
         let mut oy = oy0;
-        for line in text.split('\n') {
-            self.text.line(strike, size_px, line, ox, oy, color);
-            oy += lh;
+        if text.contains('\n') {
+            let mut old = std::mem::take(&mut self.nodes[node as usize].lines);
+            let mut fresh: Vec<(String, f32, Vec<Instance>)> = Vec::with_capacity(old.len().max(4));
+            for (i, line) in text.split('\n').enumerate() {
+                let start = self.text.scratch.len();
+                let hit = if old.get(i).is_some_and(|c| c.0 == line) { Some(i) } else { old.iter().position(|c| c.0 == line) };
+                match hit {
+                    Some(j) => {
+                        let dy = oy - old[j].1;
+                        self.text.scratch.extend(old[j].2.iter().map(|g| {
+                            let mut g = *g;
+                            g.xy[1] += dy;
+                            g
+                        }));
+                    }
+                    None => {
+                        self.text.line(strike, size_px, line, ox, oy, color);
+                    }
+                }
+                let (mut s, mut v) = old.pop().map(|e| (e.0, e.2)).unwrap_or_default();
+                s.clear();
+                s.push_str(line);
+                v.clear();
+                v.extend_from_slice(&self.text.scratch[start..]);
+                fresh.push((s, oy, v));
+                oy += lh;
+            }
+            self.nodes[node as usize].lines = fresh;
+        } else {
+            self.text.line(strike, size_px, &text, ox, oy, color);
         }
         self.nodes[node as usize].text = text;
         let cnt = self.text.scratch.len();

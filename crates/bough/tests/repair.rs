@@ -22,6 +22,7 @@ fn rects_cover_exactly_the_set_tiles() {
     let window = NRect::new(0, 0, w, h);
     let mut rng = Rng(0x9E3779B97F4A7C15);
     let mut out = Vec::new();
+    let mut sc = bough::repair::RectScratch::default();
     for case in 0..400 {
         let mut p = Plane::EMPTY;
         let n = 1 + rng.below(if case % 4 == 0 { 400 } else { 30 } as u64);
@@ -30,7 +31,7 @@ fn rects_cover_exactly_the_set_tiles() {
             let (rw, rh) = (1 + rng.below(300), 1 + rng.below(200));
             p.add(NRect::new(x, y, x + rw, y + rh).canon(), window);
         }
-        let ok = rects_from_plane(&p, w, h, 512, &mut out);
+        let ok = rects_from_plane(&p, w, h, 512, &mut sc, &mut out);
         if !ok {
             assert_eq!(out.len(), 1);
             continue;
