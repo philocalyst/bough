@@ -122,6 +122,7 @@ impl<V: View> App<V> {
         #[cfg(not(target_os = "macos"))]
         let pool = Pool::heap();
         let mut rt = Rt::new(win_w, win_h, cfg.scale, &cfg.font, pool);
+        rt.lay.mount_avail = (win_w as f32, win_h as f32);
         let owner = Box::new(view);
         let mut recs: Vec<RecordInit> = Vec::with_capacity(4096);
         let mut scope = Scope::default();
@@ -132,6 +133,9 @@ impl<V: View> App<V> {
             el.mount(&mut m);
         }
         rt.bough.insert_run(0, &recs);
+        // layout groups of the first mount, then the measured lists' first rows
+        rt.lay_flush();
+        unsafe { rt.mregions_init(ptr as *const u8) };
         #[cfg(target_os = "macos")]
         if let Some(m) = metal.as_mut() {
             m.sync_atlas(&mut rt.text.cache.atlas);
@@ -171,6 +175,7 @@ impl<V: View> App<V> {
         self.rt.settle(owner);
         self.prof.mark(PH_UPDATE);
         self.rt.flush_text();
+        self.rt.lay_flush();
         self.prof.mark(PH_TEXT);
     }
 

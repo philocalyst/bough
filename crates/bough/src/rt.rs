@@ -10,7 +10,7 @@ use bough_text::atlas::Instance;
 use std::collections::VecDeque;
 use std::ops::Range;
 
-pub const MAX_INST: usize = 16384;
+pub const MAX_INST: usize = 32768;
 pub const MAX_SPACES: usize = 512;
 pub const MAX_CLIPS: usize = 32;
 pub const MAX_RECTS: usize = 512;
@@ -28,6 +28,8 @@ pub const KIND_BORDER: u16 = 2;
 
 pub const REC_QUAD: u8 = 1;
 pub const REC_TEXT: u8 = 2;
+/// Node kinds (see `Node::kind`): 1 quad, 2 text, 3 bordered quad, 4 bars, 5 layout-owned text (see layout.rs).
+pub const NK_LTEXT: u8 = 5;
 
 /// The shared pool: header | spaces | clips | stencil rects | instances | draw list. Either a
 /// `storageModeShared` MTLBuffer (the Metal backend) or heap memory (headless, no GPU).
@@ -87,6 +89,8 @@ pub struct Node {
     /// Multi-line text: the previous lines' shaped instances (a streaming log scrolls by one line
     /// per update, so every unchanged line is re-used at a new baseline instead of re-shaped).
     pub lines: Vec<(String, f32, Vec<Instance>)>,
+    /// Layout node (index into `Rt::lay`) of an element laid out by cephal, else `u32::MAX`.
+    pub lnode: u32,
 }
 
 impl Node {
@@ -115,6 +119,7 @@ impl Node {
             series_key: 0,
             series_ok: false,
             lines: Vec::new(),
+            lnode: u32::MAX,
         }
     }
 }
@@ -139,6 +144,8 @@ pub struct Scope {
     pub nodes: Vec<u32>,
     pub wires: Vec<u32>,
     pub runs: Vec<u32>,
+    /// Layout roots (groups) created while mounting; removed from the layout engine on release.
+    pub lroots: Vec<u32>,
 }
 
 pub struct RowInfo {
@@ -200,6 +207,9 @@ pub struct Rt {
     pub ctr: Counters,
     /// Atlas contents changed since the backend last uploaded it.
     pub atlas_gen: (u32, u64),
+    /// The layout bridge (cephal over the mounted records) and the measured lists.
+    pub lay: crate::layout::Lay,
+    pub mregions: Vec<crate::mlist::MRegion>,
 }
 
 impl Rt {
@@ -229,6 +239,8 @@ impl Rt {
             cull_out: Vec::with_capacity(4096),
             ctr: Counters::default(),
             atlas_gen: (0, 0),
+            lay: crate::layout::Lay::new(scale),
+            mregions: Vec::new(),
         };
         let h = Hdr {
             viewport: [win_w as f32, win_h as f32],
@@ -299,14 +311,51 @@ impl Rt {
     }
 
     // ------------------------------------------------------------------ instance runs
+    /// A block of `1 << class` instances: a free block of that class, else a split of a larger free block, else
+    /// fresh pool (aligned to its size, so buddies pair up). Blocks are buddy-coalesced when freed, so a long
+    /// run of rows of varying sizes (a list jumping about) cannot fragment the pool away.
     fn alloc_block(&mut self, class: u8) -> u32 {
         if let Some(b) = self.free_blocks[class as usize].pop() {
             return b;
         }
-        let b = self.next_fresh;
-        self.next_fresh += 1 << class;
-        assert!(self.next_fresh as usize <= MAX_INST, "instance pool full");
+        for c in class as usize + 1..16 {
+            if let Some(b) = self.free_blocks[c].pop() {
+                for lower in (class as usize..c).rev() {
+                    self.free_blocks[lower].push(b + (1 << lower));
+                }
+                return b;
+            }
+        }
+        let size = 1u32 << class;
+        let b = (self.next_fresh + size - 1) & !(size - 1);
+        assert!((b + size) as usize <= MAX_INST, "instance pool full");
+        // the alignment gap becomes free blocks (largest aligned pieces that fit)
+        let mut a = self.next_fresh;
+        while a < b {
+            let mut c = a.trailing_zeros().min(15);
+            while a + (1 << c) > b {
+                c -= 1;
+            }
+            self.free_blocks[c as usize].push(a);
+            a += 1 << c;
+        }
+        self.next_fresh = b + size;
         b
+    }
+    fn free_block(&mut self, first: u32, class: u8) {
+        let (mut b, mut c) = (first, class as usize);
+        while c < 15 {
+            let buddy = b ^ (1 << c);
+            match self.free_blocks[c].iter().position(|&x| x == buddy) {
+                Some(i) => {
+                    self.free_blocks[c].swap_remove(i);
+                    b = b.min(buddy);
+                    c += 1;
+                }
+                None => break,
+            }
+        }
+        self.free_blocks[c].push(b);
     }
     /// A run with capacity for at least `n` instances (power-of-two size classes, free lists).
     pub fn alloc_run(&mut self, n: usize) -> u32 {
@@ -324,15 +373,15 @@ impl Rt {
     pub fn free_run(&mut self, i: u32) {
         let r = self.runs[i as usize];
         if r.live {
-            self.free_blocks[r.class as usize].push(r.first);
+            self.free_block(r.first, r.class);
             self.runs[i as usize].live = false;
             self.run_free.push(i);
         }
     }
     /// Grow a run in place of its id: new block, same id (the record's payload never changes).
-    fn regrow_run(&mut self, i: u32, n: usize) {
+    pub(crate) fn regrow_run(&mut self, i: u32, n: usize) {
         let r = self.runs[i as usize];
-        self.free_blocks[r.class as usize].push(r.first);
+        self.free_block(r.first, r.class);
         let class = (n.next_power_of_two().trailing_zeros()) as u8;
         let first = self.alloc_block(class);
         self.runs[i as usize] = Run { first, len: r.len, class, live: true };
@@ -518,7 +567,12 @@ impl Rt {
             let node = &mut self.nodes[n as usize];
             if node.dirty && node.live {
                 node.dirty = false;
-                self.apply_text(n);
+                if node.kind == NK_LTEXT {
+                    // wrapped / laid-out text: re-measured and re-placed by the layout flush
+                    self.lay_text_changed(n);
+                } else {
+                    self.apply_text(n);
+                }
             }
         }
         d.clear();
@@ -535,6 +589,9 @@ impl Rt {
         }
         for r in s.runs {
             self.free_run(r);
+        }
+        for r in s.lroots {
+            self.lay_remove_root(r);
         }
     }
 

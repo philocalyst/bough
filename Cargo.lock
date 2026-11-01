@@ -25,6 +25,7 @@ dependencies = [
  "bough-core",
  "bough-metal",
  "bough-text",
+ "cephal",
  "dispatch2",
  "libc",
  "objc2",
@@ -36,6 +37,7 @@ dependencies = [
  "objc2-quartz-core",
  "rustybuzz",
  "ttf-parser",
+ "zgx-workload",
 ]
 
 [[package]]
@@ -101,6 +103,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-vlist"
+version = "0.0.0"
+dependencies = [
+ "bough",
+ "bough-metal",
+ "bough-text",
+ "cephal",
+ "libc",
+ "zgx-workload",
+]
+
+[[package]]
 name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -119,6 +133,10 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "cephal"
+version = "0.2.0"
 
 [[package]]
 name = "core_maths"

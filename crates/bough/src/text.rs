@@ -166,4 +166,31 @@ impl TextSys {
         self.run = run;
         n
     }
+
+    /// Shape `text` into `out` (font units): the table shaper when it covers the string, else rustybuzz
+    /// (x advances and glyph ids only, as in `line`). Used by layout, which needs the run itself
+    /// (widths, wrap points) before it needs instances.
+    pub fn shape_run(&mut self, text: &str, size_px: f32, out: &mut GlyphRun) {
+        if self.shaper.shape_into(text, size_px, out) {
+            return;
+        }
+        self.fallbacks += 1;
+        let mut buf = rustybuzz::UnicodeBuffer::new();
+        buf.push_str(text);
+        buf.guess_segment_properties();
+        let shaped = rustybuzz::shape(&self.face, &[], buf);
+        out.gid.clear();
+        out.x.clear();
+        out.cluster.clear();
+        out.identity_clusters = true;
+        out.upem = self.upem as u16;
+        out.size = size_px;
+        let mut x = 0i32;
+        for (i, p) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
+            out.gid.push(i.glyph_id as u16);
+            out.x.push(x + p.x_offset);
+            x += p.x_advance;
+        }
+        out.width = x;
+    }
 }

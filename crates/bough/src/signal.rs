@@ -31,6 +31,15 @@ impl<T> Signal<T> {
     }
 }
 
+impl<T> Signal<T> {
+    /// Overwrite the value without queueing its wires: for a value the runtime itself just wrote
+    /// (a measured list's anchored scroll offset), mirrored back into the owner.
+    #[inline]
+    pub fn set_silent(&mut self, v: T) {
+        self.value = v;
+    }
+}
+
 impl<T: PartialEq> Signal<T> {
     /// Equality cut-off, then mark. Returns whether the value changed.
     #[inline]

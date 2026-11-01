@@ -100,7 +100,7 @@ pub struct Shaper {
 
 impl Shaper {
     /// Dense step table and ASCII gid table, for the fused shape-to-instances kernel.
-    pub(crate) fn dense_tables(&self) -> (&[u16], &[u16; 128]) {
+    pub fn dense_tables(&self) -> (&[u16], &[u16; 128]) {
         (&self.dense, &self.gid128)
     }
 

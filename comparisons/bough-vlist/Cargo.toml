@@ -1,0 +1,44 @@
+[package]
+name = "bough-vlist"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "zgx's vlist scene (100k wrapped chat rows, measured virtual list) and vscroll-variable micro_bench on bough + cephal"
+
+[features]
+# Variant B: cephal over bough's storage (see crates/bough/LAYOUT.md)
+deep = ["bough/deep"]
+deep-kids = ["bough/deep-kids"]
+
+[dependencies]
+bough = { path = "../../crates/bough" }
+bough-metal = { path = "../../crates/bough-metal" }
+bough-text = { path = "../../crates/bough-text" }
+zgx-workload = { path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }
+libc = "0.2"
+cephal = { path = "/Users/mileswirht/Downloads/ilo-prod-work/cephal", default-features = false, features = ["flex", "block"] }
+
+[[bin]]
+name = "vlist_workload"
+path = "src/bin/vlist_workload.rs"
+[[bin]]
+name = "vlist_headless"
+path = "src/bin/vlist_headless.rs"
+[[bin]]
+name = "micro_bench"
+path = "src/bin/micro_bench.rs"
+[[bin]]
+name = "vlist_shot"
+path = "src/bin/vlist_shot.rs"
+
+[dev-dependencies]
+cephal = { path = "/Users/mileswirht/Downloads/ilo-prod-work/cephal", default-features = false, features = ["flex", "block"] }
+[[bin]]
+name = "layout_bench"
+path = "src/bin/layout_bench.rs"
+[[bin]]
+name = "cephal_raw"
+path = "src/bin/cephal_raw.rs"
+[[bin]]
+name = "text_bench"
+path = "src/bin/text_bench.rs"

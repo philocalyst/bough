@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 description = "bough: the public facade (Signal, View, typed builders, turns) over bough-core, bough-text and the Metal backend"
 
+[features]
+# Variant B: cephal's LayoutTree / CacheAccess / Incremental implemented directly over bough's storage
+# (instead of mirroring the nodes into cephal's own Tree).
+deep = []
+# With `deep`: child ids cached in the side column instead of scanned from the depth column.
+deep-kids = ["deep"]
+
 [dependencies]
 bough-core = { path = "../bough-core", features = ["tile32"] }
 bough-text = { path = "../bough-text" }
@@ -12,6 +19,8 @@ bough-metal = { path = "../bough-metal" }
 rustybuzz = "0.20"
 ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
 libc = "0.2"
+# cephal: the user's retained, incremental CSS layout engine (separate repo, used unmodified, by path)
+cephal = { path = "/Users/mileswirht/Downloads/ilo-prod-work/cephal", default-features = false, features = ["flex", "block"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -23,3 +32,6 @@ objc2-io-surface = { version = "0.3", features = ["objc2-core-foundation"] }
 objc2-core-foundation = { version = "0.3" }
 block2 = "0.6"
 dispatch2 = "0.3"
+
+[dev-dependencies]
+zgx-workload = { path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }
