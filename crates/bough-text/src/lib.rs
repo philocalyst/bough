@@ -24,5 +24,7 @@ pub mod slots;
 pub mod window;
 pub mod wrap;
 
+/// The vendored parley (vendor/README.md): bough's text path, with bough-text's mechanisms grafted in.
+pub use parley;
 pub use script::{CpSet, SimpleScript, TRIG};
 pub use shape::{GlyphRun, Shaper};
