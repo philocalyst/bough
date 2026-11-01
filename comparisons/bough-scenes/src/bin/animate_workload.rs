@@ -15,6 +15,13 @@ fn main() {
         Anim { clock: bough::signal::Signal::new(0.0) },
         move |app, t| {
             frames.set(frames.get() + 1);
+            if frames.get() == 1 {
+                // animation no input drives: the pre-armed command stream (BOUGH_STREAM=K frames, 0 = off)
+                let k = std::env::var("BOUGH_STREAM").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+                if k > 0 {
+                    app.stream(k);
+                }
+            }
             app.turn(|a| {
                 a.clock.set(t as f32);
             });

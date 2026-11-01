@@ -125,3 +125,25 @@ fn idle_is_zero_work() {
     assert!(!app.frame());
 }
 
+
+#[test]
+fn bin_overflow_grows_the_bins_and_redraws_exactly() {
+    // bins of 8 entries per row cannot hold heavy's rows: every overflow must grow them and redraw the frame
+    // before it is read back
+    let mut work = Heavy::from_env();
+    work.mode = Mode::Both;
+    let mut app = App::new(Dash::new(&work), cfg(2), true);
+    app.reset_bins(8);
+    app.frame();
+    for t in 1..=40 {
+        work.tick();
+        app.turn(|d| publish(d, &work, Mode::Both));
+        app.frame();
+        if t % 5 == 0 {
+            let (px, r) = (app.presented_pixels(), app.reference_pixels());
+            assert!(px == r, "tick {t}: presented != full redraw after bin growth");
+        }
+    }
+    assert!(app.gpu.as_ref().unwrap().bin_growths > 0, "the small bins never overflowed");
+    assert!(!app.bins_overflowed());
+}

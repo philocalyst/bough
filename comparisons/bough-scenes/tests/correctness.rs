@@ -264,3 +264,35 @@ fn trim_to_purgeable_and_resume_is_pixel_exact() {
     assert_eq!(trimmed, 2);
     assert_eq!(app.surf_stats.purged, 0, "no memory pressure here: volatile surfaces keep their pixels");
 }
+
+#[test]
+fn animate_in_throughput_mode_is_pixel_exact() {
+    // the pre-armed command stream: frames released by a shared event, published one turn later
+    let times: Vec<f32> = (1..=120).map(|f| f as f32 / 120.0).collect();
+    for ring in [2, 3, 4, 0] {
+        let mut app = app_ring(Anim { clock: Signal::new(0.0) }, anim_config(2.0), ring);
+        app.frame();
+        if ring == 3 {
+            // tiny bins: an overflow inside the pre-armed stream drains it, grows the bins, redraws, re-arms
+            app.reset_bins(4);
+        }
+        app.stream(8);
+        for (t, &c) in times.iter().enumerate() {
+            app.turn(|x| {
+                x.clock.set(c);
+            });
+            assert!(app.frame());
+            if t % 9 == 0 {
+                let (px, r) = (app.presented_pixels(), app.reference_pixels());
+                assert!(px == r, "ring {ring} frame {t}: presented != full redraw");
+            }
+        }
+        if ring == 3 {
+            assert!(app.gpu.as_ref().unwrap().bin_growths > 0);
+        }
+        let px = app.presented_pixels();
+        let mut f = app_ring(Anim { clock: Signal::new(*times.last().unwrap()) }, anim_config(2.0), ring);
+        f.frame();
+        assert!(px == f.presented_pixels(), "ring {ring}: retained != fresh mount");
+    }
+}

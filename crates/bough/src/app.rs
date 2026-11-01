@@ -143,6 +143,8 @@ pub struct App<V: View> {
     /// `frames` value when each ring slot was last drawn into.
     last_use: Vec<u64>,
     trim_mark: u64,
+    /// Throughput mode: the surface of the last released frame, published at the next sync.
+    pending: Option<usize>,
 }
 
 impl<V: View> App<V> {
@@ -153,7 +155,7 @@ impl<V: View> App<V> {
         let ring = if cfg.ring == 0 { 4 } else { cfg.ring.min(4) };
         let bytes = cfg.caps.region_bytes(win_w as u32, win_h as u32);
         #[cfg(target_os = "macos")]
-        let metal = gpu.then(|| bough_metal::fused::Fused::new(win_w as usize, win_h as usize, cfg.scale as f64, bytes, ring, 4096));
+        let metal = gpu.then(|| bough_metal::fused::Fused::new(win_w as usize, win_h as usize, cfg.scale as f64, bytes, ring, 1024));
         #[cfg(not(target_os = "macos"))]
         let _ = gpu;
         #[cfg(target_os = "macos")]
@@ -213,6 +215,19 @@ impl<V: View> App<V> {
             core_epochs: [false; RING],
             last_use: vec![0; ring],
             trim_mark: 0,
+            pending: None,
+        }
+    }
+
+    /// Throughput mode for animation that no input drives (RESULTS 12.8): the GPU's command stream is
+    /// pre-encoded `k` frames ahead, each waiting on a shared event; a frame writes its slot and signals,
+    /// and its surface is published at the next turn (one refresh later). No command buffer, encoder or
+    /// completion wait per frame.
+    #[cfg(target_os = "macos")]
+    pub fn stream(&mut self, k: usize) {
+        if let Some(g) = self.gpu.as_mut() {
+            g.sync();
+            g.arm_stream(k);
         }
     }
 
@@ -220,6 +235,9 @@ impl<V: View> App<V> {
     fn sync(&mut self) {
         if let Some(g) = self.gpu.as_mut() {
             g.sync();
+            if let Some(i) = self.pending.take() {
+                g.publish_later(i);
+            }
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -446,6 +464,9 @@ impl<V: View> App<V> {
                 a.dirty_bytes = 0;
             }
             self.repaired_tiles = g.draw(i, &self.rows, full, n_dir);
+            if g.streaming() {
+                self.pending = Some(i);
+            }
             drawn = true;
         }
         if !drawn {
@@ -504,6 +525,7 @@ impl<V: View> App<V> {
     /// Pixels (BGRA) of the surface the last frame showed.
     #[cfg(target_os = "macos")]
     pub fn presented_pixels(&mut self) -> Vec<u8> {
+        self.sync();
         let i = self.last_surface;
         self.gpu.as_mut().unwrap().surface_pixels(i)
     }
@@ -522,7 +544,17 @@ impl<V: View> App<V> {
 
     /// Did a GPU row bin overflow in the last frame? (tests)
     #[cfg(target_os = "macos")]
-    pub fn bins_overflowed(&self) -> bool {
+    pub fn bins_overflowed(&mut self) -> bool {
+        self.sync();
         self.gpu.as_ref().is_some_and(|g| g.bins_overflowed())
+    }
+
+    /// Shrink the GPU row bins to `cap` entries per row (tests: forces the grow-and-redraw path).
+    #[cfg(target_os = "macos")]
+    pub fn reset_bins(&mut self, cap: u32) {
+        if let Some(g) = self.gpu.as_mut() {
+            g.sync();
+            g.reset_bins(cap);
+        }
     }
 }

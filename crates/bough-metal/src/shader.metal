@@ -1110,7 +1110,8 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
     }
     if (li == 0) {
         counts[ty] = min(nb, cap);
-        if (nb > cap) counts[h.tiles_y] = 1u;   // overflow flag (checked by the CPU in tests)
+        // overflow: the largest row count the CPU must grow the bins to (it redraws the frame then)
+        if (nb > cap) atomic_fetch_max_explicit((device atomic_uint*)(counts + h.tiles_y), nb, memory_order_relaxed);
     }
 }
 

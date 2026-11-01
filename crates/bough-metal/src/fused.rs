@@ -12,6 +12,9 @@
 //! * **Surfaces:** up to 4 IOSurface-backed BGRA8 textures, all bound to every dispatch (the slot names the
 //!   target). An IOSurface costs nothing until first written; *which* surface to draw is the caller's policy
 //!   (`App::pick` in the façade: content-addressed, zero skips).
+//! * **Bins sized by need:** the row bins start small (1024 entries per tile row); a bin pass that finds more
+//!   hits than fit records the largest count, and the CPU (which checks after every frame, before the surface
+//!   is published) grows the bins to it and redraws the frame: exact, and memory is what the scene needs.
 //! * **Residency:** one `MTLResidencySet` on the queue holding the region, the atlas, the bins and the
 //!   surfaces that have been drawn (an untouched surface is never added: residency makes every page of an
 //!   allocation resident, measured by `examples/resprobe.rs`).
@@ -205,6 +208,8 @@ pub struct Stats {
 pub struct Fused {
     pub device: Dev,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    /// Reference renders (tests/checks): never queued behind a pre-armed batch waiting on its event.
+    aux: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     pso_bin: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pso_tile: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pool: Retained<ProtocolObject<dyn MTLBuffer>>,
@@ -228,6 +233,9 @@ pub struct Fused {
     prev_frame_at: f64,
     scratch: Option<Surface>,
     pub stats: Stats,
+    /// The last GPU frame: (slot, target, rows, tiles), redrawn if its bins overflowed.
+    last_frame: Option<(usize, usize, u32, u32)>,
+    pub bin_growths: u32,
     // throughput mode (pre-armed command stream)
     ev: Option<Retained<ProtocolObject<dyn MTLSharedEvent>>>,
     armed_upto: u64,
@@ -240,6 +248,7 @@ impl Fused {
     pub fn new(w: usize, h: usize, scale: f64, region_len: usize, surfaces: usize, bin_cap: u32) -> Fused {
         let device = MTLCreateSystemDefaultDevice().expect("no Metal device");
         let queue = device.newCommandQueue().expect("queue");
+        let aux = device.newCommandQueue().expect("aux queue");
         let data = DispatchData::from_static_bytes(METALLIB);
         let lib = device.newLibraryWithData_error(&data).expect("metallib load");
         let pso = |name: &NSString| {
@@ -265,6 +274,7 @@ impl Fused {
         let mut f = Fused {
             device,
             queue,
+            aux,
             pso_bin,
             pso_tile,
             pool,
@@ -287,6 +297,8 @@ impl Fused {
             prev_frame_at: f64::NEG_INFINITY,
             scratch: None,
             stats: Stats::default(),
+            last_frame: None,
+            bin_growths: 0,
             ev: None,
             armed_upto: 0,
             released: 0,
@@ -375,7 +387,7 @@ impl Fused {
         unsafe { (self.pool_ptr as *mut FHdr).write(h) };
     }
 
-    /// Wait for the GPU's last frame (the CPU is about to write the region).
+    /// Wait for the GPU's last frame (the CPU is about to write the region); redraw it if a bin overflowed.
     #[inline]
     pub fn sync(&mut self) {
         if let Some(c) = &self.last {
@@ -388,6 +400,77 @@ impl Fused {
                 ev.waitUntilSignaledValue_timeoutMS(2 * self.released, 5000);
             }
         }
+        self.check_bins();
+    }
+
+    /// After a GPU frame completed: if a row bin overflowed, grow the bins to the recorded need and redraw
+    /// that frame (same slot, same target) before anyone sees it.
+    fn check_bins(&mut self) {
+        let ty = self.lay.tiles_y() as usize;
+        // SAFETY: `counts` holds ty + 1 u32s in shared storage; the GPU is idle (the caller waited).
+        let need = unsafe { *(self.counts.contents().as_ptr() as *const u32).add(ty) };
+        if need == 0 {
+            return;
+        }
+        let Some((k, target, nr, nt)) = self.last_frame else { return };
+        unsafe { *(self.counts.contents().as_ptr() as *mut u32).add(ty) = 0 };
+        let streaming = self.ev.is_some();
+        if streaming {
+            // draining reuses both slots: keep the overflowed frame's
+            let sb = Layout::slot_bytes(self.lay.w, self.lay.h);
+            let mut keep = vec![0u8; sb];
+            // SAFETY: slot k lies inside the region (reserved with `slot_bytes`); the GPU is idle.
+            unsafe { std::ptr::copy_nonoverlapping(self.pool_ptr.add(self.lay.slot[k] as usize), keep.as_mut_ptr(), sb) };
+            self.drain_stream();
+            unsafe { std::ptr::copy_nonoverlapping(keep.as_ptr(), self.pool_ptr.add(self.lay.slot[k] as usize), sb) };
+        }
+        let cap = need.next_power_of_two().max(self.bin_cap * 2);
+        self.bins = self.device.newBufferWithLength_options(ty * cap as usize * 16, MTLResourceOptions::StorageModePrivate).expect("bins");
+        if let Some(r) = &self.resid {
+            r.addAllocation(ProtocolObject::from_ref(&*self.bins));
+            r.commit();
+        }
+        self.bin_cap = cap;
+        self.bin_growths += 1;
+        // SAFETY: header field `bin_cap`; the GPU is idle.
+        unsafe { (*(self.pool_ptr as *mut FHdr)).bin_cap = cap };
+        let cmd = self.aux.commandBuffer().expect("command buffer");
+        if streaming {
+            self.encode(&cmd, k, self.targets(), nr, nt, false);
+        } else {
+            let t = &self.surfs[target].tex;
+            self.encode(&cmd, k, [t, t, t, t], nr, nt, false);
+        }
+        cmd.commit();
+        cmd.waitUntilCompleted();
+        if streaming {
+            self.arm_batch();
+        }
+        self.check_bins();
+    }
+
+    /// Replace the row bins by ones of `cap` entries per row (tests; not while streaming).
+    pub fn reset_bins(&mut self, cap: u32) {
+        assert!(self.ev.is_none());
+        let ty = self.lay.tiles_y() as usize;
+        self.bins = self.device.newBufferWithLength_options(ty * cap as usize * 16, MTLResourceOptions::StorageModePrivate).expect("bins");
+        self.bin_cap = cap;
+        // SAFETY: header field `bin_cap`; the GPU is idle (the caller synced).
+        unsafe { (*(self.pool_ptr as *mut FHdr)).bin_cap = cap };
+    }
+
+    /// Release every pre-armed frame with an empty slot (no tiles) and wait: the stream is idle and can be
+    /// re-armed (with new bins).
+    fn drain_stream(&mut self) {
+        let ev = self.ev.clone().unwrap();
+        let empty = [0u128; 0];
+        for f in self.released + 1..=self.armed_upto {
+            // SAFETY: the region and its slots; the frame `f - 1` finished (waited below each time).
+            unsafe { write_slot(self.pool_ptr, &self.lay, (f % 2) as usize, 0, &empty, false) };
+            ev.setSignaledValue(2 * f - 1);
+            ev.waitUntilSignaledValue_timeoutMS(2 * f, 5000);
+        }
+        self.released = self.armed_upto;
     }
 
     pub fn is_in_use(&self, i: usize) -> bool {
@@ -511,22 +594,28 @@ impl Fused {
     /// entries, commit, and (windowed) publish it once the GPU is done. Returns the tile count.
     pub fn draw(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32) -> u32 {
         self.sync();
-        let k = (self.stats.gpu_frames % 2) as usize;
+        let k = if self.ev.is_some() { ((self.released + 1) % 2) as usize } else { (self.stats.gpu_frames % 2) as usize };
         // SAFETY: header field `n_dir` (u32) of the region's header; the GPU is idle (sync()).
         unsafe { (*(self.pool_ptr as *mut FHdr)).n_dir = n_dir };
-        let (nt, nr) = self.write_slot(k, target as u32, rows, full);
         if self.ev.is_some() {
+            // the pre-encoded stream binds every surface; the slot names the target
+            let (nt, _) = self.write_slot(k, target as u32, rows, full);
             return self.release(k, nt);
         }
+        // only the target is bound (at every slot): binding a surface makes all its pages resident, so a
+        // surface the ring never draws must never be bound
+        let (nt, nr) = self.write_slot(k, 0, rows, full);
         let cmd = self.queue.commandBuffer().expect("command buffer");
-        self.encode(&cmd, k, self.targets(), nr, nt, false);
+        let t = &self.surfs[target].tex;
+        self.encode(&cmd, k, [t, t, t, t], nr, nt, false);
         cmd.commit();
         self.after_gpu_frame(nt);
+        self.last_frame = Some((k, target, nr, nt));
+        self.last = Some(cmd);
         if self.publish {
-            cmd.waitUntilCompleted();
+            self.sync();
             self.publish_surface(target);
         }
-        self.last = Some(cmd);
         nt
     }
 
@@ -586,6 +675,10 @@ impl Fused {
 
     fn release(&mut self, k: usize, nt: u32) -> u32 {
         let f = self.released + 1;
+        // the slot names the target; a redraw after a bin overflow reads it back from there
+        let target = unsafe { *(self.pool_ptr.add(self.lay.slot[k] as usize) as *const u32).add(6) } as usize;
+        let nr = unsafe { *(self.pool_ptr.add(self.lay.slot[k] as usize) as *const u32).add(7) };
+        self.last_frame = Some((k, target, nr, nt));
         debug_assert_eq!((f % 2) as usize, k);
         self.released = f;
         let ev = self.ev.clone().unwrap();
@@ -630,14 +723,15 @@ impl Fused {
         unsafe { (*(self.pool_ptr as *mut FHdr)).n_dir = n_dir };
         let (nt, nr) = self.write_slot(2, 0, &[], true);
         let s = &self.scratch.as_ref().unwrap().tex;
-        let cmd = self.queue.commandBuffer().expect("command buffer");
+        let cmd = self.aux.commandBuffer().expect("command buffer");
         self.encode(&cmd, 2, [s, s, s, s], nr, nt, false);
         cmd.commit();
         cmd.waitUntilCompleted();
         read_io(&self.scratch.as_ref().unwrap().io, self.w, self.h)
     }
 
-    /// Did any row bin overflow its capacity in the last frame? (tests)
+    /// Did a row bin overflow in the last frame and stay unrepaired? (tests: always false after a sync, since
+    /// an overflow grows the bins and redraws.)
     pub fn bins_overflowed(&self) -> bool {
         let ty = self.lay.tiles_y() as usize;
         // SAFETY: `counts` holds ty + 1 u32s; shared storage; the GPU is idle after sync.

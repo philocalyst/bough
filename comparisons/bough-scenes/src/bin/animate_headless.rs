@@ -11,6 +11,15 @@ fn main() {
     let frames: usize = env("FRAMES", 2400);
     let render = env("RENDER", 1) != 0;
     let mut app = App::new(Anim { clock: bough::signal::Signal::new(0.0) }, anim_config(2.0), render);
+    // the throughput mode (pre-armed command stream) unless BOUGH_STREAM=0
+    #[cfg(target_os = "macos")]
+    if render {
+        app.frame();
+        let k = env("BOUGH_STREAM", 8usize);
+        if k > 0 {
+            app.stream(k);
+        }
+    }
     let warmup = 120;
     let (mut w0, mut c0) = (bough_metal::perf::snap(), 0u64);
     let mut drawn = 0u64;
