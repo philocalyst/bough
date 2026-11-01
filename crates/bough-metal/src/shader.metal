@@ -926,6 +926,18 @@ struct FHdr {
     uint gx_off, gent_off, runs_off, toks_off, tok_stride;
     uint bin_cap, debug;
 };
+// The bind table (header + FBIND_OFF): every resource the kernels touch besides the region itself, as Metal 3
+// resource ids / GPU addresses written by the CPU. Nothing is bound per encoder but the region and the frame
+// slot offset, so a pre-encoded frame never names a surface (no per-segment surface tracking in the driver, no
+// IOSurface use counts held by pending frames) and growing the bins is a header write. Everything here is in
+// the queue's residency set.
+struct FBind {
+    texture2d<float, access::write> t[4];
+    texture2d<float> atlas;
+    device uint4* bins;
+    device atomic_uint* counts;
+};
+constant uint FBIND_OFF = 128;
 typedef Instance FInst;
 constant uint F_RUN = 0x80000000u;
 constant uint F_IRUN = 0x40000000u;
@@ -968,10 +980,10 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                    uint lane [[thread_index_in_simdgroup]],
                    uint sg [[simdgroup_index_in_threadgroup]],
                    device const uchar* pool [[buffer(0)]],
-                   constant uint2& slot [[buffer(1)]],
-                   device uint4* bins [[buffer(2)]],
-                   device uint* counts [[buffer(3)]]) {
+                   constant uint2& slot [[buffer(1)]]) {
     device const FHdr& h = *(device const FHdr*)pool;
+    device const FBind& fb = *(device const FBind*)(pool + FBIND_OFF);
+    device uint4* bins = fb.bins;
     device const FRow* frows = (device const FRow*)(pool + slot.x + 32);
     device const uint* dpage = (device const uint*)(pool + h.dir_id_off);
     device const short4* dink = (device const short4*)(pool + h.dir_ink_off);
@@ -1109,9 +1121,9 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
         }
     }
     if (li == 0) {
-        counts[ty] = min(nb, cap);
+        atomic_store_explicit(fb.counts + ty, min(nb, cap), memory_order_relaxed);
         // overflow: the largest row count the CPU must grow the bins to (it redraws the frame then)
-        if (nb > cap) atomic_fetch_max_explicit((device atomic_uint*)(counts + h.tiles_y), nb, memory_order_relaxed);
+        if (nb > cap) atomic_fetch_max_explicit(fb.counts + h.tiles_y, nb, memory_order_relaxed);
     }
 }
 
@@ -1169,15 +1181,11 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
                     uint lane [[thread_index_in_simdgroup]],
                     uint sg [[simdgroup_index_in_threadgroup]],
                     device const uchar* pool [[buffer(0)]],
-                    constant uint2& slot [[buffer(1)]],
-                    device const uint4* bins [[buffer(2)]],
-                    device const uint* counts [[buffer(3)]],
-                    texture2d<float> atlas [[texture(0)]],
-                    texture2d<float, access::write> t0 [[texture(1)]],
-                    texture2d<float, access::write> t1 [[texture(2)]],
-                    texture2d<float, access::write> t2 [[texture(3)]],
-                    texture2d<float, access::write> t3 [[texture(4)]]) {
+                    constant uint2& slot [[buffer(1)]]) {
     device const FHdr& h = *(device const FHdr*)pool;
+    device const FBind& fb = *(device const FBind*)(pool + FBIND_OFF);
+    device const uint4* bins = fb.bins;
+    texture2d<float> atlas = fb.atlas;
     device const FSlot& fs = *(device const FSlot*)(pool + slot.x);
     device const FRow* frows = (device const FRow*)(pool + slot.x + 32);
     device const FInst* inst = (device const FInst*)(pool + h.inst_off);
@@ -1208,7 +1216,7 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
     threadgroup TgRec rec[128];
     half4 acc[4] = { half4(0.0h), half4(0.0h), half4(0.0h), half4(0.0h) };
     device const uint4* bin = bins + tile.y * h.bin_cap;
-    uint nb = counts[tile.y];
+    uint nb = atomic_load_explicit(fb.counts + tile.y, memory_order_relaxed);
     for (uint b0 = 0; b0 < nb; b0 += 128) {
         bool rh = false, cover = false;
         TgRec r;
@@ -1253,12 +1261,12 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
     for (uint j = 0; j < 4; j++) {
         uint2 px = o + 2u * lt + uint2(j & 1u, j >> 1);
         if (px.x >= uint(h.viewport.x) || px.y >= uint(h.viewport.y)) continue;
-        float4 v = float4(acc[j]);
-        switch (fs.target) {
-        case 0: t0.write(v, px); break;
-        case 1: t1.write(v, px); break;
-        case 2: t2.write(v, px); break;
-        default: t3.write(v, px); break;
-        }
+        fb.t[fs.target & 3u].write(float4(acc[j]), px);
     }
+}
+
+// ============================================================================ FLOOR PROBE (examples/fprobe.rs)
+// The smallest real GPU work: one thread bumps a counter. Used to price kicks, encoders and events alone.
+kernel void fl_nop(device atomic_uint* b [[buffer(0)]], uint i [[thread_position_in_grid]]) {
+    if (i == 0) atomic_fetch_add_explicit(b, 1u, memory_order_relaxed);
 }

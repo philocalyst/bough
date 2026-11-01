@@ -143,8 +143,6 @@ pub struct App<V: View> {
     /// `frames` value when each ring slot was last drawn into.
     last_use: Vec<u64>,
     trim_mark: u64,
-    /// Throughput mode: the surface of the last released frame, published at the next sync.
-    pending: Option<usize>,
 }
 
 impl<V: View> App<V> {
@@ -215,19 +213,15 @@ impl<V: View> App<V> {
             core_epochs: [false; RING],
             last_use: vec![0; ring],
             trim_mark: 0,
-            pending: None,
         }
     }
 
-    /// Throughput mode for animation that no input drives (RESULTS 12.8): the GPU's command stream is
-    /// pre-encoded `k` frames ahead, each waiting on a shared event; a frame writes its slot and signals,
-    /// and its surface is published at the next turn (one refresh later). No command buffer, encoder or
-    /// completion wait per frame.
+    /// Frames per pre-armed command buffer. Every frame goes through the pre-armed stream (bough-metal
+    /// RESULTS Part IV: released by a shared event, published in the same turn); this only sizes its batches.
     #[cfg(target_os = "macos")]
     pub fn stream(&mut self, k: usize) {
         if let Some(g) = self.gpu.as_mut() {
-            g.sync();
-            g.arm_stream(k);
+            g.set_batch(k);
         }
     }
 
@@ -235,9 +229,6 @@ impl<V: View> App<V> {
     fn sync(&mut self) {
         if let Some(g) = self.gpu.as_mut() {
             g.sync();
-            if let Some(i) = self.pending.take() {
-                g.publish_later(i);
-            }
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -464,9 +455,6 @@ impl<V: View> App<V> {
                 a.dirty_bytes = 0;
             }
             self.repaired_tiles = g.draw(i, &self.rows, full, n_dir);
-            if g.streaming() {
-                self.pending = Some(i);
-            }
             drawn = true;
         }
         if !drawn {
