@@ -31,5 +31,3 @@ naga = { path = "vendor/naga" }
 wgsl-rs = { path = "vendor/wgsl-rs/crates/wgsl-rs" }
 wgsl-rs-macros = { path = "vendor/wgsl-rs/crates/wgsl-rs-macros" }
 wgsl-rs-ir = { path = "vendor/wgsl-rs/crates/wgsl-rs-ir" }
-wgsl-rs-layout = { path = "vendor/wgsl-rs/crates/wgsl-rs-layout" }
-wgsl-rs-layout-macros = { path = "vendor/wgsl-rs/crates/wgsl-rs-layout-macros" }

@@ -1252,11 +1252,3 @@ dependencies = [
 [[package]]
 name = "zgx-workload"
 version = "0.1.0"
-
-[[patch.unused]]
-name = "wgsl-rs-layout"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "wgsl-rs-layout-macros"
-version = "0.1.0"
