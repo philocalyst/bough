@@ -44,6 +44,15 @@ Frame instructions (macOS, incl. render): heavy both 9.28 M, stream 8.30 M, scro
 121 K (zgx's own ~24 K + Metal). zgx's hand-written floor for heavy stream: 2.72 M (text 1.42 M, submit 0.99 M).
 p99 frame interval 17.6 ms.
 
+## macOS, measured here (M3 Pro, zgx 06debe9d `dist`; details in `macos/SUMMARY.md`)
+
+micro_bench medians (CPU ns per op): state write 1,020 / frame 2,200 (RENDER=0), frame **141,600** with the
+renderer; vscroll-fixed frame 4,000 / **201,000**; vscroll-variable frame 7,100 / **213,800**.
+GPUI Fast frames (no renderer): state 957,800, vscroll-fixed 37,600, vscroll-variable 162,400.
+
+Heavy per-phase (K instructions per frame): stream update 1,458 · layout 750 · damage 1,227 · paint 1,150 ·
+encode 634 · submit 16 (≈ 5.24 M); scroll paint 452 + encode 108 dominate (≈ 0.73 M); idle ≈ 125 K.
+
 ## Linux, zgx `scripts/perf/suite.py` non-GPU scenes (least of 3, instructions per whole scene)
 
 | scene | instructions | spread |

@@ -1,0 +1,10 @@
+SIZE controls=1250 local_ns=116458.0 global_ns=11647875.0 restyled=1 visited=1267 relaid_out=0 diffed=6 emitted=1 tree_inserts=2
+SIZE controls=2500 local_ns=1104666.0 global_ns=17056250.0 restyled=1 visited=2517 relaid_out=0 diffed=6 emitted=1 tree_inserts=2
+SIZE controls=5000 local_ns=716708.0 global_ns=32956500.0 restyled=1 visited=5017 relaid_out=0 diffed=6 emitted=1 tree_inserts=2
+SIZE controls=10000 local_ns=2087959.0 global_ns=125424416.0 restyled=1 visited=10017 relaid_out=0 diffed=6 emitted=1 tree_inserts=2
+  advisory (keyed to this machine, gating nothing)  click slope 189.2056 ns per control, over 10000 controls
+  advisory (keyed to this machine, gating nothing)  whole-document update slope 13340.1822 ns per control
+STATIC-locality ok  0.0142  (at most 0.0900)
+STATIC-restyle-locality ok  0.0000  (at most 0.0010)
+STATIC-visit-locality ok  1.0000  (at most 1.1000)
+ok: 3 criteria, all inside

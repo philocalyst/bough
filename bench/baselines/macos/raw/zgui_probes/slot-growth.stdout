@@ -1,0 +1,11 @@
+This is a diagnostic probe and not a reference workload: it drives a session of streaming row updates and watches what the scene's tables keep.
+ update   clips_live  paints_live     prepared    cost_us
+      0           62            2            0      813.9
+    500           62            2            0      678.9
+   1000           62            2            0      703.9
+   1500           62            2            0      674.1
+   2000           62            2            0      668.2
+   2500           62            2            0      663.6
+   3000           62            2            0      645.9
+   3500           62            2            0      721.2
+   3999           62            2            0      659.2

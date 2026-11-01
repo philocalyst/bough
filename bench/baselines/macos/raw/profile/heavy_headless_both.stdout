@@ -1,0 +1,1 @@
+Both: update 0.836 + layout 0.750 + render 2.548 = 4.134 ms/tick, layout nodes 842/tick, damaged 3.59 Mpx/tick, scene nodes 1179, atlas 1.0 MB, images 0.0 MB, shaped 0.4 MB, prepared 0.5+0.1 MB, device 18.9 MB, texts shaped 89.2/tick, cache hits 88.3/tick, allocations 303+206+71/tick

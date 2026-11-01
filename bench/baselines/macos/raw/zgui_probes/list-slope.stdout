@@ -1,0 +1,6 @@
+VIRT wheel rows=12500 port=800 built=39 cost_ns=90655541
+VIRT wheel rows=25000 port=800 built=39 cost_ns=93688708
+VIRT wheel rows=50000 port=800 built=39 cost_ns=122071584
+VIRT wheel rows=100000 port=800 built=39 cost_ns=143127167
+TICK wheel frames=21 full=0 damage=Some(0.938470238095238) fragments_rebuilt=Some(8.761904761904763)
+VIRT touchpad rows=12500 port=800 built=39 cost_ns=296989125

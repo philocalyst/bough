@@ -1,0 +1,10 @@
+anim-growth exit=0
+diff-glide exit=142
+label-churn exit=0
+slot-growth exit=0
+stream-growth exit=142
+unvirtualised-probe exit=142
+glide-split exit=142
+list-slope exit=142
+resize-slope exit=1
+static-slope exit=0

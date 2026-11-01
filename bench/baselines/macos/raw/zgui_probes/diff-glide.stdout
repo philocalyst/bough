@@ -1,0 +1,7 @@
+This is a diagnostic probe and not a reference workload: it answers what one glide frame costs over a diff-shaped virtual list, on this machine, with its own fonts.
+
+reading glide (3-line notches, 120 Hz):
+  translation (0 rows)       n=349   p50=   329.4us p95=  3284.9us max= 40225.1us | per frame: shaped=0.0 rebroken=0.0 glyphs=10 relaid=0.0 reencoded=1.0 translated=18.5 emitted=52
+  recycle, 1 row             (no frames)
+  recycle, 2-4 rows          n=139   p50=  2309.0us p95= 23620.5us max= 59841.0us | per frame: shaped=3.0 rebroken=3.0 glyphs=55 relaid=13.0 reencoded=10.9 translated=23.2 emitted=91
+  recycle, 5+ rows           n=29    p50=  6019.2us p95= 25608.3us max= 99555.4us | per frame: shaped=13.3 rebroken=13.3 glyphs=438 relaid=53.3 reencoded=71.6 translated=23.8 emitted=412

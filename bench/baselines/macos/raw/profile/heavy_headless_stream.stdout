@@ -1,0 +1,1 @@
+Stream: update 0.270 + layout 0.272 + render 0.952 = 1.494 ms/tick, layout nodes 835/tick, damaged 2.67 Mpx/tick, scene nodes 1155, atlas 1.0 MB, images 0.0 MB, shaped 0.5 MB, prepared 0.5+0.1 MB, device 18.9 MB, texts shaped 81.6/tick, cache hits 83.2/tick, allocations 252+188+34/tick

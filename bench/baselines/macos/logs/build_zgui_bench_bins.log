@@ -1,0 +1,6 @@
+   Compiling zgui-bench v0.1.0 (/private/tmp/claude-501/-Users-mileswirht-Downloads-designs-reactivity/16fd4c0d-6057-492e-b9c5-0daf75a4051a/scratchpad/zgui-copy/crates/zgui-bench)
+    Finished `release` profile [optimized] target(s) in 2m 01s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+rustup run 1.99.1 cargo build --release --locked -p zgui-bench --bins  206.06s user 21.36s system 187% cpu 2:01.36 total
+EXIT 0
