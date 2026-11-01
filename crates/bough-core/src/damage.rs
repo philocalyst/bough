@@ -3,9 +3,11 @@
 
 use crate::nrect::NRect;
 
-pub const TILE_SHIFT: u32 = 4;
+/// 16 px tiles by default (windows up to 2048 x 1536); the `tile32` feature makes them 32 px so a
+/// 2560 x 1600 (1280 x 800 pt at 2x) window fits the same u128-per-row plane (up to 4096 x 3072).
+pub const TILE_SHIFT: u32 = if cfg!(feature = "tile32") { 5 } else { 4 };
 pub const TILE: i32 = 1 << TILE_SHIFT;
-/// Window up to 2048 x 1536 device px: 128 x 96 tiles; a row of tiles is exactly one u128.
+/// 128 x 96 tiles (2048 x 1536 px at 16 px tiles); a row of tiles is exactly one u128.
 pub const MAX_TILES_X: usize = 128;
 pub const MAX_TILES_Y: usize = 96;
 pub const RING: usize = 8;
@@ -117,7 +119,7 @@ pub struct DamageRing {
 
 impl DamageRing {
     pub fn new(w: i32, h: i32) -> Self {
-        assert!(w > 0 && h > 0 && w <= (MAX_TILES_X as i32) * TILE && h <= (MAX_TILES_Y as i32) * TILE, "window up to 2048x1536");
+        assert!(w > 0 && h > 0 && w <= (MAX_TILES_X as i32) * TILE && h <= (MAX_TILES_Y as i32) * TILE, "window too large for the tile plane (2048x1536, or 4096x3072 with `tile32`)");
         DamageRing {
             planes: Box::new([const { Plane::EMPTY }; RING]),
             epoch: 1,

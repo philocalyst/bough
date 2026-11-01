@@ -18,12 +18,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough"
+version = "0.0.0"
+dependencies = [
+ "block2",
+ "bough-core",
+ "bough-metal",
+ "bough-text",
+ "dispatch2",
+ "libc",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "objc2-io-surface",
+ "objc2-metal",
+ "objc2-quartz-core",
+ "rustybuzz",
+ "ttf-parser",
+]
+
+[[package]]
 name = "bough-core"
 version = "0.0.0"
 
 [[package]]
 name = "bough-damage-lab"
 version = "0.0.0"
+
+[[package]]
+name = "bough-heavy"
+version = "0.0.0"
+dependencies = [
+ "bough",
+ "bough-metal",
+ "libc",
+ "zgx-workload",
+]
 
 [[package]]
 name = "bough-metal"

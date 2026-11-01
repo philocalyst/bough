@@ -10,6 +10,8 @@ license.workspace = true
 default = []
 # Page-start prefix counts. Default: two-level (blocked) eager counts.
 # `flat-prefix`: single array, eager NEON suffix add. `lazy-prefix`: single array, lazy watermark rebuild.
+# 32 px damage tiles (window up to 4096 x 3072 instead of 2048 x 1536).
+tile32 = []
 flat-prefix = []
 lazy-prefix = []
 
