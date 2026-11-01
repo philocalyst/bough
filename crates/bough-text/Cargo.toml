@@ -22,4 +22,6 @@ cosmic-text = { package = "zgx-cosmic-text", path = "/Users/mileswirht/projects/
 ttf-parser = "0.25"
 # Unmodified upstream parley from crates.io: the reference every graft is gated against.
 parley_upstream = { package = "parley", version = "=0.11.1", default-features = false, features = ["std", "system"] }
+# ICU's segmenters, the oracle for graft 3b's boundary machines (tests/breaks.rs).
+icu_segmenter = { version = "2.4", default-features = false, features = ["compiled_data"] }
 

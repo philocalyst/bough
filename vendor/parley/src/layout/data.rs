@@ -517,9 +517,9 @@ impl<B: Brush> LayoutData<B> {
     /// for *simple* text (letters, digits, spaces), writing exactly what `push_shaped_run` + `process_clusters`
     /// write (same f32 operations in the same order): one cluster per character, the glyph inline unless it is a
     /// ligature (then a `LigatureStart` cluster owning the glyph and `LigatureComponent` clusters splitting its
-    /// advance), the run's advance summed over every cluster but the last (upstream's accounting). The boundary of
-    /// each character follows graft 3's pair rule (`prev_space` carries across runs); `style_of` gives the style
-    /// index of the character at a byte offset of the whole text.
+    /// advance), the run's advance summed over every cluster but the last (upstream's accounting). `bounds` holds
+    /// every character's boundary (graft 3b), `ordinal` the index of this run's first character in it; `style_of`
+    /// gives the style index of the character at a byte offset of the whole text.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn push_slot_run(
         &mut self,
@@ -535,7 +535,8 @@ impl<B: Brush> LayoutData<B> {
         text_range: Range<usize>,
         coords: &[harfrust::NormalizedCoord],
         metrics_cache: &mut MetricsCache,
-        prev_space: &mut Option<bool>,
+        bounds: &[u8],
+        ordinal: &mut usize,
         style_of: &mut impl FnMut(usize) -> u16,
     ) {
         let coords_start = self.coords.len();
@@ -578,7 +579,7 @@ impl<B: Brush> LayoutData<B> {
             let glyph_id = slots.gid[k] as u32;
             if chars == 1 {
                 let (ch, len) = decode_latin1(bytes, c0);
-                let boundary = boundary_of(prev_space, ch);
+                let boundary = boundary_at(bounds, ordinal);
                 self.clusters.push(ClusterData {
                     info: ClusterInfo::new(boundary, ch),
                     flags: 0,
@@ -603,7 +604,7 @@ impl<B: Brush> LayoutData<B> {
                 let mut first = true;
                 while b < c1 {
                     let (ch, len) = decode_latin1(bytes, b);
-                    let boundary = boundary_of(prev_space, ch);
+                    let boundary = boundary_at(bounds, ordinal);
                     let (flags, glyph_len, glyph_offset) = if first {
                         (ClusterData::LIGATURE_START, 1_u8, total_glyphs)
                     } else {
@@ -798,18 +799,15 @@ fn decode_latin1(b: &[u8], i: usize) -> (char, usize) {
     }
 }
 
-/// Graft 3's pair rule for simple text: a word boundary at the start and where space-ness changes, a line boundary
-/// where a non-space follows a space.
+/// The boundary of the next character (graft 3b's per-character boundaries: 2 line, 1 word, 0 none).
 #[inline(always)]
-fn boundary_of(prev_space: &mut Option<bool>, ch: char) -> Boundary {
-    let space = ch == ' ';
-    let b = match *prev_space {
-        None => Boundary::Word,
-        Some(true) if !space => Boundary::Line,
-        Some(p) if p != space => Boundary::Word,
+fn boundary_at(bounds: &[u8], ordinal: &mut usize) -> Boundary {
+    let b = match bounds[*ordinal] {
+        2 => Boundary::Line,
+        1 => Boundary::Word,
         _ => Boundary::None,
     };
-    *prev_space = Some(space);
+    *ordinal += 1;
     b
 }
 

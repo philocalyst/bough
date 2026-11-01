@@ -571,9 +571,11 @@ fn char_info(sources: &AnalysisDataSources, ch: char, boundary: Boundary) -> (Ch
     )
 }
 
-/// bough graft 3: the simple analysis. A character is *simple* when it is a space (U+0020), or a covered Latin-1
-/// character whose UAX #14 class is AL or NU and whose UAX #29 class is ALetter or Numeric, needing no bidi
-/// resolution and not ending a line. Over simple characters the segmenters' rules reduce to pairs:
+/// bough graft 3: the simple analysis, for text of *simple* characters: covered Latin-1 (ASCII 0x20..=0x7E,
+/// 0xA0..=0xFF without U+00AD) of the Latin or Common script, needing no bidi resolution, not ending a line, not a
+/// control. Boundaries come from ICU4X's own rule tables walked over a 256-entry property map
+/// (`bough::breaks`, graft 3b); the first version (kept as the argument for letters, digits and spaces) reduced
+/// the segmenters to pair rules:
 ///
 /// * line (UAX #14, word-break `normal`): LB7 `× SP`, LB18 `SP ÷`, LB23 `AL × NU`, `NU × AL`, LB25 `NU × NU`,
 ///   LB28 `AL × AL`; no rule with wider context (LB14-17 need OP/QU/CL/CP/B2, LB25's prefixes PR/PO/OP/HY/IS/SY,
@@ -609,28 +611,28 @@ fn analyze_simple<B: Brush>(lcx: &mut LayoutContext<B>, text: &str) -> bool {
     {
         return false;
     }
-    lcx.info.reserve(text.len());
-    let mut prev_space: Option<bool> = None;
+    let mut bounds = core::mem::take(&mut lcx.scx.bounds);
+    let mut props = core::mem::take(&mut lcx.scx.props);
+    crate::bough::breaks::boundaries(b, &mut bounds, &mut props);
+    lcx.info.reserve(bounds.len());
     let mut k = 0;
-    while k < b.len() {
+    for &bd in &bounds {
         let (cp, n) = match b[k] {
             c if c < 0x80 => (c, 1),
             0xC2 => (b[k + 1], 2),
             _ => (b[k + 1] + 0x40, 2),
         };
-        let space = t.class[cp as usize] == 2;
-        let boundary = match prev_space {
-            None => Boundary::Word,
-            Some(true) if !space => Boundary::Line,
-            Some(p) if p != space => Boundary::Word,
+        let mut info = t.info[cp as usize];
+        info.boundary = match bd {
+            2 => Boundary::Line,
+            1 => Boundary::Word,
             _ => Boundary::None,
         };
-        let mut info = t.info[cp as usize];
-        info.boundary = boundary;
         lcx.info.push((info, 0));
-        prev_space = Some(space);
         k += n;
     }
+    lcx.scx.bounds = bounds;
+    lcx.scx.props = props;
     true
 }
 
@@ -662,18 +664,14 @@ fn simple_table(sources: &AnalysisDataSources) -> &'static SimpleTable {
             t.info[cp as usize] = info;
             let covered = (0x20..0x7F).contains(&cp) || (cp >= 0xA0 && cp != 0xAD);
             let script_ok = matches!(info.script, Script::Latin | Script::Common);
-            if !covered || !script_ok || needs_bidi || mandatory || info.is_control() || info.is_emoji_or_pictograph() {
+            // Emoji-property characters (digits, `#`, `*`, ©, ®) stay: their info comes from the table, and font
+            // selection appends the Emoji family *after* the style's stack, so the first candidate is unchanged.
+            if !covered || !script_ok || needs_bidi || mandatory || info.is_control() {
                 continue;
             }
-            t.class[cp as usize] = if cp == 0x20 {
-                2
-            } else if matches!(lb.get(ch), LineBreak::Alphabetic | LineBreak::Numeric)
-                && matches!(wb.get(ch), Wb::ALetter | Wb::Numeric)
-            {
-                1
-            } else {
-                0
-            };
+            // Every other covered character: its boundaries come from ICU's own tables (`bough::breaks`).
+            let _ = (&lb, &wb, ch);
+            t.class[cp as usize] = 1;
         }
         t
     })

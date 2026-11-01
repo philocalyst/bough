@@ -43,6 +43,11 @@ pub(crate) struct ShapeContext {
     /// bough graft 2: the item's font segments (byte range in the item, font).
     #[cfg(feature = "std")]
     fast_runs: Vec<(usize, usize, SelectedFont)>,
+    /// bough graft 3b: per-character boundaries and properties (scratch).
+    #[cfg(feature = "std")]
+    pub(crate) bounds: Vec<u8>,
+    #[cfg(feature = "std")]
+    pub(crate) props: Vec<u8>,
 }
 
 impl Default for ShapeContext {
@@ -62,6 +67,10 @@ impl Default for ShapeContext {
             fast_vars: Vec::new(),
             #[cfg(feature = "std")]
             fast_runs: Vec::new(),
+            #[cfg(feature = "std")]
+            bounds: Vec::new(),
+            #[cfg(feature = "std")]
+            props: Vec::new(),
         }
     }
 }
@@ -816,7 +825,10 @@ pub(crate) fn build_simple<'a, B: Brush>(
         }
     }
     if ok {
-        let mut prev_space = None;
+        let mut bounds = mem::take(&mut scx.bounds);
+        let mut props = mem::take(&mut scx.props);
+        crate::bough::breaks::boundaries(text.as_bytes(), &mut bounds, &mut props);
+        let mut ordinal = 0usize;
         let mut sr = 0usize;
         let mut style_of = |byte: usize| {
             while style_runs[sr].range.end <= byte {
@@ -839,11 +851,14 @@ pub(crate) fn build_simple<'a, B: Brush>(
                 *start..*end,
                 coords,
                 &mut scx.metrics,
-                &mut prev_space,
+                &bounds,
+                &mut ordinal,
                 &mut style_of,
             );
             crate::bough::count_segment(true);
         }
+        scx.bounds = bounds;
+        scx.props = props;
     }
     runs.clear();
     scx.fast_runs = runs;

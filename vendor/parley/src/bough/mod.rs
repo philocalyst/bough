@@ -12,6 +12,7 @@
 //! * [`shape`]: the dense ASCII kernels (scalar, NEON), the token path, the byte-slot kernels.
 //! * [`slots`]: one slot per byte for all covered text, the classifying NEON kernel.
 //! * `fast` (graft 1): parley's shaping step takes the table for a covered font segment instead of harfrust.
+//! * `breaks` (graft 3b): exact UAX #14 / #29 boundaries for covered Latin-1 text over ICU4X's own rule tables.
 #![allow(
     unsafe_code,
     missing_docs,
@@ -26,6 +27,7 @@
     reason = "bough-text's code, moved verbatim: its own lint policy (unsafe with SAFETY arguments, NEON kernels)"
 )]
 
+pub(crate) mod breaks;
 pub(crate) mod fast;
 pub mod script;
 pub mod shape;
@@ -64,4 +66,15 @@ pub(crate) fn count_analysis(simple: bool) {
 /// `[ICU, simple]` text analyses on this thread so far.
 pub fn analyses() -> [u64; 2] {
     SIMPLE.with(|c| c.get())
+}
+
+/// Graft 3b's boundaries of a covered Latin-1 text, one per character (2 line, 1 word, 0 none), as parley's analysis
+/// assigns them; `None` if the text is not covered Latin-1. For the gate `tests/breaks.rs` (against ICU's iterators).
+pub fn boundaries(text: &str) -> Option<std::vec::Vec<u8>> {
+    if !fast::maybe_covered(text.as_bytes()) {
+        return None;
+    }
+    let (mut out, mut props) = (std::vec::Vec::new(), std::vec::Vec::new());
+    breaks::boundaries(text.as_bytes(), &mut out, &mut props);
+    Some(out)
 }

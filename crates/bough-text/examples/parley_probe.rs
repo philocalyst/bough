@@ -34,6 +34,15 @@ fn main() {
             c
         }),
     ];
+    if std::env::var("PATHS").is_ok() {
+        for t in ["12.34", "-5.67", "12,345 req/s", "Throughput", "45%", &log] {
+            let (a0, s0) = (bough_text::parley::bough::analyses(), bough_text::parley::bough::segments());
+            let _ = g.layout(&Case::plain(t, "DejaVu Sans", 12.0, None));
+            let (a1, s1) = (bough_text::parley::bough::analyses(), bough_text::parley::bough::segments());
+            println!("{t:?}: analyses icu {} simple {}; segments harfrust {} table {}", a1[0] - a0[0], a1[1] - a0[1], s1[0] - s0[0], s1[1] - s0[1]);
+        }
+        return;
+    }
     if let Ok(which) = std::env::var("SPIN") {
         let c = &cases.iter().find(|c| c.0.starts_with(which.as_str())).expect("case").1;
         let up = std::env::var("UPSTREAM").is_ok();
