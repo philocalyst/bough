@@ -483,7 +483,8 @@ impl LeafCtx {
     /// Does this text wrap at all (a paragraph, whose slow path additionally needs glyph i = byte i)?
     #[inline]
     fn wraps(&self) -> bool {
-        self.wrap && self.ascii && (self.fast || self.run.len() == self.text.len())
+        // fast: byte slots (any covered text, ligatures and Latin-1 included), so a byte is a slot
+        self.wrap && (self.fast || (self.ascii && self.run.len() == self.text.len()))
     }
 
     /// Wrap at `max_units`; returns the line count (`starts` holds the first byte / glyph of each line).
@@ -552,7 +553,7 @@ impl LeafCtx {
             return 0;
         }
         let mut b = n;
-        while b > 0 && self.ascii && self.text.get(b - 1) == Some(&b' ') {
+        while b > 0 && (self.ascii || self.fast) && self.text.get(b - 1) == Some(&b' ') {
             b -= 1;
         }
         if b == 0 {
@@ -1020,6 +1021,11 @@ impl Rt {
         }
         match block {
             Some(b) => {
+                if b.exotic {
+                    let strike = self.texts[ti as usize].strike as usize;
+                    let ents = self.glyphs.ent[b.base as usize..(b.base + b.len) as usize].to_vec();
+                    self.text.ready(strike, &ents);
+                }
                 if !matches!(self.texts[ti as usize].shape, TShape::Lines { .. }) {
                     let old = std::mem::take(&mut self.texts[ti as usize].shape);
                     crate::text::release(self, TextNode { shape: old, ..Default::default() });

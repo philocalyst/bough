@@ -219,6 +219,9 @@ pub struct VRegion {
 pub struct Counters {
     pub wires_run: u64,
     pub text_set: u64,
+    /// Line sets: lines shaped and lines whose block was kept (text round 3).
+    pub lines_shaped: u64,
+    pub lines_kept: u64,
     pub rows_mounted: u64,
     pub rows_unmounted: u64,
 }
