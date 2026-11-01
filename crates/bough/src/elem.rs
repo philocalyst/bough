@@ -528,7 +528,7 @@ impl<V> TextSrc<V> for &Signal<String> {
 
 /// The text node of `node` was given a new value.
 #[inline]
-fn set_node_text(rt: &mut Rt, node: u32, s: &str) {
+pub(crate) fn set_node_text(rt: &mut Rt, node: u32, s: &str) {
     let n = &rt.nodes[node as usize];
     let ti = n.text;
     if n.kind == NK_LTEXT {

@@ -377,6 +377,7 @@ unsafe fn patch_list<T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: 
     if !reg.registered.get() {
         reg.registered.set(true);
         rt.lists.ends.push((sig, end_list::<T>));
+        rt.pubs.list(sig as usize, reg.log().0);
     }
     unsafe { rt.lr_replay::<T>(w.node as usize, l) };
 }

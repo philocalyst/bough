@@ -3,14 +3,17 @@
 //! (`rt.rs`); a frame's CPU work ends at the tile list (`app.rs`).
 pub mod app;
 pub mod backend;
+pub mod changed;
 pub mod color;
 pub mod describe;
 pub mod elem;
+pub mod entity;
 pub mod lay_deep;
 pub mod layout;
 pub mod list;
 pub mod listview;
 pub mod mlist;
+pub mod reader;
 pub mod rt;
 pub mod signal;
 pub mod text;
@@ -21,7 +24,10 @@ pub mod prelude {
     pub use crate::app::{App, Config, View};
     pub use crate::color::{rgb, Color};
     pub use crate::elem::{at, bars, clip, each, quad, text, virtual_list, Element, IntoProp, Mounter, Quad, TextSrc};
+    pub use crate::changed::Changed;
+    pub use crate::entity::{entity_view, Entities, Entity};
     pub use crate::list::{List, Slot};
+    pub use crate::reader::{latest, produce, Reader, Request};
     pub use crate::listview::{list, list_with};
     pub use crate::mlist::measured_list;
     pub use crate::rt::Caps;

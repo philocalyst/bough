@@ -1,0 +1,271 @@
+//! `Entities<T>` / `Entity<T>`: independently owned state behind generational handles.
+//!
+//! The slab is carved up front (`with_capacity`: whole 64-entity chunks, allocated once and never moved),
+//! so creating an entity allocates nothing and an entity is an owner at a stable address: views of it
+//! (`entity_view`) wire its own signals exactly as a list row does. A handle is (index, generation): a
+//! removed entity's handle answers `None` from then on, and its slot is reused only after the turn that
+//! removed it has settled.
+//!
+//! Edits are logged once per entity per turn (a bit in the slot's meta word); the field's head (first
+//! field, `#[repr(C)]`) is queued, and its wire settles exactly the edited entities that are displayed.
+use crate::elem::{Element, Mounter};
+use crate::rt::*;
+use crate::signal::{Headed, QUEUED};
+use bough_core::RecordInit;
+use std::cell::{Cell, RefCell};
+use std::marker::PhantomData;
+use std::mem::MaybeUninit;
+
+const CHUNK: usize = 64;
+const LIVE: u32 = 1 << 31;
+const EDITED: u32 = 1 << 30;
+const GEN: u32 = EDITED - 1;
+
+pub struct Entity<T> {
+    idx: u32,
+    generation: u32,
+    _t: PhantomData<fn() -> T>,
+}
+impl<T> Clone for Entity<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for Entity<T> {}
+impl<T> PartialEq for Entity<T> {
+    fn eq(&self, o: &Self) -> bool {
+        self.idx == o.idx && self.generation == o.generation
+    }
+}
+impl<T> Eq for Entity<T> {}
+impl<T> std::fmt::Debug for Entity<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Entity({}#{})", self.idx, self.generation)
+    }
+}
+
+#[repr(C)]
+pub struct Entities<T> {
+    head: Cell<u32>,
+    chunks: Vec<Box<[MaybeUninit<T>; CHUNK]>>,
+    meta: Vec<u32>,
+    free: Vec<u32>,
+    pending_free: Vec<u32>,
+    edits: Vec<u32>,
+    /// Offsets of `T`'s wired fields (cleared from a removed entity before it leaves).
+    pub(crate) wired: RefCell<Vec<u32>>,
+    pub(crate) registered: Cell<bool>,
+}
+
+// SAFETY: `#[repr(C)]`, the head first.
+unsafe impl<T> Headed for Entities<T> {
+    type At<'a, V>
+        = EWired<'a, T, V>
+    where
+        T: 'a;
+    unsafe fn at<'a, V>(&'a self, off: u32) -> EWired<'a, T, V> {
+        EWired { ents: self, off, _v: PhantomData }
+    }
+}
+
+/// An entities operand of owner `V` (`sig!(self.docs)`).
+pub struct EWired<'a, T, V> {
+    pub(crate) ents: &'a Entities<T>,
+    pub(crate) off: u32,
+    _v: PhantomData<fn(&V)>,
+}
+impl<T, V> Clone for EWired<'_, T, V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T, V> Copy for EWired<'_, T, V> {}
+
+impl<T> Drop for Entities<T> {
+    fn drop(&mut self) {
+        for (i, &m) in self.meta.iter().enumerate() {
+            if m & LIVE != 0 {
+                // SAFETY: a live slot is initialised.
+                unsafe { self.ptr(i as u32).drop_in_place() };
+            }
+        }
+    }
+}
+
+impl<T> Entities<T> {
+    /// A slab of `cap` entities, carved now (growing past it allocates whole chunks).
+    pub fn with_capacity(cap: usize) -> Entities<T> {
+        let mut e = Entities { head: Cell::new(0), chunks: Vec::new(), meta: Vec::new(), free: Vec::new(), pending_free: Vec::new(), edits: Vec::new(), wired: Default::default(), registered: Cell::new(false) };
+        e.carve(cap.div_ceil(CHUNK).max(1));
+        e
+    }
+    fn carve(&mut self, chunks: usize) {
+        for _ in 0..chunks {
+            let base = self.meta.len() as u32;
+            // SAFETY: an array of MaybeUninit needs no initialisation.
+            self.chunks.push(Box::new(unsafe { MaybeUninit::<[MaybeUninit<T>; CHUNK]>::uninit().assume_init() }));
+            self.meta.extend(std::iter::repeat_n(0, CHUNK));
+            self.free.extend((base..base + CHUNK as u32).rev());
+        }
+    }
+    #[inline(always)]
+    pub(crate) fn ptr(&self, i: u32) -> *mut T {
+        self.chunks[i as usize / CHUNK][i as usize % CHUNK].as_ptr() as *mut T
+    }
+    #[inline(always)]
+    pub(crate) fn head(&self) -> &Cell<u32> {
+        &self.head
+    }
+    fn live(&self, e: Entity<T>) -> bool {
+        self.meta.get(e.idx as usize).is_some_and(|&m| m & LIVE != 0 && m & GEN == e.generation)
+    }
+    pub fn insert(&mut self, v: T) -> Entity<T> {
+        if self.free.is_empty() {
+            self.carve(1);
+        }
+        let i = self.free.pop().unwrap();
+        // SAFETY: a free slot holds no value.
+        unsafe { self.ptr(i).write(v) };
+        let m = &mut self.meta[i as usize];
+        *m = (*m & GEN) | LIVE;
+        Entity { idx: i, generation: *m & GEN, _t: PhantomData }
+    }
+    /// Take the entity out (its handle dies). A view still showing it keeps its last pixels: its wires
+    /// are cut here.
+    pub fn remove(&mut self, e: Entity<T>) -> Option<T> {
+        if !self.live(e) {
+            return None;
+        }
+        let p = self.ptr(e.idx);
+        for &off in self.wired.borrow().iter() {
+            // SAFETY: `wired` holds `offset_of!`-proven headed fields of `T`.
+            unsafe { (*((p as *const u8).add(off as usize) as *const Cell<u32>)).set(0) };
+        }
+        let m = &mut self.meta[e.idx as usize];
+        *m = ((*m & GEN) + 1) & GEN;
+        if self.head.get() != 0 {
+            self.pending_free.push(e.idx);
+        } else {
+            self.free.push(e.idx);
+        }
+        // SAFETY: the slot was live; it is marked free above.
+        Some(unsafe { p.read() })
+    }
+    /// A scoped, generation-checked read.
+    pub fn get(&self, e: Entity<T>) -> Option<&T> {
+        // SAFETY: a live slot is initialised.
+        self.live(e).then(|| unsafe { &*self.ptr(e.idx) })
+    }
+    pub fn inspect<R>(&self, e: Entity<T>, f: impl FnOnce(&T) -> R) -> Option<R> {
+        self.get(e).map(f)
+    }
+    /// Edit an entity: its views' queued wires run at the turn's settle.
+    pub fn edit(&mut self, e: Entity<T>) -> Option<&mut T> {
+        if !self.live(e) {
+            return None;
+        }
+        let m = self.meta[e.idx as usize];
+        let h = self.head.get();
+        if m & EDITED == 0 && h != 0 {
+            self.meta[e.idx as usize] = m | EDITED;
+            self.edits.push(e.idx);
+            self.head.set(h | QUEUED);
+        }
+        // SAFETY: live; `&mut self` is the only borrow.
+        Some(unsafe { &mut *self.ptr(e.idx) })
+    }
+    pub fn len(&self) -> usize {
+        self.meta.iter().filter(|&&m| m & LIVE != 0).count()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// The entities edited this turn (`changed`).
+    pub fn edited(&self) -> impl Iterator<Item = Entity<T>> + '_ {
+        self.edits.iter().map(move |&i| Entity { idx: i, generation: self.meta[i as usize] & GEN, _t: PhantomData })
+    }
+    pub(crate) fn edits_raw(&self) -> &[u32] {
+        &self.edits
+    }
+    pub(crate) fn end_turn(&mut self) {
+        for &i in &self.edits {
+            self.meta[i as usize] &= !EDITED;
+        }
+        self.edits.clear();
+        self.free.append(&mut self.pending_free);
+        self.registered.set(false);
+    }
+    pub(crate) fn is_live_idx(&self, i: u32) -> bool {
+        self.meta[i as usize] & LIVE != 0
+    }
+}
+
+// =============================================================================== views
+
+pub struct EView {
+    pub(crate) cls: u32,
+    pub(crate) idx: u32,
+}
+
+/// # Safety
+/// `p` is a live `Entities<T>`.
+unsafe fn end_ents<T>(p: *const u8) {
+    unsafe { (*(p as *mut Entities<T>)).end_turn() };
+}
+
+/// # Safety
+/// Wire contract: `sig` is an `Entities<T>` field of the live owner; `w.node` an `EView` index.
+unsafe fn patch_entities<T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    let e = unsafe { &*(sig as *const Entities<T>) };
+    if !e.registered.get() {
+        e.registered.set(true);
+        rt.lists.ends.push((sig, end_ents::<T>));
+        rt.pubs.ents(sig as usize, e.edits_raw());
+    }
+    let (cls, idx) = {
+        let v = &rt.eviews[w.node as usize];
+        (v.cls, v.idx)
+    };
+    if e.edits_raw().contains(&idx) && e.is_live_idx(idx) {
+        // SAFETY: a live entity at its slab address; its wires were installed for class `cls`.
+        unsafe { rt.settle_cls(e.ptr(idx) as *const u8, cls) };
+    }
+    let c = &rt.classes[cls as usize];
+    if e.wired.borrow().len() < c.len() {
+        *e.wired.borrow_mut() = c.clone();
+    }
+}
+
+/// A view of one entity: `T::view` mounted with the entity as its owner.
+pub struct EntityView<'a, T, V> {
+    ents: EWired<'a, T, V>,
+    e: Entity<T>,
+}
+pub fn entity_view<'a, T: crate::app::View, V>(ents: EWired<'a, T, V>, e: Entity<T>) -> EntityView<'a, T, V> {
+    EntityView { ents, e }
+}
+
+impl<'a, T: crate::app::View, V: 'static> Element<V> for EntityView<'a, T, V> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        let ents = self.ents.ents;
+        let p = ents.get(self.e).expect("entity_view of a removed entity") as *const T;
+        let cls = m.rt.new_class();
+        let ev = m.rt.eviews.len() as u32;
+        m.rt.eviews.push(EView { cls, idx: self.e.idx });
+        // SAFETY: `self.ents` is an `offset_of!`-proven `Entities<T>` field of `V`; `patch_entities::<T>` reads one.
+        unsafe { m.wire_cell(ents.head(), self.ents.off, patch_entities::<T>, ev, [0; 16]) };
+        let recs: *mut Vec<RecordInit> = m.recs;
+        let scope: *mut Scope = m.scope;
+        {
+            // the entity is the owner of what its view mounts (its own class); resources go to this scope
+            // SAFETY: reborrows of the mounter's own buffer and scope for the sub-mount.
+            let mut sub = Mounter { rt: &mut *m.rt, owner: p, recs: unsafe { &mut *recs }, scope: unsafe { &mut *scope }, depth: m.depth, ox: m.ox, oy: m.oy, space: m.space, clip: m.clip, pending_num: None, cls, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0 };
+            // SAFETY: `p` is the live entity (its slab never moves).
+            unsafe { &*p }.view().mount(&mut sub);
+        }
+        *ents.wired.borrow_mut() = m.rt.classes[cls as usize].clone();
+    }
+    fn update(self, _m: &mut Mounter<'_, V>) {
+        panic!("entity_view inside a re-describing owner is not supported");
+    }
+}

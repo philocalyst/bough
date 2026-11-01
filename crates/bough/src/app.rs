@@ -27,8 +27,13 @@ use bough_core::{Plane, RecordInit};
 
 /// A view: a plain struct whose `Signal` fields are the state. `view` describes it once at mount.
 pub trait View: Sized + 'static {
+    /// `true`: `view` runs once at mount and only wires, lists and readers change the subtree afterwards;
+    /// `false`: every handler (`App::turn`) re-describes the owner and patches what differs (`describe.rs`).
     const FIXED: bool = false;
     fn view(&self) -> impl Element<Self> + '_;
+    /// The one effect site: what crossed the owner's boundaries this turn (`changed.rs`). It may write
+    /// state; the writes settle in another wave of the same turn.
+    fn changed(&mut self, _d: crate::changed::Changed<'_, Self>) {}
 }
 
 pub struct Config {
@@ -197,6 +202,11 @@ impl<V: View> App<V> {
         rt.lay_flush();
         // SAFETY: `ptr` is the owner just mounted (boxed: it never moves).
         unsafe { rt.mregions_init(ptr as *const u8) };
+        let mut owner = owner;
+        // wires queued while mounting (a producer's first request flips its reader to pending)
+        // SAFETY: the owner just mounted, uniquely borrowed here.
+        unsafe { rt.settle(&mut *owner as *mut V as *const u8) };
+        rt.lay_flush();
         drop(scope); // the root scope lives as long as the app: nothing of it is ever released
         let ty = rt.tiles_y;
         App {
@@ -253,10 +263,13 @@ impl<V: View> App<V> {
     pub fn turn(&mut self, f: impl FnOnce(&mut V)) {
         self.sync();
         self.prof.reset();
+        self.rt.pubs.clear();
+        self.rt.admit();
         f(&mut self.owner);
         let owner = &mut *self.owner as *mut V as *const u8;
         // SAFETY: the owner is the mounted view; every wire was installed from a `sig!` proof for it.
         unsafe { self.rt.settle(owner) };
+        self.effects();
         self.redescribe();
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
@@ -274,8 +287,36 @@ impl<V: View> App<V> {
         let owner = &mut *self.owner as *mut V as *const u8;
         // SAFETY: as in `turn`.
         unsafe { self.rt.settle(owner) };
+        self.effects();
         self.redescribe();
         self.rt.lay_flush();
+    }
+
+    /// A turn with no handler: admit async completions (a committed cohort's wires run in this turn).
+    pub fn poll(&mut self) {
+        self.turn(|_| {});
+    }
+    /// Run up to `n` queued async jobs (the manual executor; their completions are admitted next turn).
+    pub fn run_jobs(&mut self, n: usize) -> usize {
+        self.rt.run_jobs(n)
+    }
+
+    /// `View::changed` waves: while something crossed a boundary, show it to the owner and settle what it
+    /// wrote (at most 8 waves; a ninth is a cycle).
+    fn effects(&mut self) {
+        for _ in 0..8 {
+            if self.rt.pubs.is_empty() && self.rt.asy.committed.is_empty() {
+                return;
+            }
+            let d = crate::changed::Changed { pubs: &self.rt.pubs, readers: &self.rt.asy.committed, _v: std::marker::PhantomData };
+            self.owner.changed(d);
+            self.rt.pubs.clear();
+            self.rt.asy.committed.clear();
+            let owner = &mut *self.owner as *mut V as *const u8;
+            // SAFETY: as in `turn`.
+            unsafe { self.rt.settle(owner) };
+        }
+        panic!("View::changed did not settle in 8 waves (a cycle between changed and its own boundaries)");
     }
 
     /// A `FIXED = false` view: describe again and patch the retained records (`describe.rs`).

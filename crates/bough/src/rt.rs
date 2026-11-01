@@ -310,6 +310,11 @@ pub struct Rt {
     pub lists: crate::listview::Lists,
     /// Dynamic parts of re-describing owners (`describe.rs`).
     pub dyns: crate::describe::Dyns,
+    /// Entity views (`entity.rs`), async producers / cohort / executor (`reader.rs`), and this turn's
+    /// publications for `View::changed` (`changed.rs`).
+    pub(crate) eviews: Vec<crate::entity::EView>,
+    pub asy: crate::reader::Async,
+    pub(crate) pubs: crate::changed::Pubs,
     /// Keeps a heap region alive (the GPU region is kept alive by the columns' reference count too).
     _region: Region,
 }
@@ -386,6 +391,9 @@ impl Rt {
             mregions: Vec::new(),
             lists: Default::default(),
             dyns: Default::default(),
+            eviews: Vec::new(),
+            asy: Default::default(),
+            pubs: Default::default(),
             _region: region,
         }
     }
@@ -559,7 +567,15 @@ impl Rt {
         if !c.contains(&off) {
             c.push(off);
         }
-        let w = Wire { next: first, dead: false, latest: false, node, head: addr, patch, recipe };
+        // `latest` wires (producers, `latest(..)` operands) stay at the front of the chain: they run before a
+        // held source's other wires are skipped (`run_head`), whatever the declaration order
+        let mut after = 0u32;
+        let mut p = first;
+        while p != 0 && self.wires[p as usize].latest && self.wires[p as usize].head == addr {
+            after = p;
+            p = self.wires[p as usize].next;
+        }
+        let w = Wire { next: if after == 0 { first } else { p }, dead: false, latest: false, node, head: addr, patch, recipe };
         let idx = if let Some(i) = self.wire_free.pop() {
             self.wires[i as usize] = w;
             i
@@ -568,7 +584,11 @@ impl Rt {
             (self.wires.len() - 1) as u32
         };
         assert!(idx <= HEAD_IDX, "wire arena full");
-        head.set(idx | (h & !HEAD_IDX));
+        if after == 0 {
+            head.set(idx | (h & !HEAD_IDX));
+        } else {
+            self.wires[after as usize].next = idx;
+        }
         idx
     }
 
@@ -585,7 +605,12 @@ impl Rt {
     /// (every offset in class 0 is an `offset_of!`-proven headed field of it; the head is the first field of
     /// every cell, `#[repr(C)]`), and be derived from a unique borrow (list patches write their cell).
     pub unsafe fn settle(&mut self, owner: *const u8) {
-        unsafe { self.settle_cls(owner, 0) };
+        loop {
+            unsafe { self.settle_cls(owner, 0) };
+            if !std::mem::take(&mut self.asy.rescan) {
+                break;
+            }
+        }
         self.lists_end_turn();
     }
 
@@ -616,7 +641,6 @@ impl Rt {
     pub(crate) unsafe fn run_head(&mut self, head: &std::cell::Cell<u32>, sig: *const u8, owner: *const u8) {
         let addr = head as *const _ as usize;
         let h = head.get();
-        let held = h & crate::signal::HELD != 0;
         head.set(h & !crate::signal::QUEUED);
         let mut i = h & HEAD_IDX;
         let mut prev = 0u32;
@@ -643,7 +667,8 @@ impl Rt {
                 self.wires[i as usize].head = 0;
                 self.wire_free.push(i);
             } else {
-                if !held || w.latest {
+                // re-read: a producer running first may have just put this source on hold
+                if head.get() & crate::signal::HELD == 0 || w.latest {
                     self.ctr.wires_run += 1;
                     // SAFETY: the wire was installed for this cell's type and the owner's type.
                     unsafe { (w.patch)(self, &w, sig, owner) };
