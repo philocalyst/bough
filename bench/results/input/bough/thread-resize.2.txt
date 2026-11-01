@@ -1,0 +1,6 @@
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+SCENARIO thread-resize 250 messages, 499 paragraphs, 1526 records; 32 width steps
+MEASURE	thread-resize	thread.resize	ms	1.0753	p50=1.0753;p95=77.1070;p99=81.4889;max=81.4889;n=32
+INSTR	thread-resize	thread.resize	p50=21657822	p10=21545171	p95=21811673	max=22072431	n=32
+MEASURE	thread-resize	thread.nodes_written_per_step	nodes	500.0000	-
+MEASURE	thread-resize	thread.wraps_per_step	paragraphs	499.0000	-

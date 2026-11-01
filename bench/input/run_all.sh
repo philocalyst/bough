@@ -8,7 +8,7 @@ mkdir -p $O
 export ZGX_FONT_FILE=/Users/mileswirht/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf
 uptime > $O/uptime.txt
 for run in 1 2 3; do
-  for s in idle hover-storm scroll cold-start kitchen-sink app-shell; do
+  for s in idle hover-storm scroll cold-start kitchen-sink app-shell thread-resize cold-start-dump kitchen-sink-dump app-shell-dump first-pixel first-pixel-serial first-pixel-dump; do
     $B/zgui_scenario $s > $O/$s.$run.txt 2>&1
   done
   $B/label_churn > $O/label-churn.$run.txt 2>&1

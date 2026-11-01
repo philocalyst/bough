@@ -1,0 +1,16 @@
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+SCENARIO first-pixel gallery s13 (overlapped, laid out), process entry to the GPU's completion of the first frame; 2450 records, 1600 tiles
+PHASES	mount_done_ms=10.694	main_mount_ms=7.293	main_mount_instr=76514405	gpu_prep_ms=50.242	gpu_wait_ms=42.317	frame_submitted_ms=54.404	presented_ms=59.661	exec_to_presented_ms=70.494
+THREAD	main	98677414	strikes_rasterised_here=0	strikes_waited=0	waited_ms=0.000
+THREAD	gpu-prep	54213460
+THREAD	raster-0	2156281	strikes=4	glyphs=139	ms=0.406
+THREAD	raster-1	2604128	strikes=6	glyphs=146	ms=0.571
+THREAD	raster-2	1350180	strikes=6	glyphs=84	ms=0.282
+THREAD	svg-workers	29054573	images=66	ms=2.741
+DECO	icons_rasterised_on_main=66	svg_instr_on_main=1547148
+THREAD	face-prep	28619446
+GLYPHS	rasterised_on_main=35	raster_ms_on_main=0.284	text_nodes=657
+THREAD	other	12396478
+THREAD	process	229071960
+MEASURE	first-pixel	cold.first_pixel_overlapped	ms	59.6610	-
+INSTR	first-pixel	cold.first_pixel_overlapped	p50=229071960	n=1

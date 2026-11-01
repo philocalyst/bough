@@ -1,2 +1,2 @@
 font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
-label-churn: 30 labels relabelled, 3.3 us/frame median of round medians (3.3 3.3 3.2 3.3 3.3); 53259 instructions/frame (53259 53093 53406 53406 53081)
+label-churn: 30 labels relabelled, 3.4 us/frame median of round medians (3.4 3.4 3.4 3.4 3.4); 53073 instructions/frame (53073 52898 53209 53220 52953)
