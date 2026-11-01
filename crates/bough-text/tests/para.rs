@@ -199,3 +199,34 @@ fn rich_stream_equals_the_paragraph_set_at_once() {
     println!("{steps} steps: {} bytes shaped (text {}), {} words wrapped, {} early convergences", p.stats.bytes_shaped, text.len(), p.stats.words_wrapped, p.stats.converged);
     assert!(p.stats.bytes_shaped < 3 * text.len() as u64);
 }
+
+/// Whole-text replacements by unrelated sentences (the façade layout test's edits), wraps at several widths
+/// interleaved with measuring at others (the cache's eviction).
+#[test]
+fn sentence_replacements_equal_fresh() {
+    let sh = shaper(zgx_workload::FONT_BYTES);
+    let fonts = [&sh];
+    let words = ["the", "build", "passed", "on", "main", "after", "we", "moved", "layout", "wraps", "everyone", "smooth", "a"];
+    let mut st = 0x9E3779B97F4A7C15u64;
+    let mut rnd = move || {
+        st ^= st << 13;
+        st ^= st >> 7;
+        st ^= st << 17;
+        st
+    };
+    let mut pool = GlyphPool::new();
+    let mut p = Para::default();
+    p.set(&mut pool, &fonts, "", &[]).unwrap();
+    for step in 0..3000 {
+        let n = (rnd() % 40) as usize;
+        let s: String = (0..n).map(|_| words[(rnd() % words.len() as u64) as usize]).collect::<Vec<_>>().join(" ");
+        p.edit(&mut pool, &fonts, &s).unwrap();
+        for mu in [46_811, i32::MAX, 30_000 + (rnd() % 40_000) as i32, 46_811] {
+            assert_eq!(p.wrap(mu).clone(), fresh_wrap(&fonts, &s, &[], mu), "step {step} at {mu}: {s:?}");
+        }
+        let mut fp = GlyphPool::new();
+        let mut q = Para::default();
+        q.set(&mut fp, &fonts, &s, &[]).unwrap();
+        assert_eq!(state(&p, &pool), state(&q, &fp), "step {step}: {s:?}");
+    }
+}

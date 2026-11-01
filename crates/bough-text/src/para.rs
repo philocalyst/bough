@@ -70,6 +70,8 @@ pub struct Para {
     pub cap: u32,
     /// Pen after the last glyph.
     pub width: i32,
+    /// A token beyond ASCII was shaped (the strike must have it rasterized: a cold check by the caller).
+    pub exotic: bool,
     pub words: Vec<Word>,
     /// The last two wraps (by width).
     wraps: [Wrap; 2],
@@ -91,9 +93,28 @@ struct Pending {
 /// The fonts a paragraph may use (index = `Run::font`); all share one `upem`.
 pub type Fonts<'a> = &'a [&'a Shaper];
 
+/// A clone is a **measuring copy**: text, runs, words and wraps, but no pool block (the original owns it), so it
+/// measures and wraps like the original and is re-`set` (not edited) if its text changes.
+impl Clone for Para {
+    fn clone(&self) -> Self {
+        Para {
+            text: self.text.clone(),
+            runs: self.runs.clone(),
+            base: u32::MAX,
+            cap: 0,
+            width: self.width,
+            exotic: self.exotic,
+            words: self.words.clone(),
+            wraps: self.wraps.clone(),
+            pending: self.pending,
+            stats: self.stats,
+        }
+    }
+}
+
 impl Default for Para {
     fn default() -> Self {
-        Para { text: Vec::new(), runs: Vec::new(), base: u32::MAX, cap: 0, width: 0, words: Vec::new(), wraps: Default::default(), pending: None, stats: ParaStats::default() }
+        Para { text: Vec::new(), runs: Vec::new(), base: u32::MAX, cap: 0, width: 0, exotic: false, words: Vec::new(), wraps: Default::default(), pending: None, stats: ParaStats::default() }
     }
 }
 
@@ -143,7 +164,8 @@ impl Para {
             let s = &self.text[i as usize..end as usize];
             // SAFETY: the block holds `cap >= len + 16` slots (`ensure`), so a 16-lane store past `end` stays in
             // it; `s` is UTF-8 cut at ASCII bytes (spaces, run starts at word boundaries).
-            let (w, _) = unsafe { any_slots(sh, s, x, pool.x.as_mut_ptr().add((self.base + i) as usize), pool.ent.as_mut_ptr().add((self.base + i) as usize))? };
+            let (w, ex) = unsafe { any_slots(sh, s, x, pool.x.as_mut_ptr().add((self.base + i) as usize), pool.ent.as_mut_ptr().add((self.base + i) as usize))? };
+            self.exotic |= ex;
             self.stats.bytes_shaped += s.len() as u64;
             x = w;
             i = end;
@@ -423,6 +445,14 @@ impl Para {
         &self.wraps[k]
     }
 
+    /// The cached wrap at `max_units`, if it is current (after `wrap`).
+    pub fn wrap_cached(&self, max_units: i32) -> Option<&Wrap> {
+        if self.pending.is_some() {
+            return None;
+        }
+        self.wraps.iter().find(|w| w.max_units == max_units && !w.starts.is_empty())
+    }
+
     /// Full greedy wrap from line `line` (whose first word is `w0`), truncating what follows.
     fn greedy(&mut self, w: &mut Wrap, line: usize, w0: u32) -> usize {
         w.starts.truncate(line);
@@ -435,7 +465,9 @@ impl Para {
             return 1;
         }
         w.starts.push(w0);
-        let mut x0 = words[w0 as usize].x0;
+        // line 0 is measured from the paragraph's first pen (leading spaces included), later lines from their
+        // first word
+        let mut x0 = if line == 0 { 0 } else { words[w0 as usize].x0 };
         let mut last = words[w0 as usize].x1;
         for (i, wd) in words.iter().enumerate().skip(w0 as usize + 1) {
             if wd.x1 - x0 > w.max_units {
@@ -471,7 +503,7 @@ impl Para {
         w.starts.extend_from_slice(&old_starts[..line]);
         w.widths.extend_from_slice(&old_widths[..line]);
         w.starts.push(w0);
-        let mut x0 = words[w0 as usize].x0;
+        let mut x0 = if line == 0 { 0 } else { words[w0 as usize].x0 };
         let mut last = words[w0 as usize].x1;
         let mut i = w0 as usize + 1;
         // old line index to try for convergence
