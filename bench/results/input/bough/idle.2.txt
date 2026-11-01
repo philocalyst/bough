@@ -1,0 +1,5 @@
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+SCENARIO idle 5832 records over 833 rows, 600 turns with nothing touched
+MEASURE	idle	idle.frames	frames	0.0000	-
+MEASURE	idle	idle.turn	us	0.0000	p50=0.0000;p95=0.0420;p99=0.0420;max=0.0830;n=600
+INSTR	idle	idle.turn	p50=409	p10=409	p95=409	max=428	n=600

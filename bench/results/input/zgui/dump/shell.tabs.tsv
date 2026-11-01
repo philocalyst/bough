@@ -1,0 +1,62 @@
+tab_stop	preorder	testid	tag	classes
+0	22	tip-0	control	zs-9123059c zui-button zui-button--ghost zui-button--icon
+1	25	tip-1	control	zs-9123059c zui-button zui-button--ghost zui-button--icon
+2	28	tip-2	control	zs-9123059c zui-button zui-button--ghost zui-button--icon
+3	31	tip-3	control	zs-9123059c zui-button zui-button--ghost zui-button--icon
+4	34	tip-4	control	zs-9123059c zui-button zui-button--ghost zui-button--icon
+5	37	tip-5	control	zs-9123059c zui-button zui-button--ghost zui-button--icon
+6	40	tip-6	control	zs-9123059c zui-button zui-button--ghost zui-button--icon
+7	43	tip-7	control	zs-9123059c zui-button zui-button--ghost zui-button--icon
+8	46	tip-8	control	zs-9123059c zui-button zui-button--ghost zui-button--icon
+9	49	tip-9	control	zs-9123059c zui-button zui-button--ghost zui-button--icon
+10	52	tip-10	control	zs-9123059c zui-button zui-button--ghost zui-button--icon
+11	55	tip-11	control	zs-9123059c zui-button zui-button--ghost zui-button--icon
+12	69		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+13	80		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+14	91		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+15	102		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+16	113		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+17	124		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+18	135		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+19	146		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+20	157		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+21	168		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+22	179		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+23	190		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+24	201		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+25	212		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+26	223		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+27	234		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+28	245		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+29	256		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+30	267		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+31	278		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+32	289		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+33	300		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+34	311		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+35	322		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+36	333		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+37	344		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+38	355		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+39	366		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+40	377		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+41	388		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+42	399		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+43	410		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+44	421		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+45	432		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+46	443		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+47	454		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+48	465		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+49	476		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+50	487		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+51	498		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+52	509		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+53	520		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+54	531		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+55	542		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+56	553		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+57	564		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+58	575		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+59	586		control	zs-9123059c zui-button zui-button--ghost zui-button--sm
+60	588	dock-handle	control	zui-resizable__handle

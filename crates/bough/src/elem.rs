@@ -58,6 +58,17 @@ impl<V> Mounter<'_, V> {
             unsafe { (*self.tape).push(x) };
         }
     }
+    /// Length of the tape being recorded.
+    #[inline(always)]
+    pub(crate) fn ti_len(&self) -> usize {
+        // SAFETY: as `tape_push`.
+        unsafe { (&*self.tape).len() }
+    }
+    #[inline(always)]
+    pub(crate) fn tape_set(&mut self, i: usize, x: u32) {
+        // SAFETY: as `tape_push`.
+        unsafe { (&mut *self.tape)[i] = x };
+    }
     /// The next tape entry (`update`).
     #[inline(always)]
     pub(crate) fn tape_next(&mut self) -> u32 {
@@ -265,6 +276,9 @@ impl Apply for ApplyBg {
         }
         let old = n.color;
         n.color = v.0;
+        if n.kind & NK_HOVERED != 0 {
+            return; // the hover colour shows; the base returns when the pointer leaves (input.rs)
+        }
         let (h, inst, bordered) = (n.handle, rt.runs[n.run as usize].first, n.kind == NK_BORDER);
         let p = rt.inst_mut(inst);
         if bordered {
@@ -918,7 +932,8 @@ impl<V, Ch: Element<V>> Element<V> for Clip<Ch> {
         } else {
             r
         };
-        m.clip = m.rt.clip_rect(r);
+        // inside a scroll view's content the clip moves with the content (template.rs)
+        m.clip = m.rt.scoped_clip(r, prev);
         self.1.mount(m);
         m.clip = prev;
     }
@@ -951,7 +966,7 @@ pub fn virtual_list<'a, V>(
 
 /// # Safety
 /// `owner` points at the live owner `V`; `reg`'s row function is a `fn(&V, usize, &mut Mounter<V>)`.
-unsafe fn mount_row<V: 'static>(rt: &mut Rt, owner: *const u8, reg: usize, row: usize, recs: &mut Vec<RecordInit>) -> RowInfo {
+pub(crate) unsafe fn mount_row<V: 'static>(rt: &mut Rt, owner: *const u8, reg: usize, row: usize, recs: &mut Vec<RecordInit>) -> RowInfo {
     let space = rt.alloc_space();
     let origin = rt.region_row_space_origin(reg, row);
     rt.set_space(space, origin);
@@ -973,7 +988,7 @@ unsafe fn mount_row<V: 'static>(rt: &mut Rt, owner: *const u8, reg: usize, row: 
 
 /// # Safety
 /// Wire contract: `sig` is a `Signal<f32>`; `owner` is the region's owner.
-unsafe fn patch_scroll(rt: &mut Rt, w: &Wire, sig: *const u8, owner: *const u8) {
+pub(crate) unsafe fn patch_scroll(rt: &mut Rt, w: &Wire, sig: *const u8, owner: *const u8) {
     // SAFETY: see the function contract.
     let s = unsafe { &*(sig as *const Signal<f32>) };
     unsafe { rt.region_scroll(w.node as usize, owner, **s) };
@@ -1000,6 +1015,9 @@ impl<'a, V: 'static> Element<V> for VirtualList<'a, V> {
             rows: Default::default(),
             scroll_px: 0.0,
             visible: self.visible,
+            count: 0,
+            port_h: 0.0,
+            scale_pt: s,
             mount_row: mount_row::<V>,
             row_fn: self.row as usize,
         });

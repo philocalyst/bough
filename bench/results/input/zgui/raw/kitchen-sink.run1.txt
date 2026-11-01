@@ -1,0 +1,26 @@
+SCENARIO kitchen-sink gallery s13, 2695 boxes, a text field 22 tab stops in, 32 of each interaction
+MEASURE	kitchen-sink	kitchen.resize	ms	23.0984	10.2500	over	the measured on-screen p50, which every box in the window pays into	-	-	p50=23.0984;p95=69.8127;p99=196.6845;max=196.6845;n=32
+MEASURE	kitchen-sink	kitchen.click	us	48.5410	15.1200	over	the measured p50 at 1 851 boxes: one class on one element	-	-	p50=48.5410;p95=5486.2090;p99=13578.0000;max=13578.0000;n=32
+MEASURE	kitchen-sink	kitchen.keystroke	us	775.5830	407.4000	over	the measured p50: one edit, one paragraph reshaped, one box repainted	-	-	p50=775.5830;p95=29372.0410;p99=69011.3330;max=69011.3330;n=32
+MEASURE	kitchen-sink	kitchen.untouched_turn	us	99.9580	30.8000	over	the measured p50 of one turn over an untouched but animating gallery	-	-	p50=99.9580;p95=10370.2910;p99=33814.6660;max=58085.5420;n=240
+MEASURE	kitchen-sink	kitchen.glide_tick	us	4196.9580	854.0000	over	the measured p50 of one frame of the framework's own scroll animation	-	-	p50=4196.9580;p95=61857.9170;p99=72213.0420;max=127913.7920;n=120
+MEASURE	kitchen-sink	kitchen.tab_traversal	us	573.6250	533.4000	over	one Tab press moves focus by one stop, which is one element's style and one element's shaping	-	-	p50=573.6250;p95=48255.1670;p99=59473.7920;max=59473.7920;n=22
+MEASURE	kitchen-sink	reshape.paragraphs_forgotten	paragraphs	0.0000	0.0000	ok	one element's brush moving costs that element's paragraphs, not the window's	-	-	-
+MEASURE	kitchen-sink	reshape.boxes_marked_all_dirty	boxes	0.0000	0.0000	ok	nothing these scenarios drive changes the device scale, which is the one change every box pays for	-	-	-
+INSTR kitchen-sink kitchen.resize p50=29619198 p10=24257227 p90=41583326 n=32
+INSTR kitchen-sink kitchen.click p50=469414 p10=458446 p90=482253 n=32
+INSTR kitchen-sink kitchen.keystroke p50=4447493 p10=4003245 p90=4853080 n=32
+INSTR kitchen-sink kitchen.untouched_turn p50=916277 p10=878127 p90=1445953 n=240
+INSTR kitchen-sink kitchen.glide_tick p50=10501127 p10=1541664 p90=11320858 n=120
+INSTR kitchen-sink kitchen.tab_traversal p50=4534195 p10=2050482 p90=4664059 n=22
+PACE	kitchen-sink	16667.0000	48	478
+NOTE	kitchen-sink	the tab traversal is inside the measured part now, and it is the widest distribution this scenario takes: p50 573.6 us, p99 59473.8 us, max 59473.8 us over 22 presses
+ESCALATION	kitchen-sink	110851	46335	31857	4540	52980
+  kitchen.resize                            23.10 ms   band 8.2 +25% = 10.2          REGRESSED
+  kitchen.click                             48.54 us   band 10.8 +40% = 15.1         REGRESSED
+  kitchen.keystroke                        775.58 us   band 291.0 +40% = 407.4       REGRESSED
+  kitchen.untouched_turn                    99.96 us   band 22.0 +40% = 30.8         REGRESSED
+  kitchen.glide_tick                      4196.96 us   band 610.0 +40% = 854.0       REGRESSED
+  kitchen.tab_traversal                    573.62 us   band 381.0 +40% = 533.4       REGRESSED
+  reshape.paragraphs_forgotten               0.00 paragraphs band <= 0                     ok
+  reshape.boxes_marked_all_dirty             0.00 boxes band <= 0                     ok

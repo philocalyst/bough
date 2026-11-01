@@ -42,6 +42,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-app-mail-dash"
+version = "0.0.0"
+dependencies = [
+ "bough",
+ "bough-core",
+ "bough-metal",
+ "bough-text",
+ "zgx-workload",
+]
+
+[[package]]
+name = "bough-app-sketch-code"
+version = "0.0.0"
+dependencies = [
+ "bough",
+ "bough-core",
+ "bough-metal",
+ "bough-text",
+ "zgx-workload",
+]
+
+[[package]]
 name = "bough-core"
 version = "0.0.0"
 dependencies = [
@@ -123,6 +145,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-text-bench"
+version = "0.0.0"
+dependencies = [
+ "bough",
+ "bough-mem",
+ "bough-metal",
+ "bough-text",
+ "rustybuzz",
+ "zgx-workload",
+]
+
+[[package]]
 name = "bough-vlist"
 version = "0.0.0"
 dependencies = [
@@ -132,6 +166,34 @@ dependencies = [
  "bough-text",
  "cephal",
  "libc",
+ "zgx-workload",
+]
+
+[[package]]
+name = "bough-widgets"
+version = "0.0.0"
+dependencies = [
+ "bough",
+ "bough-core",
+ "bough-metal",
+ "bough-text",
+ "zgx-workload",
+]
+
+[[package]]
+name = "bough-zgui"
+version = "0.0.0"
+dependencies = [
+ "block2",
+ "bough",
+ "bough-core",
+ "bough-metal",
+ "bough-text",
+ "libc",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "rustybuzz",
  "zgx-workload",
 ]
 

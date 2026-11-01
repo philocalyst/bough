@@ -1,0 +1,12 @@
+SCENARIO hover-storm 1000 rows built, 40 on screen, 240 crossings at 120 Hz
+MEASURE	hover-storm	hover.crossing	us	168.5410	266.0000	ok	measured at 187 us, well under the half-millisecond budget	500.0000	met	p50=168.5410;p95=1756.7500;p99=5596.0000;max=7250.9590;n=240
+MEASURE	hover-storm	hover.primitives_emitted	prims	41.5625	200.0000	ok	two rows changed, so a frame that emits the table is the defect	200.0000	met	-
+MEASURE	hover-storm	reshape.paragraphs_forgotten	paragraphs	0.0000	0.0000	ok	one element's brush moving costs that element's paragraphs, not the window's	-	-	-
+MEASURE	hover-storm	reshape.boxes_marked_all_dirty	boxes	0.0000	0.0000	ok	nothing these scenarios drive changes the device scale, which is the one change every box pays for	-	-	-
+INSTR hover-storm hover.crossing p50=1829188 p10=1824601 p90=1864076 n=240
+PACE	hover-storm	8333.0000	0	240
+ESCALATION	hover-storm	9975	241916	3593	479	8865
+  hover.crossing                           168.54 us   band 190.0 +40% = 266.0       ok
+  hover.primitives_emitted                  41.56 prims band <= 200                   ok
+  reshape.paragraphs_forgotten               0.00 paragraphs band <= 0                     ok
+  reshape.boxes_marked_all_dirty             0.00 boxes band <= 0                     ok

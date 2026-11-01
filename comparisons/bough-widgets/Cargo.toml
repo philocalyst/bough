@@ -1,0 +1,12 @@
+[package]
+name = "bough-widgets"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bough = { path = "../../crates/bough" }
+bough-core = { path = "../../crates/bough-core" }
+bough-metal = { path = "../../crates/bough-metal" }
+bough-text = { path = "../../crates/bough-text" }
+zgx-workload = { path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }

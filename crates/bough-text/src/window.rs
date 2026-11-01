@@ -25,6 +25,8 @@ pub struct Shaped {
     pub len: u32,
     /// Pen after the last glyph.
     pub width: i32,
+    /// A token beyond ASCII was written (see `slots::any_slots`).
+    pub exotic: bool,
 }
 
 impl GlyphPool {
@@ -33,23 +35,25 @@ impl GlyphPool {
         self.new_run(RunHeader { origin, scale, color, space, strike, base: 0, len: 0, x0: 0 })
     }
 
-    /// Shape ASCII `text` into a fresh block. `false` if it needs the token path (trigger,
-    /// non-ASCII): the block is released then.
+    /// Shape UTF-8 `text` into a fresh block, one slot per byte (`slots::any_slots`: ASCII, Latin-1 and the
+    /// font's ligatures, phantoms for the other bytes of a cluster). `false` if a codepoint is not covered
+    /// (beyond Latin-1, a control character): the block is released then.
     pub fn shape_block(&mut self, sh: &Shaper, text: &[u8], out: &mut Shaped) -> bool {
         let n = text.len();
-        if !text.is_ascii() {
-            return false;
-        }
         let cap = n.max(16).next_power_of_two();
         let base = self.alloc_block(cap, u32::MAX);
-        // SAFETY: ASCII; the block holds `cap >= n.next_multiple_of(16)` slots.
-        let (w, acc) = unsafe { slots(sh, text, 0, 0, self.x.as_mut_ptr().add(base as usize), self.ent.as_mut_ptr().add(base as usize)) };
-        if acc & 0x8000 != 0 {
-            self.free_block(base, cap as u32);
-            return false;
+        // SAFETY: the block holds `cap >= n.next_multiple_of(16)` slots; callers pass UTF-8 (a `&str`'s bytes).
+        let r = unsafe { crate::slots::any_slots(sh, text, 0, self.x.as_mut_ptr().add(base as usize), self.ent.as_mut_ptr().add(base as usize)) };
+        match r {
+            Ok((w, exotic)) => {
+                *out = Shaped { base, cap: cap as u32, len: n as u32, width: w, exotic };
+                true
+            }
+            Err(_) => {
+                self.free_block(base, cap as u32);
+                false
+            }
         }
-        *out = Shaped { base, cap: cap as u32, len: n as u32, width: w };
-        true
     }
 
     pub fn free_shaped(&mut self, s: Shaped) {

@@ -20,6 +20,9 @@ pub use crate::page::RecordInit;
 use crate::prefix::Prefix;
 use bough_mem::Col;
 
+/// Pointer and focus queries (hit test, hit cell, flagged chains, tab order): `bough/hit.rs`.
+pub mod hit;
+
 /// The GPU-visible storage of a Bough, carved from one region (see `bough_mem`): pages, the
 /// directory's page-id and union-ink columns, and the clip table. The GPU reads these in place.
 pub struct Columns {

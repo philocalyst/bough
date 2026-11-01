@@ -224,3 +224,34 @@ pub(crate) unsafe fn redescribe<V: crate::app::View>(rt: &mut Rt, v: &V, tape: &
     // a fixed shape adds nothing outside dynamic parts: the root scope stays empty
     debug_assert!(scope.nodes.is_empty() && scope.wires.is_empty());
 }
+
+/// Mount an element a re-description steps over (its content is state-driven: templates, scroll views,
+/// text fields, tooltips): the tape records how many records, tape entries and layout children it made.
+pub(crate) fn mount_opaque<V>(m: &mut Mounter<'_, V>, f: impl FnOnce(&mut Mounter<'_, V>)) {
+    if !m.taping() {
+        return f(m);
+    }
+    let at = m.ti_len();
+    m.tape_push(0);
+    m.tape_push(0);
+    m.tape_push(0);
+    let r0 = m.recs.len();
+    let lid = m.rt.lay.cur;
+    let k0 = if lid == NONE { 0 } else { m.rt.lay.eng.kid_count(lid) };
+    f(m);
+    let nkid = if lid == NONE { 0 } else { m.rt.lay.eng.kid_count(lid) - k0 };
+    let t1 = m.ti_len();
+    m.tape_set(at, (m.recs.len() - r0) as u32);
+    m.tape_set(at + 1, (t1 - at - 3) as u32);
+    m.tape_set(at + 2, nkid as u32);
+}
+
+/// Step over an element mounted by `mount_opaque`.
+pub(crate) fn update_opaque<V>(m: &mut Mounter<'_, V>) {
+    let nrec = m.tape_next() as usize;
+    let ntape = m.tape_next() as usize;
+    let nkid = m.tape_next() as usize;
+    m.ti += ntape;
+    m.pos += nrec;
+    m.kid += nkid;
+}
