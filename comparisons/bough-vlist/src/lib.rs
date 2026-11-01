@@ -86,7 +86,7 @@ pub fn set_scroll(app: &mut App<VList>, v: f32) {
 /// The probe (`ZGX_MODE=probe`): each probe row at the top in turn, measured after a few frames.
 pub fn probe(app: &mut App<VList>) -> String {
     let mut measured = Vec::new();
-    for row in vlist::probe_rows() {
+    for row in probe_set() {
         for _ in 0..2 {
             let off = app.rt.mregion_row_offset_pt(0, row);
             set_scroll(app, off);
@@ -97,4 +97,13 @@ pub fn probe(app: &mut App<VList>) -> String {
         measured.push((row, app.rt.mregion_row_height_pt(0, row)));
     }
     vlist::probe_report(&measured, vlist::WIDTH)
+}
+
+/// The rows a probe measures: `vlist::probe_rows()`, or with `PROBE_SPREAD=N` N rows spread over the list
+/// (`i * 97 % ROWS`; the same set in the zgx-side headless probe), for a wider height comparison.
+pub fn probe_set() -> Vec<usize> {
+    match std::env::var("PROBE_SPREAD").ok().and_then(|v| v.parse::<usize>().ok()) {
+        Some(n) => (0..n).map(|i| i * 97 % vlist::ROWS).collect(),
+        None => vlist::probe_rows(),
+    }
 }

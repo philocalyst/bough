@@ -10,7 +10,7 @@ use bough_text::atlas::Instance;
 use std::collections::VecDeque;
 use std::ops::Range;
 
-pub const MAX_INST: usize = 16384;
+pub const MAX_INST: usize = 32768;
 pub const MAX_SPACES: usize = 512;
 pub const MAX_CLIPS: usize = 32;
 pub const MAX_RECTS: usize = 512;
@@ -311,14 +311,51 @@ impl Rt {
     }
 
     // ------------------------------------------------------------------ instance runs
+    /// A block of `1 << class` instances: a free block of that class, else a split of a larger free block, else
+    /// fresh pool (aligned to its size, so buddies pair up). Blocks are buddy-coalesced when freed, so a long
+    /// run of rows of varying sizes (a list jumping about) cannot fragment the pool away.
     fn alloc_block(&mut self, class: u8) -> u32 {
         if let Some(b) = self.free_blocks[class as usize].pop() {
             return b;
         }
-        let b = self.next_fresh;
-        self.next_fresh += 1 << class;
-        assert!(self.next_fresh as usize <= MAX_INST, "instance pool full");
+        for c in class as usize + 1..16 {
+            if let Some(b) = self.free_blocks[c].pop() {
+                for lower in (class as usize..c).rev() {
+                    self.free_blocks[lower].push(b + (1 << lower));
+                }
+                return b;
+            }
+        }
+        let size = 1u32 << class;
+        let b = (self.next_fresh + size - 1) & !(size - 1);
+        assert!((b + size) as usize <= MAX_INST, "instance pool full");
+        // the alignment gap becomes free blocks (largest aligned pieces that fit)
+        let mut a = self.next_fresh;
+        while a < b {
+            let mut c = a.trailing_zeros().min(15);
+            while a + (1 << c) > b {
+                c -= 1;
+            }
+            self.free_blocks[c as usize].push(a);
+            a += 1 << c;
+        }
+        self.next_fresh = b + size;
         b
+    }
+    fn free_block(&mut self, first: u32, class: u8) {
+        let (mut b, mut c) = (first, class as usize);
+        while c < 15 {
+            let buddy = b ^ (1 << c);
+            match self.free_blocks[c].iter().position(|&x| x == buddy) {
+                Some(i) => {
+                    self.free_blocks[c].swap_remove(i);
+                    b = b.min(buddy);
+                    c += 1;
+                }
+                None => break,
+            }
+        }
+        self.free_blocks[c].push(b);
     }
     /// A run with capacity for at least `n` instances (power-of-two size classes, free lists).
     pub fn alloc_run(&mut self, n: usize) -> u32 {
@@ -336,7 +373,7 @@ impl Rt {
     pub fn free_run(&mut self, i: u32) {
         let r = self.runs[i as usize];
         if r.live {
-            self.free_blocks[r.class as usize].push(r.first);
+            self.free_block(r.first, r.class);
             self.runs[i as usize].live = false;
             self.run_free.push(i);
         }
@@ -344,7 +381,7 @@ impl Rt {
     /// Grow a run in place of its id: new block, same id (the record's payload never changes).
     pub(crate) fn regrow_run(&mut self, i: u32, n: usize) {
         let r = self.runs[i as usize];
-        self.free_blocks[r.class as usize].push(r.first);
+        self.free_block(r.first, r.class);
         let class = (n.next_power_of_two().trailing_zeros()) as u8;
         let first = self.alloc_block(class);
         self.runs[i as usize] = Run { first, len: r.len, class, live: true };
