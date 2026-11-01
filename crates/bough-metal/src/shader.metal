@@ -925,6 +925,10 @@ struct FHdr {
     uint inst_off, spaces_off, clips_off, dir_id_off, dir_ink_off, n_dir, pages_off;
     uint gx_off, gent_off, runs_off, toks_off, tok_stride;
     uint bin_cap, debug;
+    // capacity - 1 of each column (all capacities are powers of two): every index read from region data is
+    // ANDed with its column's mask, every loop bound read from it is min-ed with a capacity, so no value in
+    // the region can make a kernel read outside its column or loop unboundedly. No branch, ~1 ALU op each.
+    uint m_inst, m_page, m_glyph, m_run, m_space, m_clip, m_strike;
 };
 // The bind table (header + FBIND_OFF): every resource the kernels touch besides the region itself, as Metal 3
 // resource ids / GPU addresses written by the CPU. Nothing is bound per encoder but the region and the frame
@@ -949,19 +953,19 @@ constant uint FPG_CLIP = 1280;
 constant uint FPG_OFFL = 1436;
 
 static float4 f_clip(device const uchar* pool, device const FHdr& h, uint c) {
-    short4 r = ((device const short4*)(pool + h.clips_off))[c];
+    short4 r = ((device const short4*)(pool + h.clips_off))[c & h.m_clip];
     return float4(float(r.x), float(r.y), -float(r.z), -float(r.w));
 }
 static float2 f_space(device const uchar* pool, device const FHdr& h, uint s) {
-    return float2(((device const int2*)(pool + h.spaces_off))[s]);
+    return float2(((device const int2*)(pool + h.spaces_off))[s & h.m_space]);
 }
 // bough-text's pen formula, verified bit-exact there: px = floor(fma(float(x - x0), scale, origin.x + 0.5)) + geo.x
 static bool f_glyph(device const uchar* pool, device const FHdr& h, uint run, uint slot,
                     thread float2& p0, thread float2& size, thread uint& color, thread ushort2& uv) {
-    device const RunHeader& rh = ((device const RunHeader*)(pool + h.runs_off))[run];
-    int x = ((device const int*)(pool + h.gx_off))[slot];
-    uint e = ((device const ushort*)(pool + h.gent_off))[slot];
-    device const GEntry& en = *(device const GEntry*)(pool + h.toks_off + uint(rh.strike) * h.tok_stride + e * 32u);
+    device const RunHeader& rh = ((device const RunHeader*)(pool + h.runs_off))[run & h.m_run];
+    int x = ((device const int*)(pool + h.gx_off))[slot & h.m_glyph];
+    uint e = ((device const ushort*)(pool + h.gent_off))[slot & h.m_glyph] & 255u;
+    device const GEntry& en = *(device const GEntry*)(pool + h.toks_off + (uint(rh.strike) & h.m_strike) * h.tok_stride + e * 32u);
     if (en.uv.z == 0) return false;
     int dx = as_type<int>(as_type<uint>(x) - as_type<uint>(rh.x0));
     float px = floor(fma(float(dx), rh.scale, rh.origin.x + 0.5)) + en.geo.x;
@@ -1001,13 +1005,14 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
     uint nb = 0;
     uint cap = h.bin_cap;
     device uint4* bin = bins + ty * cap;
-    for (uint d0 = 0; d0 < h.n_dir; d0 += 256) {
+    uint ndir = min(h.n_dir, h.m_page + 1u);
+    for (uint d0 = 0; d0 < ndir; d0 += 256) {
         uint di = d0 + li;
-        bool dh = di < h.n_dir && all(dink[di] < th);
+        bool dh = di < ndir && all(dink[di] < th);
         threadgroup_barrier(mem_flags::mem_threadgroup);
         uint nd;
         uint ds = compact(dh, lane, sg, sgc, nd);
-        if (dh) dl[ds] = dpage[di];
+        if (dh) dl[ds] = dpage[di] & h.m_page;
         threadgroup_barrier(mem_flags::mem_threadgroup);
         for (uint p0 = 0; p0 < nd; p0 += 32) {
             uint pk = p0 + (li >> 3), g = li & 7u;
@@ -1039,7 +1044,7 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                     rh = all(rel < subsat(th, offl));
                     ink = rel + offl;                                                // absolute (in domain when hit)
                     ii = ((device const uint*)(pg + FPG_PAYLOAD))[sl];
-                    cid = ((device const ushort*)(pg + FPG_CLIP))[sl];
+                    cid = ((device const ushort*)(pg + FPG_CLIP))[sl] & h.m_clip;
                 }
                 threadgroup_barrier(mem_flags::mem_threadgroup);
                 uint nr;
@@ -1053,7 +1058,7 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                     while (j < nr && (hl[j] & (F_RUN | F_IRUN)) == 0u) j++;
                     if (li < j - k && nb + li < cap) {
                         uint idx = k + li;
-                        bin[nb + li] = uint4(hl[idx], hk[idx].x, hk[idx].y, hc[idx] << 20);
+                        bin[nb + li] = uint4(hl[idx] & h.m_inst, hk[idx].x, hk[idx].y, hc[idx] << 20);
                     }
                     nb += j - k;
                     if (j < nr) {
@@ -1062,9 +1067,10 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                         float4 cl = f_clip(pool, h, cid2);
                         if ((p & F_RUN) != 0u) {
                             uint r0 = p & 0xFFFFFu, rn = ((p >> 20) & 0x7FFu) + 1u;
-                            for (uint run = r0; run < r0 + rn; run++) {
+                            for (uint run0 = r0; run0 < r0 + rn; run0++) {
+                                uint run = run0 & h.m_run;
                                 device const RunHeader& rhd = ((device const RunHeader*)(pool + h.runs_off))[run];
-                                uint rlen = rhd.len, rbase = rhd.base;
+                                uint rlen = min(rhd.len, h.m_glyph + 1u), rbase = rhd.base;
                                 for (uint g0 = 0; g0 < rlen; g0 += 256) {
                                     uint gk2 = g0 + li;
                                     bool gh2 = false;
@@ -1085,7 +1091,7 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                                     threadgroup_barrier(mem_flags::mem_threadgroup);
                                     uint ng2;
                                     uint gs2 = compact(gh2, lane, sg, sgc, ng2);
-                                    if (gh2 && nb + gs2 < cap) bin[nb + gs2] = uint4(run | F_RUN, as_type<uint>(gi.xy), as_type<uint>(gi.zw), (cid2 << 20) | (rbase + gk2));
+                                    if (gh2 && nb + gs2 < cap) bin[nb + gs2] = uint4(run | F_RUN, as_type<uint>(gi.xy), as_type<uint>(gi.zw), (cid2 << 20) | ((rbase + gk2) & h.m_glyph));
                                     nb += ng2;
                                 }
                             }
@@ -1096,7 +1102,7 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                                 bool gh2 = false;
                                 short4 gi = short4(0);
                                 if (gk2 < in_) {
-                                    device const FInst& q = inst[i0 + gk2];
+                                    device const FInst& q = inst[(i0 + gk2) & h.m_inst];
                                     float2 q0 = q.pos + f_space(pool, h, q.space);
                                     float m = q.kind == 0 ? 0.0 : 1.0;
                                     float2 qa = clamp(q0 - m, cl.xy, cl.zw);
@@ -1109,7 +1115,7 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                                 threadgroup_barrier(mem_flags::mem_threadgroup);
                                 uint ng2;
                                 uint gs2 = compact(gh2, lane, sg, sgc, ng2);
-                                if (gh2 && nb + gs2 < cap) bin[nb + gs2] = uint4(i0 + gk2, as_type<uint>(gi.xy), as_type<uint>(gi.zw), cid2 << 20);
+                                if (gh2 && nb + gs2 < cap) bin[nb + gs2] = uint4((i0 + gk2) & h.m_inst, as_type<uint>(gi.xy), as_type<uint>(gi.zw), cid2 << 20);
                                 nb += ng2;
                             }
                         }
@@ -1168,7 +1174,8 @@ static half4 f_shade(threadgroup const FRec& r, float2 c, texture2d<float> atlas
         float2 t = c - r.b.xy;
         half cov = 0.0h;
         if (all(t >= 0.0) && all(t < r.b.zw - r.b.xy)) {
-            cov = half(atlas.read(uint2(float2(r.uv)) + uint2(t)).r);
+            uint2 lim = uint2(atlas.get_width() - 1u, atlas.get_height() - 1u);
+            cov = half(atlas.read(min(uint2(float2(r.uv)) + uint2(t), lim)).r);
         }
         return r.pm * cov; }
     }
@@ -1273,9 +1280,9 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
             if (all(ink < th)) {
                 float4 cl = f_clip(pool, h, en.w >> 20);
                 if ((en.x & F_RUN) != 0u) {
-                    rh = f_stage_glyph(pool, h, en.x & ~F_RUN, en.w & 0xFFFFFu, cl, r);
+                    rh = f_stage_glyph(pool, h, en.x & h.m_run, en.w & h.m_glyph, cl, r);
                 } else {
-                    device const FInst& in = inst[en.x];
+                    device const FInst& in = inst[en.x & h.m_inst];
                     rh = f_stage_rec(in, f_space(pool, h, in.space), cl, o, r, cover);
                 }
             }

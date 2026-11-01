@@ -84,6 +84,22 @@ pub struct Layout {
     pub tok_stride: u32,
     /// Three frame slots (two in flight, one for the reference render): header + damaged-row records.
     pub slot: [u32; 3],
+    /// Capacity masks (capacity - 1, every column's capacity a power of two): the kernels AND every index
+    /// they read from region data with its column's mask, so no value in the region can make the GPU read
+    /// outside the column (bough-metal RESULTS Part IV). `Layout::default()` (probes: empty scene) masks to 0.
+    pub masks: Masks,
+}
+
+/// Power-of-two capacity minus one, per GPU-read column.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Masks {
+    pub inst: u32,
+    pub page: u32,
+    pub glyph: u32,
+    pub run: u32,
+    pub space: u32,
+    pub clip: u32,
+    pub strike: u32,
 }
 
 impl Layout {
@@ -120,6 +136,7 @@ struct FHdr {
     tok_stride: u32,
     bin_cap: u32,
     debug: u32,
+    masks: [u32; 7],
 }
 /// Bytes reserved for the header at the start of the region.
 pub const HDR_BYTES: usize = 256;
@@ -406,6 +423,7 @@ impl Fused {
             tok_stride: l.tok_stride,
             bin_cap: self.bin_cap,
             debug: 0,
+            masks: [l.masks.inst, l.masks.page, l.masks.glyph, l.masks.run, l.masks.space, l.masks.clip, l.masks.strike],
         };
         // SAFETY: the region starts with HDR_BYTES reserved for the header; no GPU work reads it now.
         unsafe { (self.pool_ptr as *mut FHdr).write(h) };

@@ -26,7 +26,7 @@ use bough_core::damage::DamageRing;
 use bough_core::page::Page;
 use bough_core::{Bough, Handle, NRect, RecordInit};
 use bough_mem::{Col, Region};
-use bough_metal::fused::{Layout, HDR_BYTES};
+use bough_metal::fused::{Layout, Masks, HDR_BYTES};
 use bough_metal::instance::Instance;
 use bough_text::atlas::TokStrike;
 use bough_text::pool::{GlyphPool, PoolColumns, RunHeader};
@@ -94,20 +94,29 @@ impl Caps {
     /// glyphs mounted). Untouched capacity costs no memory until written.
     pub const DEFAULT: Caps = Caps { instances: 8192, pages: 512, glyphs: 1 << 16, runs: 8192, spaces: 2048, clips: 512, strikes: 16 };
 
+    /// Every capacity rounded up to a power of two: the GPU masks indices with `capacity - 1`, and the
+    /// rounding is the phantom padding that keeps a masked index inside its own column (zero-filled: an
+    /// all-zero instance, page, glyph or run header draws nothing).
+    pub fn pow2(&self) -> Caps {
+        let p = |n: usize| n.max(1).next_power_of_two();
+        Caps { instances: p(self.instances), pages: p(self.pages), glyphs: p(self.glyphs), runs: p(self.runs), spaces: p(self.spaces), clips: p(self.clips), strikes: p(self.strikes) }
+    }
+
     pub fn region_bytes(&self, w: u32, h: u32) -> usize {
+        let caps = self.pow2();
         let sb = Layout::slot_bytes(w, h);
         let a = |n: usize| n.next_multiple_of(256) + 256;
         HDR_BYTES
             + 3 * a(sb)
-            + a(self.instances * size_of::<Instance>())
-            + a(self.pages * size_of::<Page>())
-            + 2 * a(self.pages * 8)
-            + a(self.clips * 8)
-            + a(self.spaces * 8)
-            + a(self.glyphs * 4)
-            + a(self.glyphs * 2)
-            + a(self.runs * size_of::<RunHeader>())
-            + a(self.strikes * size_of::<TokStrike>())
+            + a(caps.instances * size_of::<Instance>())
+            + a(caps.pages * size_of::<Page>())
+            + 2 * a(caps.pages * 8)
+            + a(caps.clips * 8)
+            + a(caps.spaces * 8)
+            + a(caps.glyphs * 4)
+            + a(caps.glyphs * 2)
+            + a(caps.runs * size_of::<RunHeader>())
+            + a(caps.strikes * size_of::<TokStrike>())
             + 4096
     }
 }
@@ -322,6 +331,7 @@ pub struct Rt {
 impl Rt {
     /// The runtime over `region` (the presenter's shared buffer, or heap memory of the same size).
     pub fn new(win_w: i32, win_h: i32, scale: f32, font: &[u8], mut region: Region, caps: Caps) -> Rt {
+        let caps = caps.pow2();
         let sb = Layout::slot_bytes(win_w as u32, win_h as u32);
         let hdr = region.reserve(HDR_BYTES, 64);
         assert_eq!(hdr, 0, "the header is at offset 0");
@@ -355,6 +365,15 @@ impl Rt {
             toks_off: text.cache.tok_offset().unwrap() as u32,
             tok_stride: size_of::<TokStrike>() as u32,
             slot,
+            masks: Masks {
+                inst: caps.instances as u32 - 1,
+                page: caps.pages as u32 - 1,
+                glyph: caps.glyphs as u32 - 1,
+                run: caps.runs as u32 - 1,
+                space: caps.spaces as u32 - 1,
+                clip: caps.clips as u32 - 1,
+                strike: caps.strikes as u32 - 1,
+            },
         };
         let (tx, ty) = (layout.tiles_x() as usize, layout.tiles_y() as usize);
         Rt {
