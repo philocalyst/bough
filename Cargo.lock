@@ -1156,6 +1156,7 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "half",
+ "naga",
  "paste",
  "snafu",
  "wgsl-rs-ir",
