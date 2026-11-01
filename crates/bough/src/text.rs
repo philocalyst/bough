@@ -526,36 +526,35 @@ impl Rt {
     /// A text node's value changed. Labels patch (exact tile marks at update time); line windows re-point
     /// with per-line marks; glyph instances are rebuilt (old and new ink damaged).
     pub(crate) fn text_set(&mut self, ti: u32, new: &str) {
-        if self.texts[ti as usize].text == new {
-            return;
+        // A label holds its own text (its 16-byte head and its bytes) and its patch starts with the comparison
+        // of old and new: the node's `String` is neither compared nor copied on this path (the value was there
+        // all along); it is refreshed only on a change of representation. A `\n` or an uncovered codepoint makes
+        // the label refuse (a control byte never tokenizes), which is that change.
+        {
+            let Rt { glyphs, text: ts, bough, texts, ctr, .. } = self;
+            let t = &mut texts[ti as usize];
+            if let TShape::Label(lb) = &mut t.shape {
+                ctr.text_set += 1;
+                let old_w = lb.width();
+                if glyphs.set_text(&ts.shaper, &mut ts.cache, lb, new, &mut CoreMarks(bough.plane_mut())) {
+                    let w = lb.width();
+                    if w != old_w {
+                        let scale = t.size_px / ts.shaper.script.upem as f32;
+                        let ink = line_ink(&lb.bounds, scale, t.ox, t.oy as i32, w, glyphs.spaces[t.space as usize]);
+                        t.ink = ink;
+                        bough.set_ink_handle_nodamage(t.handle, ink);
+                    }
+                    return;
+                }
+            } else if t.text == new {
+                return;
+            } else {
+                ctr.text_set += 1;
+            }
         }
-        self.ctr.text_set += 1;
         let h = self.texts[ti as usize].handle;
         let shape = std::mem::take(&mut self.texts[ti as usize].shape);
         match shape {
-            TShape::Label(mut lb) if !new.contains('\n') => {
-                let old_w = lb.width();
-                let ok = {
-                    let Rt { glyphs, text: ts, bough, .. } = self;
-                    glyphs.set_text(&ts.shaper, &mut ts.cache, &mut lb, new, &mut CoreMarks(bough.plane_mut()))
-                };
-                if ok {
-                    let w = lb.width();
-                    let t = &mut self.texts[ti as usize];
-                    t.text.clear();
-                    t.text.push_str(new);
-                    if w != old_w {
-                        let (space, ox, oy) = (t.space, t.ox, t.oy);
-                        let scale = t.size_px / self.text.shaper.script.upem as f32;
-                        let ink = line_ink(&lb.bounds, scale, ox, oy as i32, w, self.glyphs.spaces[space as usize]);
-                        self.texts[ti as usize].ink = ink;
-                        self.bough.set_ink_handle_nodamage(h, ink);
-                    }
-                    self.texts[ti as usize].shape = TShape::Label(lb);
-                    return;
-                }
-                self.texts[ti as usize].shape = TShape::Label(lb);
-            }
             TShape::Set(mut set) => {
                 let strike = self.texts[ti as usize].strike as StrikeId;
                 let b = self.text.bounds(strike);

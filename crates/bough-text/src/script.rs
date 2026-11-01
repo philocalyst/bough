@@ -164,18 +164,26 @@ fn build_tokens(
     script_dep: usize,
 ) -> Option<TokenTable> {
     // Conditions under which the ligature replay is the whole GSUB story.
-    if !single.is_empty() || script_dep != 0 || b.ligs.is_empty() {
+    if !single.is_empty() || script_dep != 0 {
         return None;
     }
-    let lookup = b.ligs[0].0;
-    if b.ligs.iter().any(|l| l.0 != lookup) || !gsub_latn.contains(&lookup) {
-        return None;
-    }
-    if b.rep.live_rules != b.ligs.len() {
-        return None; // some other rule is live: its triggers must stay
-    }
-    if gsub_latn.iter().any(|&i| i > lookup) {
-        return None; // a later GSUB lookup could see the ligature glyphs
+    if b.ligs.is_empty() {
+        // No ligature at all (a monospace font, say): the token model is Latin-1 alone, valid when no GSUB rule
+        // is live (every pair is the matrix's).
+        if b.rep.live_rules != 0 {
+            return None;
+        }
+    } else {
+        let lookup = b.ligs[0].0;
+        if b.ligs.iter().any(|l| l.0 != lookup) || !gsub_latn.contains(&lookup) {
+            return None;
+        }
+        if b.rep.live_rules != b.ligs.len() {
+            return None; // some other rule is live: its triggers must stay
+        }
+        if gsub_latn.iter().any(|&i| i > lookup) {
+            return None; // a later GSUB lookup could see the ligature glyphs
+        }
     }
     let mut ligs = vec![];
     for (k, (_, first, comps, gid)) in b.ligs.iter().enumerate() {
