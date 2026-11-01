@@ -14,6 +14,8 @@ bough-damage-lab = { path = "../bough-damage-lab" }
 default = []
 # Page-start prefix counts. Default: two-level (blocked) eager counts.
 # `flat-prefix`: single array, eager NEON suffix add. `lazy-prefix`: single array, lazy watermark rebuild.
+# No-op: 32 px damage tiles are now the only design (iteration 2). Kept so dependents enabling it still build.
+tile32 = []
 flat-prefix = []
 lazy-prefix = []
 # Count cull work (pages, groups, classifications, refined records); for analysis only.

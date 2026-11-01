@@ -91,10 +91,15 @@ impl Host {
 
 /// Create the window (960x720 points) and run the main loop; `f` is called on every display-link tick.
 pub fn run(title: &str, f: impl FnMut(&Host, &CADisplayLink) + 'static) -> ! {
+    run_sized(title, 960.0, 720.0, f)
+}
+
+/// `run` with an explicit content size in points (the façade's windows are not 960x720).
+pub fn run_sized(title: &str, w: f64, h: f64, f: impl FnMut(&Host, &CADisplayLink) + 'static) -> ! {
     let mtm = MainThreadMarker::new().expect("main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory); // no Dock icon, no focus steal
-    let rect = NSRect::new(NSPoint::new(120.0, 120.0), NSSize::new(960.0, 720.0));
+    let rect = NSRect::new(NSPoint::new(120.0, 120.0), NSSize::new(w, h));
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
@@ -108,7 +113,7 @@ pub fn run(title: &str, f: impl FnMut(&Host, &CADisplayLink) + 'static) -> ! {
     window.setTitle(&NSString::from_str(title));
     let view = window.contentView().expect("content view");
     let root = CALayer::new();
-    root.setFrame(CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(960.0, 720.0)));
+    root.setFrame(CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(w, h)));
     view.setLayer(Some(&root)); // layer-hosting view
     view.setWantsLayer(true);
     app.finishLaunching();

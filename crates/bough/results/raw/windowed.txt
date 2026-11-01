@@ -1,0 +1,36 @@
+rep1 bough lab idle    cpu   0.01% of a core  instr/s         128444  footprint   40.8 MB (peak  134.1)  rss   38.5 MB  idle-wakeups/s    0.0  {"framework":"bough","scene":"lab","ticks":0}
+rep1 zgx lab idle    cpu   0.18% of a core  instr/s        9945881  footprint   41.0 MB (peak  134.7)  rss   57.0 MB  idle-wakeups/s    0.0  {"framework":"zgx","adapter":"components","renderer":"gpu","ticks":0,"mounted_rows":17,"elapsed_seconds":10.008}
+rep1 bough lab stream  cpu   1.69% of a core  instr/s       32248603  footprint  144.9 MB (peak  144.9)  rss   39.3 MB  idle-wakeups/s    0.0  {"framework":"bough","scene":"lab","ticks":600}
+rep1 zgx lab stream  cpu   2.82% of a core  instr/s       74008020  footprint  146.1 MB (peak  146.1)  rss   63.9 MB  idle-wakeups/s    0.0  {"framework":"zgx","adapter":"components","renderer":"gpu","ticks":599,"mounted_rows":17,"elapsed_seconds":10.017}
+rep1 bough lab scroll  cpu   1.61% of a core  instr/s       29364486  footprint  145.2 MB (peak  145.1)  rss   32.6 MB  idle-wakeups/s    0.0  {"framework":"bough","scene":"lab","ticks":600}
+rep1 zgx lab scroll  cpu   2.51% of a core  instr/s       46299148  footprint  145.6 MB (peak  146.3)  rss   64.8 MB  idle-wakeups/s    0.0  {"framework":"zgx","adapter":"components","renderer":"gpu","ticks":599,"mounted_rows":19,"elapsed_seconds":10.017}
+rep1 bough lab both    cpu   1.87% of a core  instr/s       33396791  footprint  144.1 MB (peak  144.1)  rss   38.9 MB  idle-wakeups/s    0.0  {"framework":"bough","scene":"lab","ticks":600}
+rep1 zgx lab both    cpu   3.62% of a core  instr/s       92476321  footprint  148.1 MB (peak  148.2)  rss   73.3 MB  idle-wakeups/s    0.0  {"framework":"zgx","adapter":"components","renderer":"gpu","ticks":599,"mounted_rows":19,"elapsed_seconds":10.012}
+rep1 bough animate x       cpu   3.65% of a core  instr/s       60586674  footprint  145.2 MB (peak  145.3)  rss   39.3 MB  idle-wakeups/s    0.0  animation_frames=1202 fps=120.2
+rep1 zgx animate x       cpu   4.83% of a core  instr/s      101367441  footprint  145.7 MB (peak  146.6)  rss   64.1 MB  idle-wakeups/s    0.0  animation_frames=1201 fps=119.0
+rep1 bough blink x       cpu   0.07% of a core  instr/s        1267020  footprint  143.5 MB (peak  143.6)  rss   27.8 MB  idle-wakeups/s    0.0  blink_frames=18 workload_ticks=0
+rep1 zgx blink x       cpu   0.26% of a core  instr/s       10834218  footprint  141.8 MB (peak  142.0)  rss   61.1 MB  idle-wakeups/s    0.0  blink_frames=18 workload_ticks=0
+rep1 bough heavy idle    cpu   0.00% of a core  instr/s          77725  footprint   46.0 MB (peak  140.3)  rss   39.2 MB  idle-wakeups/s    0.0  {"framework":"bough","scene":"heavy","ticks":0}
+rep1 zgx heavy idle    cpu   0.08% of a core  instr/s        4761024  footprint   51.0 MB (peak  147.2)  rss   74.7 MB  idle-wakeups/s    0.0  {"framework":"zgx","scene":"heavy","ticks":0}
+rep1 bough heavy stream  cpu   1.94% of a core  instr/s       52259151  footprint  156.9 MB (peak  156.9)  rss   28.7 MB  idle-wakeups/s    0.0  {"framework":"bough","scene":"heavy","ticks":600}
+rep1 zgx heavy stream  cpu   6.98% of a core  instr/s      359710528  footprint  166.1 MB (peak  167.9)  rss   78.0 MB  idle-wakeups/s    0.0  {"framework":"zgx","scene":"heavy","ticks":599}
+rep1 bough heavy scroll  cpu   1.92% of a core  instr/s       30257853  footprint  156.3 MB (peak  156.3)  rss   38.8 MB  idle-wakeups/s    0.0  {"framework":"bough","scene":"heavy","ticks":600}
+rep1 zgx heavy scroll  cpu   3.45% of a core  instr/s       67514990  footprint  161.5 MB (peak  164.9)  rss   78.3 MB  idle-wakeups/s    0.0  {"framework":"zgx","scene":"heavy","ticks":599}
+rep1 bough heavy both    cpu   2.29% of a core  instr/s       54351674  footprint  158.0 MB (peak  158.0)  rss   40.1 MB  idle-wakeups/s    0.0  {"framework":"bough","scene":"heavy","ticks":600}
+rep1 zgx heavy both    cpu   7.27% of a core  instr/s      417618952  footprint  167.5 MB (peak  169.8)  rss   86.8 MB  idle-wakeups/s    0.0  {"framework":"zgx","scene":"heavy","ticks":599}
+rep2 bough lab stream  cpu   1.86% of a core  instr/s       32332573  footprint  144.3 MB (peak  144.3)  rss   38.5 MB  idle-wakeups/s    0.0  {"framework":"bough","scene":"lab","ticks":600}
+rep2 zgx lab stream  cpu   2.94% of a core  instr/s       74566147  footprint  146.6 MB (peak  147.6)  rss   68.2 MB  idle-wakeups/s    0.0  {"framework":"zgx","adapter":"components","renderer":"gpu","ticks":599,"mounted_rows":17,"elapsed_seconds":10.014}
+rep2 bough lab scroll  cpu   1.90% of a core  instr/s       29119278  footprint  145.0 MB (peak  145.1)  rss   29.3 MB  idle-wakeups/s    0.0  {"framework":"bough","scene":"lab","ticks":600}
+rep2 zgx lab scroll  cpu   2.85% of a core  instr/s       51225753  footprint  145.8 MB (peak  146.4)  rss   70.8 MB  idle-wakeups/s    0.0  {"framework":"zgx","adapter":"components","renderer":"gpu","ticks":599,"mounted_rows":19,"elapsed_seconds":10.012}
+rep2 bough lab both    cpu   1.52% of a core  instr/s       32942308  footprint  143.3 MB (peak  143.3)  rss   38.5 MB  idle-wakeups/s    0.0  {"framework":"bough","scene":"lab","ticks":600}
+rep2 zgx lab both    cpu   2.74% of a core  instr/s       87311010  footprint  147.1 MB (peak  154.8)  rss   65.8 MB  idle-wakeups/s    0.0  {"framework":"zgx","adapter":"components","renderer":"gpu","ticks":599,"mounted_rows":19,"elapsed_seconds":10.015}
+rep2 bough animate x       cpu   2.87% of a core  instr/s       58535431  footprint  143.7 MB (peak  143.7)  rss   34.7 MB  idle-wakeups/s    0.0  animation_frames=1202 fps=120.2
+rep2 zgx animate x       cpu   3.67% of a core  instr/s      100075708  footprint  144.5 MB (peak  145.5)  rss   61.1 MB  idle-wakeups/s    0.0  animation_frames=1199 fps=119.1
+rep2 bough blink x       cpu   0.05% of a core  instr/s        1150901  footprint  142.8 MB (peak  142.8)  rss   28.9 MB  idle-wakeups/s    0.0  blink_frames=18 workload_ticks=0
+rep2 zgx blink x       cpu   0.15% of a core  instr/s        6023539  footprint  141.6 MB (peak  142.8)  rss   59.3 MB  idle-wakeups/s    0.0  blink_frames=18 workload_ticks=0
+rep2 bough heavy stream  cpu   1.75% of a core  instr/s       52447826  footprint  156.4 MB (peak  156.4)  rss   39.0 MB  idle-wakeups/s    0.0  {"framework":"bough","scene":"heavy","ticks":600}
+rep2 zgx heavy stream  cpu   5.58% of a core  instr/s      358472738  footprint  165.1 MB (peak  173.1)  rss   82.3 MB  idle-wakeups/s    0.0  {"framework":"zgx","scene":"heavy","ticks":599}
+rep2 bough heavy scroll  cpu   1.62% of a core  instr/s       30223275  footprint  156.2 MB (peak  156.2)  rss   38.7 MB  idle-wakeups/s    0.0  {"framework":"bough","scene":"heavy","ticks":600}
+rep2 zgx heavy scroll  cpu   2.93% of a core  instr/s       65083643  footprint  161.1 MB (peak  164.1)  rss   76.8 MB  idle-wakeups/s    0.0  {"framework":"zgx","scene":"heavy","ticks":599}
+rep2 bough heavy both    cpu   1.87% of a core  instr/s       54376650  footprint  156.0 MB (peak  156.0)  rss   39.5 MB  idle-wakeups/s    0.0  {"framework":"bough","scene":"heavy","ticks":600}
+rep2 zgx heavy both    cpu   7.51% of a core  instr/s      451788344  footprint  165.9 MB (peak  167.3)  rss   84.8 MB  idle-wakeups/s    0.0  {"framework":"zgx","scene":"heavy","ticks":599}
