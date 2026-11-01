@@ -148,6 +148,7 @@ impl Rt {
     }
 
     fn m_remove(&mut self, reg: usize, front: bool, count: usize) {
+        self.lay.prof.reset();
         let mut nrec = 0usize;
         for _ in 0..count {
             let row = if front { self.mregions[reg].rows.pop_front() } else { self.mregions[reg].rows.pop_back() }.unwrap();
@@ -159,6 +160,7 @@ impl Rt {
         let r = &self.mregions[reg];
         let start = if front { r.base_pos } else { r.base_pos + r.rows.iter().map(|x| x.nrec as usize).sum::<usize>() };
         self.bough.remove_run(start, nrec);
+        self.lay.prof.mark(crate::layout::LP_UNMOUNT);
     }
 
     unsafe fn m_mount(&mut self, reg: usize, owner: *const u8, range: Range<usize>, front: bool) {
@@ -170,12 +172,14 @@ impl Rt {
         let mut built: Vec<MRow> = Vec::with_capacity(range.len());
         let vp_w = self.mregions[reg].vp[2];
         self.lay.mount_avail = (vp_w, f32::NAN);
+        self.lay.prof.reset();
         for row in range {
             let mut r = unsafe { f(self, owner, reg, row, &mut recs) };
             r.fresh = true;
             built.push(r);
             self.mregions[reg].stats.rows_mounted += 1;
         }
+        self.lay.prof.mark(crate::layout::LP_MOUNT);
         let r = &mut self.mregions[reg];
         let pos = if front { r.base_pos } else { r.base_pos + r.rows.iter().map(|x| x.nrec as usize).sum::<usize>() };
         if front {
@@ -186,6 +190,7 @@ impl Rt {
             r.rows.extend(built);
         }
         self.bough.insert_run(pos, &recs);
+        self.lay.prof.mark(crate::layout::LP_INSERT);
     }
 
     unsafe fn m_set_range(&mut self, reg: usize, owner: *const u8, new_range: Range<usize>) {

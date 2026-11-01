@@ -9,6 +9,8 @@ description = "bough: the public facade (Signal, View, typed builders, turns) ov
 # Variant B: cephal's LayoutTree / CacheAccess / Incremental implemented directly over bough's storage
 # (instead of mirroring the nodes into cephal's own Tree).
 deep = []
+# With `deep`: child ids cached in the side column instead of scanned from the depth column.
+deep-kids = ["deep"]
 
 [dependencies]
 bough-core = { path = "../bough-core", features = ["tile32"] }

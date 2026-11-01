@@ -85,13 +85,13 @@ fn row_layouts_equal_cold_layout() {
     let mut checked = 0;
     for row in app.rt.mregions[0].rows.iter() {
         let avail = cephal::Size { width: cephal::AvailableSpace::Definite(1440.0), height: cephal::AvailableSpace::MaxContent };
-        let cold = lay.eng.cold_rects(row.root, avail);
+        let cold = lay.eng.cold_rects(&app.rt.bough, row.root, avail);
         // the engine's current rects, node for node
         let mut now = Vec::new();
         let mut stack = vec![row.root];
         while let Some(n) = stack.pop() {
             now.push((n, lay.eng.rect(n)));
-            lay.eng.children_into(n, &mut stack);
+            lay.eng.children_into(&app.rt.bough, n, &mut stack);
         }
         now.sort_by_key(|e| e.0);
         assert_eq!(now.len(), cold.len());
@@ -99,18 +99,18 @@ fn row_layouts_equal_cold_layout() {
             assert_eq!(a, b, "row layout differs from cold");
         }
         // written geometry = the chain of locations
-        fn walk(lay: &bough::layout::Lay, n: u32, px: f32, py: f32, count: &mut usize) {
-            let (x, y, w, h) = lay.eng.rect(n);
-            let li = lay.info[n as usize];
+        fn walk(rt: &bough::rt::Rt, n: u32, px: f32, py: f32, count: &mut usize) {
+            let (x, y, w, h) = rt.lay.eng.rect(n);
+            let li = rt.lay.info[n as usize];
             assert_eq!((li.ax, li.ay, li.aw, li.ah), (px + x, py + y, w, h), "written geometry of node {n}");
             *count += 1;
             let mut kids = Vec::new();
-            lay.eng.children_into(n, &mut kids);
+            rt.lay.eng.children_into(&rt.bough, n, &mut kids);
             for k in kids {
-                walk(lay, k, px + x, py + y, count);
+                walk(rt, k, px + x, py + y, count);
             }
         }
-        walk(lay, row.root, 0.0, 0.0, &mut checked);
+        walk(&app.rt, row.root, 0.0, 0.0, &mut checked);
     }
     assert!(checked > 10);
 }

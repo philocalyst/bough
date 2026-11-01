@@ -8,6 +8,7 @@ description = "zgx's vlist scene (100k wrapped chat rows, measured virtual list)
 [features]
 # Variant B: cephal over bough's storage (see crates/bough/LAYOUT.md)
 deep = ["bough/deep"]
+deep-kids = ["bough/deep-kids"]
 
 [dependencies]
 bough = { path = "../../crates/bough" }

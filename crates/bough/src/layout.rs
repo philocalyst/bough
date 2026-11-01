@@ -28,8 +28,17 @@ use cephal::style::{
     AlignItems, Dimension, Display, FlexDirection, JustifyContent, LengthPercentage, LengthPercentageAuto, Position,
 };
 use cephal::{AvailableSpace, MeasureInput, MeasureOutput, Size, Style};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 
 pub const NONE: u32 = u32::MAX;
+/// A paint-less layout box's record (empty ink, no instances): present only in the deep variant, whose layout
+/// structure *is* the Bough's depth column.
+pub const REC_BOX: u8 = 3;
+const DEEP: bool = cfg!(feature = "deep");
+
+/// Measure-callback counters (relaxed; for the cost breakdown in LAYOUT.md).
+pub static MEASURE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static WRAP_RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(not(feature = "deep"))]
 pub type Eng = crate::lay_mirror::Mirror;
@@ -271,6 +280,70 @@ pub trait Styled: Sized {
     }
 }
 
+#[derive(Default)]
+pub struct Fx(u64);
+impl Hasher for Fx {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(5) ^ b as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+    }
+    #[inline]
+    fn write_u32(&mut self, v: u32) {
+        self.0 = (self.0.rotate_left(5) ^ v as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+    #[inline]
+    fn write_u8(&mut self, v: u8) {
+        self.write_u32(v as u32)
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+pub type FxBuild = BuildHasherDefault<Fx>;
+
+/// A `Spec` as a hash key (bit-exact).
+#[derive(Clone, Copy)]
+pub struct SpecKey(pub Spec);
+impl PartialEq for SpecKey {
+    fn eq(&self, o: &Self) -> bool {
+        self.0 == o.0
+    }
+}
+impl Eq for SpecKey {}
+impl Hash for SpecKey {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        let s = &self.0;
+        h.write_u8(s.container as u8 | (s.column as u8) << 1 | (s.relative as u8) << 2);
+        let dim = |h: &mut H, d: crate::layout::Dim| match d {
+            crate::layout::Dim::Auto => h.write_u32(0),
+            crate::layout::Dim::Pt(v) => {
+                h.write_u32(1);
+                h.write_u32(v.to_bits())
+            }
+            crate::layout::Dim::Pct(v) => {
+                h.write_u32(2);
+                h.write_u32(v.to_bits())
+            }
+        };
+        dim(h, s.w);
+        dim(h, s.h);
+        for v in [s.min_w, s.min_h, s.gap, s.grow, s.shrink].into_iter().chain(s.pad).chain(s.margin) {
+            h.write_u32(v.to_bits());
+        }
+        h.write_u8(s.items.map_or(255, |a| a as u8));
+        h.write_u8(s.self_align.map_or(255, |a| a as u8));
+        h.write_u8(s.justify.map_or(255, |a| a as u8));
+        if let Some((x, y)) = s.abs {
+            h.write_u32(x.to_bits());
+            h.write_u32(y.to_bits());
+        }
+    }
+}
+
+
 // =============================================================================== measured text
 
 /// A measured text leaf's state: the shaped run (font units), its bytes and the last wrap.
@@ -315,6 +388,7 @@ impl LeafCtx {
             return self.starts.len();
         }
         self.wrapped_at = max_units;
+        WRAP_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let n = self.run.len();
         if n == 0 {
             self.starts.clear();
@@ -343,6 +417,19 @@ impl LeafCtx {
         lines
     }
 
+    /// Width of the whole text on one line, trailing spaces excluded (font units).
+    fn line_width(&self) -> i32 {
+        let n = self.run.len();
+        if n == 0 {
+            return 0;
+        }
+        let mut b = n;
+        while b > 1 && self.ascii && self.text[b - 1] == b' ' {
+            b -= 1;
+        }
+        self.run.x[b - 1] + self.run.advance(b - 1)
+    }
+
     fn longest_word(&mut self) -> i32 {
         if self.min_word >= 0 {
             return self.min_word;
@@ -368,6 +455,7 @@ impl LeafCtx {
 
     /// cephal's measure callback: content-box size of the text under `input`.
     pub fn measure(&mut self, input: MeasureInput) -> MeasureOutput {
+        MEASURE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let k = self.k().max(1e-6);
         let lh = self.lh_px;
         if !self.wrap || !self.ascii {
@@ -386,10 +474,8 @@ impl LeafCtx {
                 let l = self.wrap_at(units);
                 (l, self.widest)
             }
-            None => {
-                let l = self.wrap_at(i32::MAX);
-                (l, self.widest)
-            }
+            // max-content: one line, as wide as the text (no wrap pass)
+            None => (1, self.line_width()),
         };
         MeasureOutput::from_size(Size {
             width: input.known_dimensions.width.unwrap_or(widest as f32 * k),
@@ -462,8 +548,45 @@ pub struct LayStats {
     pub text_placed: u64,
 }
 
+/// Instruction-count profiler for the layout path (proc_pid_rusage; off unless enabled): mount (builders
+/// -> engine nodes + records), insert (records into the Bough), compute (the engine), write-back
+/// (instances + ink), unmount.
+pub struct LProf {
+    pub on: bool,
+    pub acc: [u64; 5],
+    last: u64,
+    ovh: u64,
+}
+pub const LP_MOUNT: usize = 0;
+pub const LP_INSERT: usize = 1;
+pub const LP_COMPUTE: usize = 2;
+pub const LP_WRITE: usize = 3;
+pub const LP_UNMOUNT: usize = 4;
+pub const LP_NAMES: [&str; 5] = ["mount", "insert", "compute", "write-back", "unmount"];
+impl LProf {
+    pub fn enable(&mut self) {
+        self.on = true;
+        self.ovh = bough_metal::perf::snap_overhead();
+    }
+    #[inline]
+    pub fn reset(&mut self) {
+        if self.on {
+            self.last = bough_metal::perf::snap().instrs;
+        }
+    }
+    #[inline]
+    pub fn mark(&mut self, i: usize) {
+        if self.on {
+            let s = bough_metal::perf::snap().instrs;
+            self.acc[i] += (s - self.last).saturating_sub(self.ovh);
+            self.last = bough_metal::perf::snap().instrs;
+        }
+    }
+}
+
 pub struct Lay {
     pub eng: Eng,
+    pub prof: LProf,
     pub info: Vec<LInfo>,
     /// Layout parent while a subtree is being mounted (NONE: the next box is a group root).
     pub cur: u32,
@@ -484,6 +607,7 @@ impl Lay {
     pub fn new(scale: f32) -> Lay {
         Lay {
             eng: Eng::new(),
+            prof: LProf { on: false, acc: [0; 5], last: 0, ovh: 0 },
             info: Vec::new(),
             cur: NONE,
             mount_avail: (0.0, f32::NAN),
@@ -523,17 +647,20 @@ impl Lay {
     pub fn first_root(&self) -> u32 {
         self.info.iter().position(|i| i.live && i.parent == NONE).expect("a layout group") as u32
     }
-    pub fn child(&self, n: u32, i: usize) -> u32 {
-        let mut v = Vec::new();
-        self.eng.children_into(n, &mut v);
-        v[i]
-    }
-    pub fn child_rect(&self, n: u32, i: usize) -> (f32, f32, f32, f32) {
-        self.eng.rect(self.child(n, i))
-    }
+
 }
 
 impl Rt {
+    /// Test / inspection helpers: a layout node's i-th child and its rect.
+    pub fn lay_child(&self, n: u32, i: usize) -> u32 {
+        let mut v = Vec::new();
+        self.lay.eng.children_into(&self.bough, n, &mut v);
+        v[i]
+    }
+    pub fn lay_child_rect(&self, n: u32, i: usize) -> (f32, f32, f32, f32) {
+        self.lay.eng.rect(self.lay_child(n, i))
+    }
+
     /// Release a group: its layout nodes (the drawables are released with the scope's nodes).
     pub fn lay_remove_root(&mut self, root: u32) {
         let mut stack = std::mem::take(&mut self.lay.kids);
@@ -542,9 +669,9 @@ impl Rt {
         let mut all: Vec<u32> = Vec::new();
         while let Some(n) = stack.pop() {
             all.push(n);
-            self.lay.eng.children_into(n, &mut stack);
+            self.lay.eng.children_into(&self.bough, n, &mut stack);
         }
-        self.lay.eng.remove_tree(root);
+        self.lay.eng.remove_tree(&self.bough, root, &all);
         for n in all {
             self.lay.info[n as usize].live = false;
         }
@@ -565,7 +692,7 @@ impl Rt {
             ctx.set_text(&mut self.text, &text);
         }
         self.nodes[n as usize].text = text;
-        self.lay.eng.invalidate(lid);
+        self.lay.eng.invalidate(&self.bough, lid);
         self.lay.info[lid as usize].tdirty = true;
         let root = self.lay.root_of(lid);
         if !self.lay.info[root as usize].queued {
@@ -577,6 +704,7 @@ impl Rt {
 
     /// Lay out every pending group (no write-back yet).
     pub fn lay_compute_pending(&mut self) {
+        self.lay.prof.reset();
         let mut pend = std::mem::take(&mut self.lay.pending);
         for &r in &pend {
             let li = self.lay.info[r as usize];
@@ -584,7 +712,7 @@ impl Rt {
                 width: AvailableSpace::Definite(li.avail_w),
                 height: if li.avail_h.is_nan() { AvailableSpace::MaxContent } else { AvailableSpace::Definite(li.avail_h) },
             };
-            self.lay.eng.layout(r, avail);
+            self.lay.eng.layout(&self.bough, r, avail);
             self.lay.stats.computes += 1;
             // flag what moved / resized, and the path to it
             let mut i = 0;
@@ -602,16 +730,19 @@ impl Rt {
         }
         pend.clear();
         self.lay.pending = pend;
+        self.lay.prof.mark(LP_COMPUTE);
     }
 
     /// Write the laid-out groups back into instances and ink.
     pub fn lay_writeback_ready(&mut self) {
+        self.lay.prof.reset();
         let mut ready = std::mem::take(&mut self.lay.ready);
         for &r in &ready {
             self.lay_writeback(r);
         }
         ready.clear();
         self.lay.ready = ready;
+        self.lay.prof.mark(LP_WRITE);
     }
 
     pub fn lay_flush(&mut self) {
@@ -655,7 +786,7 @@ impl Rt {
                 l.tdirty = false;
             }
             kids.clear();
-            self.lay.eng.children_into(n, &mut kids);
+            self.lay.eng.children_into(&self.bough, n, &mut kids);
             let fc = force || moved;
             for &c in &kids {
                 stack.push((c, ax, ay, fc));
@@ -812,6 +943,7 @@ fn attach<V>(m: &mut Mounter<'_, V>, lid: u32) -> u32 {
         l.avail_w = aw;
         l.avail_h = ah;
         l.queued = true;
+        m.rt.lay.eng.mark_root(lid);
         m.scope.lroots.push(lid);
         m.rt.lay.pending.push(lid);
     }
@@ -825,8 +957,8 @@ where
 {
     fn mount(self, m: &mut Mounter<'_, V>) {
         let s = m.rt.scale;
-        let style = self.spec.to_style(s);
-        let lid = m.rt.lay.eng.add(&style, None);
+        let hd = m.rt.bough.new_handle();
+        let lid = m.rt.lay.eng.add(hd, &self.spec, s, None);
         let parent = attach(m, lid);
         let mut deeper = false;
         if self.draw {
@@ -849,7 +981,6 @@ where
             }
             ins.aux[1] = (self.radius * s).to_bits();
             unsafe { m.rt.inst_ptr(inst).write(ins) };
-            let hd = m.rt.bough.new_handle();
             {
                 let n = &mut m.rt.nodes[node as usize];
                 n.handle = hd;
@@ -866,6 +997,10 @@ where
             m.rt.lay.info[lid as usize].rtn = node;
             m.rt.lay.info[lid as usize].kind = 1;
             m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_QUAD, payload: run, handle: hd.idx });
+            m.depth += 1;
+            deeper = true;
+        } else if DEEP {
+            m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: hd.idx });
             m.depth += 1;
             deeper = true;
         }
@@ -924,11 +1059,10 @@ impl<V: 'static, S: IntoProp<String>> Element<V> for Para<S> {
         let strike = m.rt.text.strike(size_px);
         let mut ctx = LeafCtx::new(size_px, lh_px, self.wrap);
         ctx.set_text(&mut m.rt.text, &init);
-        let style = self.spec.to_style(s);
-        let lid = m.rt.lay.eng.add(&style, Some(ctx));
+        let hd = m.rt.bough.new_handle();
+        let lid = m.rt.lay.eng.add(hd, &self.spec, s, Some(ctx));
         let _parent = attach(m, lid);
         let run = m.rt.alloc_run(init.len().max(4));
-        let hd = m.rt.bough.new_handle();
         {
             let n = &mut m.rt.nodes[node as usize];
             n.text = init;

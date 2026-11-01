@@ -21,6 +21,7 @@ fn main() {
     let mut app = App::new(VList::new(rows), config(scale), render);
     if phases {
         app.prof.enable();
+        app.rt.lay.prof.enable();
     }
     app.frame();
     if mode == Mode::Probe {
@@ -29,11 +30,11 @@ fn main() {
     }
     let t0 = bough_metal::perf::snap();
     let start = std::time::Instant::now();
-    let mut warm = (t0.instrs, 0usize, [0u64; 5], 0u64);
+    let mut warm = (t0.instrs, 0usize, [0u64; 5], 0u64, [0u64; 5]);
     let mut frames = 0u64;
     for tick in 1..=ticks {
         if tick == 60 {
-            warm = (bough_metal::perf::snap().instrs, tick, app.prof.acc, frames);
+            warm = (bough_metal::perf::snap().instrs, tick, app.prof.acc, frames, app.rt.lay.prof.acc);
         }
         step(&mut app, mode, tick as u64);
         frames += app.frame() as u64;
@@ -63,6 +64,10 @@ fn main() {
         app.rt.lay.stats.nodes_written,
         app.rt.text.fallbacks,
     );
+    {
+        use std::sync::atomic::Ordering::Relaxed;
+        println!("measure calls {} wrap runs {} for {} rows mounted", bough::layout::MEASURE_CALLS.load(Relaxed), bough::layout::WRAP_RUNS.load(Relaxed), m.rows_mounted);
+    }
     if phases {
         let n = measured;
         let mut tot = 0.0;
@@ -73,5 +78,15 @@ fn main() {
             print!("  {name} {v:.0}");
         }
         println!("  | sum {tot:.0}");
+        print!("layout path, instr/frame (included in update above):");
+        for (i, name) in bough::layout::LP_NAMES.iter().enumerate() {
+            print!("  {name} {:.0}", (app.rt.lay.prof.acc[i] - warm.4[i]) as f64 / n);
+        }
+        let mounted = app.rt.mregions[0].stats.rows_mounted.max(1) as f64;
+        print!("\nper mounted row ({} rows):", app.rt.mregions[0].stats.rows_mounted);
+        for (i, name) in bough::layout::LP_NAMES.iter().enumerate() {
+            print!("  {name} {:.0}", app.rt.lay.prof.acc[i] as f64 / mounted);
+        }
+        println!();
     }
 }

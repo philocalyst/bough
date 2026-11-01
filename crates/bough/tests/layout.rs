@@ -56,7 +56,7 @@ fn rects(app: &App<impl View>, root: u32) -> Vec<(u32, (f32, f32, f32, f32))> {
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
         out.push((n, app.rt.lay.eng.rect(n)));
-        app.rt.lay.eng.children_into(n, &mut stack);
+        app.rt.lay.eng.children_into(&app.rt.bough, n, &mut stack);
     }
     out.sort_by_key(|e| e.0);
     out
@@ -95,32 +95,32 @@ fn flex_geometry_matches_hand_computation() {
     let rect = |i: usize| by_depth_first[i];
     assert_eq!(rect(0), (0.0, 0.0, 300.0, 300.0));
     // row 0 is the first child: x 0, y 0, stretched to 300 wide, 20 + 2*7 = 34 tall
-    let row0 = app.rt.lay.child_rect(root, 0);
+    let row0 = app.rt.lay_child_rect(root, 0);
     assert_eq!(row0, (0.0, 0.0, 300.0, 34.0));
-    let b0 = app.rt.lay.child_rect(app.rt.lay.child(root, 0), 0);
-    let b1 = app.rt.lay.child_rect(app.rt.lay.child(root, 0), 1);
-    let b2 = app.rt.lay.child_rect(app.rt.lay.child(root, 0), 2);
+    let b0 = app.rt.lay_child_rect(app.rt.lay_child(root, 0), 0);
+    let b1 = app.rt.lay_child_rect(app.rt.lay_child(root, 0), 1);
+    let b2 = app.rt.lay_child_rect(app.rt.lay_child(root, 0), 2);
     assert_eq!(b0, (7.0, 7.0, 30.0, 20.0));
     assert_eq!(b1, (42.0, 7.0, 40.0, 20.0));
     assert_eq!(b2, (87.0, 7.0, 10.0, 20.0));
     // row 1: 100 wide, two items w=20 grow 1:3 -> free 60 -> 35 and 65
-    let row1 = app.rt.lay.child(root, 1);
-    assert_eq!(app.rt.lay.child_rect(root, 1), (0.0, 34.0, 100.0, 10.0));
-    assert_eq!(app.rt.lay.child_rect(row1, 0), (0.0, 0.0, 35.0, 10.0));
-    assert_eq!(app.rt.lay.child_rect(row1, 1), (35.0, 0.0, 65.0, 10.0));
+    let row1 = app.rt.lay_child(root, 1);
+    assert_eq!(app.rt.lay_child_rect(root, 1), (0.0, 34.0, 100.0, 10.0));
+    assert_eq!(app.rt.lay_child_rect(row1, 0), (0.0, 0.0, 35.0, 10.0));
+    assert_eq!(app.rt.lay_child_rect(row1, 1), (35.0, 0.0, 65.0, 10.0));
     // row 2: 200 x 40, a 50% (100) wide box centred vertically, then a 10 box
-    let row2 = app.rt.lay.child(root, 2);
-    assert_eq!(app.rt.lay.child_rect(root, 2), (0.0, 44.0, 200.0, 40.0));
-    assert_eq!(app.rt.lay.child_rect(row2, 0), (0.0, 15.0, 100.0, 10.0));
-    assert_eq!(app.rt.lay.child_rect(row2, 1), (100.0, 15.0, 10.0, 10.0));
+    let row2 = app.rt.lay_child(root, 2);
+    assert_eq!(app.rt.lay_child_rect(root, 2), (0.0, 44.0, 200.0, 40.0));
+    assert_eq!(app.rt.lay_child_rect(row2, 0), (0.0, 15.0, 100.0, 10.0));
+    assert_eq!(app.rt.lay_child_rect(row2, 1), (100.0, 15.0, 10.0, 10.0));
     // row 3: space-between over 100: boxes at 0, 45, 90
-    let row3 = app.rt.lay.child(root, 3);
-    assert_eq!(app.rt.lay.child_rect(row3, 0).0, 0.0);
-    assert_eq!(app.rt.lay.child_rect(row3, 1).0, 45.0);
-    assert_eq!(app.rt.lay.child_rect(row3, 2).0, 90.0);
+    let row3 = app.rt.lay_child(root, 3);
+    assert_eq!(app.rt.lay_child_rect(row3, 0).0, 0.0);
+    assert_eq!(app.rt.lay_child_rect(row3, 1).0, 45.0);
+    assert_eq!(app.rt.lay_child_rect(row3, 2).0, 90.0);
     // absolute child: at its inset inside the 60 x 30 box
-    let col4 = app.rt.lay.child(root, 4);
-    assert_eq!(app.rt.lay.child_rect(col4, 0), (30.0, 12.0, 10.0, 10.0));
+    let col4 = app.rt.lay_child(root, 4);
+    assert_eq!(app.rt.lay_child_rect(col4, 0), (30.0, 12.0, 10.0, 10.0));
 }
 
 // ------------------------------------------------------------------ text
@@ -155,7 +155,7 @@ fn paragraph_wraps_and_measures() {
     let app = wrap_app(A, "user-0001", "short");
     let root = app.rt.lay.first_root();
     // 300 px wide paragraph at 14 px: 160 chars ~ 1,000+ px of text -> several lines of 20
-    let (_, _, w, h) = app.rt.lay.child_rect(root, 0);
+    let (_, _, w, h) = app.rt.lay_child_rect(root, 0);
     assert_eq!(w, 300.0);
     assert!(h >= 60.0 && h <= 200.0 && h % 20.0 == 0.0, "para height {h}");
     // the same text at the same width laid out by bough-text's own wrap helper
@@ -201,7 +201,7 @@ fn incremental_edits_equal_cold_layout_and_fresh_mount() {
         // (a) incremental == cold
         let root = app.rt.lay.first_root();
         let avail = cephal::Size { width: cephal::AvailableSpace::Definite(400.0), height: cephal::AvailableSpace::Definite(700.0) };
-        let cold = app.rt.lay.eng.cold_rects(root, avail);
+        let cold = app.rt.lay.eng.cold_rects(&app.rt.bough, root, avail);
         let now = rects(&app, root);
         assert_eq!(now.len(), cold.len());
         for (a, b) in now.iter().zip(&cold) {
