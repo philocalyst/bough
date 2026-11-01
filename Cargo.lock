@@ -135,6 +135,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-zgui"
+version = "0.0.0"
+dependencies = [
+ "block2",
+ "bough",
+ "bough-core",
+ "bough-metal",
+ "bough-text",
+ "libc",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "rustybuzz",
+ "zgx-workload",
+]
+
+[[package]]
 name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

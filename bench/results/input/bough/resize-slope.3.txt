@@ -1,0 +1,10 @@
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+SIZE rows=64 boxes=129 resize_us=29.958 content_us=2.250 resize_instr=671766 content_instr=15326 records=129
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+SIZE rows=128 boxes=257 resize_us=68.250 content_us=1.166 resize_instr=1329734 content_instr=24926 records=257
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+SIZE rows=256 boxes=513 resize_us=117.500 content_us=2.042 resize_instr=2645276 content_instr=44126 records=513
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+SIZE rows=512 boxes=1025 resize_us=233.708 content_us=4.042 resize_instr=5276982 content_instr=82526 records=1025
+RESIZE slope 0.22305 us/box, content slope 0.00257 us/box, ratio 86.7574 (zgui recorded 0.8650)
+RESIZE slope 5139.7 instr/box, content slope 75.0 instr/box, ratio 68.5294

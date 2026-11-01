@@ -318,6 +318,19 @@ impl DamageRing {
         // SAFETY: as in `add`; an inside rect's span is within the window's tiles.
         unsafe { (*self.cur).mark_span(tx0, ty0, tx1, ty1) };
     }
+    /// A new window size (up to 4096 x 4096): window, tile columns and rows. The planes keep their marks
+    /// (rows past the new height are never read); the caller damages what the resize repaints.
+    pub fn set_window(&mut self, w: i32, h: i32) {
+        assert!(w > 0 && h > 0 && w <= (MAX_TILES_X as i32) * TILE && h <= (MAX_TILES_Y as i32) * TILE, "window up to 4096x4096");
+        let rows = ((h + TILE - 1) >> TILE_SHIFT) as u32;
+        for p in self.planes.iter_mut() {
+            p.n = rows;
+        }
+        self.window = NRect::new(0, 0, w, h);
+        self.wthresh = Thresh::of_rect(self.window);
+        self.tw = ((w + TILE - 1) >> TILE_SHIFT) as u32;
+        self.rows = rows;
+    }
     /// Start a new epoch: the slot it reuses (epoch - RING) is cleared.
     pub fn advance(&mut self) {
         self.epoch += 1;
