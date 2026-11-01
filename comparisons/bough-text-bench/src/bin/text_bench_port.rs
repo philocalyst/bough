@@ -65,8 +65,16 @@ fn size(p: &mut Para, width: Option<f32>, upem: f32) -> (f32, f32) {
 
 fn main() {
     let t_fonts = Instant::now();
-    let (body, bold, code) = (dejavu("DejaVuSans.ttf"), dejavu("DejaVuSans-Bold.ttf"), dejavu("DejaVuSansMono.ttf"));
-    let shapers = [body, bold, code].map(|b| Shaper::new(SimpleScript::build_cached(&b, 0).expect("font")));
+    // STOCK=1: zgx's own faces on macOS: SF NS at the instances cosmic-text picks (wght 400 / 700, opsz = the
+    // 14 px size, which the font clamps to its 17 minimum); the code face stays DejaVu Sans Mono (zgx: Menlo, whose
+    // AAT `morx` table the table shaper does not model).
+    let shapers: [Shaper; 3] = if bough_text_bench::env("STOCK", 0) != 0 {
+        let sf = std::fs::read("/System/Library/Fonts/SFNS.ttf").expect("SF NS");
+        let inst = |w: f32| Shaper::new(SimpleScript::build_instance_cached(&sf, 0, &[(*b"wght", w), (*b"opsz", 14.0)]).expect("SF NS instance"));
+        [inst(400.0), inst(700.0), Shaper::new(SimpleScript::build_cached(&dejavu("DejaVuSansMono.ttf"), 0).expect("font"))]
+    } else {
+        [dejavu("DejaVuSans.ttf"), dejavu("DejaVuSans-Bold.ttf"), dejavu("DejaVuSansMono.ttf")].map(|b| Shaper::new(SimpleScript::build_cached(&b, 0).expect("font")))
+    };
     let fonts: Vec<&Shaper> = shapers.iter().collect();
     let upem = shapers[0].script.upem as f32;
     assert!(shapers.iter().all(|s| s.script.upem as f32 == upem));

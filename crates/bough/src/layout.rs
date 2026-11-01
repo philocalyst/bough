@@ -478,6 +478,8 @@ impl LeafCtx {
         self.run.gid.clear();
         self.run.x.clear();
         let fonts = [&*ts.shaper];
+        // a leaf that never wraps (a label) keeps the degenerate paragraph: slots only, no word table
+        self.para.line_only = !self.wrap;
         // a face without the token model (DejaVu Bold, Mono) takes the general path
         let ok = if ts.shaper.script.tokens.is_none() {
             false
@@ -500,7 +502,7 @@ impl LeafCtx {
         self.fast = true;
         let p = &self.para;
         self.block = Some(Shaped { base: p.base, cap: p.cap, len: text.len() as u32, width: p.width, exotic: p.exotic });
-        self.line_w = p.words.last().map_or(0, |w| w.x1);
+        self.line_w = if p.line_only { p.line_width(pool) } else { p.words.last().map_or(0, |w| w.x1) };
     }
 
     #[inline]
@@ -524,15 +526,14 @@ impl LeafCtx {
         WRAP_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let empty = if self.fast { self.para.text.is_empty() } else { self.run.is_empty() };
         if empty {
+            // one line from byte 0: `line_start` / `line_spans` answer it without a vector
             self.starts.clear();
-            self.starts.push(0);
             self.widest = 0;
             self.nlines = 1;
             return 1;
         }
         if !self.wraps() {
             self.starts.clear();
-            self.starts.push(0);
             self.widest = if self.fast { self.line_w } else { self.line_width() };
             self.nlines = 1;
             return 1;
@@ -564,6 +565,26 @@ impl LeafCtx {
         self.widest = widest;
         self.nlines = lines;
         lines
+    }
+
+    /// The byte span of every line of the last wrap (one lookup of the paragraph's wrap, then one load per line).
+    pub fn line_spans(&self, out: &mut Vec<(u32, u32)>) {
+        out.clear();
+        let n = self.bytes().len() as u32;
+        if !self.starts.is_empty() {
+            let st = &self.starts;
+            for i in 0..st.len() {
+                out.push((st[i], if i + 1 < st.len() { st[i + 1] } else { n }));
+            }
+        } else if let Some(w) = (self.nlines > 1 || self.wraps()).then(|| self.para.wrap_cached(self.wrapped_at)).flatten() {
+            let (words, lines) = (&self.para.words, &w.lines);
+            let start = |k: usize| if k == 0 { 0 } else { words[lines[k].0 as usize].ws };
+            for k in 0..lines.len() {
+                out.push((start(k), if k + 1 < lines.len() { start(k + 1) } else { n }));
+            }
+        } else {
+            out.push((0, n));
+        }
     }
 
     /// First byte of line `i` of the last wrap.
@@ -1042,7 +1063,10 @@ impl Rt {
         let lines = if ctx.wraps() { ctx.wrap_at(((w + 1e-3) / k).floor() as i32) } else { ctx.wrap_at(i32::MAX) };
         let n = ctx.bytes().len() as u32;
         let block = ctx.block;
-        let spans: Vec<(u32, u32)> = (0..lines).map(|i| (ctx.line_start(i), if i + 1 < lines { ctx.line_start(i + 1) } else { n })).collect();
+        let mut spans: Vec<(u32, u32)> = Vec::with_capacity(lines);
+        ctx.line_spans(&mut spans);
+        debug_assert_eq!(spans.len(), lines);
+        let _ = n;
         let slow_text = if block.is_none() { Some(String::from_utf8_lossy(&ctx.text).into_owned()) } else { None };
         self.lay.prof.reset();
         let old_ink = self.texts[ti as usize].ink;

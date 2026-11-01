@@ -360,6 +360,8 @@ impl<V: View> App<V> {
         let owner = &*self.owner as *const V as *const u8;
         // SAFETY: the owner is the mounted view; every wire was installed from a `sig!` proof for it.
         unsafe { self.rt.settle(owner) };
+        // SAFETY: as above (rows re-measured after a reactive text edit mount nothing new for another owner).
+        unsafe { self.rt.mregions_retouch(owner) };
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
         self.prof.mark(PH_TEXT);
@@ -381,6 +383,8 @@ impl<V: View> App<V> {
         let owner = &*self.owner as *const V as *const u8;
         // SAFETY: as in `turn`.
         unsafe { self.rt.settle(owner) };
+        // SAFETY: as in `turn`.
+        unsafe { self.rt.mregions_retouch(owner) };
         self.rt.lay_flush();
     }
 

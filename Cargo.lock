@@ -154,6 +154,7 @@ dependencies = [
  "bough-mem",
  "bough-metal",
  "bough-text",
+ "bough-vlist",
  "rustybuzz",
  "zgx-workload",
 ]

@@ -325,6 +325,34 @@ impl Rt {
         self.lay_writeback_ready();
     }
 
+    /// Text round 3b (LAYOUT.md gap): a reactive text edit inside a mounted row changes the row's height, so the
+    /// prefix index must follow. The roots whose text changed this turn (`Lay::touched_roots`) mark their rows
+    /// unmeasured; each list holding one re-runs its update at its current offset, which re-measures exactly those
+    /// rows, sets their heights (O(log n) each), keeps the first visible row anchored and re-places the rows that
+    /// moved. Lists with no touched row cost one scan of the roots.
+    pub(crate) unsafe fn mregions_retouch(&mut self, owner: *const u8) {
+        if self.lay.touched_roots.is_empty() {
+            return;
+        }
+        let touched = std::mem::take(&mut self.lay.touched_roots);
+        for reg in 0..self.mregions.len() {
+            let mut any = false;
+            for r in self.mregions[reg].rows.iter_mut() {
+                if touched.contains(&r.root) {
+                    r.measured = false;
+                    any = true;
+                }
+            }
+            if any {
+                let s = self.mregions[reg].scroll_px;
+                unsafe { self.mregion_update(reg, owner, s) };
+            }
+        }
+        let mut t = touched;
+        t.clear();
+        self.lay.touched_roots = t;
+    }
+
     /// Initial rows of every measured list (call once the first records are in the Bough).
     pub unsafe fn mregions_init(&mut self, owner: *const u8) {
         for reg in 0..self.mregions.len() {
