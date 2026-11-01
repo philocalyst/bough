@@ -1,0 +1,14 @@
+
+### strategy `cb:h:z:4` damage-mode `stencil` link-pause true
+
+| scenario | frames | process instr / frame | main-thread in-tick instr (med) | publish-thread instr / publish | GPU ms med / p99 | tick interval med / p99 | publish interval med / p99 | present->publish-commit ms med | CPU us / frame (all threads) | wakeups / frame |
+|---|---|---|---|---|---|---|---|---|---|---|
+| one-colour | 167 | **358859** | 60848 | 86601 | 0.195 / 1.136 | 8.33 / 8.33 | 8.32 / 9.19 | 0.55 | 211.1 | 1.02 |
+| full | 168 | **357189** | 67616 | 85757 | 0.921 / 1.863 | 8.33 / 8.33 | 8.33 / 9.11 | 1.34 | 212.3 | 1.02 |
+| text | 168 | **458321** | 167034 | 85719 | 0.471 / 1.314 | 8.33 / 8.33 | 8.33 / 9.28 | 0.82 | 230.3 | 1.02 |
+
+threads [one-colour] (us per frame): main#259 74.5us, ?#5123 66.4us, ?#8707 43.2us, ?#35099 27.3us
+threads [full] (us per frame): main#259 72.3us, ?#35099 71.8us, ?#5123 68.3us, com.apple.NSEventThread#35851 0.2us
+threads [text] (us per frame): main#259 89.2us, ?#35099 73.8us, ?#5123 67.5us
+memory: RSS 35.3 MB, phys_footprint 139.0 MB, MTLDevice.currentAllocatedSize 52.4 MB, surfaces 44.2 MB
+[cb:h:z:4] keep-warm blits 0, content evals 1430 (whole-plane 0), gpu frames 533, tiles/frame 4499.4, skipped-gpu 0, skipped-all 0, deferred (no free surface) 0, drawn-while-in-use 0, published-while-in-use 22, free-candidates hist [0, 0, 476, 56, 1], armed batch errors 0

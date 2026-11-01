@@ -35,6 +35,13 @@ use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Raster {
+    /// binned 32x32 compute repair: row bin pass + tile pass (`cs_bin32` + `cs_tile32b`)
+    ComputeB,
+    ArmedB(usize),
+    /// 32x32-tile compute repair reading the bough-core page layout (`cs_repair32`)
+    ComputeW,
+    /// pre-armed stream of the 32x32 kernel
+    ArmedW(usize),
     Render,
     /// vertex-clipped instance stream (format C expanded by the vertex shader from the damage plane)
     VClip,
@@ -75,6 +82,10 @@ impl Spec {
             "rp" => Raster::Render,
             "vc" => Raster::VClip,
             "cs" => Raster::Compute,
+            "cw" => Raster::ComputeW,
+            "cb" => Raster::ComputeB,
+            a if a.starts_with("ab") => Raster::ArmedB(a[2..].parse().ok()?),
+            a if a.starts_with("aw") => Raster::ArmedW(a[2..].parse().ok()?),
             a if a.starts_with("arm") => Raster::Armed(a[3..].parse().ok()?),
             _ => return None,
         };
@@ -181,6 +192,15 @@ pub struct V2 {
     /// content pick: evaluations that had to hash-compare the whole plane (history too old / unknown)
     pub full_filters: std::cell::Cell<u64>,
     pub evals: std::cell::Cell<u64>,
+    /// post-idle remedy (RESULTS 13.3): residency set (always, unless BOUGH_NORESIDENCY) + bounded keep-warm
+    /// (BOUGH_KEEPWARM=period_ms,window_s): a 4-byte blit every period while the last frame is < window old
+    warm: Option<(f64, f64)>,
+    warm_armed: bool,
+    last_gpu: f64,
+    tiny: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    queue: Option<Retained<ProtocolObject<dyn MTLCommandQueue>>>,
+    pub warm_blits: u64,
+    last_gpu_warm: f64,
     tiles: Vec<u32>,
     cand: Box<Plane>,
     best: Box<Plane>,
@@ -234,11 +254,42 @@ impl V2 {
             batch_errors: 0,
             full_filters: std::cell::Cell::new(0),
             evals: std::cell::Cell::new(0),
+            warm: std::env::var("BOUGH_KEEPWARM").ok().and_then(|s| {
+                let mut it = s.split(',').map(|x| x.parse::<f64>().ok());
+                Some((it.next()?? / 1e3, it.next()??))
+            }),
+            warm_armed: false,
+            last_gpu: 0.0,
+            tiny: None,
+            queue: Some(e.gpu.queue.clone()),
+            warm_blits: 0,
+            last_gpu_warm: 0.0,
             tiles: Vec::with_capacity(TX * TY),
             cand: Box::new(Plane::new()),
             best: Box::new(Plane::new()),
         };
-        if let Raster::Armed(k) = spec.raster {
+        if std::env::var_os("BOUGH_NORESIDENCY").is_none() {
+            // keep every resource the frame touches resident: removes the lingering post-idle penalty (13.3)
+            let d = MTLResidencySetDescriptor::new();
+            unsafe { d.setInitialCapacity(16) };
+            if let Ok(set) = e.gpu.device.newResidencySetWithDescriptor_error(&d) {
+                set.addAllocation(ProtocolObject::from_ref(&*e.gpu.pool));
+                set.addAllocation(ProtocolObject::from_ref(&*e.gpu.atlas));
+                set.addAllocation(ProtocolObject::from_ref(&*e.gpu.bins));
+                set.addAllocation(ProtocolObject::from_ref(&*e.gpu.bin_counts));
+                for s in &v.surfs {
+                    set.addAllocation(ProtocolObject::from_ref(&*s.tex));
+                }
+                set.commit();
+                set.requestResidency();
+                e.gpu.queue.addResidencySet(&set);
+                std::mem::forget(set);
+            }
+        }
+        if v.warm.is_some() {
+            v.tiny = e.gpu.device.newBufferWithLength_options(16, MTLResourceOptions::StorageModePrivate);
+        }
+        if let Raster::Armed(k) | Raster::ArmedW(k) | Raster::ArmedB(k) = spec.raster {
             v.ev = Some(e.gpu.device.newSharedEvent().expect("shared event"));
             if spec.publish != Pub::NextTick {
                 v.listener = Some(MTLSharedEventListener::new());
@@ -255,9 +306,15 @@ impl V2 {
         let cmd = g.queue.commandBuffer().unwrap();
         let t: Vec<&Tex> = self.surfs.iter().map(|s| &s.tex).collect();
         let targets = [t[0], t[1 % t.len()], t[2 % t.len()], t[3 % t.len()]];
+        let wide = matches!(self.spec.raster, Raster::ArmedW(_));
+        let binned = matches!(self.spec.raster, Raster::ArmedB(_));
         for f in self.armed_upto + 1..=self.armed_upto + k {
             cmd.encodeWaitForEvent_value(ProtocolObject::from_ref(&**ev), 2 * f - 1);
-            g.encode_compute(&cmd, FRAME_OFF + (f % 2) as usize * SLOT_BYTES, targets, 0, true);
+            if binned {
+                g.encode_binned(&cmd, FRAME_OFF + (f % 2) as usize * SLOT_BYTES, targets, 0, 0, true);
+            } else {
+                g.encode_compute_w(&cmd, FRAME_OFF + (f % 2) as usize * SLOT_BYTES, targets, 0, true, wide);
+            }
             cmd.encodeSignalEvent_value(ProtocolObject::from_ref(&**ev), 2 * f);
         }
         cmd.commit();
@@ -273,7 +330,7 @@ impl V2 {
 
     fn gpu_done(&self) -> bool {
         match self.spec.raster {
-            Raster::Armed(_) => self.ev.as_ref().unwrap().signaledValue() >= 2 * self.gpu_frames,
+            Raster::Armed(_) | Raster::ArmedW(_) | Raster::ArmedB(_) => self.ev.as_ref().unwrap().signaledValue() >= 2 * self.gpu_frames,
             _ => self.last_cmd.as_ref().map(|c| c.status() == MTLCommandBufferStatus::Completed).unwrap_or(true),
         }
     }
@@ -395,6 +452,43 @@ impl V2 {
         }
     }
 
+    /// Bounded keep-warm: while the last GPU frame is younger than the window, make sure the GPU sees real work at
+    /// least every `period` (a 4-byte blit), so it never powers down between closely spaced interactions.
+    fn warm_tick(&mut self) {
+        self.warm_armed = false;
+        let Some((period, window)) = self.warm else { return };
+        let now = unsafe { CACurrentMediaTime() };
+        if now - self.last_gpu > window {
+            return; // long idle: let the GPU sleep, pay the wake once
+        }
+        let last = self.last_gpu.max(self.last_gpu_warm);
+        if now - last >= period * 0.9 {
+            let c = self.queue.as_ref().unwrap().commandBuffer().unwrap();
+            let b = c.blitCommandEncoder().unwrap();
+            b.fillBuffer_range_value(self.tiny.as_ref().unwrap(), objc2_foundation::NSRange::new(0, 4), 0);
+            b.endEncoding();
+            c.commit();
+            self.warm_blits += 1;
+            self.last_gpu_warm = now;
+        }
+        // next look: one period after the latest GPU activity (frame or blit)
+        let last = self.last_gpu.max(self.last_gpu_warm);
+        self.arm_warm((last + period - now).max(0.02));
+    }
+
+    fn arm_warm(&mut self, period: f64) {
+        if self.warm_armed {
+            return;
+        }
+        self.warm_armed = true;
+        let me = SendPtr(self as *mut V2);
+        let when = dispatch2::DispatchTime::try_from(std::time::Duration::from_secs_f64(period)).unwrap();
+        let _ = dispatch2::DispatchQueue::main().after(when, move || {
+            let me = me;
+            unsafe { (*me.0).warm_tick() };
+        });
+    }
+
     fn arm_poll(&mut self, us: u64) {
         let me = SendPtr(self as *mut V2);
         let when = dispatch2::DispatchTime::try_from(std::time::Duration::from_micros(us)).unwrap();
@@ -440,6 +534,10 @@ impl Presenter for V2 {
             Raster::Render => "rp".to_string(),
             Raster::VClip => "vc".to_string(),
             Raster::Compute => "cs".to_string(),
+            Raster::ComputeW => "cw".to_string(),
+            Raster::ComputeB => "cb".to_string(),
+            Raster::ArmedB(k) => format!("ab{k}"),
+            Raster::ArmedW(k) => format!("aw{k}"),
             Raster::Armed(k) => format!("arm{k}"),
         };
         let p = match self.spec.publish {
@@ -458,7 +556,7 @@ impl Presenter for V2 {
 
     fn sync(&mut self) {
         match self.spec.raster {
-            Raster::Armed(_) => {
+            Raster::Armed(_) | Raster::ArmedW(_) | Raster::ArmedB(_) => {
                 if self.gpu_frames > 0 {
                     let ev = self.ev.as_ref().unwrap();
                     if ev.signaledValue() < 2 * self.gpu_frames {
@@ -581,6 +679,10 @@ impl Presenter for V2 {
         // ---- encode ------------------------------------------------------------------------------------------
         self.gpu_frames += 1;
         let f = self.gpu_frames;
+        if let Some((period, _)) = self.warm {
+            self.last_gpu = unsafe { CACurrentMediaTime() };
+            self.arm_warm(period);
+        }
         self.sh.produced_at[(f % 8) as usize].store(unsafe { CACurrentMediaTime() }.to_bits(), Relaxed);
         match self.spec.raster {
             Raster::Render => {
@@ -615,13 +717,50 @@ impl Presenter for V2 {
                 Self::plane_to_tiles(&best, &mut self.tiles);
                 e.gpu.write_slot_ex((f % 2) as usize, (idx % 4) as u32, &self.tiles, best.full);
             }
+            Raster::ComputeW => {
+                if !best.full {
+                    crate::gpu::tiles32(&best, &mut self.tiles);
+                }
+                let off = e.gpu.write_slot_w((f % 2) as usize, 0, &self.tiles, best.full, true);
+                let cmd = e.gpu.queue.commandBuffer().unwrap();
+                let t = &self.surfs[idx].tex;
+                e.gpu.encode_compute_w(&cmd, off, [t, t, t, t], if best.full { 60 * 45 } else { self.tiles.len() }, false, true);
+                self.last_cmd = Some(cmd);
+            }
+            Raster::ArmedW(_) => {
+                if !best.full {
+                    crate::gpu::tiles32(&best, &mut self.tiles);
+                }
+                e.gpu.write_slot_w((f % 2) as usize, (idx % 4) as u32, &self.tiles, best.full, true);
+            }
+            Raster::ComputeB => {
+                if !best.full {
+                    crate::gpu::tiles32(&best, &mut self.tiles);
+                }
+                let slot = (f % 2) as usize;
+                let off = e.gpu.write_slot_w(slot, 0, &self.tiles, best.full, true);
+                e.gpu.write_rows(slot, &self.tiles, best.full);
+                let nrows = unsafe { *(e.gpu.pool_ptr.add(FRAME_OFF + slot * SLOT_BYTES + SLOT_BYTES - 256) as *const u32) } as usize;
+                let cmd = e.gpu.queue.commandBuffer().unwrap();
+                let t = &self.surfs[idx].tex;
+                e.gpu.encode_binned(&cmd, off, [t, t, t, t], nrows, if best.full { 60 * 45 } else { self.tiles.len() }, false);
+                self.last_cmd = Some(cmd);
+            }
+            Raster::ArmedB(_) => {
+                if !best.full {
+                    crate::gpu::tiles32(&best, &mut self.tiles);
+                }
+                let slot = (f % 2) as usize;
+                e.gpu.write_slot_w(slot, (idx % 4) as u32, &self.tiles, best.full, true);
+                e.gpu.write_rows(slot, &self.tiles, best.full);
+            }
         }
         self.mark_drawn(e, idx, &best, epoch);
         self.best = best;
         self.shown = Some(idx);
         // ---- submit + publish ----------------------------------------------------------------------------
         match self.spec.raster {
-            Raster::Armed(k) => {
+            Raster::Armed(k) | Raster::ArmedW(k) | Raster::ArmedB(k) => {
                 let ev = self.ev.clone().unwrap();
                 match self.spec.publish {
                     Pub::NextTick => self.pending = Some((idx, f)),
@@ -715,6 +854,8 @@ impl Presenter for V2 {
     fn reference(&self, e: &Engine) -> Vec<u8> {
         match self.spec.raster {
             Raster::Render | Raster::VClip => e.gpu.reference(&e.scene),
+            Raster::ComputeW | Raster::ArmedW(_) => e.gpu.reference_compute32(),
+            Raster::ComputeB | Raster::ArmedB(_) => e.gpu.reference_binned(),
             _ => e.gpu.reference_compute(),
         }
     }
@@ -733,8 +874,9 @@ impl Presenter for V2 {
 
     fn diag(&self) -> String {
         format!(
-            "[{}] content evals {} (whole-plane {}), gpu frames {}, tiles/frame {:.1}, skipped-gpu {}, skipped-all {}, deferred (no free surface) {}, drawn-while-in-use {}, published-while-in-use {}, free-candidates hist {:?}, armed batch errors {}",
+            "[{}] keep-warm blits {}, content evals {} (whole-plane {}), gpu frames {}, tiles/frame {:.1}, skipped-gpu {}, skipped-all {}, deferred (no free surface) {}, drawn-while-in-use {}, published-while-in-use {}, free-candidates hist {:?}, armed batch errors {}",
             self.name(),
+            self.warm_blits,
             self.evals.get(),
             self.full_filters.get(),
             self.gpu_frames,

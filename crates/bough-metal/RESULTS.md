@@ -691,3 +691,205 @@ $X/lab --strategy bh                                # before
 $X/lab --strategy cs:h:z:4 --pause --direct         # after (raster:publish:pick:n; rp|vc|cs|armK : h|hm|nt|tp : rr|free|z : 3|4)
 $X/lab --strategy cs:h:z:4 --pause --scn idle --secs 8
 ```
+
+---
+
+# Part III: second Opus round (2026-11-01)
+
+* **Same rules:** one mechanism; byte-exact against a full redraw through the same mechanism; sabotage must fail;
+  losing results kept.
+* **Same machine, same load:** other agents kept the GPU ~50 % busy. GPU ms are noisy run to run; ratios inside one
+  interleaved run, and p10s, are what to read.
+* **New code:**
+  * `cs_repair32`, `cs_bin32` and `cs_tile32b` in `shader.metal`;
+  * the bough-core page mirror and bough-text runs in `scene.rs`;
+  * residency + keep-warm in `v2.rs`;
+  * new examples `runs_check`, `wake`, `opcost`;
+  * `INTERFACE.md`.
+* Raw data: `results/v2/r2_*`.
+
+## 13.1 Compute repair that wins GPU time at every damage size (KEPT: binned 32x32)
+
+Round 1's 16-px compute kernel lost the GPU 1.7x on scroll and 2.2x on full redraw. Chain of attempts, each one a
+representation change, all exact (correctness + sabotage after each):
+
+| step | rule bent / representation | full / scroll GPU ms (stencil in the same run) | verdict |
+|---|---|---|---|
+| v3 | 32x32 threadgroup tile (the hardware tile and bough-core's damage unit), 4 px/thread, half-precision accumulation; cull reads **bough-core's own page layout**: directory union → `gink` (8-record groups) → record `ink`, NRect threshold tests | 0.414 / 0.206 (0.307 / 0.186) | progress |
+| diag | `debug` modes: write-only 0.073-0.079, cull-only 0.19-0.22, i.e. shading ≈ 0.2 ms with only 3.5 records staged per tile | | shading cost per evaluation, then culling |
+| v4 | colours premultiplied **once per record** (staged), thread owns a 2x2 block (one reject test for 4 px), **opaque floor**: shading starts at the last opaque solid record covering the whole tile (exact: blending over alpha 1 is a bitwise overwrite) | 0.370 (0.275) | same ratio |
+| v5 | **core box**: per record, the box where coverage is provably 1 (solid: the quad; rrect/border: centre ± (half − max(r, 0.5 + bw) − 1)); blocks inside take the colour with no SDF. Staging capped at 64 records per step (~6 KB of threadgroup memory → occupancy) | 0.383 / 0.174 (0.348 / 0.182) | scroll won, full −10 % |
+| **v6** | **row binning**: pass 1, one threadgroup per damaged 32-px tile ROW, runs the hierarchical cull once and appends hits (instance + ink) to the row's bin in paint order; pass 2, each tile scans only its row's bin (128 per step, 3 barriers). Two dispatches, one encoder, one buffer barrier | **0.188-0.229 / 0.082-0.119** (0.248-0.308 / 0.123-0.184) | **KEPT** |
+| v7 | per-tile lists built in the bin pass (one thread per tile column scans the row bin sequentially) | 0.29 / 0.14 (0.31-0.35 / 0.18); text-heavy 1.5x stencil | REJECTED: the sequential scan serialises the bin pass |
+
+Head-to-head, default scene (`gpumodes`, headless, modes interleaved; `r2_gpumodes_binned_*.txt`,
+`r2_gpumodes_final.txt`). Cells are CPU instr (encode+commit, main thread) / GPU ms median:
+
+| damage | stencil (render) | compute16 (round 1) | **binned32** |
+|---|---|---|---|
+| one colour | 89 K / 0.090-0.137 | 42 K / 0.015-0.026 | **46 K / 0.020-0.054** |
+| scatter-80 | 146 K / 0.198-0.224 | 78 K / 0.234 | **67 K / 0.123-0.130** |
+| scroll 400 px | 72 K / 0.123-0.184 | 78 K / 0.201-0.302 | **60 K / 0.082-0.119** |
+| full | 53 K / 0.248-0.308 | 40 K / 0.667 | **44 K / 0.188-0.229** |
+
+* **On the dashboard scene, binned32 now wins both CPU and GPU at all four damage sizes, with no damage-size
+  switch.** The single exception is the 16-px kernel's one-colour GPU time: 32-px tiles repaint 4x the pixels of a
+  glyph-sized damage.
+* At display cadence (DVFS): one colour 0.066 vs 0.14-0.15 ms (b-h), scroll 0.24 vs 0.34, full 0.20-0.73 vs
+  0.58-0.60.
+
+## 13.2 Text runs expanded on the GPU (bough-text iteration 2 format) (KEPT)
+
+* **Rule bent:** "the draw list holds glyph instances". **Representation:**
+  * A text run is ONE core record: kind RUN, payload = run | bit 31, ink = the run's union.
+  * Glyphs stay in bough-text's 6-byte SoA pool (`x: i32`, `ent: u16`) behind a 32-byte window header.
+  * The bin pass culls runs by their record ink. It expands each hit run cooperatively (256 glyphs per step,
+    bough-text's `floor(fma(float(x − x0), scale, origin.x + 0.5)) + geo` plus the space and the space's clip),
+    tests every glyph against the row band, and appends hits to the row bin in paint order.
+  * So a run is expanded at most once per damaged tile row and shared by all the row's tiles. The tile pass stages
+    glyph entries like instances.
+* **Heavy text load** (`BOUGH_HEAVYTEXT=1`):
+  * 84 numeric labels of 8 glyphs (in the cards; a tick changes the last 3 digits of every label);
+  * a 5-line log pane of 85 glyphs per line (a tick writes one new line into a ring of slots and re-points 5
+    window headers);
+  * plus all the dashboard's table cells and labels.
+  * Total: 2,309 glyphs in 232 runs. The GPU directory holds **487 records instead of 2,564**.
+* **Exactness:**
+  * `runs_check`: the same scene state rendered with the mirror in instance mode and in runs mode is
+    **byte-identical** (60 mixed steps).
+  * Partial repairs in runs mode are exact (182 frames, 3 strategies), and sabotage fails.
+* **Cost of the expansion: none measurable.** Runs mode vs instance mode through the same kernels
+  (`r2_gpumodes_heavytext_*`), GPU ms:
+
+| heavy-text damage | stencil (glyph instances) | binned32 (glyph instances) | **binned32 (runs, GPU-expanded)** |
+|---|---|---|---|
+| text tick (84 labels + log line) | 0.118-0.133 | 0.194-0.197 | **0.171-0.193** |
+| one colour (a whole label) | 0.063-0.066 | 0.068 | 0.083 |
+| scatter-80 | 0.199-0.200 | 0.183-0.188 | 0.185-0.189 |
+| scroll 400 | 0.107-0.109 | 0.075-0.076 | 0.081-0.082 |
+| full | 0.268 | 0.274-0.276 | 0.276-0.278 |
+
+* CPU per encode+commit is identical in both modes (45-71 K, vs 54-143 K for stencil).
+* **Losing regime (recorded):** on glyph-dense partial damage (the text tick), binned compute is ~1.45x stencil on
+  the GPU, and full redraw only ties. A tile in a log-pane row scans ~230 row-bin entries to find ~5 glyphs. The
+  tile-list fix (v7) failed. The next structural step is 2D binning with a *parallel* scatter: count + prefix +
+  scatter per (row, column chunk), not a per-tile sequential scan.
+* Windowed, heavy text (`r2_text_*`), process instr per frame:
+
+| heavy text | b-h | binned design |
+|---|---|---|
+| text tick | 474-560 K | **456-458 K** |
+| one colour | 417-423 K | **356-359 K** |
+| full | 378-381 K | **357-360 K** |
+
+  GPU at cadence: text tick 0.47 vs 0.31 ms, full 0.8-0.9 vs 0.65 ms (the losing regime above). In this prototype
+  both the instance and the run representation are written on every text op (the render paths need instances), so
+  the text tick's CPU includes both writers.
+
+## 13.3 The post-idle wake cost: explained and (mostly) killed
+
+**Headless reproduction** (`examples/wake.rs`): warm 2 s at 120 Hz, idle D, then 10 changes at 10 Hz
+(`r2_wake.txt`).
+
+| idle D | first change after idle | its present→commit | changes 2-10 |
+|---|---|---|---|
+| 0.1-0.5 s | 216-229 K | 0.3-0.5 ms | 226-234 K |
+| **1.5-3 s** | **9.9-10.0 M** | **3.1-4.1 ms** | **565-650 K** |
+
+* **Explanation:**
+  * Between 0.5 and 1.5 s of no GPU work, the GPU powers down.
+  * The first submission afterwards costs ~10 M instructions in our process. These are counted to our threads,
+    presumably the kernel driver polling while the GPU powers back up.
+  * It also adds ~3-4 ms of latency.
+  * The driver then stays in a slow state at 10 Hz submission rates: 2.5x per frame for the following changes.
+* Not Core Animation: no window, no CA commits involved.
+* In round 1's lab this produced 0.95-1.3 M per sparse change after the GPU-silent toggle phase.
+
+| remedy (headless, same protocol) | first change after 1.5 / 3 s | changes 2-10 | idle cost |
+|---|---|---|---|
+| none | 9.9 / 10.0 M | 565-650 K | ~0.05 M/s |
+| `MTLResidencySet` (pool, atlas, bins, surfaces) on the queue | 7.6 / 8.5 M | **222 K** | 0 |
+| empty command buffer every 100 / 500 ms | 10-16.5 M | 540-620 K | 0.3-1.1 M/s: **useless**, no GPU work runs |
+| real work (4-byte blit) every 250 ms, no residency set | 2.3-2.6 M | 540-625 K | 0.4-0.8 M/s |
+| pre-armed command stream (event release) | 11.9-12.8 M | 250 K | 0 |
+| **residency set + real 4-byte blit every 800 ms** | **0.49 / 0.47 M** | **230 K** | ~0.3 M/s (headless) |
+
+* **Kept:** a residency set, always on (it removes the lingering slow state for free), plus **bounded keep-warm**
+  (`BOUGH_KEEPWARM=800,10`): a 4-byte blit whenever the GPU has been idle 0.8 s, but only within 10 s of the last
+  real frame. After that the GPU is allowed to sleep and the next wake pays the 10 M once.
+* Windowed (`r2_wake_lab.txt`), sparse changes after the GPU-silent stretch:
+  * **416-460 K per change with keep-warm vs 949-971 K without** (one blit fired);
+  * keep-warm's idle cost inside its window: **0.54 M instr/s** at 800 ms (1.29 M/s at 250 ms, 0.81 at 500), vs
+    0.105-0.137 M/s idle floor.
+* **Break-even:** keep-warm costs ~0.4 M/s above the floor, so it is worth it for idle gaps up to ~25 s. With a
+  10-s window the worst case is +4 M per long idle period; the best case saves ~9.5 M and ~3 ms of input latency
+  per short pause.
+
+## 13.4 Final before / after (same harness, same scene code, alternating runs; `r2_final_*`)
+
+* **Before** = b-h (round-0 winner).
+* **After** = the recommended design: binned compute, completion-handler commit, content-addressed 4-ring, link
+  paused when idle, direct present from events, residency set, bounded keep-warm (`lab --strategy cb:h:z:4 --pause
+  --direct`, `BOUGH_KEEPWARM=800,10`).
+* Note: this round's prototype scene costs more per scroll write (`op_scroll` ≈ 102 K vs 49 K; it recomputes 924
+  clipped inks and mirrors them). Both columns pay it. In the real Bough a translation is a NEON pass over the ink
+  column.
+
+| scenario | before: process instr/frame (GPU ms at cadence) | **after** | change |
+|---|---|---|---|
+| idle (8 s) | 5.25-5.41 M instr/s, 121 wakeups/s, 3.8-4.7 ms CPU/s | **0.105-0.137 M/s**, 1.5 wakeups/s, 0.1 ms CPU/s (0.54 M/s inside the 10-s keep-warm window) | −97..−98 % |
+| one colour | 481-491 K (0.14-0.15) | **346 K** (0.066) | **−29 %** |
+| 80 scattered | 477 K (0.41-0.42) | **418 K** (0.37-0.39) | −12 % |
+| scroll 400 px | 533 K (0.33-0.35) | **503-505 K** (0.24-0.25) | −5 % |
+| full redraw | 379 K (0.58-0.60) | **357-359 K** (0.20-0.51) | −6 % |
+| toggle A/B | 379 K | **163-164 K** (GPU skipped) | **−57 %** |
+| sparse 10/s | 976-980 K | **386-401 K** | **−60 %** |
+| phys_footprint | 159-160 MB | **140 MB** | −12 % |
+| frame interval med / p99 | 8.33 / 8.33 | 8.33 / 8.33 (commit p99 8.6-9.1) | = |
+| present → commit | (not instrumented) | 0.37-0.45 ms one colour, 0.55-0.95 full | |
+
+## 13.5 Recommended presenter, round 2: call sequence
+
+Same as 12.11 with two changes.
+
+**The raster is two dispatches in one compute encoder:**
+
+```
+ 1 [queue commandBuffer]
+ 2 [cmd computeCommandEncoder]
+ 3 [enc setBuffer:pool offset:0 atIndex:0]     4 [enc setBytes:&slotOffset length:4 atIndex:1]
+ 5 [enc setBuffer:bins atIndex:2]              6 [enc setBuffer:binCounts atIndex:3]
+ 7 [enc setComputePipelineState:cs_bin32]      8 [enc dispatchThreadgroups:(nrows) threadsPerThreadgroup:(256)]
+ 9 [enc memoryBarrierWithScope:Buffers]
+10 [enc setComputePipelineState:cs_tile32b]   11 [enc setTextures:{atlas, target x4} withRange:0..5]
+12 [enc dispatchThreadgroups:(ntiles) threadsPerThreadgroup:(16,16)]
+13 [enc endEncoding]   14 [cmd addCompletedHandler:^publish]   15 [cmd commit]
+```
+
+* The CPU side of a frame: OR of the age window's 32-px planes → row-major tile list + row spans into the frame
+  slot (O(damaged tiles); `full` flag for a redraw).
+* **Setup gains** one `MTLResidencySet` (pool, atlas, bins, surfaces) on the queue.
+* **Idle gains** a 0.8-s keep-warm blit while within 10 s of the last frame.
+* The input contract (bough-core pages and directory, bough-text runs, frame slots) is `INTERFACE.md`.
+
+Next structural steps:
+
+1. 2D binning with a parallel count/prefix/scatter, for glyph-dense partial damage (13.2's losing regime).
+2. 16-px sub-tile masks inside a 32-px tile (write only damaged quadrants) to recover the 16-px kernel's
+   one-colour GPU time.
+3. Map bough-core's `PagePool` arena and bough-text's `GlyphPool` into the pool buffer for real. The integration
+   is then pointer arithmetic, and the prototype's mirror pass and double text representation disappear.
+
+Reproduce (in addition to 11 and Part II):
+
+```
+$X/gpumodes 300                                           # default scene: stencil | vclip | compute16 | compute32 | binned32
+BOUGH_HEAVYTEXT=1 $X/gpumodes 200                         # + text-heavy pattern, binned32 runs vs instances
+BOUGH_HEAVYTEXT=1 $X/runs_check 60                        # GPU-expanded runs == glyph instances, byte for byte
+BOUGH_HEAVYTEXT=1 BOUGH_RUNS=1 $X/correctness 200 cb:h:z:4,cb:h:free:4,ab8:nt:free:4 bbox
+BOUGH_SABOTAGE=1 $X/correctness 100 cb:h:free:4 bbox      # must FAIL
+$X/wake cb:h:free:4 none|residency|warm100|rblit800       # post-idle wake cost per remedy
+BOUGH_KEEPWARM=800,10 $X/lab --strategy cb:h:z:4 --pause --direct
+BOUGH_HEAVYTEXT=1 BOUGH_RUNS=1 $X/lab --strategy cb:h:z:4 --pause --direct --scn text,one-colour,full
+$X/opcost                                                 # scene write costs (prototype scene)
+```

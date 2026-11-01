@@ -105,6 +105,12 @@ pub struct Gpu {
     /// second queue for readback/reference work, so it never queues behind a pre-armed (event-waiting) batch
     pub aux: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     pub pso_cs: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub pso_cs32: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub pso_bin32: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub pso_tile32b: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    /// row bins of the binned compute repair (GPU-private): 45 rows x 4096 x (instance, ink) and per-row counts
+    pub bins: Retained<ProtocolObject<dyn MTLBuffer>>,
+    pub bin_counts: Retained<ProtocolObject<dyn MTLBuffer>>,
     pso_main: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     pso_vclip: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     /// entries emitted by the last vclip cull (diagnostic)
@@ -127,6 +133,36 @@ pub struct Gpu {
     /// Number of ObjC message sends issued by the encode path (counted at call sites).
     pub msgs: Cell<u32>,
     pub draws: Cell<u32>,
+}
+
+/// 16-px plane -> list of damaged 32x32 tiles ((ty << 16) | tx), a 32-px tile being damaged iff any of its four
+/// 16-px tiles is. (The bough-core ring is 32-px natively; this adapter exists only for this crate's 16-px history.)
+pub fn tiles32(p: &crate::damage::Plane, out: &mut Vec<u32>) {
+    out.clear();
+    if !p.any {
+        return;
+    }
+    const EVEN: u64 = 0x5555_5555_5555_5555;
+    let (r0, r1) = (p.r0 as usize, p.r1 as usize);
+    for ty in r0 / 2..=r1 / 2 {
+        let mut m = [0u64; 2];
+        for y in [2 * ty, 2 * ty + 1] {
+            if y >= r0 && y <= r1 {
+                m[0] |= p.rows[y][0];
+                m[1] |= p.rows[y][1];
+            }
+        }
+        for w in 0..2 {
+            let mut b = (m[w] | m[w] >> 1) & EVEN; // bit 2k set iff 16-px tile 2k or 2k+1 is damaged
+            while b != 0 {
+                let tx = (w * 64 + b.trailing_zeros() as usize) / 2;
+                b &= b - 1;
+                if tx < 60 {
+                    out.push((ty as u32) << 16 | tx as u32);
+                }
+            }
+        }
+    }
 }
 
 /// Runs per tile row the vertex-clipped stream draws (must match `VK` in shader.metal).
@@ -248,6 +284,14 @@ impl Gpu {
         };
         let cs = lib.newFunctionWithName(ns_string!("cs_repair")).unwrap();
         let pso_cs = device.newComputePipelineStateWithFunction_error(&cs).expect("pso cs");
+        let cs32 = lib.newFunctionWithName(ns_string!("cs_repair32")).unwrap();
+        let pso_cs32 = device.newComputePipelineStateWithFunction_error(&cs32).expect("pso cs32");
+        let f = lib.newFunctionWithName(ns_string!("cs_bin32")).unwrap();
+        let pso_bin32 = device.newComputePipelineStateWithFunction_error(&f).expect("pso bin32");
+        let f = lib.newFunctionWithName(ns_string!("cs_tile32b")).unwrap();
+        let pso_tile32b = device.newComputePipelineStateWithFunction_error(&f).expect("pso tile32b");
+        let bins = device.newBufferWithLength_options(45 * 8192 * 16, MTLResourceOptions::StorageModePrivate).expect("bins");
+        let bin_counts = device.newBufferWithLength_options(64 * 4, MTLResourceOptions::StorageModePrivate).expect("bin counts");
         let ds_write = ds(true);
         let ds_test = ds(false);
         times.pipelines_ms = ms(t);
@@ -301,6 +345,11 @@ impl Gpu {
             queue,
             aux,
             pso_cs,
+            pso_cs32,
+            pso_bin32,
+            pso_tile32b,
+            bins,
+            bin_counts,
             pso_main,
             pso_vclip,
             vclip_entries: Cell::new(0),
@@ -544,11 +593,16 @@ impl Gpu {
 
     /// `full`: dispatch every tile (threadgroup index = tile), no list is written.
     pub fn write_slot_ex(&self, slot: usize, target: u32, tiles: &[u32], full: bool) -> usize {
+        self.write_slot_w(slot, target, tiles, full, false)
+    }
+
+    /// `wide`: tiles are 32x32 (60 x 45 grid) for `cs_repair32`.
+    pub fn write_slot_w(&self, slot: usize, target: u32, tiles: &[u32], full: bool, wide: bool) -> usize {
         let off = FRAME_OFF + slot * SLOT_BYTES;
         if full {
             unsafe {
                 let h = self.pool_ptr.add(off) as *mut u32;
-                let n = (crate::damage::TX * crate::damage::TY) as u32;
+                let n = if wide { 60 * 45 } else { (crate::damage::TX * crate::damage::TY) as u32 };
                 *h = n;
                 *h.add(1) = 1;
                 *h.add(2) = 1;
@@ -575,8 +629,12 @@ impl Gpu {
     /// Encode one compute tile repair: textures = [atlas, t0..t3]; the kernel picks t[target] from the slot.
     /// `indirect` reads the threadgroup count from the slot (constant command stream); otherwise it is immediate.
     pub fn encode_compute(&self, cmd: &ProtocolObject<dyn MTLCommandBuffer>, slot_off: usize, targets: [&Tex; 4], ntiles: usize, indirect: bool) {
+        self.encode_compute_w(cmd, slot_off, targets, ntiles, indirect, false)
+    }
+
+    pub fn encode_compute_w(&self, cmd: &ProtocolObject<dyn MTLCommandBuffer>, slot_off: usize, targets: [&Tex; 4], ntiles: usize, indirect: bool, wide: bool) {
         let enc = cmd.computeCommandEncoder().expect("compute encoder");
-        enc.setComputePipelineState(&self.pso_cs);
+        enc.setComputePipelineState(if wide { &self.pso_cs32 } else { &self.pso_cs });
         let off = slot_off as u32;
         unsafe {
             enc.setBuffer_offset_atIndex(Some(&self.pool), 0, 0);
@@ -594,6 +652,97 @@ impl Gpu {
         }
         enc.endEncoding();
         self.bump(6);
+    }
+
+    /// Binned 32x32 repair: also writes the damaged-row list (ty | tx0 << 8 | tx1 << 16) into the slot tail and the
+    /// bin pass's indirect args. `tiles` are 32-px tiles in row-major order (as `tiles32` emits them).
+    pub fn write_rows(&self, slot: usize, tiles: &[u32], full: bool) {
+        let off = FRAME_OFF + slot * SLOT_BYTES + SLOT_BYTES - 256;
+        unsafe {
+            let h = self.pool_ptr.add(off) as *mut u32;
+            let rows = h.add(4);
+            let mut n = 0usize;
+            if full {
+                for ty in 0..45u32 {
+                    *rows.add(n) = ty | 60 << 16;
+                    n += 1;
+                }
+            } else {
+                let mut i = 0;
+                while i < tiles.len() {
+                    let ty = tiles[i] >> 16;
+                    let tx0 = tiles[i] & 0xffff;
+                    let mut tx1 = tx0 + 1;
+                    while i < tiles.len() && tiles[i] >> 16 == ty {
+                        tx1 = (tiles[i] & 0xffff) + 1;
+                        i += 1;
+                    }
+                    *rows.add(n) = ty | tx0 << 8 | tx1 << 16;
+                    n += 1;
+                }
+            }
+            *h = n as u32;
+            *h.add(1) = 1;
+            *h.add(2) = 1;
+        }
+    }
+
+    /// Two dispatches in one encoder: bin pass (one threadgroup per damaged row), buffer barrier, tile pass.
+    pub fn encode_binned(&self, cmd: &ProtocolObject<dyn MTLCommandBuffer>, slot_off: usize, targets: [&Tex; 4], nrows: usize, ntiles: usize, indirect: bool) {
+        let enc = cmd.computeCommandEncoder().expect("compute encoder");
+        let off = slot_off as u32;
+        let tg = MTLSize { width: 256, height: 1, depth: 1 };
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(&self.pool), 0, 0);
+            enc.setBytes_length_atIndex(NonNull::new(&off as *const u32 as *mut _).unwrap(), 4, 1);
+            enc.setBuffer_offset_atIndex(Some(&self.bins), 0, 2);
+            enc.setBuffer_offset_atIndex(Some(&self.bin_counts), 0, 3);
+            enc.setComputePipelineState(&self.pso_bin32);
+            if indirect {
+                enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, slot_off + SLOT_BYTES - 256, tg);
+            } else {
+                enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: nrows, height: 1, depth: 1 }, tg);
+            }
+            enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+            enc.setComputePipelineState(&self.pso_tile32b);
+            let texs: [*const ProtocolObject<dyn MTLTexture>; 5] = [
+                Retained::as_ptr(&self.atlas), Retained::as_ptr(targets[0]), Retained::as_ptr(targets[1]), Retained::as_ptr(targets[2]), Retained::as_ptr(targets[3]),
+            ];
+            enc.setTextures_withRange(NonNull::new(texs.as_ptr() as *mut _).unwrap(), objc2_foundation::NSRange::new(0, 5));
+            let tg2 = MTLSize { width: 16, height: 16, depth: 1 };
+            if indirect {
+                enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, slot_off, tg2);
+            } else {
+                enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: ntiles, height: 1, depth: 1 }, tg2);
+            }
+        }
+        enc.endEncoding();
+        self.bump(11);
+    }
+
+    /// Full-redraw reference through the BINNED 32x32 kernels (explicit list of all 2700 tiles).
+    pub fn reference_binned(&self) -> Vec<u8> {
+        let tex = self.new_texture(MTLStorageMode::Shared, true);
+        let all: Vec<u32> = (0..45u32).flat_map(|y| (0..60u32).map(move |x| y << 16 | x)).collect();
+        let off = self.write_slot_w(2, 0, &all, false, true);
+        self.write_rows(2, &all, false);
+        let cmd = self.aux.commandBuffer().unwrap();
+        self.encode_binned(&cmd, off, [&tex, &tex, &tex, &tex], 45, all.len(), false);
+        cmd.commit();
+        cmd.waitUntilCompleted();
+        self.read_texture(&tex)
+    }
+
+    /// Full-redraw reference through the 32x32 COMPUTE kernel (explicit list of all 2700 tiles).
+    pub fn reference_compute32(&self) -> Vec<u8> {
+        let tex = self.new_texture(MTLStorageMode::Shared, true);
+        let all: Vec<u32> = (0..45u32).flat_map(|y| (0..60u32).map(move |x| y << 16 | x)).collect();
+        let off = self.write_slot_w(2, 0, &all, false, true);
+        let cmd = self.aux.commandBuffer().unwrap();
+        self.encode_compute_w(&cmd, off, [&tex, &tex, &tex, &tex], all.len(), false, true);
+        cmd.commit();
+        cmd.waitUntilCompleted();
+        self.read_texture(&tex)
     }
 
     /// Full-redraw reference through the COMPUTE kernel (all tiles), returned as bytes.

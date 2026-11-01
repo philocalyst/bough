@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering::Relaxed;
 
 // (`lab` is registered in Cargo.toml)
-const ALL: [&str; 7] = ["idle", "one-colour", "scatter-80", "scroll-400", "full", "toggle", "sparse"];
+const ALL: [&str; 8] = ["idle", "one-colour", "scatter-80", "scroll-400", "full", "toggle", "sparse", "text"];
 
 #[derive(Default)]
 struct Scn {
@@ -81,6 +81,11 @@ fn apply(st: &mut St, name: &str) {
         "scatter-80" => st.e.scene.op_scattered(&mut st.rng, 80),
         "scroll-400" => st.e.scene.op_scroll(7.0),
         "full" => st.e.scene.invalidate_all(),
+        "text" => {
+            // heavy text tick (BOUGH_HEAVYTEXT=1): 84 numeric labels change 3 digits + one new log line
+            st.e.scene.op_numeric(&mut st.rng);
+            st.e.scene.op_log(&mut st.rng);
+        }
         "toggle" => {
             st.toggle = !st.toggle;
             let i = st.e.scene.small[17] as usize;
@@ -347,7 +352,7 @@ fn main() {
     let mode = get("--mode").and_then(|m| DamageMode::ALL.iter().copied().find(|d| d.name() == m)).unwrap_or(DamageMode::Stencil);
     let order: Vec<&'static str> = match get("--scn") {
         Some(s) => ALL.iter().copied().filter(|n| s.split(',').any(|x| x == *n)).collect(),
-        None => ALL.to_vec(),
+        None => ALL.iter().copied().filter(|n| *n != "text").collect(),
     };
     let mut st: Option<Box<St>> = None;
     app::run(&format!("bough-metal lab {strategy}"), move |host, link| {

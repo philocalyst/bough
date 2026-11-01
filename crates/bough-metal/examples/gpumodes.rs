@@ -12,6 +12,8 @@ use objc2_metal::*;
 
 fn main() {
     let iters: usize = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(300);
+    // BOUGH_KDEBUG=1: cs_repair32 culls only (no shading); =2: count staged records per tile
+    let kdebug: u32 = std::env::var("BOUGH_KDEBUG").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
     let mut e = Engine::new(ShaderSource::Metallib);
     let io = make_iosurface();
     let d = unsafe { MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(MTLPixelFormat::BGRA8Unorm, 1920, 1440, false) };
@@ -19,11 +21,13 @@ fn main() {
     d.setStorageMode(MTLStorageMode::Shared);
     let tex = e.gpu.device.newTextureWithDescriptor_iosurface_plane(&d, &io, 0).unwrap();
     let ovh = tinstr_overhead();
+    unsafe { *(e.gpu.pool_ptr.add(bough_metal::instance::HDR_DEBUG_OFF) as *mut u32) = kdebug };
     let mut rng = Rng(0xFEED);
     println!("tinstr overhead {ovh}; {iters} iterations per (pattern, mode); damage = union of 3 epochs (ring-of-3 age)\n");
     println!("| pattern | repair tiles (16 px) | mode | CPU instr encode+commit (med) | GPU ms med | GPU ms p10 | GPU ms p90 | draws/dispatch | entries |");
     println!("|---|---|---|---|---|---|---|---|---|");
-    for pat in ["one-colour", "scatter-80", "scroll-400", "full"] {
+    let pats: Vec<&str> = if e.scene.heavy_text { vec!["text-heavy", "one-colour", "scatter-80", "scroll-400", "full"] } else { vec!["one-colour", "scatter-80", "scroll-400", "full"] };
+    for pat in pats {
         // build an age-3 repair plane for this pattern
         let mut h = History::new();
         for _ in 0..3 {
@@ -31,6 +35,10 @@ fn main() {
                 "one-colour" => e.scene.op_one_colour(&mut rng),
                 "scatter-80" => e.scene.op_scattered(&mut rng, 80),
                 "scroll-400" => e.scene.op_scroll(7.0),
+                "text-heavy" => {
+                    e.scene.op_numeric(&mut rng);
+                    e.scene.op_log(&mut rng);
+                }
                 _ => e.scene.invalidate_all(),
             }
             h.push(&mut e.scene.acc);
@@ -38,13 +46,21 @@ fn main() {
         let mut plane = Plane::new();
         h.repair(Some(h.epoch - 3), &mut plane);
         let ntiles: u32 = if plane.full { (TX * TY) as u32 } else { (plane.r0..=plane.r1).map(|y| plane.rows[y as usize][0].count_ones() + plane.rows[y as usize][1].count_ones()).sum() };
-        let modes = ["bbox", "stencil", "vclip", "compute"];
-        let mut cpu: Vec<Vec<f64>> = vec![vec![]; 4];
-        let mut gpu: Vec<Vec<f64>> = vec![vec![]; 4];
-        let mut entries = [0usize; 4];
+        let modes = ["bbox", "stencil", "vclip", "compute16", "compute32", "binned32", "binned32-runs"];
+        let mut cpu: Vec<Vec<f64>> = vec![vec![]; 7];
+        let mut gpu: Vec<Vec<f64>> = vec![vec![]; 7];
+        let mut entries = [0usize; 7];
         let mut tiles: Vec<u32> = Vec::with_capacity(TX * TY);
         for it in 0..iters + 20 {
             for (m, &mode) in modes.iter().enumerate() {
+                if mode == "binned32-runs" && !e.scene.heavy_text {
+                    continue;
+                }
+                let want_runs = mode == "binned32-runs";
+                if e.scene.gpu_runs != want_runs {
+                    e.scene.gpu_runs = want_runs;
+                    e.scene.rebuild_mirror(); // outside the measured bracket: the integration never translates
+                }
                 let t0 = tinstr();
                 let cmd = e.gpu.queue.commandBuffer().unwrap();
                 let mut region = Region::default();
@@ -62,6 +78,26 @@ fn main() {
                             e.gpu.encode_vclip(&cmd, &tex, &e.scene, &plane);
                             entries[m] = e.gpu.vclip_entries.get();
                         }
+                    }
+                    "binned32" | "binned32-runs" => {
+                        if !plane.full {
+                            bough_metal::gpu::tiles32(&plane, &mut tiles);
+                        }
+                        let off = e.gpu.write_slot_w(it % 2, 0, &tiles, plane.full, true);
+                        e.gpu.write_rows(it % 2, &tiles, plane.full);
+                        let nrows = unsafe { *(e.gpu.pool_ptr.add(bough_metal::instance::FRAME_OFF + (it % 2) * bough_metal::instance::SLOT_BYTES + bough_metal::instance::SLOT_BYTES - 256) as *const u32) } as usize;
+                        let nt = if plane.full { 60 * 45 } else { tiles.len() };
+                        e.gpu.encode_binned(&cmd, off, [&tex, &tex, &tex, &tex], nrows, nt, false);
+                        entries[m] = nrows;
+                    }
+                    "compute32" => {
+                        if !plane.full {
+                            bough_metal::gpu::tiles32(&plane, &mut tiles);
+                        }
+                        let off = e.gpu.write_slot_w(it % 2, 0, &tiles, plane.full, true);
+                        let nt = if plane.full { 60 * 45 } else { tiles.len() };
+                        e.gpu.encode_compute_w(&cmd, off, [&tex, &tex, &tex, &tex], nt, false, true);
+                        entries[m] = nt;
                     }
                     _ => {
                         tiles.clear();
@@ -95,7 +131,15 @@ fn main() {
                 }
             }
         }
+        if kdebug == 2 {
+            let st = unsafe { std::slice::from_raw_parts(e.gpu.pool_ptr.add(bough_metal::instance::STATS_OFF) as *mut u32, 2) };
+            println!("  [{pat}] cs_repair32 staged records per L3 step: {:.1} ({} steps total)", st[0] as f64 / st[1].max(1) as f64, st[1]);
+            unsafe { std::ptr::write_bytes(e.gpu.pool_ptr.add(bough_metal::instance::STATS_OFF), 0, 8) };
+        }
         for (m, mode) in modes.iter().enumerate() {
+            if cpu[m].is_empty() {
+                continue;
+            }
             println!(
                 "| {pat} | {ntiles} | {mode} | {:.0} | {:.3} | {:.3} | {:.3} | {} | {} |",
                 pct(&mut cpu[m], 0.5), pct(&mut gpu[m], 0.5), pct(&mut gpu[m], 0.1), pct(&mut gpu[m], 0.9),

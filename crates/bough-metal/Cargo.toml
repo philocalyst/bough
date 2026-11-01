@@ -35,3 +35,9 @@ name = "vclip_test"
 name = "gpumodes"
 [[example]]
 name = "lab"
+[[example]]
+name = "opcost"
+[[example]]
+name = "runs_check"
+[[example]]
+name = "wake"

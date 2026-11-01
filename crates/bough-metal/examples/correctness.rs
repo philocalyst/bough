@@ -7,6 +7,13 @@ use bough_metal::scene::Rng;
 use std::time::Instant;
 
 fn random_ops(e: &mut Engine, rng: &mut Rng) {
+    if e.scene.heavy_text {
+        match rng.below(4) {
+            0 => e.scene.op_numeric(rng),
+            1 => e.scene.op_log(rng),
+            _ => {}
+        }
+    }
     let r = rng.below(100);
     match r {
         0..=14 => {}

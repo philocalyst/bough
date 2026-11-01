@@ -387,3 +387,508 @@ vertex VOut vs_vclip(uint vid [[vertex_id]], uint iid [[instance_id]], device co
     o.kind = in.kind;
     return o;
 }
+
+// ============================================================================ COMPUTE REPAIR v3: 32x32 tiles
+// Reads the bough-core page layout directly (INTERFACE.md): a directory (page id + page union ink per entry, in
+// paint order) and 1344-byte SoA pages (ink: NRect i16x4 negated-max (x0, y0, -x1, -y1) per slot, gink: union of
+// each 8-slot group, payload: instance index). Culling is three NRect-vs-threshold compares (exactly the core's
+// `Thresh::matches`: overlap <=> all(r < (X1, Y1, -X0, -Y0)); EMPTY = MAX padding fails by itself):
+//   L1 directory entries -> L2 groups of the hit pages -> L3 records of the hit groups.
+// One threadgroup = one 32x32 damaged tile (the Apple GPU's hardware tile and the core's damage unit); 256 threads
+// x 4 pixels each (thread (x, y) owns (x + 16i, y + 16j)), so every cull is amortised over 1024 pixels.
+// Colour is accumulated in half precision (positions and SDFs stay float). Every pixel is written once.
+struct Hdr3 {
+    float2 viewport;
+    uint spaces_off, clips_off, rects_off, inst_off, list_off;
+    uint n_inst, plane_off, pages_off;
+    uint dir_page_off;   // u32 page id per directory entry
+    uint dir_ink_off;    // short4 page union ink per directory entry
+    uint n_dir;
+    uint pagepool_off;   // base of the 1344-byte pages (page id * 1344)
+    uint debug;          // 0 normal; 1 = cull only (no shading); 2 = count staged records into stats
+    uint stats_off;
+    uint gx_off, gent_off, runs_off, entries_off, space_clip_off;   // bough-text format (INTERFACE.md)
+};
+
+// bough-text run header (32 B) and strike entry (32 B)
+struct RunHeader {
+    float2 origin;
+    float scale;
+    uint color;
+    ushort space, strike;
+    uint base, len;
+    int x0;
+};
+struct GEntry {
+    float4 geo;        // [left, -top, w, h] px
+    ushort4 uv;
+    uint state, pad;
+};
+constant uint RUN_BIT = 0x80000000u;
+
+// Glyph `slot` of `run` -> clip-space inputs. The pen formula is bough-text's, verified bit-exact there:
+// px = floor(fma(float(x - x0), scale, origin.x + 0.5)) + geo.x
+static bool glyph_quad(device const uchar* pool, device const Hdr3& h, uint run, uint slot,
+                       thread float2& p0, thread float2& size, thread float4& cl, thread uint& color, thread ushort2& uv) {
+    device const RunHeader& rh = ((device const RunHeader*)(pool + h.runs_off))[run];
+    int x = ((device const int*)(pool + h.gx_off))[slot];
+    uint e = ((device const ushort*)(pool + h.gent_off))[slot];
+    device const GEntry& en = ((device const GEntry*)(pool + h.entries_off))[uint(rh.strike) * 256u + e];
+    if (en.uv.z == 0) return false;
+    float2 off = ((device const float2*)(pool + h.spaces_off))[rh.space];
+    cl = ((device const float4*)(pool + h.clips_off))[((device const uint*)(pool + h.space_clip_off))[rh.space]];
+    float px = floor(fma(float(x - rh.x0), rh.scale, rh.origin.x + 0.5)) + en.geo.x;
+    p0 = float2(px, rh.origin.y + en.geo.y) + off;
+    size = en.geo.zw;
+    color = rh.color;
+    uv = en.uv.xy;
+    return true;
+}
+constant uint PG_BYTES = 1344;
+constant uint PG_INK = 128;
+constant uint PG_GINK = 640;
+constant uint PG_PAYLOAD = 768;
+
+struct TgRec {
+    float4 q;          // clip-clamped quad incl. AA margin (pixel-centre test)
+    float4 core;       // pixel centres inside `core` take `cv` with no per-pixel work (coverage provably 1)
+    half4 cv;
+    float2 centre;
+    float2 half_;
+    half4 pm;          // premultiplied colour, unpacked once per record (not per pixel)
+    half4 pm2;
+    float radius, bw;
+    ushort2 uv;
+    ushort kind, pad;
+};
+
+static half4 shade_h(threadgroup const TgRec& r, float2 c, texture2d<float> atlas) {
+    if (!(c.x >= r.q.x && c.x < r.q.z && c.y >= r.q.y && c.y < r.q.w)) return half4(0.0h);
+    switch (r.kind) {
+    case 0:
+        return r.pm;
+    case 1: {
+        float d = sd_rbox(c - r.centre, r.half_, r.radius);
+        return r.pm * half(clamp(0.5 - d, 0.0, 1.0)); }
+    case 2: {
+        float d = sd_rbox(c - r.centre, r.half_, r.radius);
+        float outer = clamp(0.5 - d, 0.0, 1.0);
+        float inner = clamp(0.5 - (d + r.bw), 0.0, 1.0);
+        return r.pm * half(max(outer - inner, 0.0)) + r.pm2 * half(inner); }
+    default: {
+        float2 t = c - r.centre + r.half_;
+        half cov = 0.0h;
+        if (all(t >= 0.0) && all(t < r.half_ * 2.0)) {
+            cov = half(atlas.read(uint2(float2(r.uv)) + uint2(t)).r);
+        }
+        return r.pm * cov; }
+    }
+}
+
+// Ordered compaction of `hit` across the threadgroup: returns this thread's slot (if hit) and the total.
+static uint compact(bool hit, uint lane, uint sg, threadgroup uint* sgc, thread uint& total) {
+    uint pre = simd_prefix_exclusive_sum(uint(hit));
+    uint cnt = simd_sum(uint(hit));
+    if (lane == 0) sgc[sg] = cnt;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint off = 0;
+    total = 0;
+    for (uint s = 0; s < 8; s++) { uint v = sgc[s]; off += (s < sg) ? v : 0; total += v; }
+    return off + pre;
+}
+
+kernel void cs_repair32(uint2 tgid2 [[threadgroup_position_in_grid]],
+                        uint li [[thread_index_in_threadgroup]],
+                        uint2 lt [[thread_position_in_threadgroup]],
+                        uint lane [[thread_index_in_simdgroup]],
+                        uint sg [[simdgroup_index_in_threadgroup]],
+                        device uchar* pool [[buffer(0)]],
+                        constant uint& slot_off [[buffer(1)]],
+                        texture2d<float> atlas [[texture(0)]],
+                        texture2d<float, access::write> t0 [[texture(1)]],
+                        texture2d<float, access::write> t1 [[texture(2)]],
+                        texture2d<float, access::write> t2 [[texture(3)]],
+                        texture2d<float, access::write> t3 [[texture(4)]]) {
+    device const Hdr3& h = *(device const Hdr3*)pool;
+    device const FrameSlot& fs = *(device const FrameSlot*)(pool + slot_off);
+    device const uint* tiles = (device const uint*)(pool + slot_off + 32);
+    device const Instance* inst = (device const Instance*)(pool + h.inst_off);
+    device const float2* spaces = (device const float2*)(pool + h.spaces_off);
+    device const float4* clips = (device const float4*)(pool + h.clips_off);
+    device const uint* dpage = (device const uint*)(pool + h.dir_page_off);
+    device const short4* dink = (device const short4*)(pool + h.dir_ink_off);
+    device const uchar* pages = pool + h.pagepool_off;
+    uint t = fs.full ? ((tgid2.x / 60u) << 16 | (tgid2.x % 60u)) : tiles[tgid2.x];
+    uint2 tile = uint2(t & 0xffffu, t >> 16);
+    uint2 o = tile * 32u;
+    short4 th = short4(short(o.x + 32u), short(o.y + 32u), short(-int(o.x)), short(-int(o.y)));
+    // thread (x, y) owns the 2x2 block at (2x, 2y): one block test rejects a record for all 4 pixels
+    float2 c00 = float2(o + 2u * lt) + 0.5;
+    float4 blk = float4(c00, c00 + 1.0);   // centres of the block's first and last pixel
+
+    threadgroup uint sgc[8];
+    threadgroup uint flo[8];
+    threadgroup uint dl[256];      // hit directory entries (page ids), paint order
+    threadgroup uint gl[256];      // hit groups (page id * 8 + group), paint order
+    threadgroup TgRec rec[64];     // 8 groups x 8 records per L3 step: ~6 KB of threadgroup memory -> occupancy
+    half4 acc[4] = { half4(0.0h), half4(0.0h), half4(0.0h), half4(0.0h) };
+
+    uint ndir = h.debug == 3 ? 0u : h.n_dir;   // debug 3: write-only floor (no cull, no shading)
+    for (uint d0 = 0; d0 < ndir; d0 += 256) {
+        // L1: directory
+        uint di = d0 + li;
+        bool dh = di < h.n_dir && all(dink[di] < th);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        uint nd;
+        uint ds = compact(dh, lane, sg, sgc, nd);
+        if (dh) dl[ds] = dpage[di];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        // L2: the 8 groups of each hit page, 32 pages per step
+        for (uint p0 = 0; p0 < nd; p0 += 32) {
+            uint pk = p0 + (li >> 3), g = li & 7u;
+            bool gh = false;
+            uint gid = 0;
+            if (pk < nd) {
+                uint pid = dl[pk];
+                gid = pid * 8u + g;
+                gh = all(((device const short4*)(pages + pid * PG_BYTES + PG_GINK))[g] < th);
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            uint ng;
+            uint gs = compact(gh, lane, sg, sgc, ng);
+            if (gh) gl[gs] = gid;
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            // L3: the 8 records of each hit group, 32 groups per step; stage hits, then shade
+            for (uint q0 = 0; q0 < ng; q0 += 8) {
+                uint gk = q0 + (li >> 3), s = li & 7u;
+                bool rh = false, cover = false;
+                TgRec r;
+                if (li < 64 && gk < ng) {
+                    uint gidv = gl[gk];
+                    uint pid = gidv >> 3, slot = (gidv & 7u) * 8u + s;
+                    device const uchar* pg = pages + pid * PG_BYTES;
+                    if (all(((device const short4*)(pg + PG_INK))[slot] < th)) {
+                        uint ii = ((device const uint*)(pg + PG_PAYLOAD))[slot];
+                        device const Instance& in = inst[ii];
+                        float2 p0 = in.pos + spaces[in.space];
+                        float4 cl = clips[in.ext];
+                        float2 qa = clamp(p0 - 1.0, cl.xy, cl.zw);
+                        float2 qb = clamp(p0 - 1.0 + (in.size + 2.0), cl.xy, cl.zw);
+                        rh = qa.x < qb.x && qa.y < qb.y;
+                        r.q = float4(qa, qb);
+                        r.half_ = in.size * 0.5;
+                        r.centre = p0 + r.half_;
+                        half4 c1 = half4(unpack(in.color)), c2 = half4(unpack(in.color2));
+                        r.pm = half4(c1.rgb * c1.a, c1.a);
+                        r.pm2 = half4(c2.rgb * c2.a, c2.a);
+                        r.radius = in.radius;
+                        r.bw = in.bw;
+                        r.uv = in.uv.xy;
+                        r.kind = in.kind;
+                        // core box (exact shortcut, 1-px safety margin beyond the SDF's own 0.5)
+                        float k = in.kind == 1 ? max(in.radius, 0.5) + 1.0 : max(in.radius, 0.5 + in.bw) + 1.0;
+                        float4 cb = float4(r.centre - (r.half_ - k), r.centre + (r.half_ - k));
+                        cb = float4(max(cb.xy, qa), min(cb.zw, qb));
+                        r.core = in.kind == 0 ? float4(qa, qb) : (in.kind == 3 ? float4(0.0) : cb);
+                        r.cv = in.kind == 2 ? r.pm2 : r.pm;
+                        // opaque floor: a solid, alpha-1 record whose quad holds every pixel centre of the tile
+                        cover = in.kind == 0 && (in.color >> 24) == 255u && qa.x <= float(o.x) + 0.5 && qa.y <= float(o.y) + 0.5
+                                && qb.x > float(o.x) + 31.5 && qb.y > float(o.y) + 31.5;
+                    }
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                uint nr;
+                uint rs = compact(rh, lane, sg, sgc, nr);
+                if (rh) rec[rs] = r;
+                uint fl = simd_max((rh && cover) ? rs + 1u : 0u);
+                if (lane == 0) flo[sg] = fl;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                uint k0 = 0;
+                for (uint s2 = 0; s2 < 8; s2++) k0 = max(k0, flo[s2]);
+                k0 = k0 > 0 ? k0 - 1u : 0u;   // records below an opaque full cover cannot show: exact skip
+                if (h.debug == 2 && li == 0) {
+                    atomic_fetch_add_explicit((device atomic_uint*)(pool + h.stats_off), nr - k0, memory_order_relaxed);
+                    atomic_fetch_add_explicit((device atomic_uint*)(pool + h.stats_off + 4), 1u, memory_order_relaxed);
+                }
+                uint nshade = h.debug == 1 ? 0u : nr;
+                for (uint k = k0; k < nshade; k++) {
+                    threadgroup const TgRec& rr = rec[k];
+                    if (rr.q.x > blk.z || rr.q.z <= blk.x || rr.q.y > blk.w || rr.q.w <= blk.y) continue;
+                    if (blk.x >= rr.core.x && blk.z < rr.core.z && blk.y >= rr.core.y && blk.w < rr.core.w) {
+                        half4 cv = rr.cv;
+                        for (uint j = 0; j < 4; j++) acc[j] = cv + acc[j] * (1.0h - cv.a);
+                        continue;
+                    }
+                    for (uint j = 0; j < 4; j++) {
+                        half4 sh = shade_h(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas);
+                        acc[j] = sh + acc[j] * (1.0h - sh.a);
+                    }
+                }
+            }
+        }
+    }
+    for (uint j = 0; j < 4; j++) {
+        uint2 px = o + 2u * lt + uint2(j & 1u, j >> 1);
+        float4 v = float4(acc[j]);
+        switch (fs.target) {
+        case 0: t0.write(v, px); break;
+        case 1: t1.write(v, px); break;
+        case 2: t2.write(v, px); break;
+        default: t3.write(v, px); break;
+        }
+    }
+}
+
+// ============================================================================ COMPUTE REPAIR v4: binned
+// Pass 1 (cs_bin32): one threadgroup per damaged 32-px tile ROW (restricted to that row's damaged x-span) runs the
+// hierarchical core-page cull ONCE and appends the hit records (instance index + ink), in paint order, to the
+// row's bin. Pass 2 (cs_tile32b): each damaged tile scans only its row's bin (128 entries per step), stages hits
+// and shades exactly like cs_repair32. Culling work per tile drops from directory+groups+records to one list scan.
+// Slot tail (last 256 B of the frame slot): [nrows, 1, 1, pad] indirect args, then rows[]: ty | tx0 << 8 | tx1 << 16.
+constant uint BIN_CAP = 8192;           // a record or glyph appears at most once per row: never overflows
+
+static bool stage_rec(device const Instance& in, float2 off, float4 cl, uint2 o, thread TgRec& r, thread bool& cover) {
+    float2 p0 = in.pos + off;
+    float2 qa = clamp(p0 - 1.0, cl.xy, cl.zw);
+    float2 qb = clamp(p0 - 1.0 + (in.size + 2.0), cl.xy, cl.zw);
+    r.q = float4(qa, qb);
+    r.half_ = in.size * 0.5;
+    r.centre = p0 + r.half_;
+    half4 c1 = half4(unpack(in.color)), c2 = half4(unpack(in.color2));
+    r.pm = half4(c1.rgb * c1.a, c1.a);
+    r.pm2 = half4(c2.rgb * c2.a, c2.a);
+    r.radius = in.radius;
+    r.bw = in.bw;
+    r.uv = in.uv.xy;
+    r.kind = in.kind;
+    float k = in.kind == 1 ? max(in.radius, 0.5) + 1.0 : max(in.radius, 0.5 + in.bw) + 1.0;
+    float4 cb = float4(r.centre - (r.half_ - k), r.centre + (r.half_ - k));
+    cb = float4(max(cb.xy, qa), min(cb.zw, qb));
+    r.core = in.kind == 0 ? float4(qa, qb) : (in.kind == 3 ? float4(0.0) : cb);
+    r.cv = in.kind == 2 ? r.pm2 : r.pm;
+    cover = in.kind == 0 && (in.color >> 24) == 255u && qa.x <= float(o.x) + 0.5 && qa.y <= float(o.y) + 0.5
+            && qb.x > float(o.x) + 31.5 && qb.y > float(o.y) + 31.5;
+    return qa.x < qb.x && qa.y < qb.y;
+}
+
+static bool stage_glyph(device const uchar* pool, device const Hdr3& h, uint run, uint slot, thread TgRec& r) {
+    float2 p0, size;
+    float4 cl;
+    uint color;
+    ushort2 uv;
+    if (!glyph_quad(pool, h, run, slot, p0, size, cl, color, uv)) return false;
+    float2 qa = clamp(p0 - 1.0, cl.xy, cl.zw);
+    float2 qb = clamp(p0 - 1.0 + (size + 2.0), cl.xy, cl.zw);
+    r.q = float4(qa, qb);
+    r.half_ = size * 0.5;
+    r.centre = p0 + r.half_;
+    half4 c1 = half4(unpack(color));
+    r.pm = half4(c1.rgb * c1.a, c1.a);
+    r.pm2 = half4(0.0h);
+    r.radius = 0.0;
+    r.bw = 0.0;
+    r.uv = uv;
+    r.kind = 3;
+    r.core = float4(0.0);
+    r.cv = r.pm;
+    return qa.x < qb.x && qa.y < qb.y;
+}
+
+
+kernel void cs_bin32(uint2 tgid2 [[threadgroup_position_in_grid]],
+                     uint li [[thread_index_in_threadgroup]],
+                     uint lane [[thread_index_in_simdgroup]],
+                     uint sg [[simdgroup_index_in_threadgroup]],
+                     device const uchar* pool [[buffer(0)]],
+                     constant uint& slot_off [[buffer(1)]],
+                     device uint4* bins [[buffer(2)]],
+                     device uint* counts [[buffer(3)]]) {
+    device const Hdr3& h = *(device const Hdr3*)pool;
+    device const uint* rows = (device const uint*)(pool + slot_off + 65536 - 256 + 16);
+    device const uint* dpage = (device const uint*)(pool + h.dir_page_off);
+    device const short4* dink = (device const short4*)(pool + h.dir_ink_off);
+    device const uchar* pages = pool + h.pagepool_off;
+    uint e = rows[tgid2.x];
+    uint ty = e & 0xffu, tx0 = (e >> 8) & 0xffu, tx1 = (e >> 16) & 0xffu;
+    short4 th = short4(short(tx1 * 32u), short(ty * 32u + 32u), short(-int(tx0 * 32u)), short(-int(ty * 32u)));
+    threadgroup uint sgc[8];
+    threadgroup uint dl[256];
+    threadgroup uint gl[256];
+    threadgroup uint hl[256];      // L3 hits (payload) and their inks, paint order
+    threadgroup uint2 hk[256];
+    uint nb = 0;
+    device uint4* bin = bins + ty * BIN_CAP;
+    for (uint d0 = 0; d0 < h.n_dir; d0 += 256) {
+        uint di = d0 + li;
+        bool dh = di < h.n_dir && all(dink[di] < th);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        uint nd;
+        uint ds = compact(dh, lane, sg, sgc, nd);
+        if (dh) dl[ds] = dpage[di];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint p0 = 0; p0 < nd; p0 += 32) {
+            uint pk = p0 + (li >> 3), g = li & 7u;
+            bool gh = false;
+            uint gid = 0;
+            if (pk < nd) {
+                uint pid = dl[pk];
+                gid = pid * 8u + g;
+                gh = all(((device const short4*)(pages + pid * PG_BYTES + PG_GINK))[g] < th);
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            uint ng;
+            uint gs = compact(gh, lane, sg, sgc, ng);
+            if (gh) gl[gs] = gid;
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            for (uint q0 = 0; q0 < ng; q0 += 32) {
+                uint gk = q0 + (li >> 3), s = li & 7u;
+                bool rh = false;
+                uint ii = 0;
+                short4 ink = short4(0);
+                if (gk < ng) {
+                    uint gidv = gl[gk];
+                    uint pid = gidv >> 3, slot = (gidv & 7u) * 8u + s;
+                    device const uchar* pg = pages + pid * PG_BYTES;
+                    ink = ((device const short4*)(pg + PG_INK))[slot];
+                    rh = all(ink < th);
+                    ii = ((device const uint*)(pg + PG_PAYLOAD))[slot];
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                uint nr;
+                uint rs = compact(rh, lane, sg, sgc, nr);
+                if (rh) { hl[rs] = ii; hk[rs] = uint2(as_type<uint>(ink.xy), as_type<uint>(ink.zw)); }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                // append in paint order: runs of instance hits in parallel; each text run expanded cooperatively
+                uint k = 0;
+                while (k < nr) {
+                    uint j = k;
+                    while (j < nr && (hl[j] & RUN_BIT) == 0u) j++;
+                    if (li < j - k) {
+                        uint idx = k + li;
+                        bin[nb + li] = uint4(hl[idx], hk[idx].x, hk[idx].y, 0u);
+                    }
+                    nb += j - k;
+                    if (j < nr) {
+                        uint run = hl[j] & ~RUN_BIT;
+                        device const RunHeader& rhd = ((device const RunHeader*)(pool + h.runs_off))[run];
+                        uint rlen = rhd.len, rbase = rhd.base;
+                        for (uint g0 = 0; g0 < rlen; g0 += 256) {
+                            uint gk2 = g0 + li;
+                            bool gh = false;
+                            short4 gi = short4(0);
+                            if (gk2 < rlen) {
+                                float2 p0, size;
+                                float4 cl;
+                                uint color;
+                                ushort2 uv;
+                                if (glyph_quad(pool, h, run, rbase + gk2, p0, size, cl, color, uv)) {
+                                    float2 qa = clamp(p0 - 1.0, cl.xy, cl.zw);
+                                    float2 qb = clamp(p0 - 1.0 + (size + 2.0), cl.xy, cl.zw);
+                                    if (qa.x < qb.x && qa.y < qb.y) {
+                                        gi = short4(short(floor(qa.x)), short(floor(qa.y)), short(-ceil(qb.x)), short(-ceil(qb.y)));
+                                        gh = all(gi < th);
+                                    }
+                                }
+                            }
+                            threadgroup_barrier(mem_flags::mem_threadgroup);
+                            uint ng2;
+                            uint gs = compact(gh, lane, sg, sgc, ng2);
+                            if (gh) bin[nb + gs] = uint4(run | RUN_BIT, as_type<uint>(gi.xy), as_type<uint>(gi.zw), rbase + gk2);
+                            nb += ng2;
+                        }
+                    }
+                    k = j + 1;
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+            }
+        }
+    }
+    if (li == 0) counts[ty] = nb;
+    // (Round 2 attempt, REJECTED, RESULTS 13.1: per-tile lists built here by a sequential scan per tile column made
+    //  the bin pass a serial bottleneck: full 0.21 vs 0.18 ms p10, text-heavy 1.5x slower. Row bins are scanned
+    //  directly by the tile pass instead.)
+}
+
+kernel void cs_tile32b(uint2 tgid2 [[threadgroup_position_in_grid]],
+                       uint li [[thread_index_in_threadgroup]],
+                       uint2 lt [[thread_position_in_threadgroup]],
+                       uint lane [[thread_index_in_simdgroup]],
+                       uint sg [[simdgroup_index_in_threadgroup]],
+                       device const uchar* pool [[buffer(0)]],
+                       constant uint& slot_off [[buffer(1)]],
+                       device const uint4* bins [[buffer(2)]],
+                       device const uint* counts [[buffer(3)]],
+                       texture2d<float> atlas [[texture(0)]],
+                       texture2d<float, access::write> t0 [[texture(1)]],
+                       texture2d<float, access::write> t1 [[texture(2)]],
+                       texture2d<float, access::write> t2 [[texture(3)]],
+                       texture2d<float, access::write> t3 [[texture(4)]]) {
+    device const Hdr3& h = *(device const Hdr3*)pool;
+    device const FrameSlot& fs = *(device const FrameSlot*)(pool + slot_off);
+    device const uint* tiles = (device const uint*)(pool + slot_off + 32);
+    device const Instance* inst = (device const Instance*)(pool + h.inst_off);
+    device const float2* spaces = (device const float2*)(pool + h.spaces_off);
+    device const float4* clips = (device const float4*)(pool + h.clips_off);
+    uint t = fs.full ? ((tgid2.x / 60u) << 16 | (tgid2.x % 60u)) : tiles[tgid2.x];
+    uint2 tile = uint2(t & 0xffffu, t >> 16);
+    uint2 o = tile * 32u;
+    short4 th = short4(short(o.x + 32u), short(o.y + 32u), short(-int(o.x)), short(-int(o.y)));
+    float2 c00 = float2(o + 2u * lt) + 0.5;
+    float4 blk = float4(c00, c00 + 1.0);
+    threadgroup uint sgc[8];
+    threadgroup uint flo[8];
+    threadgroup TgRec rec[128];
+    half4 acc[4] = { half4(0.0h), half4(0.0h), half4(0.0h), half4(0.0h) };
+    device const uint4* bin = bins + tile.y * BIN_CAP;
+    uint nb = counts[tile.y];
+    for (uint b0 = 0; b0 < nb; b0 += 128) {
+        bool rh = false, cover = false;
+        TgRec r;
+        uint bi = b0 + li;
+        if (li < 128 && bi < nb) {
+            uint4 en = bin[bi];
+            short4 ink = short4(as_type<short2>(en.y), as_type<short2>(en.z));
+            if (all(ink < th)) {
+                if ((en.x & RUN_BIT) != 0u) {
+                    rh = stage_glyph(pool, h, en.x & ~RUN_BIT, en.w, r);
+                } else {
+                    device const Instance& in = inst[en.x];
+                    rh = stage_rec(in, spaces[in.space], clips[in.ext], o, r, cover);
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);   // previous step's shading reads of rec are done
+        uint nr;
+        uint rs = compact(rh, lane, sg, sgc, nr);
+        if (rh) rec[rs] = r;
+        uint fl = simd_max((rh && cover) ? rs + 1u : 0u);
+        if (lane == 0) flo[sg] = fl;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        uint k0 = 0;
+        for (uint s2 = 0; s2 < 8; s2++) k0 = max(k0, flo[s2]);
+        k0 = k0 > 0 ? k0 - 1u : 0u;
+        for (uint k = k0; k < nr; k++) {
+            threadgroup const TgRec& rr = rec[k];
+            if (rr.q.x > blk.z || rr.q.z <= blk.x || rr.q.y > blk.w || rr.q.w <= blk.y) continue;
+            if (blk.x >= rr.core.x && blk.z < rr.core.z && blk.y >= rr.core.y && blk.w < rr.core.w) {
+                half4 cv = rr.cv;
+                for (uint j = 0; j < 4; j++) acc[j] = cv + acc[j] * (1.0h - cv.a);
+                continue;
+            }
+            for (uint j = 0; j < 4; j++) {
+                half4 sh = shade_h(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas);
+                acc[j] = sh + acc[j] * (1.0h - sh.a);
+            }
+        }
+    }
+    for (uint j = 0; j < 4; j++) {
+        uint2 px = o + 2u * lt + uint2(j & 1u, j >> 1);
+        float4 v = float4(acc[j]);
+        switch (fs.target) {
+        case 0: t0.write(v, px); break;
+        case 1: t1.write(v, px); break;
+        case 2: t2.write(v, px); break;
+        default: t3.write(v, px); break;
+        }
+    }
+}

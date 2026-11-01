@@ -1,0 +1,24 @@
+tinstr overhead 1455; 300 iterations per (pattern, mode); damage = union of 3 epochs (ring-of-3 age)
+
+| pattern | repair tiles (16 px) | mode | CPU instr encode+commit (med) | GPU ms med | GPU ms p10 | GPU ms p90 | draws/dispatch | entries |
+|---|---|---|---|---|---|---|---|---|
+| one-colour | 18 | bbox | 84982 | 0.529 | 0.143 | 0.600 | 1 | 3 |
+| one-colour | 18 | stencil | 88931 | 0.132 | 0.083 | 0.718 | 2 | 3 |
+| one-colour | 18 | vclip | 104299 | 0.046 | 0.016 | 0.561 | 1 | 19 |
+| one-colour | 18 | compute16 | 41465 | 0.026 | 0.009 | 0.080 | 1 | 18 |
+| one-colour | 18 | compute32 | 42051 | 0.056 | 0.018 | 0.071 | 1 | 10 |
+| scatter-80 | 2332 | bbox | 141362 | 0.432 | 0.293 | 0.843 | 1 | 136 |
+| scatter-80 | 2332 | stencil | 145737 | 0.249 | 0.182 | 0.513 | 2 | 136 |
+| scatter-80 | 2332 | vclip | 211251 | 0.282 | 0.193 | 0.487 | 1 | 661 |
+| scatter-80 | 2332 | compute16 | 77867 | 0.234 | 0.158 | 0.435 | 1 | 2332 |
+| scatter-80 | 2332 | compute32 | 56171 | 0.190 | 0.128 | 0.444 | 1 | 842 |
+| scroll-400 | 2375 | bbox | 71332 | 0.183 | 0.122 | 0.454 | 1 | 1 |
+| scroll-400 | 2375 | stencil | 71343 | 0.182 | 0.122 | 0.471 | 1 | 1 |
+| scroll-400 | 2375 | vclip | 83863 | 0.245 | 0.164 | 0.582 | 1 | 344 |
+| scroll-400 | 2375 | compute16 | 78115 | 0.301 | 0.202 | 0.653 | 1 | 2375 |
+| scroll-400 | 2375 | compute32 | 51639 | 0.174 | 0.117 | 0.471 | 1 | 624 |
+| full | 10800 | bbox | 53089 | 0.310 | 0.248 | 0.430 | 1 | 1 |
+| full | 10800 | stencil | 53096 | 0.348 | 0.243 | 0.450 | 1 | 1 |
+| full | 10800 | vclip | 53078 | 0.316 | 0.247 | 0.450 | 1 | 0 |
+| full | 10800 | compute16 | 40101 | 0.730 | 0.537 | 0.971 | 1 | 10800 |
+| full | 10800 | compute32 | 40610 | 0.383 | 0.288 | 0.599 | 1 | 2700 |
