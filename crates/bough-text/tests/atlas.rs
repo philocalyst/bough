@@ -82,8 +82,11 @@ fn fused_shape_to_instances_equals_two_step() {
         let ok = sh.shape_into(&s, 14., &mut run);
         let (mut a, mut b) = (vec![], vec![]);
         let fused = cache.shape_instances_ascii(&sh, strike, &s, 7., 40., 0x11223344, &mut b);
-        assert_eq!(fused.is_some(), ok, "{s:?}");
-        if ok {
+        // The fused prototype writer knows only the dense ASCII table: it refuses the
+        // ligature strings that `shape_into` now shapes through the token path.
+        let lig = s.contains("ff") || s.contains("fi") || s.contains("fl");
+        assert_eq!(fused.is_some(), ok && !lig, "{s:?}");
+        if fused.is_some() {
             let n = cache.instances(strike, &run, 7., 40., 0x11223344, &mut a);
             assert_eq!(fused, Some(n), "{s:?}");
             assert_eq!(a, b, "{s:?}");

@@ -24,6 +24,7 @@ struct Harness<'a> {
     run: GlyphRun,
     run2: GlyphRun,
     run3: GlyphRun,
+    run4: GlyphRun,
     eligible: u64,
     ineligible: u64,
 }
@@ -37,6 +38,7 @@ impl<'a> Harness<'a> {
             run: GlyphRun::default(),
             run2: GlyphRun::default(),
             run3: GlyphRun::default(),
+            run4: GlyphRun::default(),
             eligible: 0,
             ineligible: 0,
         }
@@ -78,6 +80,17 @@ impl<'a> Harness<'a> {
                     "shape_simd differs from scalar for {s:?}"
                 );
                 assert_eq!(self.run3.identity_clusters, self.run2.identity_clusters);
+            }
+        }
+        // The token path on its own must agree with whatever the hybrid produced (for ASCII
+        // strings without ligatures that is the dense kernel's output, clusters included).
+        let ok4 = self.shaper.shape_tokens(s, &mut self.run4);
+        assert_eq!(ok, ok4, "token path eligibility differs for {s:?}");
+        if ok4 {
+            let (a, b) = (&self.run4, &self.run);
+            assert_eq!((&a.gid, &a.x, a.width), (&b.gid, &b.x, b.width), "token path differs for {s:?}");
+            for i in 0..a.len() {
+                assert_eq!(a.cluster_of(i), b.cluster_of(i), "token cluster {i} of {s:?}");
             }
         }
         if !ok {
@@ -179,6 +192,9 @@ fn exhaustive_up_to_three() {
     let (e, i) = (elig.into_inner(), inelig.into_inner());
     eprintln!("exhaustive<=3: {e} eligible, {i} ineligible ({:.4}% ineligible)", 100. * i as f64 / (e + i) as f64);
     assert!(e > 0);
+    // With the token model (ligatures in the table) every string over the covered set is
+    // accepted: there is no fallback left for Latin-1 text in DejaVu Sans.
+    assert_eq!(i, 0, "the token model must accept every covered string");
 }
 
 #[test]
@@ -281,14 +297,37 @@ fn english_words_and_sentences() {
     }
     eprintln!("words: {n}; eligible {} ineligible {}", h.eligible, h.ineligible);
     assert!(n > 100 || !full());
-    // Known ligature pairs must be refused.
-    for s in ["fi", "office", "ffl", "fluff", "af"] {
-        if s == "af" {
-            assert!(h.check(s));
-        } else {
-            assert!(!h.check(s), "{s}");
-        }
+    // Ligature words are accepted (token path) and exact.
+    for s in ["fi", "office", "ffl", "fluff", "af", "affluent", "baffling", "fff", "ffffi", "Ff fF", "caf\u{e9} fl\u{e2}ner"] {
+        assert!(h.check(s), "{s}");
     }
+    assert_eq!(h.ineligible, 0, "dictionary forms are all covered");
+}
+
+/// Every string up to length 7 over an f-heavy alphabet: greedy ligature parity (`fff`,
+/// `ffff`, `fffi`, `ffffl`...), ligatures next to kerning letters, Latin-1 and spaces.
+#[test]
+fn ligature_alphabet_exhaustive() {
+    let sh = shaper();
+    let alphabet: Vec<char> = "fil Ty\u{e9}".chars().collect();
+    let max_len = if full() { 7 } else { 5 };
+    parallel(0, |t, threads| {
+        let mut h = Harness::new(&sh);
+        let mut s = String::new();
+        let k = alphabet.len();
+        for len in 1..=max_len {
+            let total = k.pow(len as u32);
+            for code in (t..total).step_by(threads) {
+                s.clear();
+                let mut c = code;
+                for _ in 0..len {
+                    s.push(alphabet[c % k]);
+                    c /= k;
+                }
+                assert!(h.check(&s), "{s:?} refused");
+            }
+        }
+    });
 }
 
 #[test]
@@ -321,19 +360,15 @@ fn refusals_are_only_ligature_pairs_or_uncovered_codepoints() {
     let sh = shaper();
     let mut run = GlyphRun::default();
     let all = corpus::all_workload_strings();
-    let (mut lig, mut unc) = (0, 0);
+    let mut unc = 0;
     for s in &all {
         if sh.shape_into(s, 12., &mut run) {
             continue;
         }
-        if s.contains("ff") || s.contains("fi") || s.contains("fl") {
-            lig += 1;
-        } else {
-            assert!(s.chars().any(|c| !sh.script.covered.contains(c as u32 as u8) || c as u32 > 255), "{s:?}");
-            unc += 1;
-        }
+        assert!(s.chars().any(|c| c as u32 > 255 || !sh.script.covered.contains(c as u32 as u8)), "{s:?}");
+        unc += 1;
     }
-    eprintln!("workload refusals: {lig} ligature pairs, {unc} uncovered codepoints");
+    eprintln!("workload refusals: {unc}, all with a codepoint outside the covered set");
     // Digits never kern in this font; spaces/punctuation among digits neither.
     for a in b"0123456789" {
         for b in b"0123456789" {

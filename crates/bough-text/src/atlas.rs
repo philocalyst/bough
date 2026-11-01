@@ -134,8 +134,40 @@ pub struct GlyphCache {
     pub raster_ns: u64,
 }
 
+/// Per-strike tables indexed by *token* (an ASCII byte, a Latin-1 codepoint, a ligature or
+/// the pad/phantom tokens; see `script::TokenTable`): what the glyph pool's `ent` column
+/// refers to. `entry` is the GPU-visible table the vertex shader reads; `ibox` is the same
+/// geometry as an NRect offset for damage; `ready` says whether the token was rasterized.
+pub struct TokStrike {
+    pub entry: [Entry; 256],
+    /// `(left, -top, -(left + w), -(-top + h))`: add `(px, oy, -px, -oy)` to get the glyph's
+    /// ink box in negated-max form. Empty glyphs hold `EMPTY_IBOX` (absorbing under `min`).
+    pub ibox: [[i32; 4]; 256],
+    pub ready: [u8; 256],
+}
+
+/// The ibox of a glyph with no ink: so large that adding any on-screen pen position keeps it
+/// the identity of the union (`min`).
+pub const EMPTY_IBOX: [i32; 4] = [1 << 28; 4];
+
+/// Conservative ink bounds of any line of tokens at one strike, in pixels relative to the pen
+/// and baseline, for O(1) whole-line damage: a run whose glyphs start at pen `p0` and end at
+/// pen `p1` (snapped) has all its ink inside `[p0 + left, p1 + over) x [baseline + top,
+/// baseline + bottom)`. From outline bounding boxes (nothing is rasterized), widened by 2 px
+/// for the rasterizer's rounding; `over` accounts for negative kerning (the next pen may sit
+/// left of a glyph's advance).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LineBounds {
+    pub left: i32,
+    pub over: i32,
+    pub top: i32,
+    pub bottom: i32,
+}
+
 struct Strike {
     size: f32,
+    bounds: Option<LineBounds>,
+    tok: Box<TokStrike>,
     entries: Vec<Entry>,
     /// Entries of the 128 ASCII bytes (indexed by byte, not gid), filled lazily, for the
     /// fused kernel that never materializes a `GlyphRun`.
@@ -161,7 +193,11 @@ impl GlyphCache {
         if let Some(i) = self.strikes.iter().position(|s| s.size == size) {
             return i;
         }
-        self.strikes.push(Strike { size, entries: vec![], ascii: Box::new([Entry::default(); 128]) });
+        let mut tok = Box::new(TokStrike { entry: [Entry::default(); 256], ibox: [EMPTY_IBOX; 256], ready: [0; 256] });
+        // Pad and phantom tokens draw nothing and are always ready.
+        tok.ready[crate::script::TOK_PAD as usize] = 1;
+        tok.ready[crate::script::TOK_PH as usize] = 1;
+        self.strikes.push(Strike { size, bounds: None, tok, entries: vec![], ascii: Box::new([Entry::default(); 128]) });
         self.strikes.len() - 1
     }
 
@@ -195,6 +231,74 @@ impl GlyphCache {
         self.rasterized += 1;
         self.raster_ns += t0.elapsed().as_nanos() as u64;
         e
+    }
+
+    /// Pixel size of a strike.
+    pub fn strike_size(&self, strike: StrikeId) -> f32 {
+        self.strikes[strike].size
+    }
+
+    /// Line ink bounds of a strike over the whole token alphabet (computed once per strike).
+    pub fn line_bounds(&mut self, strike: StrikeId, tt: &crate::script::TokenTable, upem: u16) -> LineBounds {
+        if let Some(b) = self.strikes[strike].bounds {
+            return b;
+        }
+        let face = ttf_parser::Face::parse(&self.font, 0).expect("font");
+        let s = self.strikes[strike].size / upem as f32;
+        let mut b = LineBounds { left: 0, over: 0, top: 0, bottom: 0 };
+        for t in 0..256usize {
+            let adv = tt.step[t << 8];
+            if adv == 0xFFFF || t < 2 {
+                continue;
+            }
+            // The smallest step this token can take (its advance plus its most negative kern).
+            let min_step = (0..256).map(|u| tt.step[t << 8 | u]).filter(|&v| v != 0xFFFF).min().unwrap_or(adv);
+            let Some(bb) = face.glyph_bounding_box(ttf_parser::GlyphId(tt.gid[t])) else { continue };
+            b.left = b.left.min((bb.x_min as f32 * s).floor() as i32 - 2);
+            b.over = b.over.max((bb.x_max as f32 * s).ceil() as i32 - (min_step as f32 * s).floor() as i32 + 2);
+            b.top = b.top.min(-(bb.y_max as f32 * s).ceil() as i32 - 2);
+            b.bottom = b.bottom.max(-(bb.y_min as f32 * s).floor() as i32 + 2);
+        }
+        self.strikes[strike].bounds = Some(b);
+        b
+    }
+
+    /// The token tables of a strike (see [`TokStrike`]).
+    #[inline]
+    pub fn tok(&self, strike: StrikeId) -> &TokStrike {
+        &self.strikes[strike].tok
+    }
+
+    /// [`tok`](Self::tok) without the bounds check.
+    ///
+    /// # Safety
+    /// `strike` must be a strike id this cache returned.
+    #[inline(always)]
+    pub unsafe fn tok_unchecked(&self, strike: StrikeId) -> &TokStrike {
+        unsafe { &self.strikes.get_unchecked(strike).tok }
+    }
+
+    /// Make every token in `toks` ready in `strike` (rasterizing misses). Cold path of the
+    /// glyph pool: steady-state text never gets here.
+    #[cold]
+    #[inline(never)]
+    pub fn prepare_tokens(&mut self, strike: StrikeId, tok_gid: &[u16; 256], toks: impl Iterator<Item = u16>) {
+        for t in toks {
+            let t = t as usize;
+            if self.strikes[strike].tok.ready[t] != 0 {
+                continue;
+            }
+            let e = self.entry(strike, tok_gid[t]);
+            let ts = &mut self.strikes[strike].tok;
+            ts.entry[t] = e;
+            ts.ibox[t] = if e.uv[2] == 0 {
+                EMPTY_IBOX
+            } else {
+                let (l, t0, w, h) = (e.geo[0] as i32, e.geo[1] as i32, e.geo[2] as i32, e.geo[3] as i32);
+                [l, t0, -(l + w), -(t0 + h)]
+            };
+            ts.ready[t] = 1;
+        }
     }
 
     /// Entry for a glyph, rasterizing on a miss.

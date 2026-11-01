@@ -114,6 +114,188 @@ pub struct SimpleScript {
     /// `16 * this < 65536`).
     pub max_step: u32,
     pub report: BuildReport,
+    /// The token model (ligatures and Latin-1 in one pair table), when the font's live rules
+    /// are all modelled ligatures. See [`TokenTable`].
+    pub tokens: Option<TokenTable>,
+}
+
+/// Token pad (end of string / no next glyph).
+pub const TOK_PAD: u8 = 0;
+/// Phantom slot: a byte that belongs to the previous glyph's cluster (UTF-8 continuation byte,
+/// ligature component after the first). Zero step, no glyph.
+pub const TOK_PH: u8 = 1;
+/// First ligature token; ligature `k` (application order) is `TOK_LIG0 + k`.
+pub const TOK_LIG0: u8 = 2;
+
+/// The token model: the run is rewritten into one token per glyph (ASCII byte, Latin-1
+/// codepoint, or ligature), and every glyph's pen step is `step[t << 8 | next]`, exactly like
+/// the ASCII dense table but over a 256-token alphabet that includes the ligature glyphs.
+///
+/// Exactness argument (on top of the module-level one): the only live GSUB rules are the
+/// recorded ligatures of a single lookup `L`, applied by HarfBuzz left to right, at each glyph
+/// trying the font's ligatures for that glyph in order (we replay exactly that); no active
+/// GSUB lookup runs after `L` (so nothing sees the ligature glyphs); no active non-pair,
+/// non-mark GPOS lookup covers a ligature glyph (mark lookups need a mark, and no covered
+/// glyph is a mark); pairs involving a ligature glyph are evaluated with the `latn` lookups
+/// (every ligature component is a Latin letter, so such a run is Latin) and are `TRIG` when
+/// the value is not plain first-glyph `XAdvance`. All other pair values are the matrix's.
+pub struct TokenTable {
+    /// `step[t << 8 | u]`: `adv(t) + kern(t, u)`, or `0xFFFF` (needs full shaping).
+    /// `u = TOK_PAD` is the end of the run. Row `TOK_PH` is zero.
+    pub step: Box<[u16]>,
+    pub gid: [u16; 256],
+    /// `(first byte, remaining component bytes, token)` in application order.
+    pub ligs: Vec<(u8, Vec<u8>, u8)>,
+    /// `lig_first[b]`: some ligature starts with ASCII byte `b`.
+    pub lig_first: [bool; 128],
+    pub max_step: u32,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_tokens(
+    b: &Builder,
+    cps: &[u8],
+    adv: &[u16; 256],
+    m: &[Vec<i32>],
+    pv_trig: &[Vec<bool>],
+    single: &CpSet,
+    gsub_latn: &BTreeSet<u16>,
+    gpos_latn: &BTreeSet<u16>,
+    script_dep: usize,
+) -> Option<TokenTable> {
+    // Conditions under which the ligature replay is the whole GSUB story.
+    if !single.is_empty() || script_dep != 0 || b.ligs.is_empty() {
+        return None;
+    }
+    let lookup = b.ligs[0].0;
+    if b.ligs.iter().any(|l| l.0 != lookup) || !gsub_latn.contains(&lookup) {
+        return None;
+    }
+    if b.rep.live_rules != b.ligs.len() {
+        return None; // some other rule is live: its triggers must stay
+    }
+    if gsub_latn.iter().any(|&i| i > lookup) {
+        return None; // a later GSUB lookup could see the ligature glyphs
+    }
+    let mut ligs = vec![];
+    for (k, (_, first, comps, gid)) in b.ligs.iter().enumerate() {
+        let rest: Option<Vec<u8>> = comps.iter().copied().collect();
+        let rest = rest?;
+        if *first >= 0x80 || rest.iter().any(|&c| c >= 0x80 || !is_latin_letter(c)) || !is_latin_letter(*first) {
+            return None;
+        }
+        if rest.is_empty() {
+            return None;
+        }
+        ligs.push((*first, rest, *gid, TOK_LIG0.checked_add(k as u8)?));
+        if TOK_LIG0 as usize + k >= 0x20 {
+            return None;
+        }
+    }
+    let lig_gids: Vec<GlyphId> = ligs.iter().map(|l| GlyphId(l.2)).collect();
+    // GPOS: what may touch a ligature glyph.
+    let gpos = b.face.tables().gpos;
+    if let Some(t) = gpos.as_ref() {
+        for &li in gpos_latn {
+            let l = t.lookups.get(li)?;
+            let conservative = flags_conservative(l.flags);
+            for si in 0..l.subtables.len() {
+                let st = l.subtables.get::<PositioningSubtable>(si)?;
+                let cov_hits = |c: &Coverage| lig_gids.iter().any(|&g| c.contains(g));
+                match st {
+                    PositioningSubtable::Pair(p) => {
+                        if conservative && cov_hits(&p.coverage()) {
+                            return None;
+                        }
+                    }
+                    PositioningSubtable::Single(s) => {
+                        if cov_hits(&s.coverage()) {
+                            return None;
+                        }
+                    }
+                    PositioningSubtable::Cursive(c) => {
+                        if cov_hits(&c.coverage) {
+                            return None;
+                        }
+                    }
+                    PositioningSubtable::MarkToBase(_)
+                    | PositioningSubtable::MarkToLigature(_)
+                    | PositioningSubtable::MarkToMark(_) => {}
+                    PositioningSubtable::Context(_) | PositioningSubtable::ChainContext(_) => return None,
+                }
+            }
+        }
+    }
+    let face = b.face;
+    let latn_l: Vec<u16> = gpos_latn.iter().copied().collect();
+    // token -> (gid, adv, Some(cp) for codepoint tokens)
+    let mut tgid = [0u16; 256];
+    let mut tadv = [0u32; 256];
+    let mut valid = [false; 256];
+    for &c in cps {
+        tgid[c as usize] = b.gid_of[c as usize];
+        tadv[c as usize] = adv[c as usize] as u32;
+        valid[c as usize] = true;
+    }
+    for l in &ligs {
+        tgid[l.3 as usize] = l.2;
+        tadv[l.3 as usize] = face.glyph_hor_advance(GlyphId(l.2))? as u32;
+        valid[l.3 as usize] = true;
+    }
+    let lig_tok = |t: usize| ligs.iter().find(|l| l.3 as usize == t);
+    let kern = |t: usize, u: usize| -> Option<i32> {
+        if u == TOK_PAD as usize {
+            return Some(0);
+        }
+        match (lig_tok(t), lig_tok(u)) {
+            (None, None) => {
+                if pv_trig[t][u] { None } else { Some(m[t][u]) }
+            }
+            _ => b.pair_value_g(&latn_l, GlyphId(tgid[t]), GlyphId(tgid[u])),
+        }
+    };
+    let mut step = vec![0xFFFFu16; 65536].into_boxed_slice();
+    let mut max_step = 0u32;
+    for t in 0..256usize {
+        if t == TOK_PH as usize {
+            for u in 0..256 {
+                step[t << 8 | u] = 0;
+            }
+            continue;
+        }
+        if !valid[t] {
+            continue;
+        }
+        for u in 0..256usize {
+            if u != TOK_PAD as usize && !valid[u] {
+                continue;
+            }
+            if let Some(k) = kern(t, u) {
+                let v = tadv[t] as i32 + k;
+                if !(0..0x1000).contains(&v) {
+                    return None;
+                }
+                step[t << 8 | u] = v as u16;
+                max_step = max_step.max(v as u32);
+            }
+        }
+    }
+    // The original ligature triggers (a, c) must be pairs that never survive the replay: the
+    // token table keeps them TRIG, so if the replay were wrong the run would be refused.
+    for l in &ligs {
+        step[(l.0 as usize) << 8 | l.1[0] as usize] = 0xFFFF;
+    }
+    let mut lig_first = [false; 128];
+    for l in &ligs {
+        lig_first[l.0 as usize] = true;
+    }
+    Some(TokenTable {
+        step,
+        gid: tgid,
+        ligs: ligs.iter().map(|l| (l.0, l.1.clone(), l.3)).collect(),
+        lig_first,
+        max_step,
+    })
 }
 
 struct Builder<'a> {
@@ -125,6 +307,10 @@ struct Builder<'a> {
     pair: Vec<CpSet>, // pair[a] = set of b
     rep: BuildReport,
     unsupported: bool,
+    /// Every ligature rule seen in an active GSUB lookup (plain flags), in application order:
+    /// (lookup index, first codepoint, component codepoints or `None` if a component is not a
+    /// covered glyph, ligature glyph).
+    ligs: Vec<(u16, u8, Vec<Option<u8>>, u16)>,
 }
 
 fn tag(b: &[u8; 4]) -> Tag {
@@ -444,6 +630,17 @@ impl<'a> Builder<'a> {
                             let Some(lig) = set.get(li) else { continue };
                             let mut pos = vec![self.glyph_set(g.0)];
                             pos.extend(lig.components.into_iter().map(|x| self.glyph_set(x.0)));
+                            // Record it for the token model (a component that is not exactly one
+                            // covered codepoint makes the model refuse the font).
+                            let comps: Vec<Option<u8>> = lig
+                                .components
+                                .into_iter()
+                                .map(|x| {
+                                    let set = self.glyph_set(x.0);
+                                    if set.len() == 1 { set.iter().next() } else { None }
+                                })
+                                .collect();
+                            self.ligs.push((idx, c, comps, lig.glyph.0));
                             self.mark_window(pos);
                         }
                     }
@@ -520,8 +717,12 @@ impl<'a> Builder<'a> {
 
     /// Sum of pair adjustments of `lookups` for the glyph pair, or `None` = trigger.
     fn pair_value(&self, lookups: &[u16], a: u8, b: u8) -> Option<i32> {
+        self.pair_value_g(lookups, GlyphId(self.gid_of[a as usize]), GlyphId(self.gid_of[b as usize]))
+    }
+
+    /// `pair_value` for arbitrary glyphs (ligature glyphs of the token model).
+    fn pair_value_g(&self, lookups: &[u16], ga: GlyphId, gb: GlyphId) -> Option<i32> {
         let t = self.face.tables().gpos?;
-        let (ga, gb) = (GlyphId(self.gid_of[a as usize]), GlyphId(self.gid_of[b as usize]));
         let mut sum = 0;
         for &li in lookups {
             let l = t.lookups.get(li).unwrap();
@@ -597,6 +798,7 @@ impl SimpleScript {
             pair: vec![CpSet::default(); 256],
             rep: rep.clone(),
             unsupported: false,
+            ligs: vec![],
         };
 
         // Active lookups. A run is Latin when it has a Latin letter, otherwise DFLT.
@@ -673,6 +875,9 @@ impl SimpleScript {
         }
         b.rep.script_dependent_pairs = script_dep;
 
+        // Pair-value triggers only (before the GSUB-rule triggers are folded in): the token
+        // model removes the ligature triggers but must keep these.
+        let pv_trig = trig.clone();
         // Fold in the trigger analysis.
         let mut single = b.single;
         for &a in &cps {
@@ -789,6 +994,11 @@ impl SimpleScript {
         // Class-0 col for pad must be neutral: verified by construction (col_of(256) is
         // zero for non-TRIG rows).
         let _ = &b.covered;
+        let tokens = build_tokens(&b, &cps, &adv, &m, &pv_trig, &single, &gsub_latn, &gpos_latn, script_dep);
+        b.rep.notes.push(match &tokens {
+            Some(t) => format!("token model: {} ligatures, max token step {}", t.ligs.len(), t.max_step),
+            None => "token model: unsupported for this font".into(),
+        });
         Some(SimpleScript {
             upem,
             gid: gid_of,
@@ -801,6 +1011,7 @@ impl SimpleScript {
             covered,
             max_step,
             report: b.rep,
+            tokens,
         })
     }
 

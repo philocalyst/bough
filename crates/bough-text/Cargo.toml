@@ -9,8 +9,12 @@ ttf-parser = { version = "0.25", default-features = false, features = ["std", "o
 swash = "0.2"
 
 [dev-dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-metal = "0.3"
 rustybuzz = "0.20"
 libc = "0.2"
 zgx-workload = { package = "zgx-workload", path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }
 cosmic-text = { package = "zgx-cosmic-text", path = "/Users/mileswirht/projects/_ref/zgx/vendor/cosmic-text", default-features = false, features = ["std", "swash", "shape-run-cache"] }
+ttf-parser = "0.25"
 

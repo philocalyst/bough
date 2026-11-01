@@ -1,6 +1,6 @@
 //! The fast shapers: NEON table lookup + SIMD prefix sum, and a scalar twin.
 
-use crate::script::{SimpleScript, TRIG};
+use crate::script::{SimpleScript, TRIG, TokenTable, TOK_PAD};
 
 /// A shaped run in font design units. Everything is an exact integer; the pixel scale is
 /// applied only when instances are generated (`scale = size / upem`).
@@ -89,6 +89,13 @@ pub struct Shaper {
     gid128: [u16; 128],
     /// Strings shorter than this take the scalar kernel in `shape_into`.
     pub simd_min_len: usize,
+    /// Position-equivalence class of each ASCII byte: `a` and `b` share a class iff
+    /// `dense[a][*] == dense[b][*]` and `dense[*][a] == dense[*][b]` over all 128 rows and
+    /// columns. Substituting bytes within their classes leaves every pen step of every
+    /// string unchanged (each step `dense[s_i][s_i+1]` keeps its row and column), so pen
+    /// positions, width and eligibility are unchanged; only glyph ids differ. In DejaVu Sans
+    /// the ten digits are one class.
+    pub pos_class: [u8; 128],
 }
 
 impl Shaper {
@@ -132,7 +139,25 @@ impl Shaper {
         }
         let mut gid128 = [0u16; 128];
         gid128.copy_from_slice(&script.gid[..128]);
-        Shaper { script, t, cp_recs, narrow_gid, dense, gid128, simd_min_len: 16 }
+        let mut pos_class = [0u8; 128];
+        let mut reps: Vec<usize> = vec![];
+        for a in 0..128usize {
+            let same = |r: usize| (0..128).all(|k| dense[a << 7 | k] == dense[r << 7 | k] && dense[k << 7 | a] == dense[k << 7 | r]);
+            pos_class[a] = match reps.iter().position(|&r| same(r)) {
+                Some(c) => c as u8,
+                None => {
+                    reps.push(a);
+                    (reps.len() - 1) as u8
+                }
+            };
+        }
+        Shaper { script, t, cp_recs, narrow_gid, dense, gid128, simd_min_len: 16, pos_class }
+    }
+
+    /// The dense ASCII step table (`dense[a << 7 | b]`), for the glyph pool.
+    #[inline]
+    pub fn dense(&self) -> &[u16] {
+        &self.dense
     }
 
     /// Convenience allocation wrapper. Returns `None` if the string needs full shaping.
@@ -151,27 +176,31 @@ impl Shaper {
     pub fn shape_into(&self, text: &str, font_size: f32, out: &mut GlyphRun) -> bool {
         out.reset(self.script.upem, font_size);
         if !text.is_ascii() {
-            return self.scalar_utf8(text, out);
+            return self.shape_tokens(text, out);
         }
         let b = text.as_bytes();
         // SAFETY: `b` is ASCII (checked above).
-        unsafe {
+        let ok = unsafe {
             #[cfg(target_arch = "aarch64")]
             if b.len() >= self.simd_min_len {
-                return self.simd_ascii(b, out);
+                self.simd_ascii(b, out)
+            } else {
+                self.scalar_ascii(b, out)
             }
+            #[cfg(not(target_arch = "aarch64"))]
             self.scalar_ascii(b, out)
-        }
+        };
+        ok || self.shape_tokens(text, out)
     }
 
-    /// Always the scalar kernel (ASCII loop, UTF-8 decoding for the rest).
+    /// Always the scalar kernel (ASCII loop; the token path for the rest).
     pub fn shape_scalar(&self, text: &str, font_size: f32, out: &mut GlyphRun) -> bool {
         out.reset(self.script.upem, font_size);
         if !text.is_ascii() {
-            return self.scalar_utf8(text, out);
+            return self.shape_tokens(text, out);
         }
         // SAFETY: ASCII checked.
-        unsafe { self.scalar_ascii(text.as_bytes(), out) }
+        unsafe { self.scalar_ascii(text.as_bytes(), out) || self.shape_tokens(text, out) }
     }
 
     /// Always the NEON kernel (aarch64 only), for benchmarks and tests.
@@ -179,10 +208,68 @@ impl Shaper {
     pub fn shape_simd(&self, text: &str, font_size: f32, out: &mut GlyphRun) -> bool {
         out.reset(self.script.upem, font_size);
         if !text.is_ascii() {
-            return self.scalar_utf8(text, out);
+            return self.shape_tokens(text, out);
         }
         // SAFETY: ASCII checked.
-        unsafe { self.simd_ascii(text.as_bytes(), out) }
+        unsafe { self.simd_ascii(text.as_bytes(), out) || self.shape_tokens(text, out) }
+    }
+
+    /// The prototype's Latin-1 path (`char_indices` + class matrix + `Vec::push`), kept only as
+    /// the "before" of the token path in the benchmarks. Ligature strings are refused.
+    pub fn shape_latin1_legacy(&self, text: &str, font_size: f32, out: &mut GlyphRun) -> bool {
+        out.reset(self.script.upem, font_size);
+        self.scalar_utf8(text, out)
+    }
+
+    /// The token path: ASCII + Latin-1 UTF-8 with the font's ligatures replayed, then the
+    /// same pair-step prefix sum as the ASCII kernels over the 256-token table. `false` for
+    /// codepoints outside the covered set (or a font without a token model).
+    ///
+    /// Pass 1 writes one token per glyph (and its cluster = UTF-8 offset of its first byte);
+    /// pass 2 turns tokens into gids and pen positions in place.
+    pub fn shape_tokens(&self, text: &str, out: &mut GlyphRun) -> bool {
+        let Some(tt) = self.script.tokens.as_ref() else { return false };
+        let s = text.as_bytes();
+        let n = s.len();
+        out.gid.clear();
+        out.x.clear();
+        out.cluster.clear();
+        out.identity_clusters = false;
+        out.gid.reserve(n);
+        out.x.reserve(n);
+        out.cluster.reserve(n);
+        let tok = out.gid.as_mut_ptr();
+        let cl = out.cluster.as_mut_ptr();
+        // SAFETY: at most one token per input byte, so `j <= i < n` stays within the reserved
+        // capacity; `s` is valid UTF-8 (a `&str`), so a lead byte is followed by its
+        // continuation byte (`i + 1 < n`).
+        let j = unsafe { tokenize(tt, s, tok, cl) };
+        let Some(j) = j else { return false };
+        let step = tt.step.as_ptr();
+        let gid = tt.gid.as_ptr();
+        let xp = out.x.as_mut_ptr();
+        let mut x = 0i32;
+        let mut acc = 0u32;
+        // SAFETY: tokens are < 256 so `t << 8 | u < 65536 = step.len()`; k < j <= capacity.
+        unsafe {
+            for k in 0..j {
+                let t = *tok.add(k) as usize;
+                let u = if k + 1 < j { *tok.add(k + 1) as usize } else { TOK_PAD as usize };
+                let st = *step.add(t << 8 | u) as u32;
+                acc |= st;
+                *tok.add(k) = *gid.add(t);
+                *xp.add(k) = x;
+                x += st as i32;
+            }
+            out.width = x;
+            if acc & 0x8000 != 0 {
+                return false;
+            }
+            out.gid.set_len(j);
+            out.x.set_len(j);
+            out.cluster.set_len(j);
+        }
+        true
     }
 
     /// Scalar kernel over ASCII bytes: per glyph one byte load, one 16-bit step load from the
@@ -428,7 +515,7 @@ impl Shaper {
 /// past `p + rem`. Overlapping loads, no memory round trip for the combine.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn load_partial(p: *const u8, rem: usize) -> core::arch::aarch64::uint8x16_t {
+pub(crate) unsafe fn load_partial(p: *const u8, rem: usize) -> core::arch::aarch64::uint8x16_t {
     use core::arch::aarch64::*;
     unsafe {
         if rem >= 8 {
@@ -458,4 +545,157 @@ unsafe fn load_partial(p: *const u8, rem: usize) -> core::arch::aarch64::uint8x1
             vcombine_u8(vcreate_u8(x), vdup_n_u8(0))
         }
     }
+}
+
+/// Rewrite UTF-8 (ASCII + Latin-1) into glyph tokens, replaying the font's ligatures exactly as
+/// HarfBuzz applies a ligature lookup: left to right, at each glyph the ligatures that start
+/// with it in the font's order, first match wins, matching resumes after the ligature.
+/// Writes `tok[j]` and `cl[j]` (UTF-8 offset of the glyph's first byte); returns the glyph
+/// count, or `None` for a codepoint outside ASCII printable / Latin-1.
+///
+/// # Safety
+/// `tok` and `cl` must be valid for `s.len()` writes; `s` must be valid UTF-8.
+#[inline]
+pub(crate) unsafe fn tokenize(tt: &TokenTable, s: &[u8], tok: *mut u16, cl: *mut u32) -> Option<usize> {
+    let n = s.len();
+    let (mut i, mut j) = (0usize, 0usize);
+    unsafe {
+        while i < n {
+            let b = *s.get_unchecked(i);
+            let (t, len) = if b < 0x80 {
+                if *tt.lig_first.get_unchecked(b as usize) {
+                    let mut hit = (b, 1usize);
+                    for (first, rest, lt) in &tt.ligs {
+                        if *first == b && s.len() - i - 1 >= rest.len() && s[i + 1..i + 1 + rest.len()] == rest[..] {
+                            hit = (*lt, 1 + rest.len());
+                            break;
+                        }
+                    }
+                    hit
+                } else {
+                    // Control bytes (and DEL) have all-TRIG rows; they must not alias the
+                    // internal tokens below 0x20.
+                    if b < 0x20 {
+                        return None;
+                    }
+                    (b, 1)
+                }
+            } else if b == 0xC3 {
+                (*s.get_unchecked(i + 1) + 0x40, 2)
+            } else if b == 0xC2 {
+                let c = *s.get_unchecked(i + 1);
+                if c < 0xA0 {
+                    return None; // C1 controls
+                }
+                (c, 2)
+            } else {
+                return None; // beyond Latin-1
+            };
+            *tok.add(j) = t as u16;
+            *cl.add(j) = i as u32;
+            j += 1;
+            i += len;
+        }
+    }
+    Some(j)
+}
+
+/// NEON slot kernel for the glyph pool: per 16 ASCII bytes, the entry ids (the bytes, widened:
+/// no glyph-id lookup) and the pen x of every slot (dense-table gather + 16-lane prefix sum),
+/// starting at pen `x_base`. Returns `(end pen, OR of all steps)`; bit 15 of the OR = trigger
+/// (outputs are then unspecified). `next` is the byte after `s` (0 = end of run), so a chunk
+/// appended to a stream gets the right last step.
+///
+/// # Safety
+/// `s` must be ASCII; `xp`/`ep` valid for `s.len().next_multiple_of(16)` writes.
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+pub unsafe fn simd_slots(dense: &[u16], s: &[u8], next: u8, x_base: i32, xp: *mut i32, ep: *mut u16) -> (i32, u32) {
+    use core::arch::aarch64::*;
+    debug_assert_eq!(dense.len(), 128 * 128);
+    unsafe {
+        let n = s.len();
+        let dense = core::hint::black_box(dense.as_ptr());
+        const IOTA: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let iota = vld1q_u8(IOTA.as_ptr());
+        let zero16 = vdupq_n_u16(0);
+        let mut base = x_base;
+        let mut trig = vdupq_n_u16(0);
+        let mut i = 0usize;
+        while i < n {
+            let rem = n - i;
+            let (b, nx) = if rem >= 17 {
+                (vld1q_u8(s.as_ptr().add(i)), vld1q_u8(s.as_ptr().add(i + 1)))
+            } else {
+                let b = load_partial(s.as_ptr().add(i), rem);
+                // the byte after the last one is `next`
+                let nb = vsetq_lane_u8::<15>(next, vdupq_n_u8(0));
+                let shifted = vextq_u8::<1>(b, vdupq_n_u8(0));
+                let at = vceqq_u8(iota, vdupq_n_u8((rem - 1) as u8));
+                let nbv = vdupq_laneq_u8::<15>(nb);
+                (b, vbslq_u8(at, nbv, shifted))
+            };
+            let valid = vcltq_u8(iota, vdupq_n_u8(if rem >= 16 { 16 } else { rem as u8 }));
+            vst1q_u16(ep.add(i), vmovl_u8(vget_low_u8(b)));
+            vst1q_u16(ep.add(i + 8), vmovl_high_u8(b));
+            let i0 = vaddw_u8(vshll_n_u8::<7>(vget_low_u8(b)), vget_low_u8(nx));
+            let i1 = vaddw_high_u8(vshll_high_n_u8::<7>(b), nx);
+            let mut st = [0u16; 16];
+            macro_rules! lane {
+                ($v:ident, $off:literal, $($l:literal)*) => { $(
+                    *st.get_unchecked_mut($off + $l) = *dense.add(vgetq_lane_u16::<$l>($v) as usize);
+                )* };
+            }
+            lane!(i0, 0, 0 1 2 3 4 5 6 7);
+            lane!(i1, 8, 0 1 2 3 4 5 6 7);
+            let m8 = vreinterpretq_s8_u8(valid);
+            let m0 = vreinterpretq_u16_s16(vmovl_s8(vget_low_s8(m8)));
+            let m1 = vreinterpretq_u16_s16(vmovl_high_s8(m8));
+            let st0 = vandq_u16(vld1q_u16(st.as_ptr()), m0);
+            let st1 = vandq_u16(vld1q_u16(st.as_ptr().add(8)), m1);
+            trig = vorrq_u16(trig, vorrq_u16(st0, st1));
+            let mut s0 = vaddq_u16(st0, vextq_u16::<7>(zero16, st0));
+            s0 = vaddq_u16(s0, vextq_u16::<6>(zero16, s0));
+            s0 = vaddq_u16(s0, vextq_u16::<4>(zero16, s0));
+            let mut s1 = vaddq_u16(st1, vextq_u16::<7>(zero16, st1));
+            s1 = vaddq_u16(s1, vextq_u16::<6>(zero16, s1));
+            s1 = vaddq_u16(s1, vextq_u16::<4>(zero16, s1));
+            s1 = vaddq_u16(s1, vdupq_laneq_u16::<7>(s0));
+            let e0 = vsubq_u16(s0, st0);
+            let e1 = vsubq_u16(s1, st1);
+            let bv = vdupq_n_u32(base as u32);
+            let x = xp.add(i) as *mut u32;
+            vst1q_u32(x, vaddw_u16(bv, vget_low_u16(e0)));
+            vst1q_u32(x.add(4), vaddw_high_u16(bv, e0));
+            vst1q_u32(x.add(8), vaddw_u16(bv, vget_low_u16(e1)));
+            vst1q_u32(x.add(12), vaddw_high_u16(bv, e1));
+            base = base.wrapping_add(vgetq_lane_u16::<7>(s1) as i32);
+            i += 16;
+        }
+        (base, vmaxvq_u16(trig) as u32)
+    }
+}
+
+/// Scalar twin of [`simd_slots`] (also the short-run kernel).
+///
+/// # Safety
+/// `s` must be ASCII; `xp`/`ep` valid for `s.len()` writes.
+#[inline]
+pub unsafe fn scalar_slots(dense: &[u16], s: &[u8], next: u8, x_base: i32, xp: *mut i32, ep: *mut u16) -> (i32, u32) {
+    let n = s.len();
+    let mut x = x_base;
+    let mut acc = 0u32;
+    unsafe {
+        let dp = dense.as_ptr();
+        for i in 0..n {
+            let b = *s.get_unchecked(i) as usize;
+            let c = if i + 1 < n { *s.get_unchecked(i + 1) as usize } else { next as usize };
+            let st = *dp.add((b & 127) << 7 | (c & 127)) as u32;
+            acc |= st;
+            *xp.add(i) = x;
+            *ep.add(i) = b as u16;
+            x = x.wrapping_add(st as i32);
+        }
+    }
+    (x, acc)
 }
