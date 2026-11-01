@@ -73,26 +73,37 @@ component roots) get a handle; the handle table maps handle → (page, slot) + g
 splice moves records (scan the moved run's `handle` column for non-zero). Template-internal nodes are
 addressed as `root + ordinal`.
 
-## 2. Damage: versions in, tiles out
+## 2. Damage: exact differences, counted in GPU tiles
 
-**Writes stamp, they don't flag.** Every visual mutation sets the record's `stamp` to the current epoch and
-lowers the page's `max_stamp` invariant (`max_stamp = max(stamps)`, maintained on write: one `max`). Nothing
-is ever cleared. Any number of consumers — each of the 2–3 presentation surfaces, accessibility, the inspector,
-a remote mirror — keep their own "last seen epoch" and ask *what changed since e* independently
-(WebRender keeps 64 frames of per-tile dirty bits; stamps make that unbounded and per-record).
+Measured in `crates/bough-damage-lab/RESULTS.md` (28 formulations, 10 zgx-derived traces, ages 1–3, every frame
+verified byte-exact by repairing a surface of that age). This section supersedes the first draft, whose per-record
+version stamps **lost** on both CPU and GPU.
 
-**Old support is captured at write time.** Before a record's `ink` changes, its old `ink` is unioned into
-the epoch's damage; after layout, the new `ink` is. Paint-only writes (old = new) union once. Removal unions
-the whole run's page summaries. This is write-through; there is no later pass that rediscovers changes.
+**The cost unit is the GPU's 32×32 tile.** Apple GPUs load and store only the tiles that drawn geometry touches.
+Scissor prevents a touch; stencil and discard do not. So pixel-exact damage is worthless unless the *geometry* is
+clipped, and tracking finer than 32 device px gains nothing once it is.
 
-**Damage planes.** An epoch's damage is a tile bitmap (16×16 device px tiles; rows padded to whole words,
-phantom tiles past the edge) plus its NRect bounding box. A ring of the last N planes gives buffer-age repair:
-`repair(age) = OR of the last age planes` — a handful of vector ORs. Rect → tile bits is branch-free
-(row mask = `((1 << tx1) − 1) & !((1 << tx0) − 1)` OR'd into rows `ty0..ty1`).
+**Plane.** One bit per 32×32 tile, rows of `u128` (≤ 4096 px a side; 800 B at 2560×1600). A ring of 4 planes
+indexed by epoch; each presentation surface remembers the epoch it was drawn at; `repair(age)` = OR of the last
+`age` planes. No bounding box, no dirty-row mask, no per-record stamps.
 
-**Cull to a draw list.** For a repair region: SIMD-test page summaries' `ink` against the region box, then the
-surviving pages' record `ink` (and optionally the tile plane), emitting instance runs in paint order. This is the
-only per-frame traversal and it streams contiguous columns.
+**Write-time marks are exact symmetric differences**, not unions of bounds: a colour change marks its coverage
+once; a resize or move of a rect marks only the strips between old and new (rounded rects add corner squares);
+a text rewrite marks only the tile spans whose glyphs changed; a scroll or transform marks clip ∩ old ∪ clip ∩ new
+content bounds, never each moved record. Old support is captured before the write; there is no later pass that
+rediscovers changes.
+
+**Cull to a draw list.** OR the planes, test page summaries, then an 8-wide NEON scan of record bounds with one
+word test per tile row, emitting the paint-ordered list of instances that touch damaged tiles.
+
+**Consumption.** The plane (≤ 800 B) and the culled list go to the GPU; the vertex shader clips each instance to
+the damaged tiles of the rows it spans (sub-quads clamped to the row's damaged span, degenerate when none), so
+the CPU never splits primitives. One instanced draw, `loadAction = .load` into the surface of that age, no stencil,
+no discard, no retained-texture copy; nothing at all when the plane is empty.
+
+Result to beat: the lab's CPU-clipped variant already costs 3.4–12× less total frame time than zgx (1.2–1.7× even
+crediting zgx without its full-surface copy) but more CPU instructions on heavy and lab; moving the clip to the
+vertex shader is what removes that CPU cost.
 
 ## 3. Paint: the instance is the output
 
@@ -108,7 +119,7 @@ culling need it.
 **One uber-shader, one draw.** All primitive kinds (solid/rounded rect, border, shadow, glyph, image, gradient)
 share a 48-byte instance format; the fragment shader branches on kind (coherent per tile on TBDR GPUs). The
 frame's draw list (u32 instance indices in paint order, for the repair region only) feeds one instanced draw,
-scissored to the repair box and stencil/tile-masked to the repair plane.
+clipped per instance to damaged tiles in the vertex shader (§2).
 
 ## 4. Presentation: buffer age without a copy
 
