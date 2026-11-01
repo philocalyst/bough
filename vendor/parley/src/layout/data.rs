@@ -447,45 +447,7 @@ impl<B: Brush> LayoutData<B> {
         let metrics = metrics_cache.get(&self.fonts[font_index], font_size, coords);
         let units_per_em = metrics.units_per_em as f32;
 
-        let metrics = {
-            let (underline_offset, underline_size) = if let Some(underline) = metrics.underline {
-                (underline.offset, underline.thickness)
-            } else {
-                // Default values from Harfbuzz: https://github.com/harfbuzz/harfbuzz/blob/00492ec7df0038f41f78d43d477c183e4e4c506e/src/hb-ot-metrics.cc#L334
-                let default = units_per_em / 18.0;
-                (default, default)
-            };
-            let (strikethrough_offset, strikethrough_size) =
-                if let Some(strikeout) = metrics.strikeout {
-                    (strikeout.offset, strikeout.thickness)
-                } else {
-                    // Default values from HarfBuzz: https://github.com/harfbuzz/harfbuzz/blob/00492ec7df0038f41f78d43d477c183e4e4c506e/src/hb-ot-metrics.cc#L334-L347
-                    (metrics.ascent / 2.0, units_per_em / 18.0)
-                };
-
-            // Compute line height
-            let style = &self.styles[style_index as usize];
-            let line_height = match style.line_height {
-                LineHeight::Absolute(value) => value,
-                LineHeight::FontSizeRelative(value) => value * font_size,
-                LineHeight::MetricsRelative(value) => {
-                    (metrics.ascent - metrics.descent + metrics.leading) * value
-                }
-            };
-
-            RunMetrics {
-                ascent: metrics.ascent,
-                descent: -metrics.descent,
-                leading: metrics.leading,
-                underline_offset,
-                underline_size,
-                strikethrough_offset,
-                strikethrough_size,
-                line_height,
-                x_height: metrics.x_height,
-                cap_height: metrics.cap_height,
-            }
-        };
+        let metrics = run_metrics(&metrics, units_per_em, &self.styles[style_index as usize].line_height, font_size);
 
         let cluster_range = self.clusters.len()..self.clusters.len();
 
@@ -549,6 +511,140 @@ impl<B: Brush> LayoutData<B> {
                 bidi_level,
             });
         }
+    }
+
+    /// bough graft 5: push a run shaped by bough's table straight from its glyph stream (font units, zero offsets)
+    /// for *simple* text (letters, digits, spaces), writing exactly what `push_shaped_run` + `process_clusters`
+    /// write (same f32 operations in the same order): one cluster per character, the glyph inline unless it is a
+    /// ligature (then a `LigatureStart` cluster owning the glyph and `LigatureComponent` clusters splitting its
+    /// advance), the run's advance summed over every cluster but the last (upstream's accounting). The boundary of
+    /// each character follows graft 3's pair rule (`prev_space` carries across runs); `style_of` gives the style
+    /// index of the character at a byte offset of the whole text.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn push_slot_run(
+        &mut self,
+        font: FontData,
+        font_size: f32,
+        font_attrs: fontique::Attributes,
+        synthesis: fontique::Synthesis,
+        slots: SlotRun<'_>,
+        style_index: u16,
+        word_spacing: f32,
+        letter_spacing: f32,
+        source_text: &str,
+        text_range: Range<usize>,
+        coords: &[harfrust::NormalizedCoord],
+        metrics_cache: &mut MetricsCache,
+        prev_space: &mut Option<bool>,
+        style_of: &mut impl FnMut(usize) -> u16,
+    ) {
+        let coords_start = self.coords.len();
+        self.coords.extend(coords.iter().map(|c| c.to_bits()));
+        let coords_end = self.coords.len();
+        let font_index = self.fonts.iter().position(|f| *f == font).unwrap_or_else(|| {
+            let index = self.fonts.len();
+            self.fonts.push(font);
+            index
+        });
+        let m = metrics_cache.get(&self.fonts[font_index], font_size, coords);
+        let units_per_em = m.units_per_em as f32;
+        let metrics = run_metrics(&m, units_per_em, &self.styles[style_index as usize].line_height, font_size);
+        let cluster_start = self.clusters.len();
+        let glyph_start = self.glyphs.len();
+        let scale_factor = font_size / units_per_em;
+        let bytes = source_text.as_bytes();
+        let n = slots.gid.len();
+        let mut run_advance = 0.0_f32;
+        let mut total_glyphs: u32 = 0;
+        // The previous cluster's full advance is added when the next one starts (upstream adds every cluster but
+        // the last).
+        let mut pending: Option<f32> = None;
+        for k in 0..n {
+            let c0 = slots.cluster.map_or(k, |c| c[k] as usize);
+            let c1 = if k + 1 < n { slots.cluster.map_or(k + 1, |c| c[k + 1] as usize) } else { bytes.len() };
+            let x_advance = if k + 1 < n { slots.x[k + 1] } else { slots.width } - slots.x[k] + slots.track;
+            let advance = (x_advance as f32) * scale_factor;
+            if let Some(a) = pending.take() {
+                run_advance += a;
+            }
+            pending = Some(advance);
+            // Characters of this cluster: one, or a ligature's components.
+            let mut b = c0;
+            let mut chars = 0u32;
+            while b < c1 {
+                chars += 1;
+                b += utf8_len(bytes[b]);
+            }
+            let glyph_id = slots.gid[k] as u32;
+            if chars == 1 {
+                let (ch, len) = decode_latin1(bytes, c0);
+                let boundary = boundary_of(prev_space, ch);
+                self.clusters.push(ClusterData {
+                    info: ClusterInfo::new(boundary, ch),
+                    flags: 0,
+                    style_index: style_of(text_range.start + c0),
+                    glyph_len: 0xFF,
+                    text_len: len as u8,
+                    glyph_offset: glyph_id,
+                    text_offset: c0 as u16,
+                    advance,
+                });
+            } else {
+                let style0 = style_of(text_range.start + c0);
+                self.glyphs.push(Glyph {
+                    id: glyph_id,
+                    style_index: style0,
+                    x: (0_i32 as f32) * scale_factor,
+                    y: -(0_i32 as f32) * scale_factor,
+                    advance,
+                });
+                let share = advance / chars as f32;
+                let mut b = c0;
+                let mut first = true;
+                while b < c1 {
+                    let (ch, len) = decode_latin1(bytes, b);
+                    let boundary = boundary_of(prev_space, ch);
+                    let (flags, glyph_len, glyph_offset) = if first {
+                        (ClusterData::LIGATURE_START, 1_u8, total_glyphs)
+                    } else {
+                        (ClusterData::LIGATURE_COMPONENT, 0_u8, 0_u32)
+                    };
+                    self.clusters.push(ClusterData {
+                        info: ClusterInfo::new(boundary, ch),
+                        flags,
+                        style_index: if first { style0 } else { style_of(text_range.start + b) },
+                        glyph_len,
+                        text_len: len as u8,
+                        glyph_offset,
+                        text_offset: b as u16,
+                        advance: share,
+                    });
+                    first = false;
+                    b += len;
+                }
+                total_glyphs += 1;
+            }
+        }
+        if n == 0 {
+            return;
+        }
+        let run = RunData {
+            font_index,
+            font_size,
+            font_attrs,
+            synthesis,
+            coords_range: coords_start..coords_end,
+            text_range,
+            bidi_level: 0,
+            cluster_range: cluster_start..self.clusters.len(),
+            glyph_start,
+            metrics,
+            word_spacing,
+            letter_spacing,
+            advance: run_advance,
+        };
+        self.runs.push(run);
+        self.items.push(LayoutItem { kind: LayoutItemKind::TextRun, index: self.runs.len() - 1, bidi_level: 0 });
     }
 
     pub(crate) fn finish(&mut self) {
@@ -677,6 +773,81 @@ impl<B: Brush> LayoutData<B> {
 /// * `char_infos` - Character information from text analysis, indexed by cluster ID.
 /// * `char_indices_iter` - Iterator over (`byte_offset`, `char`) pairs from the source text.
 ///   Should be in logical order (forward for LTR, reverse for RTL).
+/// A run shaped by bough's table: glyph ids, pens in font units, the byte offset of each glyph's cluster in the
+/// run's text (`None`: one glyph per byte, ASCII), the run's width and the AAT tracking added to every advance.
+pub(crate) struct SlotRun<'a> {
+    pub(crate) gid: &'a [u16],
+    pub(crate) x: &'a [i32],
+    pub(crate) cluster: Option<&'a [u32]>,
+    pub(crate) width: i32,
+    pub(crate) track: i32,
+}
+
+#[inline(always)]
+fn utf8_len(b: u8) -> usize {
+    if b < 0x80 { 1 } else { 2 }
+}
+
+/// A character of simple (Latin-1) text at byte `i`, and its UTF-8 length.
+#[inline(always)]
+fn decode_latin1(b: &[u8], i: usize) -> (char, usize) {
+    match b[i] {
+        c if c < 0x80 => (c as char, 1),
+        0xC2 => (b[i + 1] as char, 2),
+        _ => ((b[i + 1] + 0x40) as char, 2),
+    }
+}
+
+/// Graft 3's pair rule for simple text: a word boundary at the start and where space-ness changes, a line boundary
+/// where a non-space follows a space.
+#[inline(always)]
+fn boundary_of(prev_space: &mut Option<bool>, ch: char) -> Boundary {
+    let space = ch == ' ';
+    let b = match *prev_space {
+        None => Boundary::Word,
+        Some(true) if !space => Boundary::Line,
+        Some(p) if p != space => Boundary::Word,
+        _ => Boundary::None,
+    };
+    *prev_space = Some(space);
+    b
+}
+
+/// A run's metrics from the font's (upstream's computation, shared by every push).
+fn run_metrics(metrics: &skrifa::metrics::Metrics, units_per_em: f32, line_height: &LineHeight, font_size: f32) -> RunMetrics {
+    let (underline_offset, underline_size) = if let Some(underline) = metrics.underline {
+        (underline.offset, underline.thickness)
+    } else {
+        // Default values from Harfbuzz: https://github.com/harfbuzz/harfbuzz/blob/00492ec7df0038f41f78d43d477c183e4e4c506e/src/hb-ot-metrics.cc#L334
+        let default = units_per_em / 18.0;
+        (default, default)
+    };
+    let (strikethrough_offset, strikethrough_size) = if let Some(strikeout) = metrics.strikeout {
+        (strikeout.offset, strikeout.thickness)
+    } else {
+        // Default values from HarfBuzz: https://github.com/harfbuzz/harfbuzz/blob/00492ec7df0038f41f78d43d477c183e4e4c506e/src/hb-ot-metrics.cc#L334-L347
+        (metrics.ascent / 2.0, units_per_em / 18.0)
+    };
+    // Compute line height
+    let line_height = match *line_height {
+        LineHeight::Absolute(value) => value,
+        LineHeight::FontSizeRelative(value) => value * font_size,
+        LineHeight::MetricsRelative(value) => (metrics.ascent - metrics.descent + metrics.leading) * value,
+    };
+    RunMetrics {
+        ascent: metrics.ascent,
+        descent: -metrics.descent,
+        leading: metrics.leading,
+        underline_offset,
+        underline_size,
+        strikethrough_offset,
+        strikethrough_size,
+        line_height,
+        x_height: metrics.x_height,
+        cap_height: metrics.cap_height,
+    }
+}
+
 /// bough graft: a run's font metrics are a pure function of (font, size, normalized coordinates); upstream reads
 /// them from the font's tables for every run. Kept in the shape context, so they are read once per instance.
 #[derive(Default)]

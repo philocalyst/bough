@@ -73,7 +73,14 @@ fn main() {
             let bu = meter::count(30, || {
                 std::hint::black_box(u.build(c));
             });
-            println!("  {name}: grafted build {:.0} (upstream {:.0}), break {:.0}, align {:.0}", b.instr, bu.instr, br.instr, al.instr);
+            let mut lg = g.layout(c);
+            let ri = meter::count(30, || g.layout_into(c, &mut lg));
+            let mut lu = u.layout(c);
+            let ru = meter::count(30, || u.layout_into(c, &mut lu));
+            println!(
+                "  {name}: grafted build {:.0} (upstream {:.0}), break {:.0}, align {:.0}; retained layout (build_into+break+align): grafted {:.0}, upstream {:.0}",
+                b.instr, bu.instr, br.instr, al.instr, ri.instr, ru.instr
+            );
         }
         println!(
             "{name:10} {:5}  {:10.0} {:10.0} {:7.2}  {:8.1} {:8.1}",

@@ -700,6 +700,156 @@ fn fast_item<'a, B: Brush>(
     ok
 }
 
+/// bough graft 5: the fused build for *simple* text (letters, digits and spaces by graft 3's classes) in one item
+/// (every style run agrees on size, spacing, variations; no features, no locale; word-break normal) whose style
+/// runs' fonts are their query's first complete candidate with a table covering the run. Upstream would run text
+/// analysis (pair rules here), style-index fill, item and font-segment loops, harfrust and `process_clusters`;
+/// this writes the same layout data in one pass per font segment from bough's table output (`push_slot_run`).
+/// All or nothing: `false` (nothing pushed) means the caller runs the full pipeline.
+#[cfg(feature = "std")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_simple<'a, B: Brush>(
+    rcx: &'a ResolveContext,
+    mut fq: Query<'a>,
+    styles: &'a [ResolvedStyle<B>],
+    style_runs: &[crate::resolve::StyleRun],
+    scx: &mut ShapeContext,
+    text: &str,
+    layout: &mut Layout<B>,
+    analysis_data_sources: &AnalysisDataSources,
+) -> bool {
+    use crate::WordBreak;
+    let classes = crate::analysis::simple_classes(analysis_data_sources);
+    let b = text.as_bytes();
+    if b.is_empty() {
+        return false;
+    }
+    let mut k = 0;
+    while k < b.len() {
+        let (cp, n) = match b[k] {
+            c if c < 0x80 => (c, 1),
+            0xC2 if k + 1 < b.len() => (b[k + 1], 2),
+            0xC3 if k + 1 < b.len() => (b[k + 1] + 0x40, 2),
+            _ => return false,
+        };
+        if classes[cp as usize] == 0 {
+            return false;
+        }
+        k += n;
+    }
+    // One item: every style run agrees with the first on what breaks an item.
+    let first_index = style_runs[0].style_index;
+    let first = &styles[first_index as usize];
+    if first.locale.is_some() || !rcx.features(first.font_features).is_none_or(|f| f.is_empty()) {
+        return false;
+    }
+    for r in style_runs {
+        let st = &styles[r.style_index as usize];
+        if !nearly_eq(st.font_size, first.font_size)
+            || st.locale != first.locale
+            || st.font_variations != first.font_variations
+            || st.font_features != first.font_features
+            || !nearly_eq(st.letter_spacing, first.letter_spacing)
+            || !nearly_eq(st.word_spacing, first.word_spacing)
+            || st.word_break != WordBreak::Normal
+        {
+            return false;
+        }
+    }
+    let item = Item {
+        style_index: first_index,
+        size: first.font_size,
+        script: Script::Latin,
+        level: 0,
+        locale: None,
+        variations: first.font_variations,
+        features: first.font_features,
+        word_spacing: first.word_spacing,
+        letter_spacing: first.letter_spacing,
+    };
+    let fb_script = convert::script_to_fontique(item.script, analysis_data_sources);
+    let mut font_selector = FontSelector::new(&mut fq, rcx, styles, first_index, fb_script, None);
+    let mut runs = mem::take(&mut scx.fast_runs);
+    runs.clear();
+    let mut char_cluster = mem::take(&mut scx.char_cluster);
+    let mut ok = true;
+    let mut infos_one = [(CharInfo::placeholder(), 0_u16)];
+    for r in style_runs {
+        if r.range.is_empty() {
+            continue;
+        }
+        // The run's first character as its own cluster (a simple character is its own grapheme).
+        let ch = text[r.range.start..].chars().next().unwrap();
+        infos_one[0].1 = r.style_index;
+        let mut it = infos_one.iter();
+        let mut offset = r.range.start;
+        fill_cluster_in_place(&text[r.range.start..r.range.start + ch.len_utf8()], &mut it, &mut offset, &mut char_cluster);
+        let Some(font) = font_selector.select_font(&mut char_cluster, analysis_data_sources) else {
+            ok = false;
+            break;
+        };
+        if !font_selector.first_complete {
+            ok = false;
+            break;
+        }
+        scx.fast_vars.clear();
+        scx.fast_vars.extend(variations_iter(&font.font.synthesis, rcx.variations(item.variations)));
+        if !scx.fast.covers(font.font.blob.id(), font.font.index, font.font.blob.as_ref(), &scx.fast_vars, &text[r.range.clone()]) {
+            ok = false;
+            break;
+        }
+        match runs.last_mut() {
+            Some(last) if last.2 == font => last.1 = r.range.end,
+            _ => runs.push((r.range.start, r.range.end, font)),
+        }
+    }
+    scx.char_cluster = char_cluster;
+    // Shape every segment before pushing anything (a refusal leaves the layout untouched).
+    if ok {
+        for (k, (start, end, font)) in runs.iter().enumerate() {
+            scx.fast_vars.clear();
+            scx.fast_vars.extend(variations_iter(&font.font.synthesis, rcx.variations(item.variations)));
+            if !scx.fast.shape_seg(k, font.font.blob.id(), font.font.index, font.font.blob.as_ref(), &scx.fast_vars, &text[*start..*end], item.size) {
+                ok = false;
+                break;
+            }
+        }
+    }
+    if ok {
+        let mut prev_space = None;
+        let mut sr = 0usize;
+        let mut style_of = |byte: usize| {
+            while style_runs[sr].range.end <= byte {
+                sr += 1;
+            }
+            style_runs[sr].style_index
+        };
+        for (k, (start, end, font)) in runs.iter().enumerate() {
+            let (slots, coords) = scx.fast.seg(k);
+            layout.data.push_slot_run(
+                FontData::new(font.font.blob.clone(), font.font.index),
+                item.size,
+                font.attrs,
+                font.font.synthesis,
+                slots,
+                item.style_index,
+                item.word_spacing,
+                item.letter_spacing,
+                &text[*start..*end],
+                *start..*end,
+                coords,
+                &mut scx.metrics,
+                &mut prev_space,
+                &mut style_of,
+            );
+            crate::bough::count_segment(true);
+        }
+    }
+    runs.clear();
+    scx.fast_runs = runs;
+    ok
+}
+
 fn real_script(script: Script) -> bool {
     script != Script::Common && script != Script::Unknown && script != Script::Inherited
 }

@@ -125,6 +125,12 @@ pub(crate) struct CharInfo {
 }
 
 impl CharInfo {
+    /// bough graft 5: an info for a cluster built without analysis (only its style index is read there).
+    #[cfg(feature = "std")]
+    pub(crate) fn placeholder() -> Self {
+        simple_table(&AnalysisDataSources).info[b'a' as usize]
+    }
+
     const VARIATION_SELECTOR_SHIFT: u8 = 0;
     const REGION_INDICATOR_SHIFT: u8 = 1;
     const CONTROL_SHIFT: u8 = 2;
@@ -635,6 +641,12 @@ struct SimpleTable {
     info: [CharInfo; 256],
 }
 
+/// Graft 5: the simple class of each Latin-1 codepoint (0: not simple; 1: letter or digit; 2: the space).
+#[cfg(feature = "std")]
+pub(crate) fn simple_classes(sources: &AnalysisDataSources) -> &'static [u8; 256] {
+    &simple_table(sources).class
+}
+
 #[cfg(feature = "std")]
 fn simple_table(sources: &AnalysisDataSources) -> &'static SimpleTable {
     use icu_properties::props::{LineBreak, WordBreak as Wb};
@@ -649,7 +661,8 @@ fn simple_table(sources: &AnalysisDataSources) -> &'static SimpleTable {
             let (info, needs_bidi, mandatory) = char_info(sources, ch, Boundary::None);
             t.info[cp as usize] = info;
             let covered = (0x20..0x7F).contains(&cp) || (cp >= 0xA0 && cp != 0xAD);
-            if !covered || needs_bidi || mandatory || info.is_control() || info.is_emoji_or_pictograph() {
+            let script_ok = matches!(info.script, Script::Latin | Script::Common);
+            if !covered || !script_ok || needs_bidi || mandatory || info.is_control() || info.is_emoji_or_pictograph() {
                 continue;
             }
             t.class[cp as usize] = if cp == 0x20 {

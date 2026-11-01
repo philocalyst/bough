@@ -302,6 +302,34 @@ fn build_into_layout<B: Brush>(
         "at least one style run is required"
     );
 
+    // bough graft 5: simple text is laid out by one fused pass (analysis, items, font segments, table shaping,
+    // clusters) when it qualifies; otherwise the full pipeline below runs.
+    #[cfg(feature = "std")]
+    if line_break_override.is_none() && lcx.inline_boxes.is_empty() && !text.is_empty() {
+        layout.data.clear();
+        layout.data.scale = scale;
+        layout.data.quantize = quantize;
+        layout.data.base_level = 0;
+        layout.data.text_len = text.len();
+        layout.data.styles.extend(lcx.style_table.iter().map(|s| s.as_layout_style()));
+        let query = fcx.collection.query(&mut fcx.source_cache);
+        if super::shape::build_simple(
+            &lcx.rcx,
+            query,
+            &lcx.style_table,
+            &lcx.style_runs,
+            &mut lcx.scx,
+            text,
+            layout,
+            &lcx.analysis_data_sources,
+        ) {
+            crate::bough::count_analysis(true);
+            layout.data.inline_boxes.clear();
+            layout.data.finish();
+            return;
+        }
+    }
+
     crate::analysis::analyze_text(lcx, text, line_break_override);
 
     layout.data.clear();

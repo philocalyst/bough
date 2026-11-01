@@ -36,6 +36,8 @@ pub(crate) struct FastShaper {
     /// Index of the entry used by the last successful `shape`, and its tracking at that size.
     last: usize,
     track: i32,
+    /// Graft 5: one shaped run per font segment of a simple build (glyph run, entry, tracking).
+    segs: Vec<(GlyphRun, usize, i32)>,
 }
 
 /// Whether every character of a text can be in a table's covered set: ASCII 0x20..=0x7E and two-byte Latin-1
@@ -134,6 +136,36 @@ impl FastShaper {
             }
         };
         true
+    }
+
+    /// Graft 5: shapes segment `k` of a simple build into its own slot (`false`: the table refuses it).
+    pub(crate) fn shape_seg(&mut self, k: usize, blob: u64, index: u32, data: &[u8], vars: &[harfrust::Variation], text: &str, size: f32) -> bool {
+        if !self.shape(blob, index, data, vars, text, size) {
+            return false;
+        }
+        if self.segs.len() <= k {
+            self.segs.resize_with(k + 1, Default::default);
+        }
+        let seg = &mut self.segs[k];
+        core::mem::swap(&mut seg.0, &mut self.run);
+        seg.1 = self.last;
+        seg.2 = self.track;
+        true
+    }
+
+    /// Segment `k` of a simple build: its slots and its instance's normalized coordinates.
+    pub(crate) fn seg(&self, k: usize) -> (crate::layout::data::SlotRun<'_>, &[harfrust::NormalizedCoord]) {
+        let (r, e, track) = &self.segs[k];
+        (
+            crate::layout::data::SlotRun {
+                gid: &r.gid,
+                x: &r.x,
+                cluster: (!r.identity_clusters).then_some(&r.cluster[..]),
+                width: r.width,
+                track: *track,
+            },
+            &self.tables[*e].coords,
+        )
     }
 
     /// The normalized coordinates of the last shaped segment's instance.

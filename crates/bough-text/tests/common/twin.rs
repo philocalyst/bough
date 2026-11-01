@@ -93,6 +93,20 @@ macro_rules! engine {
                     b.build(c.text)
                 }
 
+                /// `build` into a retained layout (its allocations reused), then break and align.
+                pub fn layout_into(&mut self, c: &Case, l: &mut Layout<()>) {
+                    let mut b = self.lcx.ranged_builder(&mut self.fcx, c.text, 1.0, true);
+                    for p in &c.defaults {
+                        b.push_default(Self::prop(p));
+                    }
+                    for (r, p) in &c.spans {
+                        b.push(Self::prop(p), r.clone());
+                    }
+                    b.build_into(l, c.text);
+                    l.break_all_lines(c.width);
+                    l.align(Alignment::Start, AlignmentOptions::default());
+                }
+
                 pub fn layout(&mut self, c: &Case) -> Layout<()> {
                     let mut b = self.lcx.ranged_builder(&mut self.fcx, c.text, 1.0, true);
                     for p in &c.defaults {
