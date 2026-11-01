@@ -152,24 +152,61 @@ impl Para {
     }
 
     /// Words of bytes `[a, e)` (`a` a word start or a space, `e` a word end or the text's end), from the pens in
-    /// the pool, appended to `out`.
+    /// the pool, appended to `out`. Word boundaries come from a space mask built 16 bytes at a time (NEON
+    /// compare + the `shrn` nibble mask): a word starts where a non-space follows a space and ends where a space
+    /// follows a non-space, so the loop runs per word, not per byte.
     fn words_of(&self, pool: &GlyphPool, a: u32, e: u32, out: &mut Vec<Word>) {
         let t = &self.text;
         let xs = &pool.x[self.base as usize..];
         let n = t.len() as u32;
+        let width = self.width;
+        let push = |ws: u32, we: u32, out: &mut Vec<Word>| {
+            let x1 = if we < n { xs[we as usize] } else { width };
+            out.push(Word { ws, we, x0: xs[ws as usize], x1 });
+        };
         let mut i = a;
+        let mut start: Option<u32> = None;
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            use core::arch::aarch64::*;
+            let sp = vdupq_n_u8(b' ');
+            // SAFETY: each load reads 16 bytes inside `t[..e]`.
+            while i + 16 <= e {
+                let eq = vceqq_u8(vld1q_u8(t.as_ptr().add(i as usize)), sp);
+                // bit 4k of `m` set iff byte k is a space
+                let m = vget_lane_u64::<0>(vreinterpret_u64_u8(vshrn_n_u16::<4>(vreinterpretq_u16_u8(eq)))) & 0x1111_1111_1111_1111;
+                // boundaries: a byte whose space-ness differs from the previous byte's
+                let prev_space = match start { Some(_) => 0u64, None => 1 };
+                let flips = m ^ ((m << 4) | prev_space);
+                let mut f = flips & 0x1111_1111_1111_1111;
+                while f != 0 {
+                    let k = (f.trailing_zeros() >> 2) as u32;
+                    f &= f - 1;
+                    match start {
+                        None => start = Some(i + k),
+                        Some(ws) => {
+                            push(ws, i + k, out);
+                            start = None;
+                        }
+                    }
+                }
+                i += 16;
+            }
+        }
         while i < e {
-            while i < e && t[i as usize] == b' ' {
-                i += 1;
+            let space = t[i as usize] == b' ';
+            match (start, space) {
+                (None, false) => start = Some(i),
+                (Some(ws), true) => {
+                    push(ws, i, out);
+                    start = None;
+                }
+                _ => {}
             }
-            let ws = i;
-            while i < e && t[i as usize] != b' ' {
-                i += 1;
-            }
-            if i > ws {
-                let x1 = if i < n { xs[i as usize] } else { self.width };
-                out.push(Word { ws, we: i, x0: xs[ws as usize], x1 });
-            }
+            i += 1;
+        }
+        if let Some(ws) = start {
+            push(ws, e, out);
         }
     }
 
