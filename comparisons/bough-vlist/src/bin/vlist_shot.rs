@@ -18,6 +18,6 @@ fn main() {
     let px = app.presented_pixels();
     let reference = app.reference_pixels();
     let diff = px.iter().zip(&reference).filter(|(a, b)| a != b).count();
-    println!("{mode:?} after {ticks} ticks: scroll {:.1} pt, {} differing bytes vs a full redraw, mounted rows {:?}", app.rt.mregion_scroll_pt(0), diff, app.rt.mregions[0].range);
+    println!("{mode:?} after {ticks} ticks: scroll {:.1} pt, {} differing bytes vs a full redraw, mounted rows {:?}", app.rt.list_scroll_pt(0), diff, app.rt.list_window(0));
     std::fs::write(out, px).unwrap();
 }

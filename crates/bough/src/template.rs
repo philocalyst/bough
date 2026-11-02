@@ -224,7 +224,7 @@ unsafe fn patch_view(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
         view.px = new_px;
         (view.handle, view.space, view.clip, view.vx, view.vy)
     };
-    rt.set_space(space, [vx, vy - new_px]);
+    rt.shift_space(space, 0, -dy);
     // the content's clips move with it (parents first: they were registered in preorder)
     let n = rt.input.views[v].clips.len();
     for k in 0..n {
@@ -287,7 +287,7 @@ impl<V: 'static, C: Element<V>> ScrollY<'_, V, C> {
         let o = m.rt.space(m.space);
         let (vx, vy) = (o[0] + (m.ox + x) * s, o[1] + (m.oy + y) * s);
         let clip = m.rt.scoped_clip([vx, vy, vx + w * s, vy + h * s], m.clip);
-        let space = m.rt.alloc_space();
+        let space = m.rt.alloc_space_in(m.space);
         let px = (*self.sig.get() * s).round();
         m.rt.set_space(space, [vx, vy - px]);
         let v = m.rt.input.views.len() as u32;
@@ -420,8 +420,8 @@ unsafe fn patch_port(rt: &mut Rt, w: &Wire, sig: *const u8, owner: *const u8) {
         (r.base_pos, r.rows.iter().map(|x| x.nrec as usize).sum::<usize>())
     };
     for i in 0..rt.regions[reg].rows.len() {
-        let sp = rt.regions[reg].rows[i].space as usize;
-        rt.glyphs.spaces[sp][1] += dy;
+        let sp = rt.regions[reg].rows[i].space;
+        rt.shift_space(sp, 0, dy);
     }
     rt.bough.scroll_run(base, nrec, 0, dy, old_vp.union(vp));
     // rows that entered or left the port
@@ -507,7 +507,9 @@ unsafe fn patch_offset(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8)
         return;
     }
     rt.input.offsets[w.node as usize].4 = new;
-    rt.set_space(space, [bx + new[0] as f32, by + new[1] as f32]);
+    let _ = (bx, by);
+    // relative: the space may have moved with a parent since mount
+    rt.shift_space(space, new[0] - cur[0], new[1] - cur[1]);
     let Some(pos) = rt.bough.pos_of(h) else { return };
     let end = rt.bough.subtree_end(pos);
     rt.bough.translate_run(pos + 1, end - pos - 1, new[0] - cur[0], new[1] - cur[1]);
@@ -529,7 +531,7 @@ impl<V: 'static, C: Element<V>> Offset<'_, V, C> {
         let (bx, by) = (o[0] + m.ox * s, o[1] + m.oy * s);
         let v = *self.sig.get();
         let cur = [(v.0 * s).round() as i32, (v.1 * s).round() as i32];
-        let space = m.rt.alloc_space();
+        let space = m.rt.alloc_space_in(m.space);
         m.rt.set_space(space, [bx + cur[0] as f32, by + cur[1] as f32]);
         let h = m.rt.bough.new_handle();
         m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: h.idx, clip: m.clip });

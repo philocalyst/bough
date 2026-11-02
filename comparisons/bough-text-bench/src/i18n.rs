@@ -45,11 +45,7 @@ impl View for Inbox {
     fn view(&self) -> impl Element<Self> + '_ {
         let tpl = self.template;
         each((0..self.rows).map(move |i| {
-            // SAFETY: `counts[i]` lies at `offset_of!(Inbox, counts) + i * size_of::<Signal<u32>>()` (an array is
-            // laid out contiguously); the path is the type witness.
-            let w = unsafe {
-                Wired::proven(&self.counts[i], core::mem::offset_of!(Inbox, counts) + i * size_of::<Signal<u32>>(), |v: &Inbox| &v.counts[0])
-            };
+            let w = sig!(self.counts).at(i);
             let f: fn(&u32) -> String = if tpl { |n| template_text(*n) } else { |n| message(*n) };
             text(w.map(f)).at(0.0, i as f32 * LINE).size(14.0).line_height(LINE).color(rgb(0xe5edf7))
         }))

@@ -18,6 +18,7 @@
 //!
 //! The list's own head (first field, `#[repr(C)]`) is a wire head like a `Signal`'s: every op sets
 //! `QUEUED` when the list is displayed, and the root's settle scan runs the region's wire.
+use crate::signal::WireHead;
 use crate::signal::{Headed, QUEUED};
 use std::cell::Cell;
 use std::marker::PhantomData;
@@ -71,10 +72,36 @@ pub enum Op {
     Edit { slot: u32 },
 }
 
+/// A slab chunk: 64 item slots allocated once and never moved, held by its raw pointer (from
+/// `Box::into_raw`), so a slot's address carries the allocation's own provenance: writing an item through
+/// it (`List::edit`, a wire's owner) never goes through a shared borrow of the list.
+pub(crate) struct Chunk<T>(std::ptr::NonNull<[MaybeUninit<T>; CHUNK]>);
+impl<T> Chunk<T> {
+    pub(crate) fn new() -> Chunk<T> {
+        // SAFETY: an array of `MaybeUninit` needs no initialisation.
+        let b: Box<[MaybeUninit<T>; CHUNK]> = Box::new(unsafe { MaybeUninit::<[MaybeUninit<T>; CHUNK]>::uninit().assume_init() });
+        Chunk(std::ptr::NonNull::from(Box::leak(b)))
+    }
+    /// Slot `i < CHUNK` (possibly uninitialised: the slab's metadata says).
+    #[inline(always)]
+    pub(crate) fn slot(&self, i: usize) -> *mut T {
+        debug_assert!(i < CHUNK);
+        // SAFETY: in bounds of the chunk's allocation.
+        unsafe { (self.0.as_ptr() as *mut MaybeUninit<T>).add(i) as *mut T }
+    }
+}
+impl<T> Drop for Chunk<T> {
+    fn drop(&mut self) {
+        // SAFETY: allocated by `Box` in `new`, freed once (the slots are `MaybeUninit`: the slab dropped its
+        // live items before).
+        drop(unsafe { Box::from_raw(self.0.as_ptr()) });
+    }
+}
+
 #[repr(C)]
 pub struct List<T> {
-    head: Cell<u32>,
-    chunks: Vec<Box<[MaybeUninit<T>; CHUNK]>>,
+    head: crate::signal::WireHead,
+    chunks: Vec<Chunk<T>>,
     meta: Vec<u32>,
     order: Vec<u32>,
     free: Vec<u32>,
@@ -134,7 +161,7 @@ impl<T> Drop for List<T> {
 
 impl<T> List<T> {
     pub fn new() -> List<T> {
-        List { head: Cell::new(0), chunks: Vec::new(), meta: Vec::new(), order: Vec::new(), free: Vec::new(), pending_free: Vec::new(), log: Vec::new(), perm: Vec::new(), wired: Default::default(), registered: Cell::new(false) }
+        List { head: WireHead::new(), chunks: Vec::new(), meta: Vec::new(), order: Vec::new(), free: Vec::new(), pending_free: Vec::new(), log: Vec::new(), perm: Vec::new(), wired: Default::default(), registered: Cell::new(false) }
     }
     pub fn with_capacity(n: usize) -> List<T> {
         let mut l = List::new();
@@ -144,7 +171,9 @@ impl<T> List<T> {
         l
     }
     pub fn from_iter_in(it: impl IntoIterator<Item = T>) -> List<T> {
-        let mut l = List::new();
+        let it = it.into_iter();
+        // reserved once (100,000 items: no doubling growth of the order and meta columns)
+        let mut l = List::with_capacity(it.size_hint().0);
         for v in it {
             l.push(v);
         }
@@ -170,8 +199,7 @@ impl<T> List<T> {
 
     #[inline(always)]
     pub(crate) fn slot_ptr(&self, s: u32) -> *mut T {
-        let c = &self.chunks[s as usize / CHUNK];
-        c[s as usize % CHUNK].as_ptr() as *mut T
+        self.chunks[s as usize / CHUNK].slot(s as usize % CHUNK)
     }
     fn alloc_slot(&mut self, v: T) -> u32 {
         let s = match self.free.pop() {
@@ -179,8 +207,7 @@ impl<T> List<T> {
             None => {
                 let s = self.meta.len() as u32;
                 if s as usize % CHUNK == 0 {
-                    // SAFETY: an array of MaybeUninit needs no initialisation.
-                    self.chunks.push(Box::new(unsafe { MaybeUninit::<[MaybeUninit<T>; CHUNK]>::uninit().assume_init() }));
+                    self.chunks.push(Chunk::new());
                 }
                 self.meta.push(0);
                 s
@@ -336,7 +363,7 @@ impl<T> List<T> {
     pub fn sort_by(&mut self, mut f: impl FnMut(&T, &T) -> std::cmp::Ordering) {
         let n = self.order.len();
         let chunks = &self.chunks;
-        let p = |s: u32| -> *const T { chunks[s as usize / CHUNK][s as usize % CHUNK].as_ptr() };
+        let p = |s: u32| -> *const T { chunks[s as usize / CHUNK].slot(s as usize % CHUNK) };
         let mut o = self.order.clone();
         // SAFETY: slots in `order` are live.
         o.sort_by(|&a, &b| f(unsafe { &*p(a) }, unsafe { &*p(b) }));
@@ -373,6 +400,14 @@ impl<T> List<T> {
         Some(unsafe { &mut *self.slot_ptr(s.idx) })
     }
     #[inline]
+    /// The item at `pos` (reflection).
+    pub(crate) fn item_ptr(&self, pos: usize) -> *mut T {
+        self.slot_ptr(self.order[pos])
+    }
+    /// The item at `pos` was written in place (reflection): log it as an edit.
+    pub(crate) fn mark_edit_pos(&mut self, pos: usize) {
+        self.mark_edit(self.order[pos]);
+    }
     fn mark_edit(&mut self, s: u32) {
         let m = self.meta[s as usize];
         if m & EDITED == 0 && self.displayed() {
@@ -412,11 +447,6 @@ impl<T> List<T> {
     #[inline]
     pub(crate) fn slot_live(&self, s: u32) -> bool {
         self.meta[s as usize] & LIVE != 0
-    }
-    /// The slot id at `pos` (runtime side, no generation).
-    #[inline]
-    pub(crate) fn slot_at(&self, pos: usize) -> u32 {
-        self.order[pos]
     }
 }
 

@@ -1096,7 +1096,8 @@ impl Rt {
         let spans: Vec<(u32, u32)> = (0..lines).map(|i| (ctx.line_start(i), if i + 1 < lines { ctx.line_start(i + 1) } else { n })).collect();
         let slow_text = if block.is_none() { Some(String::from_utf8_lossy(&ctx.text).into_owned()) } else { None };
         self.lay.prof.reset();
-        let old_ink = self.texts[ti as usize].ink;
+        // the record's ink as it is now (a row or scroll move translates records, not this cache)
+        let old_ink = self.cur_ink(hd);
         {
             let t = &mut self.texts[ti as usize];
             t.ox = x;
@@ -1268,6 +1269,7 @@ where
         let s = m.rt.scale;
         let hd = m.rt.bough.new_handle();
         let mut spec = self.spec;
+        m.rt.reflect.elem(hd.idx, std::any::type_name::<Self>());
         // size operands: the box is created with their initial values, the spec kept for later restyles
         let lid = if X::SIZE {
             let lid = m.rt.lay.eng.add(hd, &spec, s, None);
@@ -1390,6 +1392,19 @@ pub(crate) fn restyle(rt: &mut Rt, lid: u32, spec: &Spec) {
     }
 }
 
+/// Reflection's style edit: intern `style` and restyle node `lid`, queueing its group.
+pub(crate) fn restyle_to(rt: &mut Rt, lid: u32, style: cephal::Style) {
+    let sid = rt.lay.eng.intern_style(style);
+    if sid != rt.lay.eng.style_of(lid) {
+        rt.lay.eng.set_style(&rt.bough, lid, sid);
+        let root = rt.lay.root_of(lid);
+        if !rt.lay.info[root as usize].queued {
+            rt.lay.info[root as usize].queued = true;
+            rt.lay.pending.push(root);
+        }
+    }
+}
+
 /// Wrapping text (`para`) or a single-line label (`label`), measured by the shaper.
 pub struct Para<S, C = Color> {
     s: S,
@@ -1445,6 +1460,7 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
         }
         m.rt.lay.prof.mark(LP_TEXT_SET);
         let hd = m.rt.bough.new_handle();
+        m.rt.reflect.elem(hd.idx, std::any::type_name::<Self>());
         let spec = if self.wrap {
             self.spec
         } else {

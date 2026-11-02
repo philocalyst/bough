@@ -201,10 +201,8 @@ impl<V: View> App<V> {
             el.mount(&mut m);
         }
         rt.bough.insert_run(0, &recs);
-        // layout groups of the first mount, then the measured lists' first rows
+        // layout groups of the first mount (list regions mount their first rows between its passes)
         rt.lay_flush();
-        // SAFETY: `ptr` is the owner just mounted (boxed: it never moves).
-        unsafe { rt.mregions_init(ptr as *const u8) };
         let mut owner = owner;
         // wires queued while mounting (a producer's first request flips its reader to pending)
         // SAFETY: the owner just mounted, uniquely borrowed here.

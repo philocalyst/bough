@@ -129,6 +129,14 @@ impl Deep {
             }
         }
     }
+    /// Intern a resolved style (reflection's style edits).
+    pub fn intern_style(&mut self, s: Style) -> u32 {
+        self.styles.intern(s)
+    }
+    /// The resolved style of node `n` (reflection).
+    pub fn style(&self, n: u32) -> &Style {
+        self.styles.get(self.n[n as usize].style)
+    }
     pub fn style_of(&self, n: u32) -> u32 {
         self.n[n as usize].style
     }

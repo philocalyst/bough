@@ -65,21 +65,68 @@ unsafe impl<T> Headed for Signal<T> {
     }
 }
 
+/// An array of signals as a field: `sig!(self.counts)` proves the array, `.at(i)` one element (the array's
+/// offset plus `i` elements: arrays are contiguous, and `i < N` is checked).
+// SAFETY: element 0's head is at offset 0 (`Signal` is `repr(C)`, head first; an array has no padding before
+// element 0). The runtime never wires the array itself, only an element through `at`.
+unsafe impl<T, const N: usize> Headed for [Signal<T>; N] {
+    type At<'a, V>
+        = WiredArray<'a, T, V, N>
+    where
+        T: 'a;
+    #[inline(always)]
+    unsafe fn at<'a, V>(&'a self, off: u32) -> WiredArray<'a, T, V, N> {
+        WiredArray { arr: self, off, _v: PhantomData }
+    }
+}
+/// `sig!(self.array)` for a `[Signal<T>; N]` field.
+pub struct WiredArray<'a, T, V, const N: usize> {
+    arr: &'a [Signal<T>; N],
+    off: u32,
+    _v: PhantomData<fn(&V)>,
+}
+impl<'a, T, V, const N: usize> WiredArray<'a, T, V, N> {
+    /// Element `i` as a signal operand.
+    #[inline(always)]
+    pub fn at(&self, i: usize) -> Wired<'a, T, V> {
+        assert!(i < N, "signal array index {i} out of bounds ({N})");
+        Wired { sig: &self.arr[i], off: self.off + (i * size_of::<Signal<T>>()) as u32, _v: PhantomData }
+    }
+}
+
+/// A cell's wire head (index + flags): the first field of every reactive cell (`Signal`, `List`, `Reader`,
+/// `Entities`). Its own type so reflection recognises a reactive cell by its first field (`reflect.rs`).
+#[repr(transparent)]
+#[doc(hidden)]
+pub struct WireHead(pub(crate) Cell<u32>);
+impl WireHead {
+    pub(crate) const fn new() -> Self {
+        WireHead(Cell::new(0))
+    }
+}
+impl Deref for WireHead {
+    type Target = Cell<u32>;
+    #[inline(always)]
+    fn deref(&self) -> &Cell<u32> {
+        &self.0
+    }
+}
+
 #[repr(C)]
 pub struct Signal<T> {
-    head: Cell<u32>,
+    head: WireHead,
     value: T,
 }
 
 impl<T> Signal<T> {
     pub const fn new(value: T) -> Self {
-        Signal { head: Cell::new(0), value }
+        Signal { head: WireHead::new(), value }
     }
     /// The wire head. Crate-private: a head names a wire list monomorphised for this signal's `T`, so
     /// copying one head into another signal's would make the runtime run wires of the wrong type.
     #[inline(always)]
     pub(crate) fn head(&self) -> &Cell<u32> {
-        &self.head
+        &self.head.0
     }
     pub fn into_inner(self) -> T {
         self.value
@@ -116,8 +163,8 @@ impl<T> DerefMut for Signal<T> {
     /// Sets QUEUED (one OR) if the signal has wires.
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
-        let h = self.head.get();
-        self.head.set(h | (((h != 0) as u32) << 31));
+        let h = self.head.0.get();
+        self.head.0.set(h | (((h != 0) as u32) << 31));
         &mut self.value
     }
 }
@@ -143,18 +190,6 @@ impl<T, V> Clone for Wired<'_, T, V> {
 impl<T, V> Copy for Wired<'_, T, V> {}
 
 impl<'a, T, V> Wired<'a, T, V> {
-    /// `sig!`'s expansion. `off` is `offset_of!(V, path)`; `_path` is the field accessor `|o: &V| &o.path`
-    /// (never called: its signature proves the field at `off` is a `Signal<T>`).
-    ///
-    /// # Safety
-    /// `off` must be `offset_of!(V, path)` for the same struct field path as `_path` (the macro computes
-    /// both from one token sequence; nothing else may call this).
-    #[doc(hidden)]
-    #[inline(always)]
-    pub unsafe fn proven(sig: &'a Signal<T>, off: usize, _path: fn(&V) -> &Signal<T>) -> Self {
-        assert!(off + size_of::<Signal<T>>() <= size_of::<V>() && off <= u32::MAX as usize);
-        Wired { sig, off: off as u32, _v: PhantomData }
-    }
     /// The current value (for the description's initial state).
     #[inline(always)]
     pub fn get(&self) -> &'a T {
@@ -240,3 +275,4 @@ macro_rules! sig {
         unsafe { $crate::signal::prove::<_, Self>(r, ::core::mem::offset_of!(Self, $($f).+), p) }
     }};
 }
+

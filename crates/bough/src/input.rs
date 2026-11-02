@@ -373,6 +373,15 @@ fn act_for<V>(m: &mut Mounter<'_, V>, before: usize, nodes_before: usize, flags:
     a
 }
 
+/// Routes, scrollers and text fields run on the app's root owner (`App` dispatches them with it), so they
+/// may only be mounted by the root owner's description: in a list row or an entity view (another owner
+/// type, `Mounter::cls != 0`) the route's `V` is not the root's, and calling it would be undefined
+/// behaviour. Refused at mount (a panic, not UB) until routes carry their owner.
+#[track_caller]
+fn root_owner_only<V>(m: &Mounter<'_, V>, what: &str) {
+    assert!(m.cls == 0, "{what} inside a list row or an entity view: routes run on the app's root owner; put it on an element of the root view");
+}
+
 /// One interaction op on an element (`On<E, O>` installs it on E's first record).
 pub trait ActOp<V> {
     /// Kind flags the record gets besides [`KF_INTERACT`].
@@ -399,18 +408,21 @@ impl<V, E: Element<V>, O: ActOp<V>> Element<V> for On<E, O> {
 pub struct Click<F>(F);
 impl<V: 'static, F: Fn(&mut V) + Copy + 'static> ActOp<V> for Click<F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
+        root_owner_only(m, "click");
         m.rt.input.acts[a as usize].click = Some(route_plain::<V, F>(self.0));
     }
 }
 pub struct Press<F>(F);
 impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Press<F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
+        root_owner_only(m, "press");
         m.rt.input.acts[a as usize].press = Some(route_ev::<V, F>(self.0));
     }
 }
 pub struct Hover<F>(F);
 impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Hover<F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
+        root_owner_only(m, "hover");
         m.rt.input.acts[a as usize].hover = Some(route_ev::<V, F>(self.0));
     }
 }
@@ -437,12 +449,14 @@ pub struct OnKey<F>(F);
 impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for OnKey<F> {
     const FLAGS: u8 = KF_FOCUS;
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
+        root_owner_only(m, "onkey");
         m.rt.input.acts[a as usize].key = Some(route_ev::<V, F>(self.0));
     }
 }
 pub struct Drag<F>(F);
 impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Drag<F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
+        root_owner_only(m, "drag");
         m.rt.input.acts[a as usize].drag = Some(route_ev::<V, F>(self.0));
     }
 }
@@ -454,6 +468,7 @@ pub struct Scrolls<'a, V> {
 }
 impl<V> ActOp<V> for Scrolls<'_, V> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
+        root_owner_only(m, "scrolls");
         m.rt.input.scrollers.push(Scroller { off: self.sig.off, line: self.line, max: self.max, glide: None });
         m.rt.input.acts[a as usize].scroll = (m.rt.input.scrollers.len() - 1) as u32;
     }
@@ -816,6 +831,7 @@ impl<V: 'static> Element<V> for TextField<'_, V> {
 impl<V: 'static> TextField<'_, V> {
     fn mount_in(self, m: &mut Mounter<'_, V>) {
         use crate::elem::{quad, text};
+        root_owner_only(m, "text_field");
         let [x, y, w, h] = self.rect;
         let (before, nodes_before) = (m.recs.len(), m.scope.nodes.len());
         let s = m.rt.scale;
@@ -1193,7 +1209,7 @@ impl<V: View> App<V> {
 
     /// Is a glide (or any input animation) running?
     pub fn animating(&self) -> bool {
-        self.rt.input.scrollers.iter().any(|s| s.glide.is_some()) || self.rt.input.tips.iter().any(|t| t.fading)
+        self.rt.input.scrollers.iter().any(|s| s.glide.is_some()) || self.rt.input.tips.iter().any(|t| t.fading) || self.rt.lists.animating()
     }
 
     /// Advance input animations by `dt` seconds (glides write their scroll signals). Returns whether any
@@ -1223,6 +1239,8 @@ impl<V: View> App<V> {
             self.rt.input.tips[k].fading = a < 1.0;
             tip_alpha(&mut self.rt, k, a);
         }
+        // list moves (listview.rs): space writes and record translations, no layout
+        self.rt.lists_tick(dt);
         self.settle_input();
         true
     }

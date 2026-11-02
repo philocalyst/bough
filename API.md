@@ -156,3 +156,61 @@ keyed wire (a change patches the old key's and the new key's destinations only).
 `add_wire` cut a chain whose wire does not match (a `Signal` moved between owners or apps, a list item
 taken out and put back), so an index from another arena is never run. A list item leaves the slab with
 its heads cleared; its row's own wires are freed at once.
+
+## Round 4 (branch `api`): reflection, virtualization as exposure, interface cleanup
+
+**Reflection, typed, no opt-in** (`reflect.rs`). Built on rustc's compile-time type reflection
+(`#![feature(type_info)]`, this toolchain): `reflect::schema::<T>()` is a `const` per type, a preorder of
+nodes (kind, field / variant name, the compiler's offset, size, child count) with, per node, the vtables of
+`Debug`, bough's `Edit` (write from text), a blanket `Meta` (type name; raw-pointer receivers, so the schema
+names types it has no value of) and bough's `Items` (a container's children: `Vec`, `Option`, `Box`, `Cell`,
+`RefCell`, `Rc`/`Arc` read-only, `List`, `Reader` read-only), each found by `TypeId::trait_info_of` at
+compile time. Nothing is derived or registered in any component crate. A struct whose first field is a
+`WireHead` is a reactive cell (`Signal`, `List`, `Reader`, `Entities` now all start with one): a `Signal`'s
+node is its value, and an edit through reflection queues the cell's head, so it runs as an ordinary write
+(wires, damage, effects). Safe API: `reflect::fields_of(&v)`, `reflect::set_in(&mut v, "a.b[3].c", "text")`;
+on `App`: `reflect_fields`, `reflect_set` (a turn), `reflect_records` (records with element type, layout
+box, style, paint, text), `reflect_style` / `reflect_set_style` (cephal's `Style`, itself reflected),
+`reflect_set_color`, `reflect_stubs`. Limits: enums are listed with every variant and field in the schema
+but not opened in a value walk (the active variant index is not available; `discriminant_value` is the
+declared discriminant), `Option` opens through `Items`; std containers are opaque (shown by `Debug`); a
+schema holds at most 256 nodes (`truncated`); `TypeId::info` ICEs on tuple types in this toolchain, so tuples
+are recognised by a trait first. A `TypeId` from the schema never leaves `reflect.rs` (no downcasting).
+
+**Virtualization is exposure, not a list option** (`listview.rs`, `rt.rs`). Every list region (`list`,
+`list_with`, `index_list`) mounts only the rows meeting what is visible of it: its own viewport when it has
+one (`.viewport()` / `.scroll(sig!(..))`), otherwise its clip ∩ the window. No flag turns this on. The
+window follows any exposure: the region's scroll; its container moving (layout, or an enclosing space
+moving: spaces now nest, `alloc_space_in`, and `set_space` / `shift_space` carry the move to nested spaces
+and to the regions placed in them, which re-window); the visible rect changing (window resize, a clip
+changing, a sibling revealing it). Rows leaving it are released (two-phase teardown); their state lives in
+the list (or the owner, for index rows), so materialize → dematerialize → materialize returns the same
+pixels. The unmounted runs are typed placeholders (`Rt::stubs`, `Rt::stub_at`, `App::reflect_stubs`:
+region, rows, extent), sized by the region's extent index (`mlist::HeightIndex`, measured heights, the
+estimate for rows never mounted; without `.estimate()` the first rows measured set it); cephal sees the
+container as a sized leaf of the index's total. Nested regions (a list in a row of a list) count their rows'
+records in the enclosing row (`lr_count`), so releasing the outer row releases them.
+Representation differs from the lead's "stub record" idea in one place: placeholders are not Bough records
+(the presenter dispatches on payload, so a non-empty ink would draw), and exposure is detected as a change
+of what a region sees (O(regions) per flush), not by walking page summaries for stub inks. The extent
+index is per region, not in the Bough's page summaries. Not unified: the template `virtual_list` (zgui's
+long list: absolute rows with no layout) is still its own mechanism.
+
+**Interface cleanup and soundness** (each kept or tightened STATUS §4):
+* `Wired::proven` (a public `unsafe` constructor taking an offset and an unrelated accessor) is gone; a field
+  `[Signal<T>; N]` is proven by `sig!(self.counts)` and indexed by `.at(i)` (checked), which was the one use.
+* Routes (`on_click`, `on_press`, `on_hover`, `on_key`, `on_drag`), `scrolls` and `text_field` are refused at
+  mount (a panic, not UB) inside a list row or an entity view: `App` dispatches them with the root owner, so a
+  row-typed route would have been called with the wrong owner (found by the widgets and mail ports).
+* `Lists::regs` is private (`regs()` reads): a region's index names its monomorphised row functions, so a
+  reordered table reachable from `app.rt` would have run them on the wrong source.
+* `List` and `Entities` slab chunks are held by raw pointers from `Box::into_raw` (`list::Chunk`): an item's
+  address carries the allocation's provenance, so `List::edit` and owner writes never go through a pointer
+  derived from a shared borrow of the list.
+* A moved text's damage: a text rebuilt after its row or scroll view moved damaged its cached ink (where it
+  was laid out) instead of the record's (where it is): the stale glyphs stayed on screen (found by the
+  reflection pixel gate, reproduced with direct writes). Old ink is now read from the Bough (`Rt::cur_ink`).
+* Unchanged on purpose: `sig!` keeps its two forms (`self.path` in a `View`, `v: Type => path` for a value);
+  `prove` stays `#[doc(hidden)] pub unsafe` (the macro's expansion needs a public path); `App::frame` is the
+  only frame entry point on this branch; `NumFmt` stays re-exported at the root for `.num(f, fmt)`;
+  `Mounter`'s fields stay crate-private (custom elements outside the crate remain a gap).

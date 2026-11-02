@@ -1,3 +1,5 @@
+#![feature(type_info, ptr_metadata, rustc_attrs, const_trait_impl, const_cmp, arbitrary_self_types_pointers)]
+#![allow(internal_features)]
 //! bough: the public façade over bough-core (records, damage), bough-text (shaping into the glyph pool),
 //! cephal (layout) and bough-metal's fused presenter. One region holds everything the GPU reads
 //! (`rt.rs`); a frame's CPU work ends at the tile list (`app.rs`).
@@ -17,6 +19,7 @@ pub mod list;
 pub mod listview;
 pub mod mlist;
 pub mod reader;
+pub mod reflect;
 pub mod rt;
 pub mod select;
 pub mod signal;
@@ -34,10 +37,9 @@ pub mod prelude {
     pub use crate::input::{no_hit, text_field, tooltip, Button, Ev, Interact, Key, Mods, TipStyle};
     pub use crate::lanes::{lanes, Lane};
     pub use crate::list::{List, Slot};
-    pub use crate::listview::{list, list_with};
+    pub use crate::listview::{index_list, list, list_with};
     pub use crate::reader::{boundary, latest, produce, Reader, Request};
     pub use crate::template::{clip_by, offset, port_list, scroll_y, template, wired_clip, Hooked, TNode, T_CLIP, T_FOCUS, T_HOOK};
-    pub use crate::mlist::measured_list;
     pub use crate::rt::Caps;
     pub use crate::sig;
     pub use crate::signal::{Signal, Wired};

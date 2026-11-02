@@ -425,6 +425,7 @@ where
         if dynamic {
             let hd = m.rt.bough.new_handle();
             handle_idx = hd.idx;
+            m.rt.reflect.elem(hd.idx, std::any::type_name::<Self>());
             let n = &mut m.rt.nodes[node as usize];
             n.handle = hd;
             n.run = run;
@@ -778,6 +779,9 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
         let dynamic = G::PER_GLYPH || m.scope.wires.len() > wires_before || m.taping();
         m.tape_push(node);
         let hd = if dynamic { m.rt.bough.new_handle() } else { Handle { idx: 0, generation: 0 } };
+        if dynamic {
+            m.rt.reflect.elem(hd.idx, std::any::type_name::<Self>());
+        }
         let ti = m.rt.alloc_text(TextNode {
             text: init,
             strike: strike as u32,
@@ -835,7 +839,7 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
             m.rt.text_set(ti, &text);
         } else {
             // a moved / resized / recoloured text: rebuilt (old and new ink damaged)
-            let old_ink = m.rt.texts[ti as usize].ink;
+            let old_ink = m.rt.cur_ink(hd);
             let old = std::mem::take(&mut m.rt.texts[ti as usize].shape);
             crate::text::release(m.rt, TextNode { shape: old, ..Default::default() });
             let strike = m.rt.text.strike(size_px);

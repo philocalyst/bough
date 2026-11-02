@@ -3,6 +3,7 @@ name = "bough-app-sketch-code"
 version = "0.0.0"
 edition.workspace = true
 license.workspace = true
+description = "zgx's Sketch and Code example apps (crates/zgx-script/examples/{sketch,code_editor}) as native bough views, with zgx's apps_bench interactions and pixel gates"
 
 [dependencies]
 bough = { path = "../../crates/bough" }
@@ -10,3 +11,7 @@ bough-core = { path = "../../crates/bough-core" }
 bough-metal = { path = "../../crates/bough-metal" }
 bough-text = { path = "../../crates/bough-text" }
 zgx-workload = { path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }
+
+[[bin]]
+name = "apps_bench_sketch_code"
+path = "src/bin/apps_bench.rs"

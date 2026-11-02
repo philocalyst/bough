@@ -13,6 +13,7 @@
 //!   turn, one damage epoch, one frame. A consumer can never see half a cohort.
 //! * `pending()` operands are wires on a second head (`phead`, offset 4) queued on every pending
 //!   transition.
+use crate::signal::WireHead;
 use crate::elem::{Apply, IntoProp, Mounter, TextSrc};
 use crate::rt::*;
 use crate::signal::{Headed, Signal, Wired, HELD, QUEUED};
@@ -29,7 +30,7 @@ const FAULT: u8 = 4;
 
 #[repr(C)]
 pub struct Reader<T> {
-    head: Cell<u32>,
+    head: crate::signal::WireHead,
     phead: Cell<u32>,
     state: Cell<u8>,
     ticket: Cell<u32>,
@@ -46,7 +47,7 @@ impl<T> Default for Reader<T> {
 
 impl<T> Reader<T> {
     pub const fn new() -> Reader<T> {
-        Reader { head: Cell::new(0), phead: Cell::new(0), state: Cell::new(0), ticket: Cell::new(0), value: UnsafeCell::new(None), staged: UnsafeCell::new(None), fault: UnsafeCell::new(None) }
+        Reader { head: WireHead::new(), phead: Cell::new(0), state: Cell::new(0), ticket: Cell::new(0), value: UnsafeCell::new(None), staged: UnsafeCell::new(None), fault: UnsafeCell::new(None) }
     }
     /// The last committed (Ready) value; `None` before first readiness.
     pub fn latest(&self) -> Option<&T> {
@@ -61,6 +62,14 @@ impl<T> Reader<T> {
     }
     pub fn is_pending(&self) -> bool {
         self.state.get() & PENDING != 0
+    }
+    /// The value's address (reflection; only while `has_value`).
+    pub(crate) fn value_ptr(&self) -> *const T {
+        // SAFETY: read-only peek at the committed value; reflection runs outside every turn.
+        match unsafe { &*self.value.get() } {
+            Some(v) => v as *const T,
+            None => std::ptr::null(),
+        }
     }
     pub fn has_value(&self) -> bool {
         self.state.get() & HAS != 0

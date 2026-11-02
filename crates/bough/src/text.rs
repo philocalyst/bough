@@ -620,8 +620,9 @@ impl Rt {
             }
             other => self.texts[ti as usize].shape = other,
         }
-        // representation change (or glyph instances): rebuild, damage old and new ink
-        let old_ink = self.texts[ti as usize].ink;
+        // representation change (or glyph instances): rebuild, damage old (the record's current ink: a move
+        // translates records, not this cache) and new ink
+        let old_ink = self.cur_ink(h);
         let old = std::mem::take(&mut self.texts[ti as usize].shape);
         release(self, TextNode { shape: old, ..Default::default() });
         {

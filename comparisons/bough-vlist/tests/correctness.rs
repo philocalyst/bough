@@ -8,7 +8,8 @@
 //!  3. every mounted row's layout (incremental, as cephal left it) equals a cold layout of a copy of its
 //!     tree, node for node, bit for bit; and each laid-out node's written geometry equals the sum of its
 //!     chain of layout locations;
-//!  4. the prefix index agrees with a naive running sum under random point updates;
+//!  4. the prefix index agrees with a naive running sum under random point updates (splices: the list
+//!     region gates in crates/bough/tests/list_window.rs);
 //!  5. rows' heights are the line count x 20 pt + the fixed parts (the zgx formula), per row.
 use bough::prelude::*;
 use bough_vlist::*;
@@ -70,23 +71,16 @@ fn jump_is_pixel_exact() {
     }
 }
 
-fn heights_snapshot(app: &App<VList>) -> bough::mlist::HeightIndex {
-    let r = &app.rt.mregions[0];
-    let mut idx = bough::mlist::HeightIndex::new(r.idx.len(), r.idx.estimate());
-    for k in 0..r.idx.len() {
-        idx.set(k, r.idx.height(k));
-    }
-    idx
-}
-
 #[test]
 fn retained_equals_fresh_mount_with_same_heights() {
     for mode in [Mode::Scroll, Mode::Fling, Mode::Jump] {
         let mut app = run(mode, 150, 50, vlist::ROWS);
         let px = app.presented_pixels();
-        let at = app.rt.mregions[0].scroll_px;
+        let at = app.rt.lists.regs()[0].s;
         let mut fresh = App::new(VList::new(vlist::ROWS), config(2.0), true);
-        fresh.rt.mregions[0].idx = heights_snapshot(&app);
+        // the same heights
+        let h = app.rt.lists.regs()[0].idx.heights();
+        fresh.rt.list_set_heights(0, &h);
         fresh.frame();
         // same offset, same heights: nothing to re-measure, nothing to anchor
         let target = at as f32 / 2.0;
@@ -94,7 +88,8 @@ fn retained_equals_fresh_mount_with_same_heights() {
             d.scroll.set(target);
         });
         fresh.frame();
-        assert_eq!(fresh.rt.mregions[0].scroll_px, at, "{mode:?}: fresh mount at the same offset");
+        assert_eq!(fresh.rt.lists.regs()[0].s, at, "{mode:?}: fresh mount at the same offset");
+        assert_eq!(fresh.rt.list_window(0), app.rt.list_window(0), "{mode:?}: the same window");
         let fp = fresh.presented_pixels();
         assert!(px == fp, "{mode:?}: retained != fresh mount at {:?}", first_diff(&px, &fp));
     }
@@ -105,7 +100,7 @@ fn row_layouts_equal_cold_layout() {
     let app = run(Mode::Jump, 100, 50, vlist::ROWS);
     let lay = &app.rt.lay;
     let mut checked = 0;
-    for row in app.rt.mregions[0].rows.iter() {
+    for row in app.rt.lists.regs()[0].rows.iter().filter(|r| r.mounted) {
         let avail = cephal::Size { width: cephal::AvailableSpace::Definite(1440.0), height: cephal::AvailableSpace::MaxContent };
         let cold = lay.eng.cold_rects(&app.rt.bough, row.root, avail);
         // the engine's current rects, node for node
@@ -180,10 +175,10 @@ fn heights_follow_the_zgx_formula() {
     app.frame();
     for row in 0..300usize {
         for _ in 0..2 {
-            let off = app.rt.mregion_row_offset_pt(0, row);
+            let off = app.rt.list_row_offset_pt(0, row);
             set_scroll(&mut app, off);
         }
-        let h = app.rt.mregion_row_height_pt(0, row);
+        let h = app.rt.list_row_height_pt(0, row);
         let lines = h - 46.0 - if vlist::has_image(row) { 96.0 } else { 0.0 };
         assert!(lines >= 20.0 && lines <= 20.0 * 12.0 && lines % 20.0 == 0.0, "row {row}: height {h} is not a whole number of lines (+ image)");
     }
@@ -207,5 +202,5 @@ fn scrolling_back_up_and_in_steps_is_pixel_exact() {
     }
     let _ = at;
     // anchoring: the scroll offset never drifts from the first visible row's place by more than its estimate error
-    assert!(app.rt.mregion_scroll_pt(0) >= 0.0);
+    assert!(app.rt.list_scroll_pt(0) >= 0.0);
 }

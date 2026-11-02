@@ -8,13 +8,13 @@
 //!
 //! Edits are logged once per entity per turn (a bit in the slot's meta word); the field's head (first
 //! field, `#[repr(C)]`) is queued, and its wire settles exactly the edited entities that are displayed.
+use crate::signal::WireHead;
 use crate::elem::{Element, Mounter};
 use crate::rt::*;
 use crate::signal::{Headed, QUEUED};
 use bough_core::RecordInit;
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
-use std::mem::MaybeUninit;
 
 const CHUNK: usize = 64;
 const LIVE: u32 = 1 << 31;
@@ -46,8 +46,8 @@ impl<T> std::fmt::Debug for Entity<T> {
 
 #[repr(C)]
 pub struct Entities<T> {
-    head: Cell<u32>,
-    chunks: Vec<Box<[MaybeUninit<T>; CHUNK]>>,
+    head: crate::signal::WireHead,
+    chunks: Vec<crate::list::Chunk<T>>,
     meta: Vec<u32>,
     free: Vec<u32>,
     pending_free: Vec<u32>,
@@ -95,22 +95,21 @@ impl<T> Drop for Entities<T> {
 impl<T> Entities<T> {
     /// A slab of `cap` entities, carved now (growing past it allocates whole chunks).
     pub fn with_capacity(cap: usize) -> Entities<T> {
-        let mut e = Entities { head: Cell::new(0), chunks: Vec::new(), meta: Vec::new(), free: Vec::new(), pending_free: Vec::new(), edits: Vec::new(), wired: Default::default(), registered: Cell::new(false) };
+        let mut e = Entities { head: WireHead::new(), chunks: Vec::new(), meta: Vec::new(), free: Vec::new(), pending_free: Vec::new(), edits: Vec::new(), wired: Default::default(), registered: Cell::new(false) };
         e.carve(cap.div_ceil(CHUNK).max(1));
         e
     }
     fn carve(&mut self, chunks: usize) {
         for _ in 0..chunks {
             let base = self.meta.len() as u32;
-            // SAFETY: an array of MaybeUninit needs no initialisation.
-            self.chunks.push(Box::new(unsafe { MaybeUninit::<[MaybeUninit<T>; CHUNK]>::uninit().assume_init() }));
+            self.chunks.push(crate::list::Chunk::new());
             self.meta.extend(std::iter::repeat_n(0, CHUNK));
             self.free.extend((base..base + CHUNK as u32).rev());
         }
     }
     #[inline(always)]
     pub(crate) fn ptr(&self, i: u32) -> *mut T {
-        self.chunks[i as usize / CHUNK][i as usize % CHUNK].as_ptr() as *mut T
+        self.chunks[i as usize / CHUNK].slot(i as usize % CHUNK)
     }
     #[inline(always)]
     pub(crate) fn head(&self) -> &Cell<u32> {

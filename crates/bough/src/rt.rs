@@ -348,6 +348,11 @@ pub struct Rt {
     clip_dedupe: Vec<(NRect, u16)>,
     space_free: Vec<u16>,
     next_space: u16,
+    /// Nested spaces: a space allocated under another (`alloc_space_in`) moves with it (`set_space` /
+    /// `shift_space` carry the delta to its descendants and to the list regions placed in them).
+    space_parent: Vec<u16>,
+    space_kids: Vec<Vec<u16>>,
+    pub(crate) space_regs: Vec<Vec<u32>>,
     /// Paint-only damage, advanced with the Bough's ring.
     pub paint: DamageRing,
     /// Per epoch (`epoch % RING`): its paint writes, see the module docs.
@@ -355,11 +360,12 @@ pub struct Rt {
     pub tiles_x: usize,
     pub tiles_y: usize,
     pub ctr: Counters,
-    /// The layout bridge (cephal over the mounted records) and the measured lists.
+    /// The layout bridge (cephal over the mounted records).
     pub lay: crate::layout::Lay,
-    pub mregions: Vec<crate::mlist::MRegion>,
     /// List regions (`listview.rs`).
     pub lists: crate::listview::Lists,
+    /// Reflection (`reflect.rs`): wired fields' descriptors, element type names by record handle.
+    pub reflect: crate::reflect::Reflect,
     /// Released subtrees whose resources return to the free lists at the next frames (`reclaim`).
     pub(crate) reclaim_q: Vec<Scope>,
     /// Dynamic parts of re-describing owners (`describe.rs`).
@@ -442,15 +448,18 @@ impl Rt {
             clip_dedupe: Vec::new(),
             space_free: Vec::new(),
             next_space: 1,
+            space_parent: Vec::new(),
+            space_kids: Vec::new(),
+            space_regs: Vec::new(),
             paint: DamageRing::new(win_w, win_h),
             paint_log: Default::default(),
             tiles_x: tx,
             tiles_y: ty,
             ctr: Counters::default(),
             lay: crate::layout::Lay::new(scale),
-            mregions: Vec::new(),
             lists: Default::default(),
             reclaim_q: Vec::new(),
+            reflect: Default::default(),
             dyns: Default::default(),
             eviews: Vec::new(),
             asy: Default::default(),
@@ -473,11 +482,57 @@ impl Rt {
         &mut self.inst[i as usize]
     }
 
+    /// A record's ink as the Bough holds it now (moves translate records, not the elements' cached inks).
+    #[inline]
+    pub(crate) fn cur_ink(&self, h: bough_core::Handle) -> NRect {
+        self.bough.pos_of(h).map_or(NRect::EMPTY, |p| self.bough.ink_at(p))
+    }
+
     // ------------------------------------------------------------------ spaces and clips
-    /// Set space `s`'s translation (device px; rounded: spaces are integral, text pens snap to pixels).
+    /// Set space `s`'s translation (device px; rounded: spaces are integral, text pens snap to pixels). The
+    /// spaces nested in it move with it.
     #[inline]
     pub fn set_space(&mut self, s: u16, v: [f32; 2]) {
-        self.glyphs.spaces[s as usize] = [v[0].round() as i32, v[1].round() as i32];
+        let new = [v[0].round() as i32, v[1].round() as i32];
+        let old = self.glyphs.spaces[s as usize];
+        self.glyphs.spaces[s as usize] = new;
+        if new != old && (self.space_kids.get(s as usize).is_some_and(|k| !k.is_empty()) || self.space_regs.get(s as usize).is_some_and(|r| !r.is_empty())) {
+            self.carry_space(s, new[0] - old[0], new[1] - old[1]);
+        }
+    }
+    /// Move space `s` (and what is nested in it) by `(dx, dy)` device px.
+    #[inline]
+    pub fn shift_space(&mut self, s: u16, dx: i32, dy: i32) {
+        let sp = &mut self.glyphs.spaces[s as usize];
+        sp[0] += dx;
+        sp[1] += dy;
+        if (dx != 0 || dy != 0) && (self.space_kids.get(s as usize).is_some_and(|k| !k.is_empty()) || self.space_regs.get(s as usize).is_some_and(|r| !r.is_empty())) {
+            self.carry_space(s, dx, dy);
+        }
+    }
+    /// `s` moved by `(dx, dy)`: so do its descendants; the list regions placed in any of them keep their rows
+    /// where they are (their spaces moved, and the records with the move's own `scroll_run`) and re-window
+    /// (what they show may have changed: an exposure).
+    fn carry_space(&mut self, s: u16, dx: i32, dy: i32) {
+        let mut stack = vec![s];
+        while let Some(x) = stack.pop() {
+            if x != s {
+                let sp = &mut self.glyphs.spaces[x as usize];
+                sp[0] += dx;
+                sp[1] += dy;
+            }
+            if let Some(regs) = self.space_regs.get(x as usize) {
+                for &r in regs {
+                    let reg = &mut self.lists.regs[r as usize];
+                    reg.placed_at[0] += dx as i64;
+                    reg.placed_at[1] += dy as i64;
+                    reg.dirty = true;
+                }
+            }
+            if let Some(k) = self.space_kids.get(x as usize) {
+                stack.extend_from_slice(k);
+            }
+        }
     }
     #[inline]
     pub fn space(&self, s: u16) -> [f32; 2] {
@@ -506,8 +561,44 @@ impl Rt {
         self.next_space += 1;
         self.next_space - 1
     }
+    /// A space nested in `parent` (it moves with it).
+    pub fn alloc_space_in(&mut self, parent: u16) -> u16 {
+        let s = self.alloc_space();
+        let n = s.max(parent) as usize + 1;
+        if self.space_parent.len() < n {
+            self.space_parent.resize(n, u16::MAX);
+            self.space_kids.resize_with(n, Vec::new);
+        }
+        self.space_parent[s as usize] = parent;
+        self.space_kids[parent as usize].push(s);
+        s
+    }
     pub fn free_space(&mut self, s: u16) {
+        if let Some(&p) = self.space_parent.get(s as usize) {
+            if p != u16::MAX {
+                let k = &mut self.space_kids[p as usize];
+                if let Some(i) = k.iter().rposition(|&x| x == s) {
+                    k.swap_remove(i);
+                }
+                self.space_parent[s as usize] = u16::MAX;
+            }
+            for c in std::mem::take(&mut self.space_kids[s as usize]) {
+                self.space_parent[c as usize] = u16::MAX;
+            }
+        }
         self.space_free.push(s);
+    }
+    /// List region `reg` is placed in space `s` (it re-windows when `s` moves).
+    pub(crate) fn space_reg(&mut self, s: u16, reg: u32, on: bool) {
+        if self.space_regs.len() <= s as usize {
+            self.space_regs.resize_with(s as usize + 1, Vec::new);
+        }
+        let v = &mut self.space_regs[s as usize];
+        if on {
+            v.push(reg);
+        } else if let Some(i) = v.iter().position(|&x| x == reg) {
+            v.swap_remove(i);
+        }
     }
 
     // ------------------------------------------------------------------ instance runs
@@ -1028,8 +1119,8 @@ impl Rt {
             (r.base_pos, r.rows.iter().map(|x| x.nrec as usize).sum::<usize>(), r.vp)
         };
         for i in 0..self.regions[reg].rows.len() {
-            let s = self.regions[reg].rows[i].space as usize;
-            self.glyphs.spaces[s][1] -= dy;
+            let s = self.regions[reg].rows[i].space;
+            self.shift_space(s, 0, -dy);
         }
         self.bough.scroll_run(base, nrec, 0, -dy, vp);
         let surv_start = old_range.start.max(new_range.start);

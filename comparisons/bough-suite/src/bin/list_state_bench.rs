@@ -1,8 +1,8 @@
 //! zgx-script `list_state_bench`, native: 4,000 messages, the inbox's 1,000 rows in a list, its unread
 //! count; each tick one message's unread flag flips (`(tick * 7) % N + 1`). Instructions retired by the
 //! process per tick (with its frame) after 10 warm-up ticks, over `TICKS` (200), and time per tick.
-//! (zgx's list is virtualized to its 560-point viewport; bough's list mounts all 1,000 inbox rows and
-//! clips them: the per-tick work is the same, the mount is larger.)
+//! Both lists are virtualized to their 560-point viewport: bough's list region mounts the 20 rows meeting
+//! it plus 2 of overscan (a toggle of a message whose row is not mounted edits the list's item only).
 use bough_suite::*;
 use std::time::Instant;
 
