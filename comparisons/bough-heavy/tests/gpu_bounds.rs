@@ -63,6 +63,20 @@ fn corrupt_and_draw(open_masks: bool) {
         for i in 0..2048 {
             *(base.add(l.inst_off as usize + 48 * i + 40) as *mut u16) = rng.next() as u16; // space
         }
+        // the decoration kinds (input 3b: image, gradient, shadow; bough deco.rs): random kind, texel origin
+        // and size, margin, angle / sigma / ramp words, box (texel reads are clamped to the image atlas, or
+        // to the glyph atlas standing in for it; the shadow's loop is fixed)
+        for i in (0..2048).step_by(3) {
+            let ins = base.add(l.inst_off as usize + 48 * i);
+            *(ins.add(42) as *mut u8) = 4 + (rng.next() % 3) as u8; // kind
+            *(ins.add(43) as *mut u8) = rng.next() as u8; // ink margin
+            *(ins.add(32) as *mut u64) = rng.next(); // uv: texel origin / ramp row / gradient type
+            *(ins.add(24) as *mut u32) = rng.next() as u32; // radius / angle (any bits: NaN, inf)
+            *(ins.add(28) as *mut u32) = rng.next() as u32; // bw: sigma / gradient angle
+            *(ins.add(16) as *mut u64) = rng.next(); // colours / radial centre
+            *(ins.add(8) as *mut f32) = (rng.next() % 4096) as f32; // size
+            *(ins.add(12) as *mut f32) = (rng.next() % 4096) as f32;
+        }
         if open_masks {
             // open the glyph mask: it also bounds the run loops, so the corrupted lengths (> 2^24 glyphs per
             // run) now loop for seconds and the frame cannot finish

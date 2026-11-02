@@ -43,6 +43,7 @@ fn assert_exact<V: View>(app: &mut App<V>, full_w: usize, what: &str) {
 /// Run `steps`; after each, frame and compare. Returns the app.
 fn run<V: View>(name: &str, mut app: App<V>, steps: usize, mut step: impl FnMut(&mut App<V>, usize)) -> App<V> {
     let w = app.rt.win_w as usize;
+    let name = &format!("{name} (windowed {}, ring {})", app.windowed, app.surfaces());
     app.frame();
     for t in 0..steps {
         step(&mut app, t);
@@ -333,4 +334,183 @@ fn hover_enter_leave_sets_equal_the_oracle() {
         prev = cur;
     }
     assert!(moves == 3000 && app.rt.input.stats.crossings > 500, "{:?}", app.rt.input.stats);
+}
+
+#[test]
+fn laid_out_gallery_interactions_and_resize_are_pixel_exact() {
+    use bough_zgui::gallery::{turn_l, GalleryL};
+    for ring in RINGS {
+        let app = app_ring(GalleryL::new(), config(WIDTH, HEIGHT), ring);
+        let keys: Vec<Key> = std::iter::repeat_n(Key::Tab, 22).chain("xyz".chars().map(Key::Char)).chain([Key::Left, Key::Char('Q'), Key::End, Key::Backspace]).collect();
+        let nk = keys.len();
+        let mut app = run("gallery-l", app, nk + 34, |a, t| {
+            if t < nk {
+                a.key_down(keys[t], Mods::default());
+                return;
+            }
+            match t - nk {
+                0 => a.pointer_move(41.0, 41.0),
+                1 => a.pointer_down(41.0, 41.0, Button::Primary),
+                2 => a.pointer_up(41.0, 41.0, Button::Primary),
+                3 => a.pointer_move(800.0, 500.0),
+                4 | 9 => a.wheel(800.0, 500.0, 0.0, 3.0),
+                // relayout at narrower and shorter windows (the surfaces keep their size: shrink only)
+                20 => a.resize(1480.0, 1000.0),
+                24 => a.resize(1352.0, 920.0),
+                28 => a.resize(1544.0, 960.0),
+                _ => {
+                    turn_l(a, TICK_60);
+                }
+            }
+        });
+        while app.animating() {
+            turn_l(&mut app, TICK_60);
+        }
+        app.pointer_leave();
+        app.set_focus(None, false);
+        app.frame();
+        let g = &app.owner;
+        let fresh = GalleryL { scroll: Signal::new(*g.scroll), picked: Signal::new(*g.picked), value: Signal::new((*g.value).clone()), clock: Signal::new(*g.clock), slide: Signal::new(*g.slide) };
+        assert_eq!(*g.value, "Ada LovelacexyQ");
+        let (w, h) = (app.rt.win_w as f32, app.rt.win_h as f32);
+        same_as_fresh("gallery-l", &mut app, App::new(fresh, config(w, h), true));
+    }
+}
+
+#[test]
+fn laid_out_shell_drag_and_resize_are_pixel_exact() {
+    use bough_zgui::shell::ShellL;
+    for ring in RINGS {
+        let app = app_ring(ShellL::new(), config(WIDTH, HEIGHT), ring);
+        let mut app = run("shell-l", app, 40, |a, t| match t {
+            0 => a.pointer_move(25.0, 21.0),
+            1 | 2 | 3 => {
+                a.tick(1.0 / 60.0);
+            }
+            4 => a.pointer_move(800.0, 692.5),
+            5 => a.pointer_down(800.0, 692.5, Button::Primary),
+            k if k < 26 => a.pointer_move(800.0, 692.5 - (k as f32 - 5.0) * 9.0),
+            26 => a.pointer_up(800.0, 512.5, Button::Primary),
+            30 => a.resize(1440.0, 920.0),
+            34 => a.resize(1280.0, 840.0),
+            _ => a.pointer_leave(),
+        });
+        let split = *app.owner.split;
+        assert!(split < 65.0, "{split}");
+        let mut fresh = ShellL::new();
+        fresh.split = Signal::new(split);
+        let (w, h) = (app.rt.win_w as f32, app.rt.win_h as f32);
+        same_as_fresh("shell-l", &mut app, App::new(fresh, config(w, h), true));
+    }
+}
+
+#[test]
+fn thread_resize_rewraps_pixel_exact() {
+    use bough_zgui::thread::{thread_config, Thread};
+    for ring in RINGS {
+        let app = app_ring(Thread { scroll: Signal::new(0.0) }, thread_config(WIDTH, HEIGHT), ring);
+        let widths = [1400.0, 700.0, 1180.0, 520.0, 1560.0];
+        let mut app = run("thread", app, widths.len() + 6, |a, t| {
+            if t < widths.len() {
+                a.resize(widths[t], HEIGHT);
+            } else if t == widths.len() {
+                a.pointer_move(300.0, 500.0);
+                a.wheel(300.0, 500.0, 0.0, 9.0);
+            } else {
+                a.tick(1.0 / 60.0);
+            }
+        });
+        while app.animating() {
+            app.tick(1.0 / 60.0);
+            app.frame();
+        }
+        let s = *app.owner.scroll;
+        let (w, h) = (app.rt.win_w as f32, app.rt.win_h as f32);
+        same_as_fresh("thread", &mut app, App::new(Thread { scroll: Signal::new(s) }, thread_config(w, h), true));
+    }
+}
+
+/// A focused field's blinking caret: pixel exact at every flip, and after the first two flips every frame is
+/// a surface that already holds the state (no GPU work), as the blink scene.
+#[test]
+fn caret_blink_is_served_by_held_surfaces() {
+    use bough_zgui::gallery::Gallery;
+    let mut app = app_ring(Gallery::new(), config(WIDTH, HEIGHT), 0);
+    app.frame();
+    for _ in 0..22 {
+        app.key_down(Key::Tab, Mods::default());
+        app.frame();
+    }
+    assert!(app.rt.input.focused_field());
+    let w = app.rt.win_w as usize;
+    let gpu0 = app.surf_stats.gpu;
+    for t in 0..40 {
+        assert!(app.tick(0.53), "flip {t}");
+        assert!(app.frame());
+        assert_exact(&mut app, w, &format!("blink flip {t}"));
+    }
+    assert!(app.surf_stats.gpu - gpu0 <= 2, "GPU frames after the first two flips: {:?}", app.surf_stats);
+}
+
+/// A scroll view nested in another, with a tooltip in the outer content: the inner view's space and clips and
+/// the tooltip's rect follow the outer scroll; pixel exact, and equal to a fresh mount at the same offsets.
+struct Nested {
+    outer: Signal<f32>,
+    inner: Signal<f32>,
+}
+
+fn nested_row(i: usize) -> impl Element<Nested> {
+    quad(10.0, i as f32 * 40.0, 300.0, 34.0).bg(Color::rgba(40, (i * 30 % 255) as u8, 120, 255)).children(text(format!("row {i}")).at(8.0, 8.0).size(14.0).line_height(18.0).color(rgb(0xffffff)))
+}
+
+impl View for Nested {
+    const FIXED: bool = true;
+    fn view(&self) -> impl Element<Self> + '_ {
+        (
+            quad(0.0, 0.0, 800.0, 600.0).bg(rgb(0x101010)),
+            scroll_y(
+                sig!(self.outer),
+                [20.0, 20.0, 700.0, 500.0],
+                1200.0,
+                (
+                    each((0..40).map(nested_row)),
+                    tooltip(quad(400.0, 300.0, 60.0, 30.0).bg(rgb(0x3d7ef7)), "inside the outer view", [380.0, 340.0, 180.0, 28.0]),
+                    clip(380.0, 600.0, 320.0, 300.0, scroll_y(sig!(self.inner), [380.0, 600.0, 300.0, 200.0], 400.0, each((0..15).map(|i| quad(0.0, i as f32 * 40.0, 280.0, 34.0).bg(Color::rgba(200, (i * 17 % 255) as u8, 60, 255))))).bg(rgb(0x202830))),
+                ),
+            )
+            .bg(rgb(0x181818))
+            .line(40.0),
+        )
+    }
+}
+
+#[test]
+fn nested_views_and_tooltips_follow_an_outer_scroll() {
+    for ring in RINGS {
+        let app = app_ring(Nested { outer: Signal::new(0.0), inner: Signal::new(0.0) }, config(800.0, 600.0), ring);
+        let mut app = run("nested", app, 60, |a, t| {
+            match t {
+            0 => a.pointer_move(500.0, 300.0),
+            1 => a.wheel(500.0, 300.0, 0.0, 6.0), // outer: 240, the inner view comes into the port
+            20 => a.pointer_move(500.0, 450.0),
+            21 => a.wheel(500.0, 450.0, 0.0, 3.0), // the inner view
+            40 => {
+                a.pointer_move(440.0, 95.0); // the tooltip trigger, moved up 240 with the outer content
+                assert_eq!(a.rt.input.hovered().len(), 2, "the trigger (and the outer port) are hovered");
+            }
+            41 => a.wheel(440.0, 95.0, 0.0, -1.0), // the shown tooltip moves with the outer view
+            _ => {
+                a.tick(1.0 / 60.0);
+            }
+        }});
+        while app.animating() {
+            app.tick(1.0 / 60.0);
+            app.frame();
+        }
+        app.pointer_leave();
+        app.frame();
+        let (o, i) = (*app.owner.outer, *app.owner.inner);
+        assert!(o > 0.0 && i > 0.0, "both views scrolled: {o} {i}");
+        same_as_fresh("nested", &mut app, App::new(Nested { outer: Signal::new(o), inner: Signal::new(i) }, config(800.0, 600.0), true));
+    }
 }

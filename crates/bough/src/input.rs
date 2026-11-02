@@ -182,9 +182,12 @@ pub(crate) struct Scroller {
     pub off: u32,
     /// Points per wheel line.
     pub line: f32,
-    /// Largest offset (points).
+    /// Largest offset (points); for laid-out content, the content's height less the port's.
     pub max: f32,
     pub glide: Option<Tween>,
+    /// Laid-out content: its layout group root (NONE: `max` as given) and the port height (points).
+    pub root: u32,
+    pub port_h: f32,
 }
 
 /// A text field: the owner's `Signal<String>` at `off`, its label (`Rt::texts`) and caret quad.
@@ -196,6 +199,8 @@ pub(crate) struct Field {
     pub caret: usize,
     pub caret_color: u32,
     pub focused: bool,
+    /// The caret's blink phase: shown (`true`) or hidden.
+    pub lit: bool,
 }
 
 /// zgui's smooth scroll (zgui-scroll `Tween`): 240 ms, ease-out cubic; a detent during a glide adds to
@@ -245,6 +250,10 @@ pub struct Input {
     /// Scroll views (`template::scroll_y`) and the one whose content is being mounted.
     pub(crate) views: Vec<crate::template::ScrollView>,
     pub(crate) mounting_view: Option<u32>,
+    /// Layout placement hooks (`ltemplate::PlaceHook`, by `LInfo::hook`).
+    pub(crate) lhooks: Vec<(crate::ltemplate::PlaceHook, u32)>,
+    /// Layout clips by parent clip id (re-cut when the parent changes).
+    pub(crate) clip_kids: std::collections::HashMap<u16, Vec<u32>>,
     /// Wired clips (`template::clip_by`): (clip id, space, parent clip).
     pub(crate) wclips: Vec<(u16, u16, u16)>,
     /// Offset groups (`template::offset`).
@@ -271,6 +280,9 @@ pub struct Input {
     pub ring_width: f32,
     pub ring_offset: f32,
     pub stats: InputStats,
+    /// Caret blink: half-period (seconds; 0: no blink) and the time since the last flip.
+    pub blink_half: f32,
+    blink_t: f32,
     chain: Vec<usize>,
     chain_h: Vec<Handle>,
 }
@@ -285,6 +297,8 @@ impl Default for Input {
             tips: Vec::new(),
             views: Vec::new(),
             mounting_view: None,
+            lhooks: Vec::new(),
+            clip_kids: Default::default(),
             wclips: Vec::new(),
             offsets: Vec::new(),
             hover: Vec::new(),
@@ -304,6 +318,8 @@ impl Default for Input {
             ring_width: 2.0,
             ring_offset: 2.0,
             stats: InputStats::default(),
+            blink_half: 0.53,
+            blink_t: 0.0,
             chain: Vec::new(),
             chain_h: Vec::new(),
         }
@@ -334,6 +350,20 @@ impl Input {
     }
     pub(crate) fn ensure_act(&mut self, h: Handle) -> u32 {
         self.ensure(h)
+    }
+    pub(crate) fn act_of_handle(&self, h: Handle) -> u32 {
+        self.act_of(h)
+    }
+    pub(crate) fn tips_of(&self, v: usize) -> &[u32] {
+        &self.views[v].tips
+    }
+    /// A tooltip inside a moved view: its rect moves too (and its clip, if it is showing).
+    pub(crate) fn shift_tip(&mut self, b: &mut bough_core::Bough, t: u32, dx: i32, dy: i32) {
+        let tip = &mut self.tips[t as usize];
+        tip.rect = tip.rect.translate(dx, dy);
+        if b.clip_rect(tip.clip) != NRect::EMPTY {
+            b.set_clip_rect(tip.clip, tip.rect);
+        }
     }
     /// Is the focused element a text field (zgui's `input::typing`)?
     pub fn focused_field(&self) -> bool {
@@ -373,6 +403,32 @@ fn act_for<V>(m: &mut Mounter<'_, V>, before: usize, nodes_before: usize, flags:
     a
 }
 
+/// The act of record `rec` of the mount batch (made interactive: a handle, `KF_INTERACT`); its quad node
+/// is the most recent node mounted with that handle.
+pub fn act_at<V>(m: &mut Mounter<'_, V>, rec: usize) -> u32 {
+    let r = m.recs[rec];
+    let node = if r.handle != 0 { m.scope.nodes.iter().rev().take(64).copied().find(|&n| m.rt.nodes[n as usize].handle.idx == r.handle) } else { None };
+    let h = match node {
+        Some(n) => m.rt.nodes[n as usize].handle,
+        None if r.handle != 0 => m.rt.bough.handle_gen(r.handle),
+        None => {
+            let h = m.rt.bough.new_handle();
+            m.recs[rec].handle = h.idx;
+            h
+        }
+    };
+    m.recs[rec].kind |= KF_INTERACT;
+    let a = m.rt.input.ensure(h);
+    let act = &mut m.rt.input.acts[a as usize];
+    if r.kind & 0x1F == REC_QUAD && r.payload & 0xC000_0000 == 0 {
+        act.inst = r.payload;
+    }
+    if let Some(n) = node {
+        act.node = n;
+    }
+    a
+}
+
 /// One interaction op on an element (`On<E, O>` installs it on E's first record).
 pub trait ActOp<V> {
     /// Kind flags the record gets besides [`KF_INTERACT`].
@@ -392,25 +448,25 @@ impl<V, E: Element<V>, O: ActOp<V>> Element<V> for On<E, O> {
     }
 }
 
-pub struct Click<F>(F);
+pub struct Click<F>(pub F);
 impl<V: 'static, F: Fn(&mut V) + Copy + 'static> ActOp<V> for Click<F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         m.rt.input.acts[a as usize].click = Some(route_plain::<V, F>(self.0));
     }
 }
-pub struct Press<F>(F);
+pub struct Press<F>(pub F);
 impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Press<F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         m.rt.input.acts[a as usize].press = Some(route_ev::<V, F>(self.0));
     }
 }
-pub struct Hover<F>(F);
+pub struct Hover<F>(pub F);
 impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Hover<F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         m.rt.input.acts[a as usize].hover = Some(route_ev::<V, F>(self.0));
     }
 }
-pub struct HoverBg(Color);
+pub struct HoverBg(pub Color);
 impl<V> ActOp<V> for HoverBg {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         let inst = m.rt.input.acts[a as usize].inst;
@@ -429,14 +485,14 @@ impl<V> ActOp<V> for Focusable {
     const FLAGS: u8 = KF_FOCUS;
     fn install(self, _: &mut Mounter<'_, V>, _: u32) {}
 }
-pub struct OnKey<F>(F);
+pub struct OnKey<F>(pub F);
 impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for OnKey<F> {
     const FLAGS: u8 = KF_FOCUS;
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         m.rt.input.acts[a as usize].key = Some(route_ev::<V, F>(self.0));
     }
 }
-pub struct Drag<F>(F);
+pub struct Drag<F>(pub F);
 impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Drag<F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         m.rt.input.acts[a as usize].drag = Some(route_ev::<V, F>(self.0));
@@ -450,7 +506,7 @@ pub struct Scrolls<'a, V> {
 }
 impl<V> ActOp<V> for Scrolls<'_, V> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
-        m.rt.input.scrollers.push(Scroller { off: self.sig.off, line: self.line, max: self.max, glide: None });
+        m.rt.input.scrollers.push(Scroller { off: self.sig.off, line: self.line, max: self.max, glide: None, root: NONE, port_h: 0.0 });
         m.rt.input.acts[a as usize].scroll = (m.rt.input.scrollers.len() - 1) as u32;
     }
 }
@@ -609,7 +665,7 @@ impl<T> Tooltip<T> {
 /// A mounted tooltip (`Input::tips`).
 pub(crate) struct Tip {
     clip: u16,
-    rect: NRect,
+    pub(crate) rect: NRect,
     bubble: Handle,
     inst: u32,
     label: Handle,
@@ -685,6 +741,9 @@ impl<V: 'static, T: Element<V>> Element<V> for Tooltip<T> {
         let k = m.rt.input.tips.len() as u32;
         m.rt.input.tips.push(Tip { clip: id, rect: r, bubble, inst, label, ti, style: st, alpha: 0.0, fading: false });
         m.rt.input.acts[a as usize].tip = k;
+        if let Some(v) = m.rt.input.mounting_view {
+            m.rt.input.views[v as usize].tips.push(k);
+        }
     }
 }
 
@@ -747,7 +806,7 @@ unsafe fn patch_caret(rt: &mut Rt, w: &Wire, _sig: *const u8, _owner: *const u8)
 fn place_caret(rt: &mut Rt, f: u32) {
     let (ti, cn, caret, color, focused) = {
         let fl = &rt.input.fields[f as usize];
-        (fl.ti, fl.caret_node, fl.caret, fl.caret_color, fl.focused)
+        (fl.ti, fl.caret_node, fl.caret, fl.caret_color, fl.focused && fl.lit)
     };
     let len = rt.texts[ti as usize].bytes().len();
     let caret = caret.min(len);
@@ -799,7 +858,7 @@ impl<V: 'static> Element<V> for TextField<'_, V> {
         quad(x, y, w, h).bg(self.bg).rounded(self.radius).border(1.0, self.border).children(()).mount(m);
         let a = act_for(m, before, nodes_before, KF_FOCUS);
         let f = m.rt.input.fields.len() as u32;
-        m.rt.input.fields.push(Field { off: self.sig.off, ti: NONE, caret_node: NONE, caret: 0, caret_color: self.color.0, focused: false });
+        m.rt.input.fields.push(Field { off: self.sig.off, ti: NONE, caret_node: NONE, caret: 0, caret_color: self.color.0, focused: false, lit: true });
         m.rt.input.acts[a as usize].field = f;
         // children inside the border, clipped to the inner box
         let (ox, oy, depth, clip) = (m.ox, m.oy, m.depth, m.clip);
@@ -1125,13 +1184,45 @@ impl<V: View> App<V> {
             // SAFETY: `off` is the offset_of!-proven offset of a Signal<f32> field of the owner (Wired).
             let at = **unsafe { &*(o.add(s.off as usize) as *const Signal<f32>) };
             let heading = s.glide.map_or(at, |g| g.to);
-            let to = (heading + dy * s.line).clamp(0.0, s.max);
+            let max = if s.root != NONE { (self.rt.lay.root_height(s.root) / self.rt.scale - s.port_h).max(0.0) } else { s.max };
+            let s = &mut self.rt.input.scrollers[sc as usize];
+            let to = (heading + dy * s.line).clamp(0.0, max);
             if to != heading || s.glide.is_some() {
                 s.glide = Some(Tween { from: at, to, elapsed: 0.0 });
             }
             break;
         }
         self.settle_input();
+    }
+
+    /// The focused field's caret blinks every `blink_half` seconds: one paint write per flip (the caret's
+    /// colour word), so after two frames every flip finds a surface that already shows it (content
+    /// addressing: no GPU work). Returns whether it flipped.
+    fn blink(&mut self, dt: f32) -> bool {
+        let fa = self.rt.input.focus_act;
+        if fa == 0 || self.rt.input.blink_half <= 0.0 {
+            return false;
+        }
+        let f = self.rt.input.acts[fa as usize].field;
+        if f == NONE {
+            return false;
+        }
+        self.rt.input.blink_t += dt;
+        if self.rt.input.blink_t < self.rt.input.blink_half {
+            return false;
+        }
+        self.rt.input.blink_t -= self.rt.input.blink_half * (self.rt.input.blink_t / self.rt.input.blink_half).floor();
+        self.sync_pub();
+        let lit = !self.rt.input.fields[f as usize].lit;
+        self.rt.input.fields[f as usize].lit = lit;
+        place_caret(&mut self.rt, f);
+        true
+    }
+
+    /// Seconds until the focused caret's next blink flip (`None`: nothing blinks): a host arms a timer for it.
+    pub fn next_blink(&self) -> Option<f32> {
+        let fa = self.rt.input.focus_act;
+        (fa != 0 && self.rt.input.blink_half > 0.0 && self.rt.input.acts[fa as usize].field != NONE).then(|| self.rt.input.blink_half - self.rt.input.blink_t)
     }
 
     /// Precise (trackpad) scroll at (x, y) by `dy` points: the nearest scroller moves at once (the device's
@@ -1149,11 +1240,15 @@ impl<V: View> App<V> {
                 continue;
             }
             let o = self.owner_mut();
+            let max = {
+                let s = &self.rt.input.scrollers[sc as usize];
+                if s.root != NONE { (self.rt.lay.root_height(s.root) / self.rt.scale - s.port_h).max(0.0) } else { s.max }
+            };
             let s = &mut self.rt.input.scrollers[sc as usize];
             s.glide = None;
             // SAFETY: as in `wheel`.
             let sig = unsafe { &mut *(o.add(s.off as usize) as *mut Signal<f32>) };
-            let to = (**sig + dy).clamp(0.0, s.max);
+            let to = (**sig + dy).clamp(0.0, max);
             sig.set(to);
             break;
         }
@@ -1162,16 +1257,24 @@ impl<V: View> App<V> {
 
     /// Is a glide (or any input animation) running?
     pub fn animating(&self) -> bool {
-        self.rt.input.scrollers.iter().any(|s| s.glide.is_some()) || self.rt.input.tips.iter().any(|t| t.fading)
+        self.rt.input.scrollers.iter().any(|s| s.glide.is_some()) || self.rt.input.tips.iter().any(|t| t.fading) || self.rt.transitions.running()
     }
 
     /// Advance input animations by `dt` seconds (glides write their scroll signals). Returns whether any
     /// ran; pair with `frame()`.
     pub fn tick(&mut self, dt: f32) -> bool {
+        let blinked = self.blink(dt);
         if !self.animating() {
-            return false;
+            // the frame clock runs regardless (a transition retargeted later starts from this time)
+            self.rt.transitions.now += dt as f64;
+            if blinked {
+                self.settle_input();
+            }
+            return blinked;
         }
         self.sync_pub();
+        // transitions: every running one applies its value through its property's applier
+        self.rt.step_transitions(dt);
         let o = self.owner_mut();
         for s in &mut self.rt.input.scrollers {
             let Some(g) = s.glide.as_mut() else { continue };
@@ -1289,6 +1392,8 @@ impl<V: View> App<V> {
             _ => return false,
         };
         self.rt.input.fields[f as usize].caret = new_caret;
+        self.rt.input.fields[f as usize].lit = true;
+        self.rt.input.blink_t = 0.0;
         if matches!(key, Key::Left | Key::Right | Key::Home | Key::End) {
             place_caret(&mut self.rt, f);
         }
@@ -1317,6 +1422,8 @@ impl<V: View> App<V> {
             let f = self.rt.input.acts[a as usize].field;
             if f != NONE {
                 self.rt.input.fields[f as usize].focused = true;
+                self.rt.input.fields[f as usize].lit = true;
+                self.rt.input.blink_t = 0.0;
                 place_caret(&mut self.rt, f);
             }
         }
@@ -1411,6 +1518,26 @@ impl<V: View> App<V> {
             if !l.queued {
                 l.queued = true;
                 self.rt.lay.pending.push(r as u32);
+            }
+        }
+        // scroll views whose port is the window: the port and the content's available width follow it
+        for v in 0..self.rt.input.views.len() {
+            let view = &self.rt.input.views[v];
+            if !view.follows {
+                continue;
+            }
+            let (clip, root, inset) = (view.clip, view.root, view.inset_w);
+            self.rt.bough.set_clip_rect(clip, NRect::new(0, 0, w, h));
+            if root != NONE {
+                let l = &mut self.rt.lay.info[root as usize];
+                l.avail_w = w as f32 - inset;
+                if !l.queued {
+                    l.queued = true;
+                    self.rt.lay.pending.push(root);
+                }
+            }
+            for sc in self.rt.input.scrollers.iter_mut().filter(|s| s.root == root && root != NONE) {
+                sc.port_h = h as f32 / s;
             }
         }
         self.rt.lay.mount_avail = (w as f32, h as f32);

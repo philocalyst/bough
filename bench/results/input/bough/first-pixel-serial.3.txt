@@ -1,0 +1,10 @@
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+SCENARIO first-pixel gallery s13 (serial, laid out), process entry to the GPU's completion of the first frame; 2450 records, 1600 tiles
+PHASES	mount_done_ms=40.851	main_mount_ms=38.851	main_mount_instr=196675092	gpu_prep_ms=0.000	gpu_wait_ms=0.000	frame_submitted_ms=42.228	presented_ms=46.978	exec_to_presented_ms=56.572
+THREAD	main	210436149	strikes_rasterised_here=0	strikes_waited=0	waited_ms=0.000
+DECO	icons_rasterised_on_main=66	svg_instr_on_main=29904992
+GLYPHS	rasterised_on_main=375	raster_ms_on_main=0.887	text_nodes=657
+THREAD	other	11539975
+THREAD	process	221976124
+MEASURE	first-pixel	cold.first_pixel_serial	ms	46.9785	-
+INSTR	first-pixel	cold.first_pixel_serial	p50=221976124	n=1

@@ -73,6 +73,19 @@ fn scroll_band(inst: &Col<Instance>, kind: u8, payload: u32) -> i16 {
     }
 }
 
+/// [`edge_band`] for any instance, the decoration kinds included (deco.rs): an image or a gradient changes
+/// everywhere when its box moves or resizes (its content is box-relative), so its band is the whole box; a
+/// shadow's pixels depend on an edge only within its corner radius plus 4 sigma (the kernel's erf saturates
+/// there and its y window is 3 sigma), plus the pixel-centre slack.
+#[inline]
+pub fn edge_band_of(p: &Instance) -> i16 {
+    match p.kind {
+        crate::deco::KIND_IMAGE | crate::deco::KIND_GRAD => (p.size[0].max(p.size[1]) + p.flags.max(1) as f32).ceil() as i16 + 2,
+        crate::deco::KIND_SHADOW => (p.radius.min(0.5 * p.size[0].min(p.size[1])).max(0.0) + 4.0 * p.bw + 1.0).ceil() as i16 + 2,
+        k => edge_band(k, p.radius, p.bw),
+    }
+}
+
 pub const KIND_SOLID: u8 = 0;
 pub const KIND_RRECT: u8 = 1;
 pub const KIND_BORDER: u8 = 2;
@@ -138,6 +151,7 @@ impl Caps {
             + 2 * a(caps.pages * 8)
             + a(caps.clips * 8)
             + a(caps.spaces * 8)
+            + a(caps.spaces * 32)
             + a(caps.glyphs * 4)
             + a(caps.glyphs * 2)
             + a(caps.runs * size_of::<RunHeader>())
@@ -274,6 +288,8 @@ pub struct VRegion {
     pub clip: u16,
     /// The viewport (absolute device px): the scroll marks are clipped to it.
     pub vp: NRect,
+    /// The clip the port lies in (a moved port is cut to it).
+    pub parent_clip: u16,
     pub depth: u16,
     pub base_pos: usize,
     pub range: Range<usize>,
@@ -362,6 +378,9 @@ pub struct Rt {
     clip_dedupe: Vec<(NRect, u16)>,
     space_free: Vec<u16>,
     next_space: u16,
+    /// Per space: `[a-1, b, c, d-1, pivot x, pivot y, tx, ty]`, what the kernels apply to every instance and
+    /// glyph run in the space (see `set_space_xform`).
+    pub xforms: Col<[f32; 8]>,
     /// Paint-only damage, advanced with the Bough's ring.
     pub paint: DamageRing,
     /// Per epoch (`epoch % RING`): its paint writes, see the module docs.
@@ -374,6 +393,13 @@ pub struct Rt {
     pub mregions: Vec<crate::mlist::MRegion>,
     /// Pointer, hover, focus, routes (input.rs).
     pub input: crate::input::Input,
+    /// Running transitions and the frame clock (transition.rs).
+    pub transitions: crate::transition::Transitions,
+    /// Icons, rotated images and gradient ramps (deco.rs), uploaded before a frame that wrote them.
+    pub images: crate::deco::Images,
+    /// The mounted owner (boxed by `App`, never moves): what a layout placement hook needs to mount the rows
+    /// of a list whose port it moved.
+    pub(crate) owner: *const u8,
     /// Keeps a heap region alive (the GPU region is kept alive by the columns' reference count too).
     _region: Region,
 }
@@ -395,6 +421,10 @@ impl Rt {
         let cols = Columns { pages: region.carve("pages", caps.pages), dir_id: region.carve("dir_id", caps.pages), dir_ink: region.carve("dir_ink", caps.pages), clips: region.carve("clips", caps.clips) };
         let pcols = PoolColumns { x: region.carve("glyph_x", caps.glyphs), ent: region.carve("glyph_ent", caps.glyphs), runs: region.carve("runs", caps.runs), spaces: region.carve("spaces", caps.spaces) };
         let toks: Col<TokStrike> = region.carve("tok_strikes", caps.strikes);
+        // per space: the affine of a transformed subtree (zeroed: the identity; `set_space_xform`)
+        let mut xforms: Col<[f32; 8]> = region.carve("xforms", caps.spaces);
+        // SAFETY: carved memory is zeroed and all-zero is the identity transform.
+        unsafe { xforms.set_len(caps.spaces) };
         let bough = Bough::with_columns(win_w, win_h, cols);
         let mut glyphs = GlyphPool::with_columns(pcols);
         glyphs.set_space((caps.spaces - 1) as u16, [0, 0]); // the whole space column is addressable
@@ -414,6 +444,7 @@ impl Rt {
             runs_off: glyphs.runs.region_offset().unwrap() as u32,
             toks_off: text.cache.tok_offset().unwrap() as u32,
             tok_stride: size_of::<TokStrike>() as u32,
+            xforms_off: xforms.region_offset().unwrap() as u32,
             slot,
             masks: Masks {
                 inst: caps.instances as u32 - 1,
@@ -451,6 +482,7 @@ impl Rt {
             clip_dedupe: Vec::new(),
             space_free: Vec::new(),
             next_space: 1,
+            xforms,
             paint: DamageRing::new(win_w, win_h),
             paint_log: Default::default(),
             tiles_x: tx,
@@ -459,6 +491,9 @@ impl Rt {
             lay: crate::layout::Lay::new(scale),
             mregions: Vec::new(),
             input: Default::default(),
+            transitions: Default::default(),
+            images: Default::default(),
+            owner: std::ptr::null(),
             _region: region,
         }
     }
@@ -518,6 +553,25 @@ impl Rt {
         self.next_space += 1;
         self.next_space - 1
     }
+    /// The per-instance half of a transform: every instance and glyph run in space `s` is drawn at
+    /// `T + c + m (p - c) + t` (T the space's translation, `m` row-major [a, b, c, d], pivot `c` space-local
+    /// px). The record half is `Bough::set_run_xform` on the subtree's records (`transform_subtree`).
+    pub fn set_space_xform(&mut self, s: u16, m: [f32; 4], c: [f32; 2], t: [f32; 2]) {
+        self.xforms[s as usize] = [m[0] - 1.0, m[1], m[2], m[3] - 1.0, c[0], c[1], t[0], t[1]];
+    }
+
+    /// Transform the subtree of the record `h` (its records in space `s`): its records' inks become their
+    /// transformed covers in the core (damage, hit testing, culling) and its instances are transformed by
+    /// the kernels, both by the same affine about `c` (space-local px). A scroll of an enclosing view moves
+    /// both afterwards (page offsets, the space's translation).
+    pub fn transform_subtree(&mut self, h: Handle, s: u16, m: [f32; 4], c: [f32; 2], t: [f32; 2]) {
+        self.set_space_xform(s, m, c, t);
+        let Some(pos) = self.bough.pos_of(h) else { return };
+        let end = self.bough.subtree_end(pos);
+        let o = self.space(s);
+        self.bough.set_run_xform(pos, end - pos, m, [o[0] + c[0], o[1] + c[1]], t);
+    }
+
     pub fn free_space(&mut self, s: u16) {
         self.space_free.push(s);
     }
@@ -721,7 +775,7 @@ impl Rt {
         let p = self.inst_mut(inst);
         p.pos = [x, y];
         p.size = [w, h];
-        let band = edge_band(p.kind, p.radius, p.bw);
+        let band = edge_band_of(p);
         let ink = self.ink_rect(space, x, y, w, h, margin);
         self.bough.set_ink_handle_edges(hd, ink, moved, band);
     }

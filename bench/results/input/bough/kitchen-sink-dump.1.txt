@@ -1,0 +1,16 @@
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+SCENARIO kitchen-sink gallery s13, 2382 records, a text field 22 tab stops in (value now "Ada Lovelace"), 32 of each interaction; 120 glide ticks
+MEASURE	kitchen-sink	kitchen.resize_repaint_only	ms	0.0001	p50=0.0001;p95=0.0003;p99=0.0007;max=0.0007;n=32
+INSTR	kitchen-sink	kitchen.resize_repaint_only	p50=2752	p10=2731	p95=2757	max=2770	n=32
+MEASURE	kitchen-sink	kitchen.click	us	0.0420	p50=0.0420;p95=0.1660;p99=1.1250;max=1.1250;n=32
+INSTR	kitchen-sink	kitchen.click	p50=1371	p10=1370	p95=1371	max=4435	n=32
+MEASURE	kitchen-sink	kitchen.click_release	us	0.1670	p50=0.1670;p95=0.3330;p99=0.5410;max=0.5410;n=32
+INSTR	kitchen-sink	kitchen.click_release	p50=2873	p10=2872	p95=4159	max=4234	n=32
+MEASURE	kitchen-sink	kitchen.keystroke	us	0.1670	p50=0.1670;p95=0.7500;p99=2.2500;max=2.2500;n=32
+INSTR	kitchen-sink	kitchen.keystroke	p50=3441	p10=3385	p95=4263	max=5134	n=32
+MEASURE	kitchen-sink	kitchen.untouched_turn	us	0.2090	p50=0.2090;p95=0.2500;p99=0.3330;max=0.3750;n=240
+INSTR	kitchen-sink	kitchen.untouched_turn	p50=4199	p10=4016	p95=4199	max=6183	n=240
+MEASURE	kitchen-sink	kitchen.glide_tick	us	1.0000	p50=1.0000;p95=1.1250;p99=1.4170;max=3.5830;n=120
+INSTR	kitchen-sink	kitchen.glide_tick	p50=20446	p10=6657	p95=20840	max=22556	n=120
+MEASURE	kitchen-sink	kitchen.tab_traversal	us	0.2500	p50=0.2500;p95=1.9580;p99=2.0420;max=2.0420;n=22
+INSTR	kitchen-sink	kitchen.tab_traversal	p50=3112	p10=2897	p95=3678	max=8764	n=22

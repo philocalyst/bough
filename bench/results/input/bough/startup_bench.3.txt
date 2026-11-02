@@ -1,11 +1,11 @@
 font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
-renderer 28.564584ms, shaped 1.041µs
-        0.03 real         0.01 user         0.01 sys
-            18595840  maximum resident set size
+renderer 36.543542ms, shaped 3.375µs
+        0.04 real         0.01 user         0.01 sys
+            17825792  maximum resident set size
                    0  average shared memory size
                    0  average unshared data size
                    0  average unshared stack size
-                1470  page reclaims
+                1431  page reclaims
                    0  page faults
                    0  swaps
                    0  block input operations
@@ -13,8 +13,8 @@ renderer 28.564584ms, shaped 1.041µs
                    0  messages sent
                    0  messages received
                    0  signals received
-                   3  voluntary context switches
-                 250  involuntary context switches
-           110840541  instructions retired
-            68737198  cycles elapsed
-            15959744  peak memory footprint
+                   0  voluntary context switches
+                  83  involuntary context switches
+           110905566  instructions retired
+            80343799  cycles elapsed
+            15025728  peak memory footprint

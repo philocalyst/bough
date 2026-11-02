@@ -4,24 +4,31 @@
 pub mod app;
 pub mod backend;
 pub mod color;
+pub mod deco;
 pub mod elem;
 pub mod input;
+pub mod inspect;
 pub mod lay_deep;
 pub mod layout;
+pub mod ltemplate;
 pub mod mlist;
 pub mod rt;
 pub mod signal;
 pub mod template;
 pub mod text;
+pub mod transition;
 
 pub use bough_text::numeric::NumFmt;
 
 pub mod prelude {
+    pub use crate::transition::{Curve, Ease, Lerp};
+    pub use crate::deco::{deco_box, svg_image, Deco, Grad, Shadow, Xf};
     pub use crate::app::{App, Config, View};
     pub use crate::color::{rgb, Color};
     pub use crate::elem::{at, bars, clip, each, quad, text, virtual_list, Element, IntoProp, Mounter, Quad, TextSrc};
     pub use crate::input::{no_hit, text_field, tooltip, Button, Ev, Interact, Key, Mods, TipStyle};
-    pub use crate::template::{clip_by, offset, port_list, scroll_y, template, wired_clip, Hooked, TNode, T_CLIP, T_FOCUS, T_HOOK};
+    pub use crate::ltemplate::{ltemplate, wire_restyle, Decls, LCtx, LHooked, LNode, P};
+    pub use crate::template::{anchor, clip_by, offset, port_list, port_list_in, scroll_y, template, wired_clip, Hooked, TNode, T_CLIP, T_FOCUS, T_HOOK};
     pub use crate::mlist::measured_list;
     pub use crate::rt::Caps;
     pub use crate::sig;

@@ -106,6 +106,17 @@ fn timebase() -> (u64, u64) {
 }
 
 /// Cost of one `snap()` call in instructions (subtract from deltas that bracket work).
+/// Wall time since this process was exec'd (the kernel's start time; microsecond resolution), ns.
+pub fn since_exec_ns() -> u64 {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let sz = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+    // SAFETY: PROC_PIDTBSDINFO fills one proc_bsdinfo; `info` is that size.
+    let rc = unsafe { libc::proc_pidinfo(libc::getpid(), libc::PROC_PIDTBSDINFO, 0, &mut info as *mut _ as *mut libc::c_void, sz) };
+    assert_eq!(rc, sz, "proc_pidinfo failed");
+    let start = std::time::UNIX_EPOCH + std::time::Duration::new(info.pbi_start_tvsec, info.pbi_start_tvusec as u32 * 1000);
+    std::time::SystemTime::now().duration_since(start).map(|d| d.as_nanos() as u64).unwrap_or(0)
+}
+
 pub fn snap_overhead() -> u64 {
     let _ = snap();
     let mut v: Vec<u64> = (0..200).map(|_| { let a = snap(); let b = snap(); b.instrs - a.instrs }).collect();

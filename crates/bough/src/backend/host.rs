@@ -368,6 +368,26 @@ pub fn run_interactive<V: View>(
                 unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&t, objc2_foundation::NSRunLoopCommonModes) };
                 std::mem::forget(t);
             }
+            {
+                // the caret blink: a flip every half period while a field is focused (paint writes: after two
+                // frames the ring's surfaces hold both states and a flip costs no GPU work)
+                let (app, trim) = (app.clone(), trim.clone());
+                let half = app.borrow().rt.input.blink_half as f64;
+                if half > 0.0 {
+                    let blk = RcBlock::new(move |_t: NonNull<NSTimer>| {
+                        if let Ok(mut a) = app.try_borrow_mut() {
+                            if a.next_blink().is_some() && a.tick(half as f32) {
+                                let drew = a.frame_paced();
+                                after_frame(&app, &trim, &mut a, drew);
+                            }
+                        }
+                    });
+                    let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(half, true, &blk) };
+                    t.setTolerance(0.01);
+                    unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&t, objc2_foundation::NSRunLoopCommonModes) };
+                    std::mem::forget(t);
+                }
+            }
             start(host, app.clone());
             link.setPaused(true);
             state = Some((app, None));

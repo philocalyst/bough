@@ -1,9 +1,11 @@
 font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
-SCENARIO app-shell 625 records, 12 tooltip triggers, 48 rows, a dock of 5000 lines; 251 frames over 36 crossings; hits 37 cell hits 0; drag mounted/unmounted 16 log rows
-MEASURE	app-shell	shell.tooltip_crossing	us	0.9170	p50=0.9170;p95=1.3750;p99=2.0410;max=2.0410;n=37
-INSTR	app-shell	shell.tooltip_crossing	p50=17262	p10=16835	p95=17468	max=17468	n=37
-MEASURE	app-shell	shell.drag_step	us	0.3330	p50=0.3330;p95=1.7080;p99=2.1250;max=2.1250;n=60
-INSTR	app-shell	shell.drag_step	p50=6230	p10=5837	p95=14313	max=14455	n=60
+SCENARIO app-shell (laid out) 613 records, 12 tooltip triggers, 48 rows, a dock of 5000 lines; 251 frames over 36 crossings; hits 36 cell hits 1; drag mounted/unmounted 16 log rows
+MEASURE	app-shell	shell.tooltip_crossing	us	0.9170	p50=0.9170;p95=1.5000;p99=2.5830;max=2.5830;n=37
+INSTR	app-shell	shell.tooltip_crossing	p50=17156	p10=16754	p95=17321	max=17321	n=37
+MEASURE	app-shell	shell.drag_step	us	5.4160	p50=5.4160;p95=8.5410;p99=21.1660;max=21.1660;n=60
+INSTR	app-shell	shell.drag_step	p50=101632	p10=100243	p95=112147	max=124314	n=60
+MEASURE	app-shell	shell.resize_step	us	77.2920	p50=77.2920;p95=82.2910;p99=109.9170;max=109.9170;n=40
+INSTR	app-shell	shell.resize_step	p50=1507826	p10=1501338	p95=1520406	max=1529980	n=40
 MEASURE	app-shell	shell.drag_hit_rebuilds	rebuilds	0.0000	-
 MEASURE	app-shell	shell.tooltip_tree_builds	builds	0.0000	-
-MEASURE	app-shell	shell.drag_tiles_per_step	tiles	215.9000	-
+MEASURE	app-shell	shell.drag_tiles_per_step	tiles	205.2333	-

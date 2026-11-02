@@ -10,7 +10,9 @@ use bough::prelude::*;
 use std::ops::Range;
 
 pub mod gallery;
+pub mod inspector;
 pub mod shell;
+pub mod thread;
 
 pub fn font_bytes() -> Vec<u8> {
     zgx_workload::font_file().unwrap_or_else(|| zgx_workload::FONT_BYTES.to_vec())
@@ -20,9 +22,25 @@ pub fn ring_from_env() -> usize {
     std::env::var("BOUGH_RING").ok().and_then(|v| v.parse().ok()).unwrap_or(0)
 }
 
+/// DejaVu's bold and mono faces (the documents' `font-weight >= 600` and monospace text), from
+/// `BOUGH_FONT_BOLD` / `BOUGH_FONT_MONO` or the system's DejaVu 2.37 install; absent files fall back to the
+/// regular face.
+fn face_files() -> Vec<(u8, Vec<u8>)> {
+    const DIR: &str = "/Library/Fonts/Nix Fonts/vl9mbzk97wmh1s1yj3766b4zai8msjq6-dejavu-fonts-2.37/share/fonts/truetype";
+    let mut v = Vec::new();
+    for (logical, var, file) in [(bough::text::FACE_BOLD, "BOUGH_FONT_BOLD", "DejaVuSans-Bold.ttf"), (bough::text::FACE_MONO, "BOUGH_FONT_MONO", "DejaVuSansMono.ttf")] {
+        let path = std::env::var(var).unwrap_or_else(|_| format!("{DIR}/{file}"));
+        if let Ok(b) = std::fs::read(&path) {
+            v.push((logical, b));
+        }
+    }
+    v
+}
+
 pub fn config(w: f32, h: f32) -> Config {
     let mut c = Config::new(w, h, 1.0, font_bytes());
     c.ring = ring_from_env();
+    c.faces = face_files();
     c
 }
 

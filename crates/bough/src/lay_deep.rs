@@ -121,6 +121,58 @@ impl Deep {
         i
     }
 
+    /// Intern a resolved cephal `Style` (templates resolve their declarations once per distinct style).
+    pub fn intern(&mut self, st: Style) -> u32 {
+        self.styles.intern(st)
+    }
+
+    /// The style of node `n`.
+    pub fn style_of(&self, n: u32) -> &Style {
+        self.styles.get(self.n[n as usize].style)
+    }
+
+    /// Give a node that has never been laid out (being mounted) interned style `style`.
+    pub fn set_style_cold(&mut self, n: u32, style: u32) {
+        let measured = self.n[n as usize].ctx.is_some();
+        let flags = meta_bits(&self.styles, style, measured);
+        let nd = &mut self.n[n as usize];
+        nd.style = style;
+        nd.flags = (nd.flags & !META_MASK) | (flags & META_MASK);
+    }
+
+    /// Give node `n` interned style `style` and mark it for relayout.
+    pub fn set_style(&mut self, b: &Bough, n: u32, style: u32) {
+        let measured = self.n[n as usize].ctx.is_some();
+        let flags = meta_bits(&self.styles, style, measured);
+        let nd = &mut self.n[n as usize];
+        nd.style = style;
+        nd.flags = (nd.flags & !META_MASK) | (flags & META_MASK);
+        nd.cache.clear();
+        self.invalidate(b, n);
+    }
+
+    /// `add` with an interned style id instead of a `Spec`.
+    pub fn add_style(&mut self, hd: Handle, style: u32, ctx: Option<LeafCtx>) -> u32 {
+        let i = hd.idx;
+        if self.n.len() <= i as usize {
+            self.n.resize_with(i as usize + 1, DNode::blank);
+        }
+        let flags = meta_bits(&self.styles, style, ctx.is_some());
+        let nd = &mut self.n[i as usize];
+        nd.style = style;
+        nd.flags = flags;
+        nd.live = true;
+        nd.root = false;
+        nd.hgen = hd.generation;
+        nd.nkids = 0;
+        nd.kids.clear();
+        nd.touched = 0;
+        nd.layout = Layout::ZERO;
+        nd.cache.clear();
+        nd.ctx = ctx;
+        i
+    }
+
     pub fn mark_root(&mut self, n: u32) {
         self.n[n as usize].root = true;
     }

@@ -1,0 +1,5 @@
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+SCENARIO cold-start gallery s13 (zgui's dumped geometry, no layout), 2381 records, first painted frame; 1600 tiles
+DECO	icons_rasterised=0	svg_instr=0	glyphs_rasterised=1150	raster_ms=2.692
+MEASURE	cold-start	cold.first_frame_dump_geometry	ms	8.1058	-
+INSTR	cold-start	cold.first_frame_dump_geometry	p50=77777318	n=1

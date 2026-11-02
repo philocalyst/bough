@@ -1,16 +1,16 @@
 font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
-SCENARIO kitchen-sink gallery s13, 2382 records, a text field 22 tab stops in (value now "Ada Lovelace"), 32 of each interaction; 120 glide ticks
-MEASURE	kitchen-sink	kitchen.resize_repaint_only	ms	0.0001	p50=0.0001;p95=0.0003;p99=0.0005;max=0.0005;n=32
-INSTR	kitchen-sink	kitchen.resize_repaint_only	p50=2336	p10=2331	p95=2341	max=2354	n=32
-MEASURE	kitchen-sink	kitchen.click	us	0.0420	p50=0.0420;p95=0.1250;p99=1.2500;max=1.2500;n=32
-INSTR	kitchen-sink	kitchen.click	p50=1374	p10=1374	p95=1374	max=4436	n=32
-MEASURE	kitchen-sink	kitchen.click_release	us	0.1660	p50=0.1660;p95=0.2910;p99=0.6250;max=0.6250;n=32
-INSTR	kitchen-sink	kitchen.click_release	p50=2864	p10=2864	p95=4150	max=4225	n=32
-MEASURE	kitchen-sink	kitchen.keystroke	us	0.2080	p50=0.2080;p95=0.6670;p99=1.9580;max=1.9580;n=32
-INSTR	kitchen-sink	kitchen.keystroke	p50=3424	p10=3369	p95=4246	max=5117	n=32
-MEASURE	kitchen-sink	kitchen.untouched_turn	us	0.2080	p50=0.2080;p95=0.2500;p99=0.2920;max=0.4170;n=240
-INSTR	kitchen-sink	kitchen.untouched_turn	p50=4185	p10=4002	p95=4185	max=6169	n=240
-MEASURE	kitchen-sink	kitchen.glide_tick	us	1.0000	p50=1.0000;p95=1.1250;p99=1.4170;max=2.9170;n=120
-INSTR	kitchen-sink	kitchen.glide_tick	p50=21113	p10=6675	p95=21505	max=23227	n=120
-MEASURE	kitchen-sink	kitchen.tab_traversal	us	0.2910	p50=0.2910;p95=1.4170;p99=2.4160;max=2.4160;n=22
-INSTR	kitchen-sink	kitchen.tab_traversal	p50=3103	p10=2888	p95=8038	max=8741	n=22
+SCENARIO kitchen-sink gallery s13, 2451 records, a text field 22 tab stops in (value now "Ada Lovelace"), 32 of each interaction; 120 glide ticks
+MEASURE	kitchen-sink	kitchen.resize	ms	0.2739	p50=0.2739;p95=0.9172;p99=1.0113;max=1.0113;n=32
+INSTR	kitchen-sink	kitchen.resize	p50=3017352	p10=2938948	p95=4707682	max=4829326	n=32
+MEASURE	kitchen-sink	kitchen.click	us	0.0830	p50=0.0830;p95=0.1250;p99=0.8330;max=0.8330;n=32
+INSTR	kitchen-sink	kitchen.click	p50=1379	p10=1378	p95=1379	max=4446	n=32
+MEASURE	kitchen-sink	kitchen.click_release	us	0.1670	p50=0.1670;p95=0.2920;p99=0.6670;max=0.6670;n=32
+INSTR	kitchen-sink	kitchen.click_release	p50=2880	p10=2879	p95=4166	max=4240	n=32
+MEASURE	kitchen-sink	kitchen.keystroke	us	0.1670	p50=0.1670;p95=0.7500;p99=2.0420;max=2.0420;n=32
+INSTR	kitchen-sink	kitchen.keystroke	p50=3448	p10=3392	p95=4272	max=5146	n=32
+MEASURE	kitchen-sink	kitchen.untouched_turn	us	0.2500	p50=0.2500;p95=0.3330;p99=0.8330;max=3.8750;n=240
+INSTR	kitchen-sink	kitchen.untouched_turn	p50=4518	p10=4517	p95=4518	max=6502	n=240
+MEASURE	kitchen-sink	kitchen.glide_tick	us	1.0840	p50=1.0840;p95=1.2500;p99=1.5000;max=3.8330;n=120
+INSTR	kitchen-sink	kitchen.glide_tick	p50=21588	p10=6980	p95=21972	max=23687	n=120
+MEASURE	kitchen-sink	kitchen.tab_traversal	us	0.2500	p50=0.2500;p95=0.6250;p99=2.2500;max=2.2500;n=22
+INSTR	kitchen-sink	kitchen.tab_traversal	p50=3189	p10=2904	p95=3579	max=4430	n=22

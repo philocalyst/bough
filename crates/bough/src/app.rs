@@ -39,11 +39,17 @@ pub struct Config {
     /// Surfaces: 0 = default (4: round-robin offscreen; windowed, at most 4, drawn only as contention needs).
     pub ring: usize,
     pub caps: Caps,
+    /// Further faces: (logical face `text::FACE_BOLD` / `FACE_MONO` / `FACE_OBLIQUE`, font file).
+    pub faces: Vec<(u8, Vec<u8>)>,
 }
 
 impl Config {
     pub fn new(width_pt: f32, height_pt: f32, scale: f32, font: Vec<u8>) -> Config {
-        Config { width_pt, height_pt, scale, font, ring: 0, caps: Caps::DEFAULT }
+        Config { width_pt, height_pt, scale, font, ring: 0, caps: Caps::DEFAULT, faces: Vec::new() }
+    }
+    /// Surfaces of the ring.
+    pub fn surfaces(&self) -> usize {
+        if self.ring == 0 { 4 } else { self.ring.min(4) }
     }
 }
 
@@ -143,17 +149,88 @@ pub struct App<V: View> {
     /// `frames` value when each ring slot was last drawn into.
     last_use: Vec<u64>,
     trim_mark: u64,
+    /// How the mount overlapped the GPU's preparation (see [`prepare`]).
+    pub startup: Startup,
+    /// The last drawn frame repainted the whole window (a surface with nothing reusable).
+    last_full: bool,
 }
+
+/// Per raster worker started by [`prepare`]: (strikes, glyphs, instructions, ns), for those finished.
+pub fn raster_stats() -> Vec<[u64; 4]> {
+    bough_text::atlas::prerender_stats()
+}
+
+/// The main thread's share of [`prepare`]'s rasterising: strikes it rasterised itself (no worker had
+/// started them), strikes it waited for, ns waited.
+pub fn raster_main() -> [u64; 3] {
+    bough_text::atlas::prerender_main()
+}
+
+/// Cold start accounting of [`App::new`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Startup {
+    /// Main thread: runtime, mount, shaping and layout.
+    pub mount_ns: u64,
+    pub mount_instr: u64,
+    /// The GPU preparation thread (device, queues, library, pipelines), if it ran from [`prepare`].
+    pub gpu_prep_instr: u64,
+    pub gpu_prep_ns: u64,
+    /// Main thread: waiting for that thread, then the presenter's buffers and surfaces.
+    pub gpu_wait_ns: u64,
+}
+
+/// Call at process entry: start the work of a cold start that does not depend on the mount on other
+/// threads: the Metal device, queues and pipelines on one, and the glyphs of the document's static text
+/// (`strikes`: pixel size and text, in the order the mount meets them) on `raster_threads` more. The next
+/// [`App::new`] mounts while they run and takes their results.
+pub fn prepare(cfg: &Config, strikes: &[(f32, &str, u8)], svgs: &[(&'static str, f32, f32)], raster_threads: usize) {
+    #[cfg(target_os = "macos")]
+    {
+        let (w, h) = ((cfg.width_pt * cfg.scale).round() as usize, (cfg.height_pt * cfg.scale).round() as usize);
+        bough_metal::fused::prepare_in_background(Some((w, h, cfg.surfaces(), BIN_CAP)));
+    }
+    crate::text::prepare_faces(&cfg.faces);
+    if !strikes.is_empty() && raster_threads > 0 {
+        // faces by logical id: the configured font, or the regular one when the face is absent
+        let font_of = |l: u8| cfg.faces.iter().find(|f| f.0 == l).map_or(&cfg.font[..], |f| &f.1[..]);
+        let fonts: Vec<&[u8]> = (0..4u8).map(font_of).collect();
+        // each strike is ASCII-complete from its creation (text.rs), so its whole printable alphabet too
+        const ASCII: &str = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+        let mut px: Vec<(f32, &str, usize)> = strikes.iter().map(|&(s, t, f)| (s * cfg.scale, t, f as usize & 3)).collect();
+        let mut seen: Vec<(u32, usize)> = Vec::new();
+        for &(s, _, f) in strikes {
+            if !seen.contains(&(s.to_bits(), f as usize)) {
+                seen.push((s.to_bits(), f as usize));
+                px.push((s * cfg.scale, ASCII, f as usize & 3));
+            }
+        }
+        bough_text::atlas::prerender_in_background(&fonts, &px, raster_threads);
+    }
+    if !svgs.is_empty() && raster_threads > 0 {
+        let items = svgs.iter().map(|&(s, w, h)| (s, (w * cfg.scale).round().max(1.0) as u32, (h * cfg.scale).round().max(1.0) as u32)).collect();
+        crate::deco::prerender_svgs(items, raster_threads);
+    }
+}
+
+/// Bin capacity per tile row the presenter starts with.
+const BIN_CAP: u32 = 1024;
 
 impl<V: View> App<V> {
     /// Mount `view`. `gpu`: create the fused presenter (its shared buffer is the region); otherwise the
     /// region is heap memory and `frame` stops after the tile list (the RENDER=0 shape).
     pub fn new(view: V, cfg: Config, gpu: bool) -> App<V> {
-        let (win_w, win_h) = ((cfg.width_pt * cfg.scale).round() as i32, (cfg.height_pt * cfg.scale).round() as i32);
-        let ring = if cfg.ring == 0 { 4 } else { cfg.ring.min(4) };
-        let bytes = cfg.caps.region_bytes(win_w as u32, win_h as u32);
+        let t_mount = std::time::Instant::now();
         #[cfg(target_os = "macos")]
-        let metal = gpu.then(|| bough_metal::fused::Fused::new(win_w as usize, win_h as usize, cfg.scale as f64, bytes, ring, 1024));
+        let i_mount = bough_metal::fused::thread_instructions();
+        let (win_w, win_h) = ((cfg.width_pt * cfg.scale).round() as i32, (cfg.height_pt * cfg.scale).round() as i32);
+        let ring = cfg.surfaces();
+        let bytes = cfg.caps.region_bytes(win_w as u32, win_h as u32);
+        // A GPU prepared from process entry (`prepare`): the main thread mounts, shapes and lays out into heap
+        // memory first; the presenter is made afterwards, its shared buffer wrapping that memory (no copy).
+        #[cfg(target_os = "macos")]
+        let overlapped = gpu && bough_metal::fused::prep_pending();
+        #[cfg(target_os = "macos")]
+        let metal = (gpu && !overlapped).then(|| bough_metal::fused::Fused::new(win_w as usize, win_h as usize, cfg.scale as f64, bytes, ring, BIN_CAP));
         #[cfg(not(target_os = "macos"))]
         let _ = gpu;
         #[cfg(target_os = "macos")]
@@ -169,7 +246,12 @@ impl<V: View> App<V> {
         };
         #[cfg(not(target_os = "macos"))]
         let region = bough_mem::Region::heap(bytes);
+        #[cfg(target_os = "macos")]
+        let wrap = overlapped.then(|| (region.base(), region.len(), region.keeper()));
         let mut rt = Rt::new(win_w, win_h, cfg.scale, &cfg.font, region, cfg.caps);
+        for (logical, font) in &cfg.faces {
+            rt.text.add_face(*logical, font);
+        }
         #[cfg(target_os = "macos")]
         let mut metal = metal;
         #[cfg(target_os = "macos")]
@@ -181,6 +263,7 @@ impl<V: View> App<V> {
         let mut recs: Vec<RecordInit> = Vec::with_capacity(4096);
         let mut scope = Scope::default();
         let ptr = &*owner as *const V;
+        rt.owner = ptr as *const u8;
         {
             let el = owner.view();
             let mut m = Mounter { rt: &mut rt, owner: ptr, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None };
@@ -192,6 +275,21 @@ impl<V: View> App<V> {
         // SAFETY: `ptr` is the owner just mounted (boxed: it never moves).
         unsafe { rt.mregions_init(ptr as *const u8) };
         drop(scope); // the root scope lives as long as the app: nothing of it is ever released
+        let mut startup = Startup { mount_ns: t_mount.elapsed().as_nanos() as u64, ..Startup::default() };
+        #[cfg(target_os = "macos")]
+        {
+            startup.mount_instr = bough_metal::fused::thread_instructions() - i_mount;
+        }
+        #[cfg(target_os = "macos")]
+        if let Some((p, len, keep)) = wrap {
+            let t = std::time::Instant::now();
+            // SAFETY: a heap region: page-aligned, a whole number of pages, alive while `keep` (a share of it)
+            // is; the presenter holds `keep` as long as its buffer.
+            let (mut f, instr, ns) = unsafe { bough_metal::fused::Fused::new_on(p, len, keep, win_w as usize, win_h as usize, cfg.scale as f64, ring, BIN_CAP) };
+            f.set_layout(rt.layout);
+            startup = Startup { gpu_prep_instr: instr, gpu_prep_ns: ns, gpu_wait_ns: t.elapsed().as_nanos() as u64, ..startup };
+            metal = Some(f);
+        }
         let ty = rt.tiles_y;
         App {
             owner,
@@ -213,6 +311,8 @@ impl<V: View> App<V> {
             core_epochs: [false; RING],
             last_use: vec![0; ring],
             trim_mark: 0,
+            startup,
+            last_full: true,
         }
     }
 
@@ -268,6 +368,16 @@ impl<V: View> App<V> {
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
         self.prof.mark(PH_TEXT);
+    }
+
+    /// The tile rows the last drawn frame repaired (bitmask of tile columns per row; inspect.rs).
+    pub(crate) fn repaired_rows(&self) -> (&[u128], bool) {
+        (&self.rows, self.last_full)
+    }
+
+    /// Wait until the GPU has finished every frame submitted so far (the last one is presented).
+    pub fn wait_presented(&mut self) {
+        self.sync();
     }
 
     /// The handler half of a turn alone: mutate the view's signals (no settling). Pair with `flush`.
@@ -545,6 +655,7 @@ impl<V: View> App<V> {
         let age = self.held[i].map(|l| epoch - l);
         let full = !matches!(age, Some(a) if a as usize <= RING);
         let mut copy = bough_metal::fused::SlotCopy::NONE;
+        self.last_full = full;
         if !full {
             self.repair_rows(age.unwrap());
             copy = self.copy_plan(i, epoch, age.unwrap());
@@ -562,6 +673,9 @@ impl<V: View> App<V> {
             let a = &mut self.rt.text.cache.atlas;
             if g.sync_atlas(a.width, a.height, &a.pixels, a.dirty_bytes != 0) {
                 a.dirty_bytes = 0;
+            }
+            if let Some(rows) = self.rt.images.take_dirty() {
+                g.sync_images(self.rt.images.pixels(), rows);
             }
             self.repaired_tiles = g.draw::<PACED>(i, &self.rows, full, n_dir, &copy);
             drawn = true;
@@ -609,6 +723,11 @@ impl<V: View> App<V> {
         false
     }
 
+    /// Surfaces in the ring.
+    pub fn surfaces(&self) -> usize {
+        self.held.len()
+    }
+
     /// The tile rows the last repair covered (tests and diagnostics).
     pub fn debug_rows(&self) -> &[u128] {
         &self.rows
@@ -635,6 +754,9 @@ impl<V: View> App<V> {
         let a = &mut self.rt.text.cache.atlas;
         if g.sync_atlas(a.width, a.height, &a.pixels, a.dirty_bytes != 0) {
             a.dirty_bytes = 0;
+        }
+        if let Some(rows) = self.rt.images.take_dirty() {
+            g.sync_images(self.rt.images.pixels(), rows);
         }
         g.reference_pixels(n_dir)
     }

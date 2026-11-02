@@ -486,6 +486,11 @@ impl Bough {
     pub fn set_ink_handle_edges(&mut self, h: Handle, ink: NRect, moved: u8, band: i16) -> bool {
         let Some((d, s)) = self.handle_loc(h) else { return false };
         let p = self.page(d);
+        if p.is_xf() {
+            // edge bands are a property of the untransformed frame: a transformed record takes its covers
+            self.set_ink_at(d, s, ink, true);
+            return true;
+        }
         let (old, clip) = (p.abs(p.ink[s]), p.clip[s]);
         self.set_ink_at(d, s, ink, false);
         self.damage_edges(old, ink, moved, band, clip);
@@ -786,6 +791,7 @@ impl Bough {
             // SAFETY: di != d, both live distinct pool pages.
             let (newp, oldp) = unsafe { (&mut *self.page_ptr(di), &*self.page_ptr(d)) };
             newp.wgen = newp.wgen.wrapping_add(1);
+            (newp.xm, newp.xv) = (oldp.xm, oldp.xv);
             copy_virtual(newp, off, off + szi, oldp, s, k, recs);
             newp.version += 1;
             self.d_len[di] = szi as u32;
@@ -911,7 +917,9 @@ impl Bough {
             let i = j as usize;
             if i + 1 < self.d_ptr.len() {
                 let (a, b) = (self.d_len[i] as usize, self.d_len[i + 1] as usize);
-                if a + b <= CAP && (a < MIN_FILL || b < MIN_FILL) {
+                // pages of different transforms never merge (a transformed page holds one subtree)
+                let same_xf = { let (p, q) = (self.page(i), self.page(i + 1)); p.xm == q.xm && p.xv == q.xv };
+                if a + b <= CAP && (a < MIN_FILL || b < MIN_FILL) && same_xf {
                     self.merge_next(i);
                 }
             }
@@ -1209,13 +1217,21 @@ impl Bough {
             return;
         }
         let (kind, id) = (p.kind[s], p.clip[s]);
+        let xf = p.is_xf();
+        let old_stored = p.ink[s];
         p.store_abs(s, ink);
         p.regroup(s / GROUP);
         let u = p.union_abs();
         let od = self.d_ink[d];
         self.d_ink[d] = u;
         self.chunk_update(d, od);
-        if damage {
+        if damage && xf {
+            // a transformed record (`ink` is its untransformed ink): the tile covers of the old and the new
+            // transformed rects, exact at tile granularity
+            let new_stored = self.page(d).ink[s];
+            self.damage_cover(d, old_stored, id);
+            self.damage_cover(d, new_stored, id);
+        } else if damage {
             let (old, ink) = (self.clipped(old, id), self.clipped(ink, id));
             if self.kind_uniform(kind) {
                 self.damage_xor(old, ink);
@@ -1394,6 +1410,11 @@ impl Bough {
     #[inline]
     pub fn touch(&mut self, pos: usize) {
         let (d, s) = self.locate(pos);
+        if self.page(d).is_xf() {
+            let (r, c) = (self.page(d).ink[s], self.page(d).clip[s]);
+            self.damage_cover(d, r, c);
+            return;
+        }
         let ink = self.visible(d, s);
         self.ring.add(ink);
     }
@@ -1402,12 +1423,131 @@ impl Bough {
         match self.handle_ptr(h) {
             Some((p, s)) => {
                 // SAFETY: bound handles point at live pages; s < CAP.
-                let ink = self.visible_in(unsafe { &*p }, s);
+                let pg = unsafe { &*p };
+                if pg.is_xf() {
+                    let (d, _) = self.handle_loc(h).unwrap();
+                    let (r, c) = (pg.ink[s], pg.clip[s]);
+                    self.damage_cover(d, r, c);
+                    return true;
+                }
+                let ink = self.visible_in(pg, s);
                 self.ring.add(ink);
                 true
             }
             None => false,
         }
+    }
+
+    // ------------------------------------------------------------------ transforms
+
+    /// Mark the tiles the transformed stored rect `r` of page `d` covers (with the kernels' 1 px of
+    /// anti-aliasing), clipped to clip `clip`: per 32-px tile row, the x extent of the convex quad within the
+    /// row's band. Exact at tile granularity (not the bounding box).
+    fn damage_cover(&mut self, d: usize, r: NRect, clip: u16) {
+        if r.is_empty() {
+            return;
+        }
+        let q = self.page(d).xf_quad(r);
+        let c = if clip == 0 { NRect::new(i32::MIN / 4, i32::MIN / 4, i32::MAX / 4, i32::MAX / 4) } else { self.clips[clip as usize] };
+        let ring = &mut self.ring;
+        quad_cover(&q, |t| {
+            let t = t.intersect(c).canon();
+            if !t.is_empty() {
+                ring.add(t);
+            }
+        });
+    }
+
+    /// Split the page holding `pos` so that `pos` starts a page (no-op at a page start or the end).
+    fn split_at(&mut self, pos: usize) {
+        if pos >= self.total {
+            return;
+        }
+        let (d, s) = self.locate(pos);
+        if s == 0 {
+            return;
+        }
+        let l = self.d_len[d] as usize;
+        self.page_mut(d).normalize();
+        self.dir_insert_blank(d + 1, 1);
+        {
+            // SAFETY: d and d+1 are distinct live pages.
+            let (newp, oldp) = unsafe { (&mut *self.page_ptr(d + 1), &*self.page_ptr(d)) };
+            newp.wgen = newp.wgen.wrapping_add(1);
+            (newp.xm, newp.xv) = (oldp.xm, oldp.xv);
+            copy_virtual(newp, s, l, oldp, s, 0, &[]);
+            newp.version += 1;
+        }
+        self.d_len[d + 1] = (l - s) as u32;
+        self.fixup_handles(d + 1, 0, l - s);
+        {
+            let p = self.page_mut(d);
+            p.version += 1;
+            p.set_sentinel(s, CAP);
+            p.regroup_range(0, CAP);
+        }
+        self.d_len[d] = s as u32;
+        self.refresh(d);
+        self.refresh(d + 1);
+        self.prefix.invalidate_from(d, &self.d_len);
+        self.fix_chunks(d, self.d_ptr.len());
+    }
+
+    /// Transform the run `[start, start+len)` (a subtree): its records' inks are taken as untransformed and
+    /// drawn at `K + t + m (p - K)` (`m` row-major [a, b, c, d], pivot `k` absolute px, translation `t`).
+    /// The run's pages are isolated (split at both ends) and carry the affine, as a translated run's pages
+    /// carry their offset; later translations (`translate_run`: scrolls) compose after it. Damage: the
+    /// tile covers of every record's old and new transformed ink. The identity clears the transform.
+    pub fn set_run_xform(&mut self, start: usize, len: usize, m: [f32; 4], k: [f32; 2], t: [f32; 2]) {
+        if len == 0 {
+            return;
+        }
+        assert!(start + len <= self.total);
+        self.split_at(start + len);
+        self.split_at(start);
+        let (d0, s0) = self.locate(start);
+        debug_assert_eq!(s0, 0);
+        let (mut d, mut rem) = (d0, len);
+        while rem > 0 {
+            let l = self.d_len[d] as usize;
+            self.damage_page_covers(d, l);
+            let od = self.d_ink[d];
+            {
+                let p = self.page_mut(d);
+                p.wgen = p.wgen.wrapping_add(1);
+                p.version += 1;
+                if m == [1.0, 0.0, 0.0, 1.0] && t == [0.0, 0.0] {
+                    (p.xm, p.xv) = ([0.0; 4], [0.0; 2]);
+                } else {
+                    p.set_xf(m, k, t);
+                }
+            }
+            self.damage_page_covers(d, l);
+            self.d_ink[d] = self.page(d).union_abs();
+            self.chunk_update(d, od);
+            rem -= l.min(rem);
+            d += 1;
+        }
+        self.fix_chunks(d0, d);
+    }
+
+    fn damage_page_covers(&mut self, d: usize, l: usize) {
+        for s in 0..l {
+            let (r, c, xf) = { let p = self.page(d); (p.ink[s], p.clip[s], p.is_xf()) };
+            if xf {
+                self.damage_cover(d, r, c);
+            } else {
+                let v = self.visible(d, s);
+                self.ring.add(v);
+            }
+        }
+    }
+
+    /// The transform of the page holding `pos` (`None`: untransformed): (M - I, translation).
+    pub fn xform_at(&self, pos: usize) -> Option<([f32; 4], [f32; 2])> {
+        let (d, _) = self.locate(pos);
+        let p = self.page(d);
+        p.is_xf().then_some((p.xm, p.xv))
     }
 
     // ------------------------------------------------------------------ structure queries
@@ -1504,8 +1644,19 @@ impl Bough {
 
     // ------------------------------------------------------------------ hit test
 
+    /// Topmost slot of transformed page `p` whose stored ink contains the inverse of pixel (x, y) and whose
+    /// clip contains (x, y); records with a `skip` kind bit excluded.
+    #[inline(never)]
+    pub(crate) fn xf_hit_slot(&self, p: &Page, l: usize, x: i32, y: i32, skip: u8) -> Option<usize> {
+        let (sx, sy) = p.xf_inv_point(x, y);
+        let q = NRect::new(sx, sy, sx + 1, sy + 1);
+        let px = NRect::new(x, y, x + 1, y + 1);
+        (0..l).rev().find(|&s| p.kind[s] & skip == 0 && p.ink[s].intersects(q) && (p.clip[s] == 0 || self.clips[p.clip[s] as usize].intersects(px)))
+    }
+
     /// Topmost (last in preorder) record whose ink contains pixel (x, y).
-    /// Descent: chunk -> page -> group -> record, each a SIMD point test, scanned from the top.
+    /// Descent: chunk -> page -> group -> record, each a SIMD point test, scanned from the top. A transformed
+    /// page tests the inverse of the point against its records' untransformed inks.
     pub fn hit(&self, x: i32, y: i32) -> Option<usize> {
         let t = Thresh::of_point(x, y)?;
         let n = self.d_ptr.len();
@@ -1527,6 +1678,12 @@ impl Bough {
                     pm &= !(1u64 << bit);
                     let d = b + bit;
                     let p = self.page(d);
+                    if p.is_xf() {
+                        if let Some(slot) = self.xf_hit_slot(p, self.d_len[d] as usize, x, y, 0) {
+                            return Some(self.start_of(d) + slot);
+                        }
+                        continue;
+                    }
                     let tp = t.shift_lanes(p.offl);
                     // SAFETY: gink is 8 rects; each group is 8 rects of the ink column.
                     let mut gm = unsafe { lt8(p.gink.as_ptr(), tp) };
@@ -1959,5 +2116,43 @@ fn copy_virtual(dst: &mut Page, lo: usize, hi: usize, old: &Page, s: usize, k: u
     let a = lo.max(s + k);
     if a < hi {
         dst.copy_from(a - lo, old, a - k, hi - a);
+    }
+}
+
+/// The tile rows a convex quad (absolute px) covers, grown by a pixel: one rect per 32-px row band, spanning
+/// the quad's x extent inside the band.
+fn quad_cover(q: &[[f32; 2]; 4], mut f: impl FnMut(NRect)) {
+    let ymin = q.iter().map(|p| p[1]).fold(f32::MAX, f32::min) - 1.0;
+    let ymax = q.iter().map(|p| p[1]).fold(f32::MIN, f32::max) + 1.0;
+    let mut ty = (ymin / 32.0).floor() as i32;
+    let last = (ymax / 32.0).floor() as i32;
+    while ty <= last {
+        let (b0, b1) = ((ty * 32) as f32 - 1.0, (ty * 32 + 32) as f32 + 1.0);
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for i in 0..4 {
+            let (a, b) = (q[i], q[(i + 1) % 4]);
+            let (t0, t1) = if (b[1] - a[1]).abs() < 1e-9 {
+                if a[1] < b0 || a[1] > b1 {
+                    continue;
+                }
+                (0.0, 1.0)
+            } else {
+                let (ta, tb) = ((b0 - a[1]) / (b[1] - a[1]), (b1 - a[1]) / (b[1] - a[1]));
+                let (t0, t1) = (ta.min(tb).max(0.0), ta.max(tb).min(1.0));
+                if t0 > t1 {
+                    continue;
+                }
+                (t0, t1)
+            };
+            for t in [t0, t1] {
+                let x = a[0] + (b[0] - a[0]) * t;
+                lo = lo.min(x);
+                hi = hi.max(x);
+            }
+        }
+        if lo <= hi {
+            f(NRect::new((lo - 1.0).floor() as i32, ty * 32, (hi + 1.0).ceil() as i32, ty * 32 + 32));
+        }
+        ty += 1;
     }
 }

@@ -91,6 +91,12 @@ pub struct Page {
     /// Write generation: bumped by every mutable access through the directory or a handle (and on
     /// alloc/free); `Bough::freeze_into` copies a page only when it differs from the replica's.
     pub wgen: u32,
+    /// The page's affine, generalising `off` (round 3c, input agent: transformed subtrees). Stored inks are
+    /// then the records' untransformed (local) inks, and absolute = `M s + xv + off` with `M = I + xm`
+    /// (row-major `[a, b, c, d]`); all zero is the identity, so every untransformed page is unchanged. A
+    /// transformed page holds one transformed subtree's records only (`Bough::set_run_xform` isolates them).
+    pub xm: [f32; 4],
+    pub xv: [f32; 2],
 }
 
 const _: () = assert!(core::mem::size_of::<Page>() == 1472);
@@ -106,7 +112,8 @@ pub mod gpu_layout {
     pub const PAYLOAD: usize = core::mem::offset_of!(Page, payload);
     pub const CLIP: usize = core::mem::offset_of!(Page, clip);
     pub const OFFL: usize = core::mem::offset_of!(Page, offl);
-    const _: () = assert!(PAGE_BYTES == 1472 && INK == 128 && GINK == 640 && PAYLOAD == 768 && CLIP == 1280 && OFFL == 1436);
+    pub const XF: usize = core::mem::offset_of!(Page, xm);
+    const _: () = assert!(PAGE_BYTES == 1472 && INK == 128 && GINK == 640 && PAYLOAD == 768 && CLIP == 1280 && OFFL == 1436 && XF == 1448);
 }
 
 impl Page {
@@ -127,6 +134,8 @@ impl Page {
             off: [0, 0],
             offl: [0; 4],
             wgen: 0,
+            xm: [0.0; 4],
+            xv: [0.0; 2],
         })
     }
 
@@ -179,10 +188,57 @@ impl Page {
         Record { depth: self.depth[slot], ink: self.abs(self.ink[slot]), kind: self.kind[slot], payload: self.payload[slot], handle: self.handle[slot], clip: self.clip[slot] }
     }
 
-    /// Stored (page-relative) rect -> absolute.
+    /// Stored (page-relative) rect -> absolute: translated, or on a transformed page the bounding box of the
+    /// transformed rect (grown by a pixel, as the kernels' coverage window).
     #[inline(always)]
     pub fn abs(&self, r: NRect) -> NRect {
+        if self.is_xf() {
+            return self.xf_abs(r);
+        }
         r.translate(self.off[0], self.off[1])
+    }
+    /// Does this page carry a transform?
+    #[inline(always)]
+    pub fn is_xf(&self) -> bool {
+        self.xm != [0.0; 4] || self.xv != [0.0; 2]
+    }
+    /// The four corners of stored rect `r` transformed (absolute px, `off` included).
+    #[inline]
+    pub fn xf_quad(&self, r: NRect) -> [[f32; 2]; 4] {
+        let [x0, y0, x1, y1] = r.canon().to_xyxy();
+        let m = [1.0 + self.xm[0], self.xm[1], self.xm[2], 1.0 + self.xm[3]];
+        let (ox, oy) = (self.xv[0] + self.off[0] as f32, self.xv[1] + self.off[1] as f32);
+        [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|(x, y)| {
+            let (x, y) = (x as f32, y as f32);
+            [m[0] * x + m[1] * y + ox, m[2] * x + m[3] * y + oy]
+        })
+    }
+    #[inline(never)]
+    fn xf_abs(&self, r: NRect) -> NRect {
+        if r.is_empty() {
+            return r;
+        }
+        let q = self.xf_quad(r);
+        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for p in q {
+            for i in 0..2 {
+                lo[i] = lo[i].min(p[i]);
+                hi[i] = hi[i].max(p[i]);
+            }
+        }
+        NRect::new(lo[0].floor() as i32 - 1, lo[1].floor() as i32 - 1, hi[0].ceil() as i32 + 1, hi[1].ceil() as i32 + 1)
+    }
+    /// The stored-frame point that absolute pixel `(x, y)`'s centre maps to (the inverse transform).
+    #[inline]
+    pub fn xf_inv_point(&self, x: i32, y: i32) -> (i32, i32) {
+        let m = [1.0 + self.xm[0], self.xm[1], self.xm[2], 1.0 + self.xm[3]];
+        let det = m[0] * m[3] - m[1] * m[2];
+        if det.abs() < 1e-12 {
+            return (i32::MIN / 2, i32::MIN / 2);
+        }
+        let (dx, dy) = (x as f32 + 0.5 - self.xv[0] - self.off[0] as f32, y as f32 + 0.5 - self.xv[1] - self.off[1] as f32);
+        let (sx, sy) = ((m[3] * dx - m[1] * dy) / det, (-m[2] * dx + m[0] * dy) / det);
+        (sx.floor() as i32, sy.floor() as i32)
     }
     /// Absolute rect -> stored (page-relative).
     #[inline(always)]
@@ -208,10 +264,21 @@ impl Page {
         let (a, o) = (r.0, self.offl);
         NRect([a[0].saturating_sub(o[0]), a[1].saturating_sub(o[1]), a[2].saturating_sub(o[2]), a[3].saturating_sub(o[3])])
     }
-    /// Absolute union of all ink.
+    /// Absolute union of all ink (on a transformed page: the transformed union's bounding box).
     #[inline(always)]
     pub fn union_abs(&self) -> NRect {
         self.abs(self.union_ink())
+    }
+
+    /// Set the page's affine to `x -> m (x + off) + K + t - m K` in absolute px... expressed in the stored
+    /// frame: absolute = `m s + xv + off` keeps `off` free to move (translations after the transform).
+    pub fn set_xf(&mut self, m: [f32; 4], k: [f32; 2], t: [f32; 2]) {
+        // absolute(s) = K + t + m (s + off - K)  =>  xv = K + t - m K + (m - I) off
+        let (ox, oy) = (self.off[0] as f32, self.off[1] as f32);
+        let mk = [m[0] * k[0] + m[1] * k[1], m[2] * k[0] + m[3] * k[1]];
+        let mo = [m[0] * ox + m[1] * oy - ox, m[2] * ox + m[3] * oy - oy];
+        self.xm = [m[0] - 1.0, m[1], m[2], m[3] - 1.0];
+        self.xv = [k[0] + t[0] - mk[0] + mo[0], k[1] + t[1] - mk[1] + mo[1]];
     }
 
     /// Store an absolute (canonical) ink at `slot`: relative to `off`, or -- if that would leave
@@ -231,6 +298,13 @@ impl Page {
     #[inline]
     pub fn normalize(&mut self) {
         if self.off != [0, 0] {
+            if self.is_xf() {
+                // fold the offset into the affine's translation instead: absolute = m s + xv + off and
+                // absolute = m (s + off) + xv' must agree, so xv' = xv + off - m off
+                let (ox, oy) = (self.off[0] as f32, self.off[1] as f32);
+                let m = [1.0 + self.xm[0], self.xm[1], self.xm[2], 1.0 + self.xm[3]];
+                self.xv = [self.xv[0] + ox - (m[0] * ox + m[1] * oy), self.xv[1] + oy - (m[2] * ox + m[3] * oy)];
+            }
             // SAFETY: 64 in-bounds rects; padding is EMPTY and stays EMPTY.
             unsafe { crate::nrect::translate_union(self.ink.as_mut_ptr(), CAP, self.off[0], self.off[1]) };
             self.set_off(0, 0);

@@ -1,6 +1,6 @@
 # bough input: pointer, hover, focus, keys, text fields, drag, wheel, tooltips, resize
 
-Branch `input` (worktree `bough-input`), round 3. Apple M3 Pro, macOS 15.7, `nightly-2026-10-17`, `dist` profile.
+Branch `input` (worktree `bough-input`), round 3 and 3b (1.4). Apple M3 Pro, macOS 15.7, `nightly-2026-10-17`, `dist` profile.
 The machine was shared with three other agents' builds (load average 15–125 during the runs), so **retired
 instructions are the figure to read**; times are context. Timer resolution on this Mac is 41.7 ns
 (`mach_absolute_time`), so bough's sub-microsecond times are quantised.
@@ -12,7 +12,8 @@ cargo test --release -p bough-core --test hit          # hit test / chains / cel
 cargo test --release -p bough-zgui --test input        # pixel gates for every interaction, ring ages 1-4 + windowed
 cargo build --profile dist -p bough-zgui --bins --examples
 bench/input/run_all.sh                                 # bough's side of the zgui suite, 3 runs -> bench/results/input/bough/
-target/input/dist/zgui_scenario <idle|hover-storm|scroll|cold-start|kitchen-sink|app-shell>   # RENDER=1: GPU too
+target/input/dist/zgui_scenario <idle|hover-storm|scroll|cold-start|kitchen-sink|app-shell|thread-resize|first-pixel[-serial]|*-dump>   # RENDER=1: GPU too
+cargo test --release -p bough-zgui --test drawing --test first_pixel   # 3b: drawing gates, overlapped cold start
 target/input/dist/label_churn ; target/input/dist/resize_slope                                # zgui's probes
 /usr/bin/time -l target/input/dist/examples/startup_bench                                     # zgx-gpu startup_bench
 target/input/dist/drag_probe       # windowed (take the lock): zgx drag_probe SAME_WINDOW method
@@ -83,6 +84,90 @@ Every frame adds Metal's per-command-buffer floor (~200 K instructions, STATUS �
 frame: hover.crossing 205 K, scroll.translation 206 K, kitchen.keystroke 206 K, kitchen.glide_tick 217 K,
 shell.drag_step 202 K, shell.tooltip_crossing 1.39 M (7 frames: the fade), label-churn 254 K, cold first frame with
 the device 38 ms / 135 M. zgui's numbers above have no device at all.
+
+### 1.4 Round 3b: the same work as zgui, what it draws, the cold start across cores, the missing scenarios
+
+Load average 90–113 throughout (other agents' builds): instructions are the figure; times are upper bounds.
+Medians of 3 (`bench/input/run_all.sh`, raw output in `bench/results/input/bough/`).
+
+**The gallery and shell are now real bough views built from zgui's source documents** (`GalleryL`, `ShellL`;
+`*-dump` scenarios keep the earlier dump-geometry variants for comparison). `build.rs` emits zgui's tree in preorder
+with each element's computed layout declarations; bough's own style path (`ltemplate::resolve_style`, cephal's
+parsers) resolves them at mount and cephal lays the tree out from scratch, text measured and wrapped (leaves:
+`LeafCtx`). zgui's coordinates are not used (content height 7,998 vs zgui's 8,066; the probes land within a pixel).
+Not reproduced: a cascade (the declarations are zgui's computed values, so bough parses but does not match
+selectors: 50,426 selector matches are in zgui's number and not in bough's), inline formatting contexts (inline
+elements become blocks; the thread's inline spans are one run per paragraph).
+
+| measurement (RENDER=0) | zgui | **bough, laid out** | × fewer instr | bough, dump geometry |
+|---|---:|---:|---:|---:|
+| cold.first_frame | 164–377 ms / 1,146.8 M | **13.4 ms / 145.5 M** | **7.9** | 7.5 ms / 77.7 M (14.8×) |
+| kitchen.resize (32 widths, cephal relayout) | 9.0 ms / 29.6 M | **0.18 ms / 2.97 M** | 10.0 | – (does not reflow) |
+| shell.resize_step (40 sizes) | 3,266 µs / 16.4 M | **77 µs / 1.51 M** | 10.9 | – |
+| thread.resize (250 messages, 499 rewraps/step) | 28 ms / 130.2 M | **1.04 ms / 21.7 M** | 6.0 | – |
+| shell.drag_step (panel basis restyled, relaid) | 402 µs / 3.44 M | **5.4 µs / 101.6 K** | 34 | 0.38 µs / 6.3 K |
+| shell.tooltip_crossing | 2,239 µs / 11.3 M | 0.92 µs / 17.2 K | 659 | 17.3 K |
+| kitchen.keystroke / click / tab / untouched / glide tick | (1.1) | 3,448 / 1,378 / 3,189 / 4,518 / 21,588 | 1,290 / 341 / 1,422 / 199 / 486 | 3,441 / 1,371 / 3,112 / 4,199 / 20,446 |
+
+Spans in bough's cold.first_frame: `App::new` (runtime and region, the mount of 2,451 records, style resolution,
+cephal's first layout of 2,288 layout nodes, text shaping and measuring, wrapping, glyph rasterisation of 375
+glyphs, 66 SVG documents parsed and rasterised by resvg (31.9 M), gradient ramps, the two extra faces' table
+build (28 M)) plus the first `frame()` to its tile list. Not in it: the Metal device (RENDER=0; see first pixel).
+The 15× of round 3 compared zgui's full pipeline with a mount of pre-positioned records; 7.9× is the
+like-for-like figure.
+
+**Drawing what zgui draws** (`deco.rs`, `text.rs` faces; pixel gates in `bough-zgui/tests/drawing.rs`):
+
+| feature | how | gate |
+|---|---|---|
+| linear / radial gradients (`probe-ramp`: 100deg 3 stops at 55 %; circle at 30 % 30 %) | fused kind 5: a 256-texel premultiplied ramp in the RGBA image atlas, box-relative geometry (layout moves/resizes it like a quad) | every 3rd pixel vs the CSS formula: worst 0.9 level; moving under ring ages 1–4 + windowed: presented == full redraw |
+| box shadows (15 + 6 + 2 + 1 elements; spread rings as rounded rects) | fused kind 6: Gaussian of a rounded box (closed form along x, 4 samples along y); the ink margin `ceil(3σ)+1` travels in the instance and the record's ink, so the kernel never writes outside the ink | 130 pixels vs a numerically integrated Gaussian: worst 1.65 levels; every pixel outside the ink untouched; moving: presented == full redraw |
+| icons and charts (127 SVG nodes, 32 documents) | usvg + resvg at device size into the image atlas, `currentColor` resolved at build time; fused kind 4 | 32×32 icon vs resvg: ±1 |
+| the spinner's turn | the ring (rotation-invariant) plus the mark as an image turning about its centre: kind 4's angle word is a paint write per frame; ink = the circumscribed circle | a quarter turn vs the rotated raster ±2; 40 turning frames: presented == full redraw, ≤ 9 tiles repaired |
+| faces (106 elements at weight 600, 22 at 700, 4 at 800 → DejaVu Sans Bold; 8 monospace → DejaVu Sans Mono) | strikes belong to a face; `TextSys::select` swaps a face's shaper and metrics in; faces without the token model (Bold, Mono) take the general path | 'H' bold 40 px and 'M' mono 30 px equal their own font's raster exactly (and differ from the regular face's) |
+| display text (116, 120 px; 54, 56 px) | the leaf's run path (no label tile-row cap) | 'A' at 120 px equals its raster exactly |
+
+Fixed on the way: laid-out text leaves never readied their strike's glyph tokens, so text at sizes no label used
+(12 px, 18 px, …) was not drawn (a frame-vs-redraw gate cannot see a glyph missing from both); `LeafCtx::set_text`
+now prepares them. The kernel now clamps a corner radius to the box as CSS does (pills and avatars were blank).
+Still not drawn: transforms other than the spinner's (rotated and scaled text, the tilted card, the navigation
+arrow), gradient-filled text (`background-clip: text`, drawn in the text colour), non-uniform borders.
+
+**The cold start across cores** (`bough::app::prepare`, called at process entry): one thread builds the Metal device,
+queues, library, both pipelines and the window-sized resources (atlas, bins, four surfaces); raster workers take the
+document's strikes (the glyphs of its static text, per face) and its SVG documents; one thread per extra face builds
+its shaping tables. The main thread meanwhile builds the runtime, mounts, resolves styles, shapes and lays out into
+heap memory, which the presenter then wraps as its shared buffer without a copy (`newBufferWithBytesNoCopy`). Gate:
+`tests/first_pixel.rs` (overlapped == serial == full redraw). `zgui_scenario first-pixel[-serial|-dump]`, process
+entry to the GPU's completion of the first frame:
+
+| | serial (all on main) | **overlapped** |
+|---|---:|---:|
+| wall, entry → first presented pixel (load ~110) | 45.5–55.7 ms (median 47.0) | 42.0–59.7 ms (median 52.2) |
+| wall, a quieter moment (load ~73), before decorations and faces were added | 42–49 ms | 36.6 ms |
+| main thread: mount done (from entry) | 39.8–50.1 ms | 8.2–10.7 ms |
+| instructions: main thread | 208.5 M | **98.7 M** |
+| GPU preparation thread (device 22–50 ms under load) | – | 52.6 M |
+| SVG workers (66 documents) / face threads / raster workers | – | 29.2 M / 28.6 M / 6.0 M |
+| rest of the process (Metal's and libdispatch's threads) | 11.6 M | 12.4 M |
+| process total | 220.1 M | 229.1 M |
+
+The main thread's work halves, but the wall time is the Metal device's creation (22–29 ms on a quiet machine,
+33–50 ms under this load), which no amount of mounting overlaps: the main thread is done at ~8 ms and waits.
+Under a load of 110 on 12 cores the extra threads also compete with each other, so the overlapped wall time is not
+better than the serial one here; on the quieter run it was 6–12 ms better.
+
+**The scenarios not ported in round 3**: `kitchen.resize` (GalleryL relaid by cephal at 32 widths), `shell.resize_step`
+(40 window sizes, panels restyled by percentage), `thread.resize` (zgui's 250-message thread, 32 widths, 499
+paragraph rewraps per step as zgui's). Nested scroll views follow an outer scroll (`ScrollView.nested`: the inner
+view's space and clips move with it) and tooltips inside a scrolled view follow it (gate
+`nested_views_and_tooltips_follow_an_outer_scroll`); `clip()` inside a view re-cuts against its parent. The caret
+blinks (0.53 s half period, zgx's) as a paint write; after two flips both phases are on held surfaces and every
+blink frame is a surface publish with no GPU work (gate `caret_blink_is_served_by_held_surfaces`).
+
+Not this agent's (round 3b split): resizing a real window's GPU surfaces and the drag probe's main-thread GPU wait /
+CA commit (floor agent); bough-text internals (text3 agent) — this round added, minimally and in new code where
+possible, `atlas/parallel.rs` (prerendering), per-strike faces in `GlyphCache` and the token readiness call above.
 
 ## 2. The mechanisms (one per job)
 
@@ -166,8 +251,11 @@ animates. Accessory activation, mouse-moved events accepted, no focus taken.
 | tab order forward/backward, first/last flagged == oracle | same | equal |
 | hover sets and the enter/leave routes == oracle (the symmetric difference of the old and new interactive chains of the brute-force topmost record), 3,000 moves over nested, overlapping, overflowing and pointer-transparent records, with window leaves | `bough-zgui/tests/input.rs` `hover_enter_leave_sets_equal_the_oracle` | equal at every step |
 | presented == full redraw after every interaction, ring ages 1–4 and the windowed ring; retained == fresh mount | `bough-zgui/tests/input.rs`: hover crossings and leave, hover toggles via held surfaces, list glides, the gallery (22 tabs, typing, caret moves, Home/End/Delete/Backspace, clicks, root glides moving clips and the ring, animations), label churn, resize relayout, shell tooltips (fades) and the dock drag | 0 differing bytes |
+| 3b: laid-out gallery (interactions, animations incl. the turning spinner, 32-width relayout) and shell (drag, 40-size resize), thread rewrap at 32 widths, caret blink on held surfaces, nested views and tooltips under an outer scroll | `bough-zgui/tests/input.rs` | 0 differing bytes; retained == fresh at each size |
+| 3b: gradients vs CSS, shadows vs an integrated Gaussian and nothing outside their ink, icons vs resvg, a quarter turn vs the rotated raster, bold / mono / 120 px glyphs vs their own font's raster; each moving or turning at ring ages 1–4 + windowed | `bough-zgui/tests/drawing.rs` | within 0.9 / 1.65 / 1 / 2 / 0 levels; 0 differing bytes |
+| 3b: the overlapped cold start presents the serial start's pixels | `bough-zgui/tests/first_pixel.rs` | equal, both == full redraw |
 | GPOS pair table == per-pair probe | `debug_assert` in `SimpleScript::build`, every pair of every font the bough-text tests load | equal |
-| existing gates | `cargo test --workspace --release` | all green; STATUS §1.1 slopes unchanged within noise (canonical's own binaries re-measured today: heavy stream 179.1 K, this branch 178.0–181 K) |
+| existing gates | `cargo test --workspace --release` | all green; STATUS §1.1 slopes unchanged within noise (round 3: canonical's own binaries heavy stream 179.1 K, this branch 178.0–181 K; 3b: heavy stream 178.6 K RENDER=0 / 376 K RENDER=1, scroll 25.9 K, both 213 K at load ~110) |
 
 ## 4. What was tried and rejected
 
@@ -186,26 +274,14 @@ animates. Accessory activation, mouse-moved events accepted, no focus taken.
 
 ## 5. Gaps (honest)
 
-* **Fidelity of the zgui documents.** The table, list and probes are zgui's fixtures rebuilt exactly. The gallery
-  and the shell are generated from zgui's dumped trees (preorder, rects, colours, borders, radii, text, tab stops,
-  clips, animations), but with absolute geometry: **bough's cold first frame does no layout and parses no CSS**
-  (zgui's does both: that is part of the 15×). SVG icons are tinted squares, gradients one solid stop, box shadows,
-  non-uniform borders and transforms are absent, the spinner's rotation is a colour phase over the same box, text is
-  one line per node in one face (display text over 60 px is set at 60 px: the label path caches at most 4 tile rows).
-  `kitchen.resize` is reported as `kitchen.resize_repaint_only` and not compared (the template does not reflow);
-  `shell.resize_step` and `thread.resize` were not ported.
-* **The drag probe ties.** Both frameworks spend ~200 K main-thread instructions per synthetic move. bough's own work
-  per move is ~6 K (the headless span). Measured by elimination (`BOUGH_NOFRAME`, `BOUGH_NOPUBLISH`): 113 K per move is
-  AppKit's dispatch of a posted event (frames suppressed), ~45 K is the Metal encode and commit, ~55 K is the
-  presenter's publish (the wait for the GPU and the Core Animation transaction that puts the IOSurface on the layer, on
-  the main thread). zgx presents through CAMetalLayer drawables, whose presentation is scheduled by Metal rather than
-  committed by a main-thread transaction. Closing the gap needs the presenter to publish without a main-thread
-  transaction (drawables, or a render thread): bough-metal's area, not built.
-* **Windowed resize**: `App::resize` is headless-complete (damage, tiles, layout, slots) but the presenter's
-  IOSurfaces keep their creation size, so a window cannot yet grow past it. Not built.
-* **Nested scroll views** do not follow an outer scroll's space (inner clips do); tooltips' rects are absolute (a
-  tooltip inside a scrolled view would not follow); `clip_by` inside a scroll view is not registered with it.
-* **Caret blink** is not built (the caret is solid while focused); IME is limited to committed text (`text_input`).
-* **Cold start remains** ~22 M in the simple-script build and ~3.6 ms rasterising 1,150 glyphs on one core (the
-  label path prepares 95 glyphs per strike); rasterising strikes on other cores while the tree mounts was not built.
+* **Fidelity of the zgui documents.** The laid-out gallery and shell (`GalleryL`, `ShellL`) are zgui's trees with
+  zgui's computed declarations, laid out by cephal; there is no selector cascade (the declarations come resolved),
+  inline formatting is approximated by blocks, and transforms other than the spinner's turn, gradient-filled text
+  and non-uniform borders are not drawn (1.4). The `*-dump` variants keep the round-3 absolute geometry.
+* **The cold start's wall time is the Metal device.** Overlapping halves the main thread's instructions, but the
+  first pixel waits for the device's creation (1.4).
+* **The drag probe ties** (round 3, unchanged): ~200 K main-thread instructions per synthetic move in both
+  frameworks, most of it AppKit's dispatch and the presenter's main-thread publish (floor agent's area now).
+* **Windowed resize** of the GPU surfaces: floor agent's area now.
+* **IME** is limited to committed text (`text_input`).
 * **resize-slope** is cephal's cost (4.7 K of 5.1 K instructions per box), used unmodified.

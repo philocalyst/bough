@@ -127,6 +127,13 @@ impl Bough {
                     pm &= !(1u64 << bit);
                     let d = b + bit;
                     let p = self.page(d);
+                    if p.is_xf() {
+                        // a transformed page: the inverse of the point against the untransformed inks
+                        if let Some(slot) = self.xf_hit_slot(p, self.d_len[d] as usize, x, y, KF_NOHIT) {
+                            return Some(self.start_of(d) + slot);
+                        }
+                        continue;
+                    }
                     let tp = t.shift_lanes(p.offl);
                     // SAFETY: gink is 8 rects; each group is 8 rects of the ink column.
                     let mut gm = unsafe { lt8(p.gink.as_ptr(), tp) };
@@ -187,6 +194,10 @@ impl Bough {
         let px = NRect::new(x, y, x + 1, y + 1);
         let Some(r) = top else { return px };
         let (d0, s0) = self.locate(r);
+        if self.page(d0).is_xf() {
+            // a transformed record's hit region is not a rectangle: the pixel is its cell
+            return px;
+        }
         let mut c = self.visible(d0, s0).intersect(self.ring.window).canon();
         if !c.contains_point(x, y) {
             return px;
@@ -205,6 +216,23 @@ impl Bough {
                 let p = self.page(d);
                 // the first page starts after `top`'s slot
                 let from = if d == d0 { s0 + 1 } else { 0 };
+                if p.is_xf() {
+                    // a transformed page: its records' transformed bounding boxes are the obstacles
+                    for s in from..self.d_len[d] as usize {
+                        if p.kind[s] & KF_NOHIT != 0 {
+                            continue;
+                        }
+                        let o = self.visible_in(p, s);
+                        if o.intersects(c) {
+                            if budget == 0 {
+                                return px;
+                            }
+                            budget -= 1;
+                            c = cut(c, o, x, y);
+                        }
+                    }
+                    continue;
+                }
                 let tp = Thresh::of_rect(c).shift_lanes(p.offl);
                 // SAFETY: gink is 8 rects.
                 let mut gm = unsafe { lt8(p.gink.as_ptr(), tp) } & (!0u32 << (from / GROUP));

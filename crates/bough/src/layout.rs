@@ -398,6 +398,8 @@ pub struct LeafCtx {
     pub upem: f32,
     pub size_px: f32,
     pub lh_px: f32,
+    /// Face id (`TextSys::face_id`) the text is shaped and drawn in.
+    pub face: u8,
     /// Fast path: the text shaped into a glyph-pool block (the GPU draws its lines as windows onto it; the
     /// word table is read from its pens: shaped once for measuring and drawing). A view of `para`'s block.
     pub block: Option<Shaped>,
@@ -424,6 +426,7 @@ impl Clone for LeafCtx {
             upem: self.upem,
             size_px: self.size_px,
             lh_px: self.lh_px,
+            face: self.face,
             block: None,
             para: self.para.clone(),
         }
@@ -441,6 +444,12 @@ impl LeafCtx {
         LeafCtx { wrapped_at: i32::MIN, min_word: -1, wrap, size_px, lh_px, ..Default::default() }
     }
 
+    /// In face id `f` (set before `set_text`).
+    pub fn in_face(mut self, f: u8) -> LeafCtx {
+        self.face = f;
+        self
+    }
+
     /// Release the pool block (the leaf is going away).
     pub fn release(&mut self, pool: &mut GlyphPool) {
         self.para.release(pool);
@@ -453,6 +462,13 @@ impl LeafCtx {
     /// line before the change until a break lands where it was. Slow path (beyond Latin-1): the general shaper
     /// into a glyph run.
     pub fn set_text(&mut self, ts: &mut crate::text::TextSys, pool: &mut GlyphPool, text: &str) {
+        // the leaf's face is current while it shapes (`TextSys::select`; face 0 again after)
+        ts.select(self.face);
+        self.set_text_cur(ts, pool, text);
+        ts.select(0);
+    }
+
+    fn set_text_cur(&mut self, ts: &mut crate::text::TextSys, pool: &mut GlyphPool, text: &str) {
         self.text.clear();
         self.ascii = text.is_ascii();
         self.upem = ts.shaper.script.upem as f32;
@@ -461,10 +477,13 @@ impl LeafCtx {
         self.min_word = -1;
         self.run.gid.clear();
         self.run.x.clear();
-        let fonts = [&ts.shaper];
+        let fonts = [&*ts.shaper];
         // a leaf that never wraps (a label) keeps the degenerate paragraph: slots only, no word table
         self.para.line_only = !self.wrap;
-        let ok = if self.fast && self.para.base != u32::MAX {
+        // a face without the token model (DejaVu Bold, Mono) takes the general path
+        let ok = if ts.shaper.script.tokens.is_none() {
+            false
+        } else if self.fast && self.para.base != u32::MAX {
             self.para.edit(pool, &fonts, text).is_ok()
         } else {
             self.para.release(pool);
@@ -691,6 +710,8 @@ pub struct LInfo {
     /// Group roots: available space (px); `NaN` height = max-content.
     pub avail_w: f32,
     pub avail_h: f32,
+    /// A placement hook (`Input::lhooks` index, NONE): a clip or an anchored space that follows the box.
+    pub hook: u32,
 }
 
 impl LInfo {
@@ -713,6 +734,7 @@ impl LInfo {
             ah: 0.0,
             avail_w: 0.0,
             avail_h: f32::NAN,
+            hook: NONE,
         }
     }
 }
@@ -985,6 +1007,9 @@ impl Rt {
                 }
                 self.lay.stats.nodes_written += 1;
             }
+            if li.hook != NONE && (moved || sized) {
+                self.lay_hook(li.hook, li.space, ax, ay, w, h);
+            }
             {
                 let l = &mut self.lay.info[n as usize];
                 l.ax = ax;
@@ -1031,7 +1056,8 @@ impl Rt {
             let t = &self.texts[ti as usize];
             (t.size_px, t.line_h)
         };
-        let base_off = self.text.baseline(size_px, lh);
+        let strike = self.texts[ti as usize].strike as bough_text::atlas::StrikeId;
+        let base_off = self.text.baseline_of(strike, size_px, lh);
         let ctx = self.lay.eng.ctx_mut(lid).expect("text leaf has a context");
         let k = ctx.k().max(1e-6);
         let lines = if ctx.wraps() { ctx.wrap_at(((w + 1e-3) / k).floor() as i32) } else { ctx.wrap_at(i32::MAX) };
@@ -1162,7 +1188,7 @@ impl<Bg, Ch> LBox<Bg, Ch> {
 }
 
 /// Attach the layout node `lid` under the current parent (or make it a group root).
-fn attach<V>(m: &mut Mounter<'_, V>, lid: u32) -> u32 {
+pub(crate) fn attach<V>(m: &mut Mounter<'_, V>, lid: u32) -> u32 {
     let parent = m.rt.lay.cur;
     m.rt.lay.register(lid, parent);
     {

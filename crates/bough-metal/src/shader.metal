@@ -13,8 +13,8 @@ struct Instance {          // 48 bytes, mirrors instance.rs
     float  bw;             // 28  border width
     ushort4 uv;            // 32  glyph atlas texels x,y,w,h
     ushort space;          // 40  index into spaces[]
-    uchar  kind;           // 42  0 solid, 1 rrect, 2 border, 3 glyph
-    uchar  flags;          // 43
+    uchar  kind;           // 42  0 solid, 1 rrect, 2 border, 3 glyph, 4 image, 5 gradient, 6 shadow
+    uchar  flags;          // 43  ink margin in px beyond the box (0: the kind's default)
     uint   ext;            // 44  clip index
 };
 
@@ -935,6 +935,7 @@ struct FHdr {
     // ANDed with its column's mask, every loop bound read from it is min-ed with a capacity, so no value in
     // the region can make a kernel read outside its column or loop unboundedly. No branch, ~1 ALU op each.
     uint m_inst, m_page, m_glyph, m_run, m_space, m_clip, m_strike;
+    uint xforms_off;
 };
 // The bind table (header + FBIND_OFF): every resource the kernels touch besides the region itself, as Metal 3
 // resource ids / GPU addresses written by the CPU. Nothing is bound per encoder but the region and the frame
@@ -947,6 +948,7 @@ struct FBind {
     device uint4* bins;
     device atomic_uint* counts;
     texture2d<float, access::read> r[4];   // round 3c: the same surfaces, read (the scroll copy's source)
+    texture2d<float> img;      // premultiplied RGBA images and gradient ramps (the glyph atlas until one exists)
 };
 constant uint FBIND_OFF = 128;
 typedef Instance FInst;
@@ -958,6 +960,39 @@ constant uint FPG_GINK = 640;
 constant uint FPG_PAYLOAD = 768;
 constant uint FPG_CLIP = 1280;
 constant uint FPG_OFFL = 1436;
+constant uint FPG_XF = 1448;   // the page's affine: float4 M - I, float2 translation (all zero: none)
+
+// A transformed page (bough-core `Page::xm/xv`, round 3c): its stored inks are untransformed; absolute =
+// M s + xv + off. The bin pass culls with the transformed bounding box (grown by a pixel), as the CPU's
+// `Page::abs`; the instances themselves are transformed per instance by their space (`FXf`).
+static bool f_pg_xf(device const uchar* pg) {
+    float4 xm = *(device const float4*)(pg + FPG_XF);
+    float2 xv = *(device const float2*)(pg + FPG_XF + 16);
+    return any(xm != 0.0) || any(xv != 0.0);
+}
+static short4 f_pg_xink(device const uchar* pg, short4 rel) {
+    if (rel.x >= -rel.z || rel.y >= -rel.w) return rel;   // empty stays empty (absorbing)
+    float4 xm = *(device const float4*)(pg + FPG_XF);
+    float2 xv = *(device const float2*)(pg + FPG_XF + 16);
+    short4 o = *(device const short4*)(pg + FPG_OFFL);
+    float4 m = xm + float4(1.0, 0.0, 0.0, 1.0);
+    float2 t = xv + float2(float(o.x), float(o.y));
+    float2 a = float2(float(rel.x), float(rel.y)), b = float2(-float(rel.z), -float(rel.w));
+    float2 p0 = float2(m.x * a.x + m.y * a.y, m.z * a.x + m.w * a.y) + t;
+    float2 p1 = float2(m.x * b.x + m.y * a.y, m.z * b.x + m.w * a.y) + t;
+    float2 p2 = float2(m.x * a.x + m.y * b.y, m.z * a.x + m.w * b.y) + t;
+    float2 p3 = float2(m.x * b.x + m.y * b.y, m.z * b.x + m.w * b.y) + t;
+    float2 lo = clamp(floor(min(min(p0, p1), min(p2, p3))) - 1.0, -30000.0, 30000.0);
+    float2 hi = clamp(ceil(max(max(p0, p1), max(p2, p3))) + 1.0, -30000.0, 30000.0);
+    return short4(short(lo.x), short(lo.y), short(-hi.x), short(-hi.y));
+}
+
+// The ink margin beyond an instance's box: none for a solid quad, 1 px for an SDF edge, or the instance's
+// own (`flags`: a shadow's blur reach, a rotated image's circumscribed circle). The CPU's ink rects use the
+// same value (bough deco.rs), so a record's ink always holds every pixel the kernel writes for it.
+static float f_margin(uint kind, uint flags) {
+    return kind == 0u ? 0.0 : (flags != 0u ? float(flags) : 1.0);
+}
 
 static float4 f_clip(device const uchar* pool, device const FHdr& h, uint c) {
     short4 r = ((device const short4*)(pool + h.clips_off))[c & h.m_clip];
@@ -967,9 +1002,18 @@ static float2 f_space(device const uchar* pool, device const FHdr& h, uint s) {
     return float2(((device const int2*)(pool + h.spaces_off))[s & h.m_space]);
 }
 // bough-text's pen formula, verified bit-exact there: px = floor(fma(float(x - x0), scale, origin.x + 0.5)) + geo.x
+static bool f_glyph_rh(device const uchar* pool, device const FHdr& h, device const RunHeader& rh, uint slot,
+                    thread float2& p0, thread float2& size, thread uint& color, thread ushort2& uv);
 static bool f_glyph(device const uchar* pool, device const FHdr& h, uint run, uint slot,
                     thread float2& p0, thread float2& size, thread uint& color, thread ushort2& uv) {
     device const RunHeader& rh = ((device const RunHeader*)(pool + h.runs_off))[run & h.m_run];
+    return f_glyph_rh(pool, h, rh, slot, p0, size, color, uv);
+}
+static uint f_run_space(device const uchar* pool, device const FHdr& h, uint run) {
+    return uint(((device const RunHeader*)(pool + h.runs_off))[run & h.m_run].space);
+}
+static bool f_glyph_rh(device const uchar* pool, device const FHdr& h, device const RunHeader& rh, uint slot,
+                    thread float2& p0, thread float2& size, thread uint& color, thread ushort2& uv) {
     int x = ((device const int*)(pool + h.gx_off))[slot & h.m_glyph];
     uint e = ((device const ushort*)(pool + h.gent_off))[slot & h.m_glyph] & 255u;
     device const GEntry& en = *(device const GEntry*)(pool + h.toks_off + (uint(rh.strike) & h.m_strike) * h.tok_stride + e * 32u);
@@ -982,6 +1026,25 @@ static bool f_glyph(device const uchar* pool, device const FHdr& h, uint run, ui
     uv = en.uv.xy;
     return true;
 }
+// A space's affine (round 3c, input agent: transformed subtrees). Stored as M - I, the pivot c (space-local
+// px) and a translation t, so the zeroed column is the identity: a point u in untransformed absolute px
+// (space-local + T) is drawn at K + t + M (u - K), K = T + c.
+struct FXf { float4 dm; float2 c; float2 t; };
+static bool f_xf(device const uchar* pool, device const FHdr& h, uint s, thread float4& m, thread float2& k, thread float2& t) {
+    device const FXf& x = ((device const FXf*)(pool + h.xforms_off))[s & h.m_space];
+    m = x.dm + float4(1.0, 0.0, 0.0, 1.0);
+    k = f_space(pool, h, s) + x.c;
+    t = x.t;
+    return any(x.dm != 0.0) || any(x.t != 0.0);
+}
+static float2 f_xmul(float4 m, float2 v) { return float2(m.x * v.x + m.y * v.y, m.z * v.x + m.w * v.y); }
+// The transformed box [a, b] (untransformed absolute px): its bounding box, grown by a pixel.
+static float4 f_xbox(float2 a, float2 b, float4 m, float2 k, float2 t) {
+    float2 p0 = k + t + f_xmul(m, a - k), p1 = k + t + f_xmul(m, float2(b.x, a.y) - k);
+    float2 p2 = k + t + f_xmul(m, float2(a.x, b.y) - k), p3 = k + t + f_xmul(m, b - k);
+    return float4(min(min(p0, p1), min(p2, p3)) - 1.0, max(max(p0, p1), max(p2, p3)) + 1.0);
+}
+
 static short4 f_qink(float2 qa, float2 qb) {
     return short4(short(floor(qa.x)), short(floor(qa.y)), short(-ceil(qb.x)), short(-ceil(qb.y)));
 }
@@ -1030,7 +1093,8 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                 gid = pid * 8u + g;
                 device const uchar* pg = pages + pid * FPG_BYTES;
                 short4 thp = subsat(th, *(device const short4*)(pg + FPG_OFFL));   // page-relative threshold
-                gh = all(((device const short4*)(pg + FPG_GINK))[g] < thp);
+                gh = f_pg_xf(pg) ? all(f_pg_xink(pg, ((device const short4*)(pg + FPG_GINK))[g]) < th)
+                                 : all(((device const short4*)(pg + FPG_GINK))[g] < thp);
             }
             threadgroup_barrier(mem_flags::mem_threadgroup);
             uint ng;
@@ -1048,8 +1112,13 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                     device const uchar* pg = pages + pid * FPG_BYTES;
                     short4 offl = *(device const short4*)(pg + FPG_OFFL);
                     short4 rel = ((device const short4*)(pg + FPG_INK))[sl];
-                    rh = all(rel < subsat(th, offl));
-                    ink = rel + offl;                                                // absolute (in domain when hit)
+                    if (f_pg_xf(pg)) {
+                        ink = f_pg_xink(pg, rel);                                    // transformed bounding box
+                        rh = all(ink < th);
+                    } else {
+                        rh = all(rel < subsat(th, offl));
+                        ink = rel + offl;                                            // absolute (in domain when hit)
+                    }
                     ii = ((device const uint*)(pg + FPG_PAYLOAD))[sl];
                     cid = ((device const ushort*)(pg + FPG_CLIP))[sl] & h.m_clip;
                 }
@@ -1087,8 +1156,14 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                                         uint color;
                                         ushort2 uv;
                                         if (f_glyph(pool, h, run, rbase + gk2, q0, size, color, uv)) {
-                                            float2 qa = clamp(q0 - 1.0, cl.xy, cl.zw);
-                                            float2 qb = clamp(q0 - 1.0 + (size + 2.0), cl.xy, cl.zw);
+                                            float2 qa = q0 - 1.0, qb = q0 - 1.0 + (size + 2.0);
+                                            float4 xm; float2 xk, xt;
+                                            if (f_xf(pool, h, f_run_space(pool, h, run), xm, xk, xt)) {
+                                                float4 bb = f_xbox(qa, qb, xm, xk, xt);
+                                                qa = bb.xy; qb = bb.zw;
+                                            }
+                                            qa = clamp(qa, cl.xy, cl.zw);
+                                            qb = clamp(qb, cl.xy, cl.zw);
                                             if (qa.x < qb.x && qa.y < qb.y) {
                                                 gi = f_qink(qa, qb);
                                                 gh2 = all(gi < th);
@@ -1111,9 +1186,15 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                                 if (gk2 < in_) {
                                     device const FInst& q = inst[(i0 + gk2) & h.m_inst];
                                     float2 q0 = q.pos + f_space(pool, h, q.space);
-                                    float m = q.kind == 0 ? 0.0 : 1.0;
-                                    float2 qa = clamp(q0 - m, cl.xy, cl.zw);
-                                    float2 qb = clamp(q0 + q.size + m, cl.xy, cl.zw);
+                                    float m = f_margin(q.kind, q.flags);
+                                    float2 qa = q0 - m, qb = q0 + q.size + m;
+                                    float4 xm; float2 xk, xt;
+                                    if (f_xf(pool, h, q.space, xm, xk, xt)) {
+                                        float4 bb = f_xbox(qa, qb, xm, xk, xt);
+                                        qa = bb.xy; qb = bb.zw;
+                                    }
+                                    qa = clamp(qa, cl.xy, cl.zw);
+                                    qb = clamp(qb, cl.xy, cl.zw);
                                     if (qa.x < qb.x && qa.y < qb.y) {
                                         gi = f_qink(qa, qb);
                                         gh2 = all(gi < th);
@@ -1156,6 +1237,10 @@ struct FRec {
     float radius, bw;
     ushort2 uv;
     ushort kind, pad;
+    float2 gc;         // gradient: radial centre as fractions of the box
+    float4 xi;         // transformed space: M^-1 (u = xk + M^-1 (c - xk - xt)); xs = 0: untransformed
+    float2 xk, xt;
+    float xs;          // the transform's scale (sqrt |det M|): SDF distances in u are xs times smaller in px
 };
 
 // Rounded-box SDF in edge form (== sd_rbox(c - centre, half, r) mathematically).
@@ -1188,28 +1273,169 @@ static half4 f_shade(threadgroup const FRec& r, float2 c, texture2d<float> atlas
     }
 }
 
-// Solid quads are pixel-exact (no AA margin); the others carry a 1 px margin for their SDF edge.
-static bool f_stage_rec(device const FInst& in, float2 off, float4 cl, uint2 o, thread FRec& r, thread bool& cover) {
+static float2 f_erf2(float2 x) {
+    float2 s = sign(x), a = min(abs(x), 2.8284271);   // saturated beyond 4 sigma: exactly +-1 there
+    x = 1.0 + (0.278393 + (0.230389 + 0.078108 * (a * a)) * a) * a;
+    x *= x;
+    return select(s - s / (x * x), s, a >= 2.8284271);
+}
+// A rounded box's Gaussian shadow (Evan Wallace's closed form along x, 4 samples along y), in edge form. A
+// pixel depends on an edge only within 4 sigma of it (+ the corner radius): the erf saturates there and the
+// y window is +-3 sigma, so the edge bands of a moved shadow (bough rt.rs `edge_band`) hold every change.
+static float f_shadow_x(float x, float y, float sigma, float corner, float2 hs) {
+    float delta = min(hs.y - corner - abs(y), 0.0);
+    float curved = hs.x - corner + sqrt(max(0.0, corner * corner - delta * delta));
+    float2 integral = 0.5 + 0.5 * f_erf2((x + float2(-curved, curved)) * (0.70710678 / sigma));
+    return integral.y - integral.x;
+}
+static float f_shadow(float2 p, float2 hs, float sigma, float corner) {
+    float low = p.y - hs.y, high = p.y + hs.y;
+    float start = clamp(-3.0 * sigma, low, high), end = clamp(3.0 * sigma, low, high);
+    float step = (end - start) * 0.25;
+    float y = start + step * 0.5, v = 0.0;
+    for (int i = 0; i < 4; i++) {
+        float g = exp(-(y * y) / (2.0 * sigma * sigma)) / (2.5066283 * sigma);
+        v += f_shadow_x(p.x, p.y - y, sigma, corner, hs) * g * step;
+        y += step;
+    }
+    return v;
+}
+
+// The fused tile pass's shading: the base kinds as `f_shade`, plus images (premultiplied RGBA, rotated about
+// their centre by `radius` rad, bilinear), gradients (a 256-texel premultiplied ramp in the image atlas,
+// linear at angle `bw` (CSS: 0 = to top, clockwise) or a radial circle about `gc` (fractions of the box)
+// reaching its farthest corner, in a rounded box) and box shadows (blur sigma `bw`). Every texel read is
+// clamped to the texture (bounds by construction, as the masks).
+// A record in a transformed space: the pixel centre mapped into the untransformed frame, distances scaled.
+static half4 f_shade_t(threadgroup const FRec& r, float2 u, texture2d<float> atlas) {
+    float s = r.xs;
+    switch (r.kind) {
+    case 0: {
+        float d = f_sd(u, r.b, 0.0) * s;
+        return r.pm * half(clamp(0.5 - d, 0.0, 1.0)); }
+    case 1: {
+        float d = f_sd(u, r.b, r.radius) * s;
+        return r.pm * half(clamp(0.5 - d, 0.0, 1.0)); }
+    case 2: {
+        float d = f_sd(u, r.b, r.radius);
+        float outer = clamp(0.5 - d * s, 0.0, 1.0);
+        float inner = clamp(0.5 - (d + r.bw) * s, 0.0, 1.0);
+        return r.pm * half(max(outer - inner, 0.0)) + r.pm2 * half(inner); }
+    default: {
+        // the glyph's mask, bilinear (texels outside the glyph's rect are empty)
+        float2 sz = r.b.zw - r.b.xy;
+        float2 t = u - r.b.xy - 0.5;
+        float2 f0 = floor(t), fr = t - f0;
+        int2 i0 = int2(f0);
+        int2 lim = int2(int(atlas.get_width()) - 1, int(atlas.get_height()) - 1);
+        float cov = 0.0;
+        for (int k = 0; k < 4; k++) {
+            int2 d = int2(k & 1, k >> 1);
+            int2 q = i0 + d;
+            if (q.x < 0 || q.y < 0 || float(q.x) >= sz.x || float(q.y) >= sz.y) continue;
+            float wgt = (d.x == 1 ? fr.x : 1.0 - fr.x) * (d.y == 1 ? fr.y : 1.0 - fr.y);
+            cov += atlas.read(uint2(clamp(int2(r.uv) + q, int2(0), lim))).r * wgt;
+        }
+        return r.pm * half(cov); }
+    }
+}
+
+static half4 f_shade_x(threadgroup const FRec& r, float2 c, texture2d<float> atlas, texture2d<float> img) {
+    if (r.xs != 0.0) {
+        if (!(c.x >= r.q.x && c.x < r.q.z && c.y >= r.q.y && c.y < r.q.w)) return half4(0.0h);
+        c = r.xk + float2(r.xi.x * (c.x - r.xt.x) + r.xi.y * (c.y - r.xt.y), r.xi.z * (c.x - r.xt.x) + r.xi.w * (c.y - r.xt.y));
+        if (r.kind < 4u) return f_shade_t(r, c, atlas);
+    } else {
+        if (r.kind < 4u) return f_shade(r, c, atlas);
+        if (!(c.x >= r.q.x && c.x < r.q.z && c.y >= r.q.y && c.y < r.q.w)) return half4(0.0h);
+    }
+    float2 hs = (r.b.zw - r.b.xy) * 0.5;
+    float2 p = c - (r.b.xy + hs);
+    int2 lim = int2(int(img.get_width()) - 1, int(img.get_height()) - 1);
+    switch (r.kind) {
+    case 4: {
+        float cs = cos(r.radius), sn = sin(r.radius);
+        float2 t = float2(p.x * cs + p.y * sn, -p.x * sn + p.y * cs) + hs - 0.5;
+        float2 sz = hs * 2.0;
+        if (t.x <= -1.0 || t.y <= -1.0 || t.x >= sz.x || t.y >= sz.y) return half4(0.0h);
+        float2 f0 = floor(t), fr = t - f0;
+        int2 i0 = int2(f0);
+        float4 acc = float4(0.0);
+        for (int k = 0; k < 4; k++) {
+            int2 d = int2(k & 1, k >> 1);
+            int2 q = i0 + d;
+            if (q.x < 0 || q.y < 0 || q.x >= int(sz.x) || q.y >= int(sz.y)) continue;
+            float wgt = (d.x == 1 ? fr.x : 1.0 - fr.x) * (d.y == 1 ? fr.y : 1.0 - fr.y);
+            acc += img.read(uint2(clamp(int2(r.uv) + q, int2(0), lim))) * wgt;
+        }
+        return half4(acc) * r.pm.a; }
+    case 5: {
+        float t;
+        if (r.pad == 0u) {
+            float2 dir = float2(sin(r.bw), -cos(r.bw));
+            float len = abs(2.0 * hs.x * dir.x) + abs(2.0 * hs.y * dir.y);
+            t = dot(p, dir) / max(len, 1e-6) + 0.5;
+        } else {
+            float2 g = (r.gc - 0.5) * 2.0 * hs;
+            t = length(p - g) / max(length(abs(g) + hs), 1e-6);
+        }
+        float x = clamp(t, 0.0, 1.0) * 255.0;
+        float i = min(floor(x), 254.0), f = x - i;
+        int2 a0 = clamp(int2(r.uv) + int2(int(i), 0), int2(0), lim), a1 = clamp(int2(r.uv) + int2(int(i) + 1, 0), int2(0), lim);
+        float4 c0 = img.read(uint2(a0)), c1 = img.read(uint2(a1));
+        float cov = clamp(0.5 - f_sd(c, r.b, r.radius) * (r.xs != 0.0 ? r.xs : 1.0), 0.0, 1.0);
+        return half4(mix(c0, c1, f) * cov); }
+    default:
+        return r.pm * half(clamp(f_shadow(p, hs, max(r.bw, 1e-3), r.radius), 0.0, 1.0));
+    }
+}
+
+// Solid quads are pixel-exact (no AA margin); the others carry a 1 px margin for their SDF edge, or their own
+// (`f_margin`).
+// Stage the inverse of a transformed space into `r` and return the coverage window of [a, b] under it.
+static void f_stage_xf(thread FRec& r, float4 xm, float2 xk, float2 xt, thread float2& qa, thread float2& qb) {
+    float4 bb = f_xbox(qa, qb, xm, xk, xt);
+    qa = bb.xy;
+    qb = bb.zw;
+    float det = xm.x * xm.w - xm.y * xm.z;
+    float id = abs(det) > 1e-12 ? 1.0 / det : 0.0;
+    r.xi = float4(xm.w, -xm.y, -xm.z, xm.x) * id;
+    r.xk = xk;
+    r.xt = xk + xt;
+    r.xs = max(sqrt(abs(det)), 1e-6);
+}
+
+static bool f_stage_rec(device const FInst& in, float2 off, float4 cl, uint2 o, thread FRec& r, thread bool& cover,
+                        device const uchar* pool, device const FHdr& h) {
     float2 p0 = in.pos + off;
     float2 p1 = p0 + in.size;
-    float m = in.kind == 0 ? 0.0 : 1.0;
-    float2 qa = clamp(p0 - m, cl.xy, cl.zw);
-    float2 qb = clamp(p1 + m, cl.xy, cl.zw);
+    float m = f_margin(in.kind, in.flags);
+    float2 qa = p0 - m, qb = p1 + m;
+    float4 xm; float2 xk, xt;
+    bool xf = f_xf(pool, h, in.space, xm, xk, xt);
+    r.xs = 0.0;
+    if (xf) f_stage_xf(r, xm, xk, xt, qa, qb);
+    qa = clamp(qa, cl.xy, cl.zw);
+    qb = clamp(qb, cl.xy, cl.zw);
     r.q = float4(qa, qb);
     r.b = float4(p0, p1);
     half4 c1 = half4(unpack(in.color)), c2 = half4(unpack(in.color2));
     r.pm = half4(c1.rgb * c1.a, c1.a);
     r.pm2 = half4(c2.rgb * c2.a, c2.a);
-    r.radius = in.radius;
+    // CSS clamps a corner radius to the box (a pill's 9999 px is half its height); an image's word is its angle
+    float rad = in.kind == 4 ? in.radius : min(in.radius, 0.5 * min(in.size.x, in.size.y));
+    r.radius = rad;
     r.bw = in.bw;
     r.uv = in.uv.xy;
     r.kind = in.kind;
-    float k = in.kind == 1 ? max(in.radius, 0.5) + 1.0 : max(in.radius, 0.5 + in.bw) + 1.0;
+    r.pad = in.uv.z;
+    r.gc = float2(as_type<float>(in.color), as_type<float>(in.color2));
+    float k = in.kind == 1 ? max(rad, 0.5) + 1.0 : max(rad, 0.5 + in.bw) + 1.0;
     float4 cb = float4(p0 + k, p1 - k);
     cb = float4(max(cb.xy, qa), min(cb.zw, qb));
-    r.core = in.kind == 0 ? float4(qa, qb) : (in.kind == 3 ? float4(0.0) : cb);
+    r.core = xf ? float4(0.0) : (in.kind == 0 ? float4(qa, qb) : (in.kind >= 3 ? float4(0.0) : cb));
     r.cv = in.kind == 2 ? r.pm2 : r.pm;
-    cover = in.kind == 0 && (in.color >> 24) == 255u && qa.x <= float(o.x) + 0.5 && qa.y <= float(o.y) + 0.5
+    cover = !xf && in.kind == 0 && (in.color >> 24) == 255u && qa.x <= float(o.x) + 0.5 && qa.y <= float(o.y) + 0.5
             && qb.x > float(o.x) + 31.5 && qb.y > float(o.y) + 31.5;
     return qa.x < qb.x && qa.y < qb.y;
 }
@@ -1219,8 +1445,12 @@ static bool f_stage_glyph(device const uchar* pool, device const FHdr& h, uint r
     uint color;
     ushort2 uv;
     if (!f_glyph(pool, h, run, slot, p0, size, color, uv)) return false;
-    float2 qa = clamp(p0 - 1.0, cl.xy, cl.zw);
-    float2 qb = clamp(p0 - 1.0 + (size + 2.0), cl.xy, cl.zw);
+    float2 qa = p0 - 1.0, qb = p0 - 1.0 + (size + 2.0);
+    float4 xm; float2 xk, xt;
+    r.xs = 0.0;
+    if (f_xf(pool, h, f_run_space(pool, h, run), xm, xk, xt)) f_stage_xf(r, xm, xk, xt, qa, qb);
+    qa = clamp(qa, cl.xy, cl.zw);
+    qb = clamp(qb, cl.xy, cl.zw);
     r.q = float4(qa, qb);
     r.b = float4(p0, p0 + size);
     half4 c1 = half4(unpack(color));
@@ -1247,6 +1477,7 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
     device const FBind& fb = *(device const FBind*)(pool + FBIND_OFF);
     device const uint4* bins = fb.bins;
     texture2d<float> atlas = fb.atlas;
+    texture2d<float> img = fb.img;
     device const FSlot& fs = *(device const FSlot*)(pool + slot.x);
     device const FRow* frows = (device const FRow*)(pool + slot.x + FSLOT_ROWS);
     device const FInst* inst = (device const FInst*)(pool + h.inst_off);
@@ -1291,7 +1522,7 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
                     rh = f_stage_glyph(pool, h, en.x & h.m_run, en.w & h.m_glyph, cl, r);
                 } else {
                     device const FInst& in = inst[en.x & h.m_inst];
-                    rh = f_stage_rec(in, f_space(pool, h, in.space), cl, o, r, cover);
+                    rh = f_stage_rec(in, f_space(pool, h, in.space), cl, o, r, cover, pool, h);
                 }
             }
         }
@@ -1315,7 +1546,7 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
                 continue;
             }
             for (uint j = 0; j < 4; j++) {
-                half4 sh = f_shade(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas);
+                half4 sh = f_shade_x(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas, img);
                 acc[j] = sh + acc[j] * (1.0h - sh.a);
             }
         }
