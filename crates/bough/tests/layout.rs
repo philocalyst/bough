@@ -5,7 +5,7 @@
 //!   (a) the engine's incremental layout equals a cold layout of a copy of its tree, bit for bit,
 //!   (b) the retained records (ink) and instances equal a fresh mount of the view at the same values.
 use bough::layout::prelude::*;
-use bough::prelude::*;
+use bough::raw::*;
 
 const FONT: &[u8] = zgx_workload::FONT_BYTES;
 

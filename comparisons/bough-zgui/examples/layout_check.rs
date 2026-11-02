@@ -1,6 +1,6 @@
 //! The laid-out gallery and shell against zgui's own layout: content height, and for sample points the
 //! topmost record's ink (bough) next to the dumped box (zgui).
-use bough::prelude::*;
+use bough::raw::*;
 use bough_zgui::gallery::GalleryL;
 use bough_zgui::shell::ShellL;
 use bough_zgui::*;

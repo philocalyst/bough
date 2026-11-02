@@ -6,7 +6,7 @@
 //! list as zgui's `NullRenderer` ends at its display list), plus retired instructions for the same span.
 //!
 //! zgui runs its headless harness at one device pixel per CSS pixel; so do these (`scale = 1`).
-use bough::prelude::*;
+use bough::raw::*;
 use std::ops::Range;
 
 pub mod gallery;
@@ -173,7 +173,6 @@ pub struct Table {
 }
 
 impl View for Table {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         (quad(0.0, 0.0, WIDTH, HEIGHT).bg(BG), each((0..self.rows).map(table_row)))
     }
@@ -221,7 +220,6 @@ fn list_row(_: &LongList, i: usize, m: &mut Mounter<'_, LongList>) {
 }
 
 impl View for LongList {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         (
             quad(0.0, 0.0, WIDTH, HEIGHT).bg(BG),
@@ -255,7 +253,6 @@ pub struct Churn {
 }
 
 impl View for Churn {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         (
             quad(0.0, 0.0, CHURN_W, CHURN_H).bg(BG),
@@ -282,7 +279,6 @@ pub struct Slope {
 }
 
 impl View for Slope {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         use bough::layout::prelude::*;
         column(each((0..self.rows).map(|_| {

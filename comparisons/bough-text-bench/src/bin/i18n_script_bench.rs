@@ -2,7 +2,7 @@
 //! count, changed `TICKS` times (300); `MODE=message` shows the plural message, `template` `"{count} messages"`,
 //! `switch` the message with the locale switched (English, French) every tick instead. zgx counts this whole
 //! process's instructions (it prints only the mode line): measure with `/usr/bin/time -l`.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_text_bench::i18n::*;
 use bough_text_bench::{env, font_bytes};
 

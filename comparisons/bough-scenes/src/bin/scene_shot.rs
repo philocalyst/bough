@@ -2,7 +2,7 @@
 //! full redraw of the same retained state. SCENE=lab|animate|blink|state|vscroll TICKS SCALE (2).
 //! lab: `ZGX_MODE` ticks of workload (mode both unless set); animate: clock = tick/60 (as zgx's
 //! render_parity); vscroll: scroll = tick * 12 pt.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_scenes::*;
 use zgx_workload::{Mode, Workload};
 

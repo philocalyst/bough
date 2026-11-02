@@ -4,7 +4,7 @@
 //! animates (moves or turns) under every repair age 1..=4 and the windowed ring with presented == full
 //! redraw after every frame, which holds only if every new ink kind's damage covers what the kernel draws.
 use bough::deco::Shadow;
-use bough::prelude::*;
+use bough::raw::*;
 use bough::text::TShape;
 use bough_zgui::*;
 use std::f64::consts::PI;
@@ -57,7 +57,6 @@ struct Grads {
     pos: Signal<(f32, f32)>,
 }
 impl View for Grads {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         (quad(0.0, 0.0, W as f32, H as f32).bg(rgb(0xffffff)), offset(sig!(self.pos), (deco_box(40.0, 40.0, 300.0, 160.0, 8.0).gradient(LIN), deco_box(400.0, 40.0, 300.0, 160.0, 8.0).gradient(RAD))))
     }
@@ -126,7 +125,6 @@ struct Shadows {
     alone: bool,
 }
 impl View for Shadows {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         let b = if self.alone { deco_box(200.0, 150.0, 300.0, 180.0, 12.0).shadows(ONE) } else { deco_box(200.0, 150.0, 300.0, 180.0, 12.0).bg(rgb(0xffffff)).shadows(SH) };
         (quad(0.0, 0.0, W as f32, H as f32).bg(rgb(0xffffff)), offset(sig!(self.pos), b))
@@ -204,7 +202,6 @@ struct Spin {
     a: Signal<f32>,
 }
 impl View for Spin {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         (quad(0.0, 0.0, W as f32, H as f32).bg(rgb(0xffffff)), svg_image(100.0, 100.0, 32.0, 32.0, ARROW), svg_image(300.0, 100.0, 32.0, 32.0, ARROW).angle(sig!(self.a)))
     }
@@ -277,7 +274,6 @@ static FACE_DECLS: &[Decls] = &[&[(P::Display, "flex"), (P::FlexDirection, "colu
 
 struct Faces;
 impl View for Faces {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         ltemplate(FACE_NODES, FACE_DECLS, [-1.0, -1.0], |_: &Faces, _, _| LHooked::Default)
     }

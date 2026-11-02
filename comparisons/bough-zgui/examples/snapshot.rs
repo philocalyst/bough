@@ -1,6 +1,6 @@
 //! Render the laid-out gallery (or shell) at a scroll offset and write the presented frame as a PNG:
 //! `snapshot <gallery|shell> <scroll_y> <out.png> [x y w h]` (a crop, device px).
-use bough::prelude::*;
+use bough::raw::*;
 use bough_zgui::gallery::{Doc, GalleryL};
 use bough_zgui::*;
 

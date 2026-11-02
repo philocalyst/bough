@@ -8,7 +8,7 @@
 //! frame the loop runs until quiet, through its `NullRenderer` (display list, no device). The bough span is
 //! the input turn plus `frame()`, which ends at the frame slot's tile list (the GPU's input), with
 //! `RENDER=1` the Metal repair as well.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_zgui::*;
 
 const TICK_120: f32 = 0.008_333;

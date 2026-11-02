@@ -3,7 +3,7 @@
 //! the instructions per frame. `RENDER=0` (default, zgui's probe draws into a renderer that does nothing):
 //! everything up to the GPU's input; `RENDER=1`: plus the offscreen GPU frame. `ARGS`: the label count is
 //! fixed at 30 (zgui's default).
-use bough::prelude::*;
+use bough::raw::*;
 use bough_text_bench::churn::*;
 use bough_text_bench::{env, font_bytes, instrs, median};
 use std::time::Instant;

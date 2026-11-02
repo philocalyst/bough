@@ -1,7 +1,7 @@
 //! The inspector app on the laid-out gallery (round 4): picking by pointer is the target's hit testing; the
 //! overlay shows the picked ink, its layout box and the tiles the target's last frame repaired; the
 //! inspector's own frames are exact (presented == full redraw).
-use bough::prelude::*;
+use bough::raw::*;
 use bough_zgui::gallery::{Doc, GalleryL};
 use bough_zgui::inspector::{self, Inspector, MINI};
 use bough_zgui::*;

@@ -6,7 +6,7 @@
 //!  2. at the end it equals a *fresh mount* of the view at the same signal values;
 //!  3. the numeric operands render exactly zgx's `format!` strings;
 //!  4. idle is zero work.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_heavy::*;
 use zgx_workload::heavy::*;
 use zgx_workload::Mode;

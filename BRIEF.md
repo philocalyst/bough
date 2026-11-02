@@ -370,47 +370,55 @@ so copying cannot win vlist. Moving zero pixels can (§7.2).
 | 8 | one `App` per run loop; no second window | **open**: a multi-window host (winit) |
 | 10 | editing target state needs `&mut App<T>` + `Edit` | **available on api** (`reflect_set`), not yet wired into the inspector |
 
-### 4.5 The API in one example: a counter
+### 4.5 The API in one example: the design's counter
 
-`crates/bough/examples/counter.rs`, with a headless test `crates/bough/tests/counter.rs` (three clicks through hit
-testing, then the count and presented == full redraw). Both were added at push time and **not yet compiled**: run
-`cargo test --release -p bough --test counter` first.
+`crates/bough/examples/counter.rs` is `designs/reactivity/final/examples/progressive.rs` rung 1 in bough. Its test
+is `crates/bough/tests/counter.rs`, **passing**: it finds the button by its interactive record's layout box, clicks
+it three times through hit testing, and checks count == 3 and presented == full redraw.
+
+* `bough::prelude` is the design surface (`crates/bough/src/ui.rs`): flow text, buttons and boxes laid out by
+  cephal, `const` `Flex` recipes, routes as methods, and `Application::run`.
+* `View::FIXED` is gone. The runtime never read it, so no measured path changed.
+* The benchmark ports moved to `bough::raw`, which is the old prelude unchanged.
 
 ```rust
 use bough::prelude::*;
 
+const BAR: Flex = Flex::row().align(Align::Center).gap(12.0);
+
 pub struct Counter {
-    pub count: Signal<i64>,
+    pub count: Signal<u32>,
+}
+
+impl Counter {
+    pub fn inc(&mut self) {
+        *self.count += 1; // a publish: the label's port patches, `view` does not rerun
+    }
 }
 
 impl View for Counter {
-    const FIXED: bool = true; // described once at mount; afterwards only wires run
-
     fn view(&self) -> impl Element<Self> + '_ {
-        (
-            quad(0.0, 0.0, 240.0, 120.0).bg(rgb(0x14161a)),
-            // a wire: when `count` changes, only this label's changed glyphs are re-shaped and repainted
-            text(sig!(self.count).map(|n| format!("Count: {n}"))).at(24.0, 20.0).size(20.0).color(rgb(0xe7ecf5)),
-            quad(24.0, 64.0, 72.0, 32.0)
-                .bg(rgb(0x2f6bff))
-                .rounded(8.0)
-                .children(text("+1").at(26.0, 7.0).size(16.0).color(rgb(0xffffff)))
-                .hover_bg(rgb(0x4a80ff))
-                // a typed route: a plain `&mut Counter`; the write marks `count` and its wire runs
-                .on_click(|c: &mut Counter| *c.count += 1),
-        )
+        div()
+            .layout(BAR)
+            .p(24.0)
+            .child(text(sig!(self.count).map(|n| format!("Count: {n}"))))
+            .child(button("+").on_click(Counter::inc))
     }
 }
 
 fn main() {
-    let cfg = |scale| Config::new(240.0, 120.0, scale, std::fs::read(std::env::var("ZGX_FONT_FILE").unwrap()).unwrap());
-    bough::backend::host::run_window("Counter", cfg, Counter { count: Signal::new(0) }, |_| {}, None, 0.0, || {});
+    Application::run(Window::document(Counter { count: Signal::new(0) }).title("Counter"));
 }
 ```
 
-No `cx` and no derive: state is a plain struct, `sig!` proves the field path at compile time (`offset_of!`), the
-click handler is an ordinary closure over `&mut Self`, and a write is a field assignment.
+Left against the design:
 
+* `&self.count` / `self.count.map(f)` as ports without `sig!` (offsets proven against the `type_info` schema).
+* `El<'_>` as the return type.
+* Placement (`.align`, `.at(handle)`).
+* `Handoff`, `Target`, `.with(..)`, `#[command]`.
+* Rung-0 reruns: plain-field handlers re-describe; this is built on `api`, and decided from the owner's type by
+  `type_info`, with no annotation.
 
 ---
 

@@ -1,4 +1,4 @@
-use bough::prelude::*;
+use bough::raw::*;
 use bough_zgui::thread::{thread_config, Thread};
 use bough_zgui::*;
 fn main() {

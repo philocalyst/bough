@@ -1,11 +1,11 @@
-//! The inspector (round 4): an ordinary bough app, written only against the public API (`bough::prelude`,
+//! The inspector (round 4): an ordinary bough app, written only against the public API (`bough::raw`,
 //! `bough::inspect`), opened on another running bough app. It picks a record by pointer (the target's own
 //! hit testing), shows the record tree around it, the record's kind, ink, layout box and transform, and an
 //! overlay of the target's window: the picked ink, its layout box and the tiles each target frame repaired.
 //! Reflected state (the owner's fields, editable) waits for the api agent's typed reflection: the state
 //! panel is a list of (name, value) rows ready for it. Friction while writing it: INSPECTOR.md.
 use bough::inspect::RecordView;
-use bough::prelude::*;
+use bough::raw::*;
 
 /// The overlay's scale (target device px -> inspector points).
 pub const MINI: f32 = 0.25;
@@ -57,7 +57,6 @@ const DAMAGE: Color = Color::rgba(255, 140, 0, 110);
 const CLEAR: Color = Color::rgba(0, 0, 0, 0);
 
 impl View for Inspector {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         let (tx, ty) = self.tiles;
         let mini_w = tx as f32 * TILE;

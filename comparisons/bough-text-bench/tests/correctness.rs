@@ -1,7 +1,7 @@
 //! Text round 3's new scenes, pixel-exact at every ring age 1..4: zgui's label churn and zgx's i18n rows
 //! (messages with Latin-1, a locale switch re-rendering every row): every frame the presented surface equals a
 //! full redraw by the same kernels, and after the run the retained scene equals a fresh mount of the same values.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_text_bench::churn::{self, Plot};
 use bough_text_bench::font_bytes;
 use bough_text_bench::i18n::*;
@@ -90,7 +90,7 @@ fn i18n_rows_and_locale_switch_are_pixel_exact_at_every_ring_age() {
 
 mod edited_rows {
     use bough::layout::prelude::*;
-    use bough::prelude::*;
+    use bough::raw::*;
 
     pub struct Edits {
         pub scroll: Signal<f32>,

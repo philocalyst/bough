@@ -4,7 +4,7 @@
 //! byte exact), for EVERY ring age 1..=4 (a round-robin ring of `ring` surfaces repairs at age `ring`),
 //! and with the windowed content-addressed ring; (2) at the end it equals a fresh mount of the view at
 //! the same signal values; (3) a turn that changes nothing draws nothing.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_scenes::*;
 use zgx_workload::{Mode, Workload};
 

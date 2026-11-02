@@ -2,7 +2,7 @@
 //! change each frame (a tenth of the rows a frame, `FRAMES` 600), then a locale switch there and back, against
 //! the same list as `format!` text (`template` argument). Prints zgx's line (µs per frame, µs a locale switch)
 //! plus instructions. `RENDER` 0 (default; zgx's bench flushes its scene with no renderer) or 1.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_text_bench::i18n::*;
 use bough_text_bench::{env, font_bytes, instrs};
 use std::time::Instant;

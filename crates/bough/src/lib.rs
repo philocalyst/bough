@@ -17,10 +17,27 @@ pub mod signal;
 pub mod template;
 pub mod text;
 pub mod transition;
+pub mod ui;
 
 pub use bough_text::numeric::NumFmt;
 
+/// The application surface (`designs/reactivity/final`): views, state, elements in flow (laid out by cephal),
+/// routes, and `Application::run`. No coordinates: `use bough::raw::*;`.
 pub mod prelude {
+    pub use crate::app::View;
+    pub use crate::color::{rgb, Color};
+    pub use crate::elem::{each, Element, IntoProp};
+    pub use crate::input::{text_field, tooltip, Interact, Key, Mods};
+    pub use crate::layout::{block, column, para, row, Align, Justify, Styled};
+    pub use crate::sig;
+    pub use crate::signal::Signal;
+    pub use crate::transition::{Curve, Ease};
+    pub use crate::ui::{button, div, text, Application, Flex, Window};
+}
+
+/// The scene-level surface the benchmark ports are written in: absolutely placed quads and text, templates,
+/// measured lists, the `App` driver. `use bough::raw::*;`.
+pub mod raw {
     pub use crate::transition::{Curve, Ease, Lerp};
     pub use crate::deco::{deco_box, svg_image, Deco, Grad, Shadow, Xf};
     pub use crate::app::{App, Config, View};

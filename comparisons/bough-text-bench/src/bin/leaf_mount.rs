@@ -175,7 +175,7 @@ impl OldLeaf {
 
 fn main() {
     {
-        use bough::prelude::*;
+        use bough::raw::*;
         println!("size_of LeafCtx {} B, Para {} B", size_of::<LeafCtx>(), size_of::<Para>());
         let mut app = App::new(bough_vlist::VList::new(100_000), bough_vlist::config(2.0), false);
         app.frame();

@@ -2,7 +2,7 @@
 //! animate, blink, and the two fixed-geometry micro_bench scenes (state, vscroll-fixed). Geometry,
 //! colours, strings and timing come from `zgx_workload`; zgx's "normal" line height is
 //! `ceil(1.4 * size)` and every text box here is top aligned, so the line boxes are written out.
-use bough::prelude::*;
+use bough::raw::*;
 use std::ops::Range;
 use zgx_workload as wl;
 

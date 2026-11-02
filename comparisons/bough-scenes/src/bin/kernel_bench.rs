@@ -3,7 +3,7 @@
 //! rendered `REPS` times back to back in one command buffer (`Fused::bench_frames`: the GPU saturated, so
 //! its clock is steady). `DEBUG=<n>` selects a kernel variant through the header's debug word.
 //! Usage: `ZGX_MODE=stream|scroll kernel_bench`.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_scenes::*;
 use zgx_workload::{Mode, Workload};
 

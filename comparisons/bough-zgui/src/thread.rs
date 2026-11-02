@@ -51,7 +51,6 @@ fn message(i: usize) -> impl Element<Thread> {
 }
 
 impl View for Thread {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         scroll_y(sig!(self.scroll), [0.0, 0.0, WIDTH, HEIGHT], 0.0, column(each((0..MESSAGES).map(message))).w_pct(1.0).p(12.0).gap(10.0).bg(BG)).bg(BG).line(19.5 * 3.0)
     }

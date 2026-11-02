@@ -2,7 +2,7 @@
 //! positioned 11 px labels on a 1000 x 700 sheet, the first half along the bottom edge, the rest up the left
 //! edge, every one relabelled each frame (`format!("{value:.2}")` of a value that differs at every step and
 //! from every other label).
-use bough::prelude::*;
+use bough::raw::*;
 
 pub const WIDTH: f32 = 1000.0;
 pub const HEIGHT: f32 = 700.0;

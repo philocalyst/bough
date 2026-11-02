@@ -25,9 +25,10 @@ use crate::rt::*;
 use bough_core::damage::RING;
 use bough_core::{Plane, RecordInit};
 
-/// A view: a plain struct whose `Signal` fields are the state. `view` describes it once at mount.
+/// A view: a plain struct whose fields are the state (`designs/reactivity/final/00-model.md` §3). `view`
+/// describes it; `Signal` fields bound into operands are direct ports, so publishing one patches its
+/// destinations without rerunning `view`.
 pub trait View: Sized + 'static {
-    const FIXED: bool = false;
     fn view(&self) -> impl Element<Self> + '_;
 }
 

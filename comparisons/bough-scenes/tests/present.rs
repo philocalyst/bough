@@ -4,7 +4,7 @@
 //! * a resize gives the presenter surfaces, bins and a layer frame of the new size; the first frame after it
 //!   is a full redraw at that size, and every frame at every ring age (and the windowed, content-addressed
 //!   ring) equals a full redraw, growing past the size the window was created at and shrinking again.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_scenes::*;
 use zgx_workload::{Mode, Workload};
 

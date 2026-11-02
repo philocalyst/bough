@@ -25,14 +25,70 @@ table, assigned when a view first binds it (interior mutability: binding happens
 
 ```rust
 pub trait View: Sized + 'static {
-    /// When true, `view` is called once at mount; afterwards only wires, lists and readers change the subtree
-    /// (zgx's "components mount once"). When false, an arbitrary `&mut self` handler re-describes this owner
-    /// and diffs it against its records (immediate mode). Default false.
-    const FIXED: bool = false;
     fn view(&self) -> impl Element<Self> + '_;
     fn changed(&mut self, _d: Changed<'_, Self>) {}
 }
 ```
+
+There is no per-view mode switch (`FIXED` was removed). Which owners rerun follows from their state, as the
+design's ladder says (`designs/reactivity/final/00-model.md` §3): a `Signal` bound into an operand is a direct
+port, so a handler that only publishes signals reruns nothing. A handler that changes plain fields reruns the
+owner's `view`, which is then diffed (re-description, branch `api`). Whether an owner *can* hold plain state is
+known at compile time from its type, through `type_info` reflection (`api`'s `reflect.rs`): every field is a
+ladder cell (`Signal`/`List`/`Entity`/`Reader`), or it is not. That decides whether a handler on it ever reruns
+`view`, with no annotation.
+
+### The application surface (`bough::prelude`, `crates/bough/src/ui.rs`)
+
+The design's spellings, laid out by cephal. No element takes a coordinate.
+
+```rust
+use bough::prelude::*;
+
+const BAR: Flex = Flex::row().align(Align::Center).gap(12.0); // a const layout recipe
+
+pub struct Counter { pub count: Signal<u32> }
+
+impl Counter {
+    pub fn inc(&mut self) { *self.count += 1; }             // a route is a method
+}
+
+impl View for Counter {
+    fn view(&self) -> impl Element<Self> + '_ {
+        div()
+            .layout(BAR)
+            .p(24.0)
+            .child(text(sig!(self.count).map(|n| format!("Count: {n}"))))   // a direct port
+            .child(button("+").on_click(Counter::inc))
+    }
+}
+
+fn main() {
+    Application::run(Window::document(Counter { count: Signal::new(0) }).title("Counter"));
+}
+```
+
+| spelling | what it is |
+|---|---|
+| `text(x)` | one line in flow |
+| `para(x)` | wrapped text |
+| `button(label)` | a padded, rounded, hoverable box around a label |
+| `div()` | the styled box, born empty: `.child(x)` adds content, `.layout(Flex)` arranges it |
+| `column(children)` / `row(children)` | flow containers, born with their children (tuples, iterators) |
+| `.gap`, `.p`, `.px`, `.py`, `.pad`, `.w`, `.h`, `.w_pct`, `.grow`, `.shrink`, `.items`, `.justify`, `.center()` | `Styled` |
+| `.bg`, `.rounded`, `.border` | paint |
+| `.on_click(Owner::method)`, `.hover_bg(c)` | routes and hover |
+| `Application::run(view)` or `Application::run(Window::document(view).title(..).size(w, h))` | starts the app; the default face is `BOUGH_FONT`, then `ZGX_FONT_FILE`, then the system's Arial |
+
+The benchmark ports use `bough::raw` (absolutely placed quads and text, templates, measured lists, the `App`
+driver), which is the old prelude unchanged.
+
+Still to close against the design:
+* `&self.count` / `self.count.map(f)` as ports, without `sig!`. That needs the runtime offset proven against
+  the compile-time schema, which `type_info` makes possible.
+* The return type `El<'_>` instead of `impl Element<Self> + '_`.
+* `.child(x.align(..))` / `.at(handle)` placement.
+* `Handoff`, `Target`, `.with(..)` bindings, `#[command]`.
 
 Builders are typed (`Column<(A, B, C)>`, `Text<S>`, `Quad`, `Button<L, R>` …) and implement the sealed
 `Element<V>` trait; `El<'_, V>` erases a builder only where branches must unify. Each element type exposes

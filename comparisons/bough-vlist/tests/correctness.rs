@@ -10,7 +10,7 @@
 //!     chain of layout locations;
 //!  4. the prefix index agrees with a naive running sum under random point updates;
 //!  5. rows' heights are the line count x 20 pt + the fixed parts (the zgx formula), per row.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_vlist::*;
 use zgx_workload::vlist::{self, Mode};
 

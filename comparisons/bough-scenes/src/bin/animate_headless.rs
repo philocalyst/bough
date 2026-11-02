@@ -1,6 +1,6 @@
 //! The animation scene offscreen (zgx `animation_headless`): scale 2, clock advanced one 120 Hz
 //! refresh per frame, `FRAMES` (2400), `RENDER` (1/0). Reports CPU per frame by phase.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_scenes::*;
 
 fn env<T: std::str::FromStr>(name: &str, default: T) -> T {

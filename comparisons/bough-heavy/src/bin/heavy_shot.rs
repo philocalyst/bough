@@ -1,7 +1,7 @@
 //! Render the heavy scene offscreen for `TICKS` ticks of `ZGX_MODE` (default both) and write the
 //! last presented frame as raw BGRA (`OUT`, default heavy.bgra); also compares it with a full
 //! redraw of the same state and prints the number of differing bytes.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_heavy::*;
 use zgx_workload::heavy::*;
 

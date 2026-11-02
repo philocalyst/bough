@@ -4,7 +4,7 @@
 //!   SCENE=state|vscroll-fixed OPS=2000 RENDER=1|0 WARMUP=200 WRITE_BATCH=50 FRAME_BATCH=10 CLOCK=thread
 //! write = the scene's signal write only (`App::write`); frame = settle + text + damage + cull + draw
 //! list (+ encode and commit when RENDER=1), `App::flush` + `App::frame`.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_scenes::*;
 use zgx_workload::micro::{self, *};
 

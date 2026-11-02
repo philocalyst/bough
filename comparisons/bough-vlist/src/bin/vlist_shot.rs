@@ -1,7 +1,7 @@
 //! Render the vlist scene offscreen for `TICKS` ticks of `ZGX_MODE` and write the last presented frame
 //! as raw BGRA (`OUT`, default vlist.bgra, 1440 x 1600); also compares it with a full redraw of the same
 //! retained state and prints the number of differing bytes.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_vlist::*;
 use zgx_workload::vlist::{self, Mode};
 

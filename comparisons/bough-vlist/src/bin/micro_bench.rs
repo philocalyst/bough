@@ -5,7 +5,7 @@
 //! write-back, retained state ready to cull) and through to a frame ready to present ("frame": the turn
 //! plus damage, cull, draw list and, with `RENDER=1`, the Metal encode + commit).
 //!   SCENE=vscroll-variable OPS=2000 RENDER=0|1 micro_bench
-use bough::prelude::*;
+use bough::raw::*;
 use bough_vlist::*;
 use zgx_workload::{micro, vlist};
 

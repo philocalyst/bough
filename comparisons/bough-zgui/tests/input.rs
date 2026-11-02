@@ -4,7 +4,7 @@
 //! equals a fresh mount at the same signal values. Covers hover (paint writes, content addressing),
 //! clicks, focus rings, typing and caret moves, wheel glides over a virtual list and a scroll view (page
 //! offsets, moving clips), the gallery's animations, label churn, and resize (cephal relayout).
-use bough::prelude::*;
+use bough::raw::*;
 use bough_zgui::gallery::{turn as gturn, Gallery, TICK_60};
 use bough_zgui::*;
 
@@ -261,7 +261,6 @@ fn leaf(id: u32) -> impl Element<Nest> {
 }
 
 impl View for Nest {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         (
             quad(0.0, 0.0, 800.0, 600.0).bg(rgb(0x101010)),
@@ -464,7 +463,6 @@ fn nested_row(i: usize) -> impl Element<Nested> {
 }
 
 impl View for Nested {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         (
             quad(0.0, 0.0, 800.0, 600.0).bg(rgb(0x101010)),

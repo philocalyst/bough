@@ -1,6 +1,6 @@
 //! Where the gallery's cold first frame goes: font read, simple-script tables, rustybuzz face, glyph
 //! cache, the mount (template + shaping), the first frame. Instructions and wall time per phase.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_zgui::gallery::Gallery;
 use bough_zgui::*;
 

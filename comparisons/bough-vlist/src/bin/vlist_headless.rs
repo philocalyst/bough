@@ -3,7 +3,7 @@
 //! `vlist_headless` built beside it): `ZGX_MODE` (scroll|fling|jump|probe), `TICKS` (900), `SCALE` (2),
 //! `RENDER` (1: offscreen Metal render of every damaged frame; 0: everything up to a ready draw list),
 //! `ROWS` (100000), `PHASES=1` per-phase instructions.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_vlist::*;
 use zgx_workload::vlist::{self, Mode};
 

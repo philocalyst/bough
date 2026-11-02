@@ -2,7 +2,7 @@
 //! wrapped text in a measured virtual list, laid out by cephal. Geometry, fonts, line height, widths,
 //! colours, the image placeholder and the modes come from the workload functions.
 use bough::layout::prelude::*;
-use bough::prelude::*;
+use bough::raw::*;
 use zgx_workload::vlist::{self, Mode};
 
 pub struct VList {

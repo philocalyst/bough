@@ -1,7 +1,7 @@
 //! zgx's heavy dashboard (`zgx_workload::heavy`) as a bough view: one `live` signal fanning out
 //! to every value text / bar / progress / status wire, a `scroll` signal driving a keyed virtual
 //! table, a `log` signal. Geometry, colours and strings come from the workload functions.
-use bough::prelude::*;
+use bough::raw::*;
 use zgx_workload::heavy::*;
 use zgx_workload::Mode;
 

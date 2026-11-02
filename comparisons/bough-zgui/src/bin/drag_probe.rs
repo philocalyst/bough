@@ -7,7 +7,7 @@
 //!
 //!   drag_probe            (windowed: take /private/tmp/claude-501/bough-windowed.lock first)
 use bough::backend::host::run_interactive;
-use bough::prelude::*;
+use bough::raw::*;
 use bough_zgui::font_bytes;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSWindow};
@@ -37,7 +37,6 @@ struct Probe {
 }
 
 impl View for Probe {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         let label = |s: &'static str| text(s).at(24.0, 6.0).size(14.0).line_height(16.0).color(rgb(0xffffff));
         (

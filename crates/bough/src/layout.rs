@@ -270,6 +270,10 @@ pub trait Styled: Sized {
         self.spec_mut().self_align = Some(a);
         self
     }
+    /// Centre the children on both axes.
+    fn center(self) -> Self {
+        self.items(Align::Center).justify(Justify::Center)
+    }
     fn justify(mut self, j: Justify) -> Self {
         self.spec_mut().justify = Some(j);
         self
@@ -1183,6 +1187,23 @@ impl<Bg, Ch> LBox<Bg, Ch> {
     pub fn border(mut self, w: f32, c: Color) -> Self {
         self.border = Some((w, c));
         self.draw = true;
+        self
+    }
+    /// One more child in flow: the one child verb (`div()` is born empty; `column`/`row` take theirs).
+    pub fn child<X>(self, x: X) -> LBox<Bg, (Ch, X)> {
+        LBox { spec: self.spec, draw: self.draw, bg: self.bg, radius: self.radius, border: self.border, ch: (self.ch, x) }
+    }
+    /// Apply a layout recipe (`const BAR: Flex = Flex::row().align(Align::Center).gap(8.0)`).
+    pub fn layout(mut self, f: crate::ui::Flex) -> Self {
+        self.spec.container = true;
+        self.spec.column = f.column;
+        self.spec.gap = f.gap;
+        if f.align.is_some() {
+            self.spec.items = f.align;
+        }
+        if f.justify.is_some() {
+            self.spec.justify = f.justify;
+        }
         self
     }
 }

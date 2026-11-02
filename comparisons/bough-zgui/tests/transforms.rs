@@ -8,7 +8,7 @@
 //! turned and translated cards scroll and relayout at ring ages 1..=4 and windowed with presented == full
 //! redraw after every frame.
 use bough::deco::Xf;
-use bough::prelude::*;
+use bough::raw::*;
 use bough_zgui::*;
 
 const W: usize = 600;
@@ -58,7 +58,6 @@ struct Card {
     scroll: Signal<f32>,
 }
 impl View for Card {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         let t: &'static [Deco] = match self.deg {
             90 => &D90,

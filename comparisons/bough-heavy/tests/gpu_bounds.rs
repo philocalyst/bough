@@ -8,7 +8,7 @@
 //! construction; what a test can observe is the loop bound. The sabotage test (ignored by default: it keeps
 //! the GPU busy for 5 s; run it alone: `cargo test -p bough-heavy --test gpu_bounds -- --ignored`) opens the
 //! glyph mask and the frame must not finish.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_heavy::*;
 use zgx_workload::heavy::*;
 

@@ -3,12 +3,11 @@
 //! tables, glyph cache), and shaping "zgx performance lab" at 14 px in four styles (bough ships one face,
 //! so the four styles are four shapes of the same run: no font matching). Count instructions with
 //! `/usr/bin/time -l` (process-wide, as zgx's suite does).
-use bough::prelude::*;
+use bough::raw::*;
 use std::time::Instant;
 
 struct Empty;
 impl View for Empty {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {}
 }
 

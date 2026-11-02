@@ -4,7 +4,7 @@
 //! and instance writes, nothing submitted). `PHASES=1` prints the per-phase breakdown in
 //! instructions per frame (proc_pid_rusage ri_instructions, calibrated bracket overhead subtracted),
 //! `ri_instructions` for the whole run is printed so the slope method (TICKS=300 vs 600) works on it.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_heavy::*;
 use zgx_workload::heavy::*;
 

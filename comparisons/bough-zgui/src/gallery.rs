@@ -107,7 +107,6 @@ fn hook(v: &Gallery, m: &mut Mounter<'_, Gallery>, _i: usize, n: &TNode) -> Hook
 }
 
 impl View for Gallery {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         scroll_y(sig!(self.scroll), [0.0, 0.0, WIDTH, HEIGHT], CONTENT_H - HEIGHT, template(GALLERY, hook)).bg(rgb(0xffffff)).line(LINE)
     }
@@ -457,7 +456,6 @@ fn lhook(v: &GalleryL, m: &mut Mounter<'_, GalleryL>, ctx: &mut LCtx<'_>) -> LHo
 pub const CONTENT_W: f32 = 1585.0;
 
 impl View for GalleryL {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         scroll_y(sig!(self.scroll), [0.0, 0.0, WIDTH, HEIGHT], 0.0, ltemplate(GALLERY_L, GALLERY_L_DECLS, [CONTENT_W, f32::NAN], lhook).decos(GALLERY_L_DECOS)).bg(rgb(0xffffff)).line(LINE)
     }

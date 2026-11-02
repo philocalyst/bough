@@ -3,7 +3,7 @@
 //! whole-document content change (a class on the root recolours every cell: here one signal whose wire
 //! fans out to every cell's colour), over documents of 64 / 128 / 256 / 512 rows. Least-squares slopes
 //! (µs per box and instructions per box) and their ratio, zgui's verdict quantity.   RENDER=1: GPU too
-use bough::prelude::*;
+use bough::raw::*;
 use bough_zgui::*;
 
 const ROWS: [usize; 4] = [64, 128, 256, 512];

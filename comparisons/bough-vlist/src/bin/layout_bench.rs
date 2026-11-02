@@ -9,7 +9,7 @@
 //!     in its column move, their subtrees are re-placed).
 //! `NODES` (default 10000), `EDITS` (200), `FIXED` (1|0, which edit; default both are run).
 use bough::layout::prelude::*;
-use bough::prelude::*;
+use bough::raw::*;
 
 const FONT: &[u8] = zgx_workload::FONT_BYTES;
 

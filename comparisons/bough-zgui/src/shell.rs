@@ -92,7 +92,6 @@ fn hook(v: &Shell, m: &mut Mounter<'_, Shell>, _i: usize, n: &TNode) -> Hooked {
 }
 
 impl View for Shell {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         (quad(0.0, 0.0, WIDTH, HEIGHT).bg(rgb(0x0a0a0a)), template(&SHELL[..], hook))
     }
@@ -299,7 +298,6 @@ fn log_line_l(_: &ShellL, i: usize, m: &mut Mounter<'_, ShellL>) {
 }
 
 impl View for ShellL {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         (quad(0.0, 0.0, WIDTH, HEIGHT).bg(rgb(0x0a0a0a)), ltemplate(crate::gallery::SHELL_L, crate::gallery::SHELL_L_DECLS, [-1.0, -1.0], lhook_l))
     }

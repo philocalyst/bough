@@ -3,7 +3,7 @@
 //! pixels at ring ages 1..=4 and windowed equal both a full redraw and the CPU-evaluated curve (the same f32
 //! ops); a retarget is value-continuous (and, smooth, velocity-continuous); a layout property relayouts every
 //! frame to the eased value.
-use bough::prelude::*;
+use bough::raw::*;
 use bough::transition::{Curve, Ease, Lerp};
 use bough_zgui::*;
 use cephal::style::Dimension;
@@ -23,7 +23,6 @@ struct Tr {
     smooth: bool,
 }
 impl View for Tr {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         let curve = if self.smooth { Curve::smooth(0.4) } else { Curve::out(0.3) };
         (
@@ -143,7 +142,6 @@ struct Lay {
     basis: Signal<f32>,
 }
 impl View for Lay {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         ltemplate(NODES, DECLS, [-1.0, -1.0], |v: &Lay, m, ctx| {
             if ctx.node.tag == 1 {

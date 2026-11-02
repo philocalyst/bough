@@ -2,7 +2,7 @@
 //! document's glyphs built on other threads from process entry while the main thread mounts into heap
 //! memory that the presenter then wraps without a copy) presents the same pixels as the serial one, and
 //! both equal a from-scratch full redraw. Its own test binary: `prepare` is process-wide.
-use bough::prelude::*;
+use bough::raw::*;
 use bough_zgui::gallery::{Doc, GalleryL};
 use bough_zgui::*;
 

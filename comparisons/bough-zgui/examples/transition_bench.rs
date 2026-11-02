@@ -1,7 +1,7 @@
 //! Per-frame CPU cost of N running colour transitions (the CPU wire form: the frame clock evaluates each
 //! and applies it through the colour applier, a paint write), N = 1, 100, 10,000: main-thread instructions
 //! per `tick + frame` (RENDER=0 shape: the frame ends at the tile list), median over the transition.
-use bough::prelude::*;
+use bough::raw::*;
 use bough::transition::Curve;
 use bough_zgui::*;
 
@@ -10,7 +10,6 @@ struct Many {
     on: Signal<bool>,
 }
 impl View for Many {
-    const FIXED: bool = true;
     fn view(&self) -> impl Element<Self> + '_ {
         let cols = 100usize;
         each((0..self.n).map(move |i| {

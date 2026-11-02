@@ -2,7 +2,7 @@
 //! messages}}`, English plural rules and plain numbers, as zgx builds them without its `i18n` feature) against
 //! the same rows as templates (`format!`). The locale is app state read by the message (zgx's `I18n` service);
 //! a switch re-renders every message.
-use bough::prelude::*;
+use bough::raw::*;
 use std::cell::Cell;
 
 pub const MAX_ROWS: usize = 1000;

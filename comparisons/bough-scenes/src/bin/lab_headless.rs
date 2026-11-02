@@ -1,7 +1,7 @@
 //! The lab with no window, ticked as fast as it goes (zgx `workload_headless` contract): `ZGX_MODE`
 //! (default stream), `TICKS` (900), `SCALE` (1, as zgx's), `RENDER` (1: offscreen Metal render of every
 //! damaged frame into the IOSurface ring; 0: everything up to a ready draw list).
-use bough::prelude::*;
+use bough::raw::*;
 use bough_scenes::*;
 use zgx_workload::{Mode, Workload};
 

@@ -2,7 +2,7 @@
 //! (`format!("{value:.2}")` of a new value each), the median wall time of one relabelled frame (median of
 //! five rounds' medians, each of 48 samples after 12 warm-up frames, zgui's `sample::median_ns`), plus
 //! retired instructions per frame.   label_churn [labels]   RENDER=1: GPU frames too
-use bough::prelude::*;
+use bough::raw::*;
 use bough_zgui::*;
 
 fn main() {

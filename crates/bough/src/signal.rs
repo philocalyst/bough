@@ -144,7 +144,7 @@ pub struct Num<'a, T, V, F> {
 /// A struct field path (nested paths too):
 ///
 /// ```
-/// use bough::prelude::*;
+/// use bough::raw::*;
 /// struct Inner { n: Signal<u32> }
 /// struct V { i: Inner }
 /// impl View for V {
@@ -156,7 +156,7 @@ pub struct Num<'a, T, V, F> {
 /// `offset_of!` does not follow pointers:
 ///
 /// ```compile_fail
-/// use bough::prelude::*;
+/// use bough::raw::*;
 /// struct Inner { n: Signal<u32> }
 /// struct V { b: Box<Inner> }
 /// impl View for V {
@@ -167,7 +167,7 @@ pub struct Num<'a, T, V, F> {
 /// A union field cannot be named without the caller's own `unsafe`:
 ///
 /// ```compile_fail
-/// use bough::prelude::*;
+/// use bough::raw::*;
 /// struct Inner { n: Signal<u32> }
 /// union U { a: std::mem::ManuallyDrop<Inner>, b: u64 }
 /// struct V { u: U }
