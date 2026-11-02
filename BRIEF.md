@@ -378,7 +378,9 @@ it three times through hit testing, and checks count == 3 and presented == full 
 
 * `bough::prelude` is the design surface (`crates/bough/src/ui.rs`): flow text, buttons and boxes laid out by
   cephal, `const` `Flex` recipes, routes as methods, and `Application::run`.
-* `View::FIXED` is gone. The runtime never read it, so no measured path changed.
+* `View::FIXED` is gone. The runtime never read it, so no measured path changed. After the removal and the
+  prelude split, `cargo check --workspace --all-targets` has zero warnings, and the `bough` and `bough-zgui`
+  suites pass (35 tests, 0 failures).
 * The benchmark ports moved to `bough::raw`, which is the old prelude unchanged.
 
 ```rust
