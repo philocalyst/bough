@@ -18,11 +18,13 @@ pub mod model;
 pub mod numeric;
 pub mod para;
 pub mod pool;
-pub mod script;
-pub mod shape;
-pub mod slots;
+/// The table, the kernels and byte slots live in the vendored parley now (graft 1 shapes parley's covered font
+/// segments with them); re-exported under their old paths.
+pub use parley::bough::{script, shape, slots};
 pub mod window;
 pub mod wrap;
 
+/// The vendored parley (vendor/README.md): bough's text path, with bough-text's mechanisms grafted in.
+pub use parley;
 pub use script::{CpSet, SimpleScript, TRIG};
 pub use shape::{GlyphRun, Shaper};
