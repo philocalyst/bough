@@ -98,6 +98,7 @@ name = "bough-text"
 version = "0.0.0"
 dependencies = [
  "bough-mem",
+ "icu_segmenter",
  "libc",
  "objc2",
  "objc2-foundation",
@@ -722,6 +723,7 @@ dependencies = [
  "parlance",
  "parley_data",
  "skrifa 0.44.0",
+ "ttf-parser",
 ]
 
 [[package]]
