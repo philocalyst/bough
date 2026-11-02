@@ -169,6 +169,67 @@ Not this agent's (round 3b split): resizing a real window's GPU surfaces and the
 CA commit (floor agent); bough-text internals (text3 agent) — this round added, minimally and in new code where
 possible, `atlas/parallel.rs` (prerendering), per-strike faces in `GlyphCache` and the token readiness call above.
 
+### 1.5 Round 3c / 4: merges, transforms in the core, transitions, the inspector
+
+**Merges.** `canonical` ca6412f (text3 + floor), 92a52eb (floor 3b) and 9cbeb05 (text3 round-4 plan) are merged
+into `input`.
+* Kinds 4/5/6 and the image atlas now use the floor's presenter: the image atlas is in the bind table
+  (`FBind.img`) and the residency set, and every texel read is clamped.
+* They are shaded in edge form. The shadow's erf saturates at 4σ, so a moved shadow changes only within its
+  corner radius + 4σ of a moved edge (`rt::edge_band_of`). Images and gradients take the whole box.
+* The `gpu_bounds` gate corrupts decoration instances too.
+* Text readiness has one mechanism, text3's: a strike is ASCII-complete when it is created. The 3b
+  leaf-preparation fix is dropped.
+* Clock-driven turns (the blink, the gallery's animations) use `frame_paced`.
+
+**Transforms are a core record attribute** (`bough-core` `Page::xm/xv`, `Bough::set_run_xform`; kernels
+`f_pg_xink`, `FXf`; INTERFACE.md "Transforms"). A page carries an affine that generalises its offset: stored
+inks are untransformed and absolute = `M s + xv + off`. A scroll is still an offset change composed after the
+affine.
+* **Isolation.** A transformed subtree's records are isolated in pages of their own. Splits copy the affine,
+  and merges never cross affines.
+* **Damage** is the exact tile cover of each transformed ink (per 32-px row, the quad's x extent), on transform
+  changes, ink writes and touches.
+* **Hit testing** maps the point through the inverse and tests the untransformed inks. The hit cell of a
+  transformed record is its pixel.
+* **Kernels.** The bin pass culls transformed pages with the transformed bounding box. Every instance and glyph
+  run is transformed per instance through its space's `FXf` (coverage window, inverse map, SDF scale, bilinear
+  glyphs).
+* **Templates.** A transformed box (zgui's computed rotate / scale / translate about the box centre) is mounted
+  with its subtree in its own space, and re-transformed whenever it is laid out. The gallery's turned and
+  scaled text, the tilted card and the `translate(-50%)` elements render transformed.
+* **Gates** (`tests/transforms.rs`):
+  * a quarter turn of a laid-out card with bold text equals the unturned frame turned on the CPU: 0 levels
+    over 23,908 pixels;
+  * a 30° turn covers exactly the turned rounded rect;
+  * turned and translated subtrees scroll, glide and relayout at ring ages 1–4 and windowed with presented ==
+    full redraw.
+
+**Transitions are built in** (`transition.rs`). `sig!(..).transition(curve)` and
+`sig!(..).map(f).transition(curve)` are operands like any other, so every property applier takes them:
+colour, width, span, an image's angle. A layout property goes through `wire_restyle`, whose source is a
+signal or a transition of one, and relayouts every frame.
+* **Retarget.** The wire's patch retargets: from is the value shown now, the start is now. The frame clock
+  (`App::tick`, published with `frame_paced`) applies each running transition through its property's
+  applier.
+* **Continuity.** Retargets are value-continuous. `Curve::smooth` is velocity-continuous too (a cubic
+  Hermite from the displayed value and velocity).
+* **Gates** (`tests/transitions.rs`):
+  * colour and width mid-transition at ring ages 1–4 and windowed equal both a full redraw and the
+    CPU-evaluated curve exactly;
+  * a retarget keeps the shown value; smooth: the next step continues the last within 15%;
+  * a flex-basis transition relayouts the row every frame.
+* **Cost per frame** of N running colour transitions (CPU form, main thread): 3.1 K / 34.8 K / 3.19 M
+  instructions for N = 1 / 100 / 10,000, about 320 per transition (`examples/transition_bench`). The GPU form
+  the lead proposed (from, to, t0, curve per instance, evaluated by the kernel, the CPU ORing a precomputed
+  tile mask per transition) is not built.
+
+**The inspector** is an ordinary bough app on the public API (`bough-zgui/src/inspector.rs`, `bough::inspect`).
+It picks records by the target's hit testing and shows the record tree, the pick's kind, ink, layout box and
+transform, and an overlay of the target's picked ink, layout box and repaired tiles. Its state panel waits
+for the api agent's reflection. Its friction log is `INSPECTOR.md`: four accessors were added, and the
+remaining items are reported to api and floor.
+
 ## 2. The mechanisms (one per job)
 
 **Hit testing is a range query over the paint preorder** (`bough-core/src/bough/hit.rs`). The answer is the last
