@@ -1007,6 +1007,14 @@ pub struct ComputePipeline {
 unsafe impl Send for ComputePipeline {}
 unsafe impl Sync for ComputePipeline {}
 
+/// bough extension (vendor/README.md): the Metal pipeline, for a caller that encodes its hot pass directly on
+/// [`CommandEncoder::raw_compute_encoder`].
+impl ComputePipeline {
+    pub fn raw_pipeline(&self) -> &ProtocolObject<dyn MTLComputePipelineState> {
+        &self.raw
+    }
+}
+
 impl crate::DynComputePipeline for ComputePipeline {}
 
 #[derive(Debug, Clone)]

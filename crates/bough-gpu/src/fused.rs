@@ -148,14 +148,12 @@ struct Kern {
     aux: hal::metal::Queue,
     ev: Retained<ProtocolObject<dyn MTLSharedEvent>>,
     region: hal::metal::Buffer,
-    layout: hal::metal::PipelineLayout,
-    bgl0: hal::metal::BindGroupLayout,
+    region_raw: Retained<ProtocolObject<dyn MTLBuffer>>,
     pso_bin: hal::metal::ComputePipeline,
     pso_tile: hal::metal::ComputePipeline,
     pso_copy: hal::metal::ComputePipeline,
     /// One 16-byte uniform per frame slot (x = the slot's byte offset), shared storage written in place.
     slot_raw: [Retained<ProtocolObject<dyn MTLBuffer>>; 3],
-    bg1: [hal::metal::BindGroup; 3],
     slots: [std::sync::atomic::AtomicU32; 3],
     batch: std::sync::atomic::AtomicUsize,
     /// Mirror of `arm.armed_upto` for a lock-free "already armed?" test.
@@ -172,8 +170,8 @@ struct ArmState {
     aux_enc: hal::metal::CommandEncoder,
     aux_fence: hal::metal::Fence,
     aux_value: u64,
-    /// Group 0: region, bins, counts (rebuilt when the bins or counts are replaced).
-    bg0: hal::metal::BindGroup,
+    /// The current bins and counts (replaced under the lock when they grow or the window resizes).
+    bc: (Retained<ProtocolObject<dyn MTLBuffer>>, Retained<ProtocolObject<dyn MTLBuffer>>),
 }
 // SAFETY: Metal and wgpu-hal Metal objects are thread-safe; the arming state is behind a mutex.
 unsafe impl Send for Kern {}
@@ -186,26 +184,36 @@ impl Kern {
     ///
     /// # Safety
     /// `enc` is recording; `bg0` is the current group 0.
-    unsafe fn encode(&self, enc: &mut hal::metal::CommandEncoder, bg0: &hal::metal::BindGroup, k: usize, nrows: u32, ntiles: u32, indirect: bool) {
+    unsafe fn encode(&self, enc: &mut hal::metal::CommandEncoder, bc: &(Retained<ProtocolObject<dyn MTLBuffer>>, Retained<ProtocolObject<dyn MTLBuffer>>), k: usize, nrows: u32, ntiles: u32, indirect: bool) {
         let slot = self.slots[k].load(Relaxed) as u64;
         // SAFETY: see the function contract; every object is live and of this device.
+        // The pass is the hal's; its bindings and dispatches go straight to the pass's Metal encoder (vendored
+        // `raw_compute_encoder` / `raw_pipeline`): the same calls as the direct presenter, without the hal's
+        // per-call binding bookkeeping (measured: +5..15 % instructions per frame through `set_bind_group` /
+        // `set_compute_pipeline`). The buffer indices are the pipeline layout's (build.rs).
         unsafe {
             enc.begin_compute_pass(&hal::ComputePassDescriptor { label: None, timestamp_writes: None });
-            enc.set_bind_group(&self.layout, 0, bg0, &[]);
-            enc.set_bind_group(&self.layout, 1, &self.bg1[k], &[]);
-            enc.set_compute_pipeline(&self.pso_copy);
-            enc.dispatch_indirect(&self.region, slot + 32);
-            enc.set_compute_pipeline(&self.pso_bin);
+            let ce = enc.raw_compute_encoder().unwrap();
+            let (bins, counts) = (&bc.0, &bc.1);
+            ce.setBuffer_offset_atIndex(Some(&self.region_raw), 0, 0);
+            ce.setBuffer_offset_atIndex(Some(bins), 0, 1);
+            ce.setBuffer_offset_atIndex(Some(counts), 0, 2);
+            ce.setBuffer_offset_atIndex(Some(&self.slot_raw[k]), 0, 3);
+            let tgc = MTLSize { width: 32, height: 8, depth: 1 };
+            let tg = MTLSize { width: 256, height: 1, depth: 1 };
+            ce.setComputePipelineState(self.pso_copy.raw_pipeline());
+            ce.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.region_raw, slot as usize + 32, tgc);
+            ce.setComputePipelineState(self.pso_bin.raw_pipeline());
             if indirect {
-                enc.dispatch_indirect(&self.region, slot);
+                ce.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.region_raw, slot as usize, tg);
             } else {
-                enc.dispatch([nrows, 1, 1]);
+                ce.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: nrows as usize, height: 1, depth: 1 }, tg);
             }
-            enc.set_compute_pipeline(&self.pso_tile);
+            ce.setComputePipelineState(self.pso_tile.raw_pipeline());
             if indirect {
-                enc.dispatch_indirect(&self.region, slot + 12);
+                ce.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.region_raw, slot as usize + 12, tg);
             } else {
-                enc.dispatch([ntiles, 1, 1]);
+                ce.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: ntiles as usize, height: 1, depth: 1 }, tg);
             }
             enc.end_compute_pass();
         }
@@ -216,14 +224,14 @@ impl Kern {
     fn arm_locked(&self, st: &mut ArmState) {
         let batch = self.batch.load(Relaxed) as u64;
         let ev: &ProtocolObject<dyn MTLEvent> = ProtocolObject::from_ref(&*self.ev);
-        let ArmState { enc, bg0, .. } = st;
+        let ArmState { enc, bc, .. } = st;
         // SAFETY: the encoder is idle (only armed under the lock); objects are live.
         let raw = unsafe {
             enc.begin_encoding(None).unwrap();
             let raw: Retained<ProtocolObject<dyn MTLCommandBuffer>> = Retained::from(enc.raw_command_buffer().unwrap());
             for f in st.armed_upto + 1..=st.armed_upto + batch {
                 raw.encodeWaitForEvent_value(ev, 2 * f - 1);
-                self.encode(enc, bg0, (f % 2) as usize, 0, 0, true);
+                self.encode(enc, bc, (f % 2) as usize, 0, 0, true);
                 raw.encodeSignalEvent_value(ev, 2 * f);
             }
             raw
@@ -258,13 +266,13 @@ impl Kern {
     /// command buffer's GPU time in ms (reference renders, bin-overflow redraws, kernel A/B).
     fn run_aux(&self, k: usize, nrows: u32, ntiles: u32, reps: usize) -> f64 {
         let mut st = self.arm.lock().unwrap();
-        let ArmState { aux_enc, bg0, .. } = &mut *st;
+        let ArmState { aux_enc, bc, .. } = &mut *st;
         // SAFETY: the aux encoder is idle (used only under the lock); objects are live; the caller synced.
         let raw = unsafe {
             aux_enc.begin_encoding(None).unwrap();
             let raw: Retained<ProtocolObject<dyn MTLCommandBuffer>> = Retained::from(aux_enc.raw_command_buffer().unwrap());
             for _ in 0..reps {
-                self.encode(aux_enc, bg0, k, nrows, ntiles, false);
+                self.encode(aux_enc, bc, k, nrows, ntiles, false);
             }
             raw
         };
@@ -282,22 +290,10 @@ impl Kern {
 
     /// Group 0 over the current bins and counts (under the arm lock: no frame is being encoded).
     fn rebind(&self, bins: &Retained<ProtocolObject<dyn MTLBuffer>>, counts: &Retained<ProtocolObject<dyn MTLBuffer>>) {
-        let bg = make_bg0(&self.dev, &self.bgl0, &self.region, bins, counts);
-        self.arm.lock().unwrap().bg0 = bg;
+        self.arm.lock().unwrap().bc = (bins.clone(), counts.clone());
     }
 }
 
-fn make_bg0(dev: &hal::metal::Device, bgl0: &hal::metal::BindGroupLayout, region: &hal::metal::Buffer, bins: &Retained<ProtocolObject<dyn MTLBuffer>>, counts: &Retained<ProtocolObject<dyn MTLBuffer>>) -> hal::metal::BindGroup {
-    // SAFETY: live buffers of these lengths.
-    let (b, c) = unsafe { (hal::metal::Device::buffer_from_raw(bins.clone(), bins.length() as u64), hal::metal::Device::buffer_from_raw(counts.clone(), counts.length() as u64)) };
-    let bb = [hal::BufferBinding::new_unchecked(region, 0, None), hal::BufferBinding::new_unchecked(&b, 0, None), hal::BufferBinding::new_unchecked(&c, 0, None)];
-    let entries: Vec<hal::BindGroupEntry> = (0..3).map(|i| hal::BindGroupEntry { binding: i, resource_index: i, count: 1 }).collect();
-    // SAFETY: the bind group references live buffers matching `bgl0` (the hal bind group retains them).
-    unsafe {
-        dev.create_bind_group(&hal::BindGroupDescriptor { label: None, layout: bgl0, buffers: &bb, samplers: &[], textures: &[], entries: &entries, acceleration_structures: &[], external_textures: &[] })
-            .unwrap()
-    }
-}
 
 /// The pipelines and layouts of the hal frame path (kernels from the build-time metallib).
 struct Pipes {
@@ -644,15 +640,6 @@ impl Fused {
         // SAFETY: live queues and buffer of this device.
         let (hq, haux, hregion) = unsafe { (hal::metal::Queue::queue_from_raw(queue.clone(), 1.0), hal::metal::Queue::queue_from_raw(aux.clone(), 1.0), hal::metal::Device::buffer_from_raw(pool.clone(), region_len as u64)) };
         let slot_raw: [Retained<ProtocolObject<dyn MTLBuffer>>; 3] = std::array::from_fn(|_| device.newBufferWithLength_options(16, MTLResourceOptions::StorageModeShared).expect("slot uniform"));
-        let bg1: [hal::metal::BindGroup; 3] = std::array::from_fn(|k| {
-            // SAFETY: a live 16-byte buffer.
-            let b = unsafe { hal::metal::Device::buffer_from_raw(slot_raw[k].clone(), 16) };
-            let bb = [hal::BufferBinding::new_unchecked(&b, 0, None)];
-            let entries = [hal::BindGroupEntry { binding: 0, resource_index: 0, count: 1 }];
-            // SAFETY: matches `bgl1`.
-            unsafe { hdev.create_bind_group(&hal::BindGroupDescriptor { label: None, layout: &pipes.bgl1, buffers: &bb, samplers: &[], textures: &[], entries: &entries, acceleration_structures: &[], external_textures: &[] }).unwrap() }
-        });
-        let bg0 = make_bg0(&hdev, &pipes.bgl0, &hregion, &bins, &counts);
         // SAFETY: device-owned objects.
         let (enc, fence, aux_enc, aux_fence) = unsafe {
             (
@@ -668,13 +655,11 @@ impl Fused {
             aux: haux,
             ev: device_ev.clone(),
             region: hregion,
-            layout: pipes.layout,
-            bgl0: pipes.bgl0,
+            region_raw: pool.clone(),
             pso_bin: pipes.pso_bin,
             pso_tile: pipes.pso_tile,
             pso_copy: pipes.pso_copy,
             slot_raw,
-            bg1,
             slots: Default::default(),
             batch: std::sync::atomic::AtomicUsize::new(16),
             armed: AtomicU64::new(0),
@@ -687,7 +672,7 @@ impl Fused {
                 aux_enc,
                 aux_fence,
                 aux_value: 0,
-                bg0,
+                bc: (bins.clone(), counts.clone()),
             }),
         });
         let layer = CALayer::new();

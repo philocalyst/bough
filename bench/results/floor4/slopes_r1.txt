@@ -1,0 +1,12 @@
+R1 heavy   idle   direct      -3176 [-4152..42817]   wgpu       2373 [-59171..17506]   wgpu/direct -0.747
+R1 heavy   stream direct     290173 [287455..290533]   wgpu     335211 [268137..345219]   wgpu/direct 1.155
+R1 heavy   scroll direct     194149 [162856..207114]   wgpu     156995 [156888..255771]   wgpu/direct 0.809
+R1 heavy   both   direct     333496 [323565..374847]   wgpu     443297 [293617..445937]   wgpu/direct 1.329
+R1 lab     idle   direct        908 [-1618..22073]   wgpu       4339 [267..18087]   wgpu/direct 4.778
+R1 lab     stream direct     136684 [128764..168588]   wgpu     156325 [140716..157235]   wgpu/direct 1.144
+R1 lab     scroll direct     123490 [110878..129704]   wgpu     122346 [101089..123020]   wgpu/direct 0.991
+R1 lab     both   direct     150261 [138093..153450]   wgpu     153604 [147556..167647]   wgpu/direct 1.022
+R1 animate -      direct     131559 [129621..140462]   wgpu     139919 [123790..152903]   wgpu/direct 1.064
+R1 vlist   scroll direct     129170 [126466..138482]   wgpu     139062 [138216..143666]   wgpu/direct 1.077
+R1 vlist   fling  direct     140571 [139715..141274]   wgpu     141160 [140259..147472]   wgpu/direct 1.004
+R1 vlist   jump   direct     152029 [150749..153722]   wgpu     160013 [158511..161742]   wgpu/direct 1.053
