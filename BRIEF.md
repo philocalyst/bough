@@ -700,8 +700,8 @@ headless and windowed can be measured without permissions (`bench/floor/`).
   132 tests green, zero warnings.
 * **`text3` → canonical** (the vendored parley stack plus grafts 1–6). The conflicts were the workspace manifest
   (canonical's members plus text3's comment), `vendor/README.md` (one file with a GPU-stack section and a text-stack
-  section) and `Cargo.lock`. `cargo check --workspace --all-targets` was clean; the full suite was started but **not finished
-  when the work was pushed** (at the user's call). Re-run it first.
+  section) and `Cargo.lock`. `cargo check --workspace --all-targets` was clean, and the full suite passed: 143 tests, 0 failures. That run
+  finished just after the first push, on the merge commit before the counter was added.
 * **`floor` is not merged.** Its last state is `bough/floor`: bough-gpu complete on wgpu-hal, the façade selects it
   with `--features bough/wgpu`, every pixel gate green at 3379273, plus the raw-encoder WIP (db078e0, two
   dead-field warnings). Its changes to shared files since canonical's floor merge are small: `crates/bough/src/app.rs`
