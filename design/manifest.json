@@ -1,0 +1,140 @@
+{
+  "scope": "Original supplied final statutes/examples and runtime Markdown captured before revision-2 callouts; historical requirements, superseded where CONTRACT.md explicitly amends them. Original examples are design inputs, not claimed compiled fixtures.",
+  "files": [
+    {
+      "source": "/root/designs/reactivity/final/00-model.md",
+      "copy": "final/00-model.md",
+      "sha256": "7c80e42e6074056900e4d372dc20aeb482b9fc9a93916b9565e491a9be27dd33"
+    },
+    {
+      "source": "/root/designs/reactivity/final/01-state.md",
+      "copy": "final/01-state.md",
+      "sha256": "2a9700eb05583308d8be883bea15562933e8ffa539e89f817df9ca0b2f9d0474"
+    },
+    {
+      "source": "/root/designs/reactivity/final/02-elements.md",
+      "copy": "final/02-elements.md",
+      "sha256": "d1106478486b0eb226bdbe785cbb9e13d67d92e7ce07c2917c351943699fe6d2"
+    },
+    {
+      "source": "/root/designs/reactivity/final/03-ports.md",
+      "copy": "final/03-ports.md",
+      "sha256": "3cbc5be5824f871287c50a72af535f0ed2ada41a69692cfcee9c952427830a95"
+    },
+    {
+      "source": "/root/designs/reactivity/final/04-reactions.md",
+      "copy": "final/04-reactions.md",
+      "sha256": "7eba4ee1a2a8cade321851d4f216eb3cf5c4d774131c12e71a9fbae51fc8841e"
+    },
+    {
+      "source": "/root/designs/reactivity/final/05-async.md",
+      "copy": "final/05-async.md",
+      "sha256": "b4fc06815c9407b8f9e82ebdb7b944e650eb791a554a8e1a00f0ae7e58ebcce2"
+    },
+    {
+      "source": "/root/designs/reactivity/final/06-text.md",
+      "copy": "final/06-text.md",
+      "sha256": "11395d3dad0ecdc461eadd612101330267913caa8f661aecd8fc90517f1628ba"
+    },
+    {
+      "source": "/root/designs/reactivity/final/07-platform.md",
+      "copy": "final/07-platform.md",
+      "sha256": "0487b2892affce8112da8b34482be70567c1829feadda319f94eb0add6fd8b99"
+    },
+    {
+      "source": "/root/designs/reactivity/final/08-runtime.md",
+      "copy": "final/08-runtime.md",
+      "sha256": "0f4960d4b74d28c48095da5babb3cfe08c95d930968966e2064f513f598839fd"
+    },
+    {
+      "source": "/root/designs/reactivity/final/09-boundaries.md",
+      "copy": "final/09-boundaries.md",
+      "sha256": "f250e108fea9cc8d564cc5450693d6da30d6b994da8f4132c9ac681463735cd5"
+    },
+    {
+      "source": "/root/designs/reactivity/final/10-quality.md",
+      "copy": "final/10-quality.md",
+      "sha256": "4b65882e3640aaeeb81409fc8f58cef273fd759ae32d0306165f9d9d075c0e2a"
+    },
+    {
+      "source": "/root/designs/reactivity/final/11-roadmap.md",
+      "copy": "final/11-roadmap.md",
+      "sha256": "6da813cc6156f30f5f1a7d64f48c745694011449ba5c588ca8102907905a7948"
+    },
+    {
+      "source": "/root/designs/reactivity/final/examples/README.md",
+      "copy": "final/examples/README.md",
+      "sha256": "e87deb6909545ff7f5a0848ebfe0f37650f09bba5d3f8c1e0dd773efa89b7685"
+    },
+    {
+      "source": "/root/designs/reactivity/final/examples/commands.rs",
+      "copy": "final/examples/commands.rs",
+      "sha256": "9fbe19dc224a7f4ac3d5077df27c9753614b4a638c50af2c30de02922c767853"
+    },
+    {
+      "source": "/root/designs/reactivity/final/examples/plugin_item.rs",
+      "copy": "final/examples/plugin_item.rs",
+      "sha256": "a62d1d71861d20960b76c93756fba4dd4eaa456d2ab17bac195751ae5e4fbbef"
+    },
+    {
+      "source": "/root/designs/reactivity/final/examples/ports_gallery.rs",
+      "copy": "final/examples/ports_gallery.rs",
+      "sha256": "2f7c997d4cc500f54d79efe62a3b92514ba8f8d637ca8735776f1cda0ded802f"
+    },
+    {
+      "source": "/root/designs/reactivity/final/examples/progressive.rs",
+      "copy": "final/examples/progressive.rs",
+      "sha256": "500cb20f2069e9de019f68cce23db7a48ee55c36411f0117bbd4cad6dd482f97"
+    },
+    {
+      "source": "/root/designs/reactivity/final/examples/reactions.rs",
+      "copy": "final/examples/reactions.rs",
+      "sha256": "746ad6dd12c795e2cb490dd68a321f0b26b9789bef4e82809aa444e4a65a0341"
+    },
+    {
+      "source": "/root/designs/reactivity/runtime/collections.md",
+      "copy": "runtime/collections.md",
+      "sha256": "9c2e0bb8d9f155c8f2fde708e47487c910a01a6e350c3aeaeaec1a17eb7781e1"
+    },
+    {
+      "source": "/root/designs/reactivity/runtime/color.md",
+      "copy": "runtime/color.md",
+      "sha256": "9f422b19cd45afc66e9b0c04787232b05c03707ac47c55905af722270a9b596a"
+    },
+    {
+      "source": "/root/designs/reactivity/runtime/datastructures-2.md",
+      "copy": "runtime/datastructures-2.md",
+      "sha256": "6edb46c7cd42225a573238a9bbb1dc9addd07cfa7867b8ce0d158bac99fc2dff"
+    },
+    {
+      "source": "/root/designs/reactivity/runtime/datastructures.md",
+      "copy": "runtime/datastructures.md",
+      "sha256": "c96b543d8cfca2af6ff3d6d641c0598cfc779c9df3548f12880e90e090ca913e"
+    },
+    {
+      "source": "/root/designs/reactivity/runtime/fastpath.md",
+      "copy": "runtime/fastpath.md",
+      "sha256": "b3823bcf17963c11ee97c0aacafe31dc4b165f3266b1991b2644bf9b4508507a"
+    },
+    {
+      "source": "/root/designs/reactivity/runtime/media.md",
+      "copy": "runtime/media.md",
+      "sha256": "7a542ef7c1054248ab9610fcf6eb08248a9b91c3d3a501a9af83b8b9f347e7b2"
+    },
+    {
+      "source": "/root/designs/reactivity/runtime/memory.md",
+      "copy": "runtime/memory.md",
+      "sha256": "21fb0bb803e81950311ef9974f7648f73c9e20fa221f7ed6c2cf77a4926406f7"
+    },
+    {
+      "source": "/root/designs/reactivity/runtime/scheduler.md",
+      "copy": "runtime/scheduler.md",
+      "sha256": "6ade5ae62485206cca1d8d93901600c21ed7517f2ff2b37a114cee66e5f2247b"
+    },
+    {
+      "source": "/root/designs/reactivity/runtime/shader-renderer-migration.md",
+      "copy": "runtime/shader-renderer-migration.md",
+      "sha256": "4d8833ede2b99209a95689f5e2048afb481461e7c26496627520ba1cb99fbb83"
+    }
+  ]
+}
