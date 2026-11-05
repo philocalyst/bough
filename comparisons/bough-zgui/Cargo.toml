@@ -11,7 +11,7 @@ bough-core = { path = "../../crates/bough-core" }
 bough-metal = { path = "../../crates/bough-metal" }
 zgx-workload = { path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }
 libc = "0.2"
-cephal = { path = "/Users/mileswirht/Downloads/ilo-prod-work/cephal", default-features = false, features = ["flex", "block", "grid"] }
+cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }
 
 [[bin]]
 name = "zgui_scenario"

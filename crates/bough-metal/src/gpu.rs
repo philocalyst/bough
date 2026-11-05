@@ -50,6 +50,18 @@ pub enum ShaderSource {
 pub static SHADER_SRC: &str = include_str!("shader.metal");
 pub static METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.metallib"));
 
+/// The shader library: the embedded metallib, or, when the build had no Metal compiler (empty `METALLIB`),
+/// `shader.metal` compiled from source.
+pub fn load_library(device: &ProtocolObject<dyn MTLDevice>) -> Retained<ProtocolObject<dyn MTLLibrary>> {
+    if METALLIB.is_empty() {
+        let s = NSString::from_str(SHADER_SRC);
+        device.newLibraryWithSource_options_error(&s, None).expect("msl compile")
+    } else {
+        let data = DispatchData::from_static_bytes(METALLIB);
+        device.newLibraryWithData_error(&data).expect("metallib load")
+    }
+}
+
 #[derive(Default, Clone, Debug)]
 pub struct StartupTimes {
     pub device_ms: f64,
@@ -220,10 +232,7 @@ impl Gpu {
 
         let t = Instant::now();
         let lib = match src {
-            ShaderSource::Metallib => {
-                let data = DispatchData::from_static_bytes(METALLIB);
-                device.newLibraryWithData_error(&data).expect("metallib load")
-            }
+            ShaderSource::Metallib => load_library(&device),
             ShaderSource::Runtime => {
                 let s = NSString::from_str(SHADER_SRC);
                 device.newLibraryWithSource_options_error(&s, None).expect("msl compile")

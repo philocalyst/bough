@@ -36,9 +36,8 @@
 //!   it (`sync` is a 72-instruction read of the event when the GPU is done).
 //! * **Resize:** fresh surfaces, bins and counts at the new size; the layer's new frame is committed with the
 //!   first frame drawn at that size.
-use crate::gpu::{Dev, Tex, METALLIB};
+use crate::gpu::{Dev, Tex};
 use crate::instance::Instance;
-use dispatch2::DispatchData;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2_core_foundation::{CFDictionary, CFRetained};
@@ -612,8 +611,7 @@ impl GpuPrep {
         let device = MTLCreateSystemDefaultDevice().expect("no Metal device");
         let queue = device.newCommandQueue().expect("queue");
         let aux = device.newCommandQueue().expect("aux queue");
-        let data = DispatchData::from_static_bytes(METALLIB);
-        let lib = device.newLibraryWithData_error(&data).expect("metallib load");
+        let lib = crate::gpu::load_library(&device);
         let pso = |name: &NSString| {
             let f = lib.newFunctionWithName(name).expect("kernel");
             device.newComputePipelineStateWithFunction_error(&f).expect("compute pso")
