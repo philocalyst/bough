@@ -59,3 +59,34 @@ do not revisit:  docs/SETTLED.md (nothing there concerns build configuration); n
 
 The lever order is decided by the attribution (the first report), recorded below as an amendment before any lever
 is pulled.
+
+## Amendment 1 (after report 1, `attribution.md`; before any lever is pulled)
+
+Baseline (production, stripped): counter 2,887,488 B; awagy scroll 2,837,888 B; awagy dashboard 3,185,008 B.
+
+Lever order, from the attribution. Build-configuration levers first (no source change), each added to the previous
+kept set and measured on the counter; the gates (G1 pixels on all ten cases, G3 on the ten hot cells) run on every
+configuration that is kept, and a configuration that fails is bisected back to the lever that broke it.
+
+| # | lever | expected | why |
+|---|---|---|---|
+| B1 | `panic = "abort"` (profile only, prebuilt std) | LSDA, landing pads | 29.6 KB `__gcc_except_tab` |
+| B2 | rebuild std: `-Z build-std=std,panic_abort` | | prerequisite of B3-B4 |
+| B3 | `panic_immediate_abort` | backtrace printer, panic formatting, `Location` paths | 137.5 KB backtrace + 27.4 KB paths |
+| B4 | `optimize_for_size` (std feature) | smaller sorts and std internals | 74.8 KB of sort instances; may cost hot cells (sorts on the frame path) |
+| B5 | `-Z location-detail=none`, `-Z fmt-debug=none` | remaining `Location`s, `Debug` impls | |
+| B6 | sync unwind tables (`-Z use-sync-unwind`) or none (`-C force-unwind-tables=no`) | eh_frame | 131.7 KB of epilogue CFI |
+| B7 | `-C force-frame-pointers=no`, `-Z share-generics`, explicit `-dead_strip`, `-dead_strip_dylibs` | expected ~0 (target minimum, fat LTO, already passed) | recorded either way |
+| B8 | per-crate opt-level: the rasteriser (swash, skrifa, read-fonts, zeno, yazi), rustybuzz, ttf-parser, png at `s`/`z`; hot crates at 3 | 20-35 % of those crates | must pass G3 |
+| B9 | whole-program `opt-level = "s"` / `"z"` | | expected to fail G3; recorded as the reference point and used as negative control (b) |
+
+Then source levers, each with G1 byte-identity against the production baseline:
+
+| # | lever | target bytes |
+|---|---|---:|
+| S1 | MSL minified at build time (comments, indentation) | ~30 KB |
+| S2 | glyph rasterisation through the outline and fill paths only (hinting, bitmap/colour glyphs, yazi, stroker unreachable) | up to ~300 KB |
+| S3 | cephal's grid reachable only from code that builds a grid style | ~160 KB |
+| S4 | rustybuzz as a capability linked only when an app asks for text beyond Latin-1 (semantics change: recorded as a capability cut, not a free win) | ~360 KB |
+| S5 | per-view monomorphisation: `App<V>`'s view-independent bodies behind one non-generic function | part of 76-125 KB |
+| S6 | float parsing of environment variables, other always-linked `core::fmt` | ~12 KB |

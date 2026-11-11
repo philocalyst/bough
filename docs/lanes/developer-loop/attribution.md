@@ -164,10 +164,11 @@ dashboard 56 / 125,304 B. The largest are `host::run_interactive::<V, ..>` (13â€
    interpreter and autohinter), colour/bitmap glyphs (+ yazi), and zeno's stroker are linked because they are chosen
    by runtime values (`hint(false)`, `Render::new(&[Source::Outline])`, `Style`). Calling the outline and fill paths
    directly should make them unreachable without touching the pixels.
-3. **cephal: 380 KB**, of which grid is ~150 KB that no prelude app can reach; the layout dispatch reaches it at
+3. **cephal: 380 KB** (grid 159,812, flex 148,552, block 26,180, out-of-flow 20,568, the rest shared). Grid is
+   ~160 KB that no prelude app can reach; the layout dispatch reaches it at
    run time. cephal is on the vlist hot path (rows mount while scrolling).
 4. **rustybuzz: ~360 KB** (215 KB code + 144 KB tables) for text outside Latin-1. A capability, not dead code.
-5. **The MSL source: 80 KB**, about half of it comments and indentation.
+5. **The MSL source: 80 KB**: without comments and indentation it is 50,860 B; deflated, 10,163 B.
 6. **Per-crate opt-level** on the cold crates above (rasteriser, fallback shaper, font parsing), proven with
    instruction counts.
 7. Smaller: float parsing (12 KB), objc2 (9â€“22 KB: not worth replacing by hand-written `objc_msgSend` externs on
