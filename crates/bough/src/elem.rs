@@ -29,11 +29,58 @@ pub struct Mounter<'a, V> {
     pub(crate) clip: u16,
     /// The `NumFmt` of a numeric text operand being lowered (handed to its text node).
     pub(crate) pending_num: Option<bough_text::numeric::NumFmt>,
+    /// Owner class of `owner` (0: the app's root; list rows and entities have their own, `Rt::classes`).
+    pub(crate) cls: u32,
+    /// Re-description (`describe.rs`; none with `Config::mount_once`): the owner's tape (node ids, dynamic parts)
+    /// recorded by `mount` and walked by `update` (`ti`); null for a fixed owner.
+    pub(crate) tape: *mut Vec<u32>,
+    pub(crate) ti: usize,
+    /// `update`: the Bough position of the next record, and the layout child index within `rt.lay.cur`.
+    pub(crate) pos: usize,
+    pub(crate) kid: usize,
+    /// An operand asked to keep the element's node addressable (`select`: an outside table names it).
+    pub(crate) keep: bool,
 }
 
 impl<V> Mounter<'_, V> {
     pub fn scale(&self) -> f32 {
         self.rt.scale
+    }
+    /// Is this mount recording a tape (a re-describing owner)?
+    #[inline(always)]
+    pub(crate) fn taping(&self) -> bool {
+        !self.tape.is_null()
+    }
+    #[inline(always)]
+    pub(crate) fn tape_push(&mut self, x: u32) {
+        if !self.tape.is_null() {
+            // SAFETY: `tape` points at the tape the caller of the mount owns for the mount's duration.
+            unsafe { (*self.tape).push(x) };
+        }
+    }
+    /// Length of the tape being recorded.
+    #[inline(always)]
+    pub(crate) fn ti_len(&self) -> usize {
+        // SAFETY: as `tape_push`.
+        unsafe { (&*self.tape).len() }
+    }
+    #[inline(always)]
+    pub(crate) fn tape_set(&mut self, i: usize, x: u32) {
+        // SAFETY: as `tape_push`.
+        unsafe { (&mut *self.tape)[i] = x };
+    }
+    /// The next tape entry (`update`).
+    #[inline(always)]
+    pub(crate) fn tape_next(&mut self) -> u32 {
+        // SAFETY: as `tape_push`; `update` runs only with a tape.
+        let x = unsafe { (&*self.tape)[self.ti] };
+        self.ti += 1;
+        x
+    }
+    /// A mounter for a sub-part (a dynamic item) of this one: same position state, its own scope, records
+    /// buffer and tape.
+    pub(crate) fn sub<'b>(&'b mut self, recs: &'b mut Vec<RecordInit>, scope: &'b mut Scope, tape: *mut Vec<u32>) -> Mounter<'b, V> {
+        Mounter { rt: &mut *self.rt, owner: self.owner, recs, scope, depth: self.depth, ox: self.ox, oy: self.oy, space: self.space, clip: self.clip, pending_num: None, cls: self.cls, tape, ti: 0, pos: self.pos, kid: self.kid, keep: false }
     }
     pub fn mount(&mut self, e: impl Element<V>) {
         e.mount(self)
@@ -45,17 +92,37 @@ impl<V> Mounter<'_, V> {
         debug_assert_eq!(w.sig as *const Signal<T> as usize, self.owner as usize + w.off as usize, "sig! operand is not a field of the mounted owner");
         // SAFETY: `w.off` is `offset_of!`-proven for owner type `V` (`Wired<_, V>` comes only from `sig!`),
         // and every caller passes a patch monomorphised for the signal's `T` with the recipe it reads.
-        let i = unsafe { self.rt.add_wire(w.sig.head(), w.off, patch, node, recipe) };
+        let i = unsafe { self.rt.add_wire(w.sig.head(), w.off, self.cls, patch, node, recipe) };
         self.scope.wires.push(i);
+    }
+    /// Install a wire on any headed cell of this owner (lists, readers): `head` at `owner + off`.
+    ///
+    /// # Safety
+    /// `off` is the `offset_of!`-proven offset of the cell whose head is `head` in this mounter's owner type,
+    /// and `patch` reads exactly that cell type.
+    pub(crate) unsafe fn wire_cell(&mut self, head: &std::cell::Cell<u32>, off: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
+        debug_assert_eq!(head as *const _ as usize, self.owner as usize + off as usize, "operand is not a field of the mounted owner");
+        let i = unsafe { self.rt.add_wire(head, off, self.cls, patch, node, recipe) };
+        self.scope.wires.push(i);
+        i
     }
 }
 
 pub trait Element<V>: Sized {
     fn mount(self, m: &mut Mounter<'_, V>);
+    /// Re-description: walk the owner's retained records in lockstep with this (new) description,
+    /// patching what differs (`describe.rs`). Wired operands keep their wires.
+    fn update(self, m: &mut Mounter<'_, V>);
+    /// Identity of this element inside a dynamic part (0: positional). An item whose key changed between
+    /// two descriptions is replaced (unmounted and mounted), not updated (`describe::update_dyn`).
+    fn dyn_key(&self) -> u64 {
+        0
+    }
 }
 
 impl<V> Element<V> for () {
     fn mount(self, _: &mut Mounter<'_, V>) {}
+    fn update(self, _: &mut Mounter<'_, V>) {}
 }
 
 macro_rules! tuple_elements {
@@ -65,6 +132,11 @@ macro_rules! tuple_elements {
             fn mount(self, m: &mut Mounter<'_, V>) {
                 let ($($t,)+) = self;
                 $($t.mount(m);)+
+            }
+            #[allow(non_snake_case)]
+            fn update(self, m: &mut Mounter<'_, V>) {
+                let ($($t,)+) = self;
+                $($t.update(m);)+
             }
         }
     };
@@ -80,9 +152,10 @@ tuple_elements!(A, B, C, D, E, F, G, H);
 
 impl<V, E: Element<V>> Element<V> for Vec<E> {
     fn mount(self, m: &mut Mounter<'_, V>) {
-        for e in self {
-            e.mount(m);
-        }
+        crate::describe::mount_dyn(m, self.into_iter());
+    }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_dyn(m, self.into_iter());
     }
 }
 
@@ -96,9 +169,10 @@ where
     I::Item: Element<V>,
 {
     fn mount(self, m: &mut Mounter<'_, V>) {
-        for e in self.0 {
-            e.mount(m);
-        }
+        crate::describe::mount_dyn(m, self.0);
+    }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_dyn(m, self.0);
     }
 }
 
@@ -114,6 +188,9 @@ pub trait Apply {
 pub trait IntoProp<P: 'static, V>: Sized {
     /// The initial value; installs a wire when the operand is dynamic.
     fn lower<K: Apply<P = P>>(self, m: &mut Mounter<'_, V>, node: u32) -> P;
+    /// The current value, at a re-description (a wired operand keeps its wire; applying its current value
+    /// is a no-op through the property's equality cut-off).
+    fn value(self) -> P;
 }
 
 macro_rules! const_prop {
@@ -121,6 +198,8 @@ macro_rules! const_prop {
         impl<V> IntoProp<$t, V> for $t {
             #[inline]
             fn lower<K: Apply<P = $t>>(self, _: &mut Mounter<'_, V>, _: u32) -> $t { self }
+            #[inline]
+            fn value(self) -> $t { self }
         }
     )*};
 }
@@ -129,6 +208,9 @@ const_prop!(f32, (f32, f32), Color);
 /// A plain borrow is a constant of this description (re-read only when the owner re-describes).
 impl<T: Clone + 'static, V> IntoProp<T, V> for &Signal<T> {
     fn lower<K: Apply<P = T>>(self, _: &mut Mounter<'_, V>, _: u32) -> T {
+        (**self).clone()
+    }
+    fn value(self) -> T {
         (**self).clone()
     }
 }
@@ -164,6 +246,9 @@ impl<'a, T: Clone + 'static, V> IntoProp<T, V> for Wired<'a, T, V> {
         m.wire(&self, patch_sig::<K, T>, node, [0; 16]);
         self.get().clone()
     }
+    fn value(self) -> T {
+        self.get().clone()
+    }
 }
 
 impl<'a, T: 'static, V, F, P: 'static> IntoProp<P, V> for WMap<'a, T, V, F>
@@ -174,6 +259,9 @@ where
         let init = (self.f)(self.w.get());
         m.wire(&self.w, patch_map::<K, T, F>, node, recipe_of(self.f));
         init
+    }
+    fn value(self) -> P {
+        (self.f)(self.w.get())
     }
 }
 
@@ -196,15 +284,17 @@ impl Apply for ApplyBg {
         if n.kind & NK_HOVERED != 0 {
             return; // the hover colour shows; the base returns when the pointer leaves (input.rs)
         }
-        let (h, inst, bordered) = (n.handle, rt.runs[n.run as usize].first, n.kind == NK_BORDER);
+        let (h, inst, bordered, a) = (n.handle, rt.runs[n.run as usize].first, n.kind == NK_BORDER, n.alpha);
         let p = rt.inst_mut(inst);
+        let c = crate::boxops::mul_alpha(v.0, a);
         if bordered {
-            p.color2 = v.0;
+            p.color2 = c;
         } else {
-            p.color = v.0;
+            p.color = c;
         }
-        // the colour word is the record's whole paint state: logged as is (content addressing)
-        rt.paint_write(h, old as u64, v.0 as u64);
+        // the colour word (with the opacity operand's alpha, `boxops::paint_state`) is the record's whole paint
+        // state: logged as is (content addressing)
+        rt.paint_write(h, crate::boxops::paint_state(old, a), crate::boxops::paint_state(v.0, a));
     }
 }
 
@@ -314,11 +404,14 @@ where
         let inst = m.rt.runs[run as usize].first;
         *m.rt.inst_mut(inst) = ins;
         let ink = m.rt.ink_rect(m.space, x_px, y_px, w_px, h_px, margin);
-        let dynamic = m.scope.wires.len() > wires_before;
+        // a re-describing owner keeps every quad addressable (any constant may change)
+        let dynamic = m.scope.wires.len() > wires_before || m.taping() || std::mem::take(&mut m.keep);
+        m.tape_push(node);
         let mut handle_idx = 0;
         if dynamic {
             let hd = m.rt.bough.new_handle();
             handle_idx = hd.idx;
+            m.rt.reflect.elem(hd.idx, std::any::type_name::<Self>());
             let n = &mut m.rt.nodes[node as usize];
             n.handle = hd;
             n.run = run;
@@ -349,6 +442,62 @@ where
         m.ox = ox;
         m.oy = oy;
     }
+
+    fn update(self, m: &mut Mounter<'_, V>) {
+        let node = m.tape_next();
+        let bg = self.bg.value();
+        let w = self.wd.value();
+        let (y, h) = self.sp.value();
+        let s = m.rt.scale;
+        let (x_px, y0_px) = ((m.ox + self.x) * s, m.oy * s);
+        let (y_px, h_px, w_px) = (y0_px + y * s, h * s, w * s);
+        let (mut ins, _kind, margin) = quad_instance(bg, self.radius * s, self.border, s, m.space);
+        ins.pos = [x_px, y_px];
+        ins.size = [w_px, h_px];
+        let nk = if self.border.is_some() { NK_BORDER } else { NK_QUAD };
+        let (inst, hd, cur) = {
+            let n = &m.rt.nodes[node as usize];
+            (m.rt.runs[n.run as usize].first, n.handle, n.clip)
+        };
+        if cur != m.clip {
+            m.rt.bough.set_clip_run(m.pos, 1, m.clip);
+            m.rt.nodes[node as usize].clip = m.clip;
+        }
+        let old = *m.rt.inst_mut(inst);
+        let geo = old.pos != ins.pos || old.size != ins.size || old.radius != ins.radius || old.kind != ins.kind || old.bw != ins.bw || old.space != ins.space;
+        // the border colour is geometry-class damage (one record, one paint state: its fill, see `paint_write`)
+        let border_c = self.border.is_some() && old.color != ins.color;
+        if geo || border_c || m.rt.nodes[node as usize].kind != nk {
+            *m.rt.inst_mut(inst) = ins;
+            {
+                let n = &mut m.rt.nodes[node as usize];
+                n.kind = nk;
+                n.x = x_px;
+                n.y = y_px;
+                n.y0 = y0_px;
+                n.w = w_px;
+                n.h = h_px;
+                n.color = bg.0;
+                n.margin = margin;
+                n.space = m.space;
+            }
+            m.rt.quad_ink(node);
+            let _ = hd;
+        } else {
+            m.rt.nodes[node as usize].y0 = y0_px;
+            ApplyBg::apply(m.rt, node, &bg);
+        }
+        m.pos += 1;
+        let bw = self.border.map_or(0.0, |b| b.0);
+        let (ox, oy) = (m.ox, m.oy);
+        m.ox += self.x + bw;
+        m.oy += y + bw;
+        m.depth += 1;
+        self.ch.update(m);
+        m.depth -= 1;
+        m.ox = ox;
+        m.oy = oy;
+    }
 }
 
 // =============================================================================== text
@@ -358,10 +507,15 @@ where
 /// value is rendered into the label without a `String`).
 pub trait TextSrc<V>: Sized {
     fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String;
+    /// The current text, at a re-description.
+    fn value(self) -> String;
 }
 
 impl<V> TextSrc<V> for &'static str {
     fn lower(self, _: &mut Mounter<'_, V>, _: u32) -> String {
+        self.to_owned()
+    }
+    fn value(self) -> String {
         self.to_owned()
     }
 }
@@ -369,16 +523,22 @@ impl<V> TextSrc<V> for String {
     fn lower(self, _: &mut Mounter<'_, V>, _: u32) -> String {
         self
     }
+    fn value(self) -> String {
+        self
+    }
 }
 impl<V> TextSrc<V> for &Signal<String> {
     fn lower(self, _: &mut Mounter<'_, V>, _: u32) -> String {
+        (**self).clone()
+    }
+    fn value(self) -> String {
         (**self).clone()
     }
 }
 
 /// The text node of `node` was given a new value.
 #[inline]
-fn set_node_text(rt: &mut Rt, node: u32, s: &str) {
+pub(crate) fn set_node_text(rt: &mut Rt, node: u32, s: &str) {
     let n = &rt.nodes[node as usize];
     let ti = n.text;
     if n.kind == NK_LTEXT {
@@ -449,6 +609,9 @@ impl<'a, V> TextSrc<V> for Wired<'a, String, V> {
         m.wire(&self, patch_text, node, [0; 16]);
         self.get().clone()
     }
+    fn value(self) -> String {
+        self.get().clone()
+    }
 }
 impl<'a, T: 'static, V, F: Fn(&T) -> String + Copy + 'static> TextSrc<V> for WMap<'a, T, V, F> {
     fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String {
@@ -456,12 +619,22 @@ impl<'a, T: 'static, V, F: Fn(&T) -> String + Copy + 'static> TextSrc<V> for WMa
         m.wire(&self.w, patch_text_map::<T, F>, node, recipe_of(self.f));
         init
     }
+    fn value(self) -> String {
+        (self.f)(self.w.get())
+    }
 }
 impl<'a, T: 'static, V, F: Fn(&T) -> f32 + Copy + 'static> TextSrc<V> for Num<'a, T, V, F> {
     fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String {
         let v = (self.f)(self.w.get());
         m.wire(&self.w, patch_text_num::<T, F>, node, recipe_of(self.f));
         m.pending_num = Some(self.fmt);
+        let mut buf = [0u8; 16];
+        let mut slow = String::new();
+        let n = render_num(&self.fmt, v, &mut buf, &mut slow);
+        if n == usize::MAX { slow } else { bough_text::numeric::as_str(&buf, n).to_owned() }
+    }
+    fn value(self) -> String {
+        let v = (self.f)(self.w.get());
         let mut buf = [0u8; 16];
         let mut slow = String::new();
         let n = render_num(&self.fmt, v, &mut buf, &mut slow);
@@ -516,11 +689,15 @@ pub trait GlyphOp<V>: Sized {
     /// Does it need one instance per glyph?
     const PER_GLYPH: bool;
     fn install(self, m: &mut Mounter<'_, V>, node: u32);
+    /// The text was rebuilt by a re-description: write the per-glyph state again.
+    fn refresh(self, m: &mut Mounter<'_, V>, node: u32);
 }
 impl<V> GlyphOp<V> for () {
     const PER_GLYPH: bool = false;
     #[inline]
     fn install(self, _: &mut Mounter<'_, V>, _: u32) {}
+    #[inline]
+    fn refresh(self, _: &mut Mounter<'_, V>, _: u32) {}
 }
 pub struct GlyphAlpha<'a, T, V> {
     sig: Wired<'a, T, V>,
@@ -567,6 +744,10 @@ impl<'a, V: 'static, T: 'static> GlyphOp<V> for GlyphAlpha<'a, T, V> {
         m.rt.nodes[node as usize].series_key = hsh;
         m.wire(&self.sig, patch_galpha::<T>, node, recipe_of(self.f));
     }
+    fn refresh(self, m: &mut Mounter<'_, V>, node: u32) {
+        let hsh = set_glyph_alpha(m.rt, node, self.f, self.sig.get());
+        m.rt.nodes[node as usize].series_key = hsh;
+    }
 }
 
 impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
@@ -581,8 +762,12 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
         let lh_px = self.lh * s;
         let strike = m.rt.text.strike(size_px);
         let base = ((m.oy + self.y) * s + m.rt.text.baseline(size_px, lh_px)).round();
-        let dynamic = G::PER_GLYPH || m.scope.wires.len() > wires_before;
+        let dynamic = G::PER_GLYPH || m.scope.wires.len() > wires_before || m.taping();
+        m.tape_push(node);
         let hd = if dynamic { m.rt.bough.new_handle() } else { Handle { idx: 0, generation: 0 } };
+        if dynamic {
+            m.rt.reflect.elem(hd.idx, std::any::type_name::<Self>());
+        }
         let ti = m.rt.alloc_text(TextNode {
             text: init,
             strike: strike as u32,
@@ -618,6 +803,62 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
         let ink = m.rt.texts[ti as usize].ink;
         m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_TEXT, payload, handle: hd.idx, clip: m.clip });
     }
+
+    fn update(self, m: &mut Mounter<'_, V>) {
+        let node = m.tape_next();
+        let text = self.s.value();
+        let s = m.rt.scale;
+        let size_px = self.size * s;
+        let lh_px = self.lh * s;
+        let (ti, hd) = (m.rt.nodes[node as usize].text, m.rt.nodes[node as usize].handle);
+        if m.rt.nodes[node as usize].clip != m.clip {
+            m.rt.bough.set_clip_run(m.pos, 1, m.clip);
+            m.rt.nodes[node as usize].clip = m.clip;
+        }
+        let base = ((m.oy + self.y) * s + m.rt.text.baseline(size_px, lh_px)).round();
+        let ox = (m.ox + self.x) * s;
+        let same_place = {
+            let t = &m.rt.texts[ti as usize];
+            t.size_px == size_px && t.line_h == lh_px && t.color == self.color.0 && t.ox == ox && t.oy == base && t.space == m.space
+        };
+        if same_place {
+            m.rt.text_set(ti, &text);
+        } else {
+            // a moved / resized / recoloured text: rebuilt (old and new ink damaged)
+            let old_ink = m.rt.cur_ink(hd);
+            let old = std::mem::take(&mut m.rt.texts[ti as usize].shape);
+            crate::text::release(m.rt, TextNode { shape: old, ..Default::default() });
+            let strike = m.rt.text.strike(size_px);
+            {
+                let t = &mut m.rt.texts[ti as usize];
+                t.text = text;
+                t.strike = strike as u32;
+                t.size_px = size_px;
+                t.line_h = lh_px;
+                t.color = self.color.0;
+                t.ox = ox;
+                t.oy = base;
+                t.space = m.space;
+            }
+            let payload = m.rt.text_build(ti);
+            {
+                let n = &mut m.rt.nodes[node as usize];
+                n.color = self.color.0;
+                n.size_px = size_px;
+                n.line_h = lh_px;
+                n.space = m.space;
+            }
+            if let TShape::Glyphs { run } = m.rt.texts[ti as usize].shape {
+                m.rt.nodes[node as usize].run = run;
+            }
+            self.g.refresh(m, node);
+            m.rt.bough.set_payload_handle(hd, payload);
+            let ink = m.rt.texts[ti as usize].ink;
+            m.rt.bough.damage_rect(old_ink);
+            m.rt.bough.set_ink_handle(hd, ink);
+        }
+        m.pos += 1;
+    }
 }
 
 // =============================================================================== grouping
@@ -636,6 +877,14 @@ impl<V, Ch: Element<V>> Element<V> for At<Ch> {
         m.ox = ox;
         m.oy = oy;
     }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        let (ox, oy) = (m.ox, m.oy);
+        m.ox += self.0;
+        m.oy += self.1;
+        self.2.update(m);
+        m.ox = ox;
+        m.oy = oy;
+    }
 }
 
 /// Children clipped to a rect (points, relative to the current origin): a bough-core clip id on their
@@ -644,7 +893,29 @@ pub struct Clip<Ch>(pub [f32; 4], pub Ch);
 pub fn clip<Ch>(x: f32, y: f32, w: f32, h: f32, ch: Ch) -> Clip<Ch> {
     Clip([x, y, w, h], ch)
 }
+impl<Ch> Clip<Ch> {
+    fn enter<V>(&self, m: &mut Mounter<'_, V>) -> u16 {
+        let s = m.rt.scale;
+        let o = m.rt.space(m.space);
+        let [x, y, w, h] = self.0;
+        let r = [o[0] + (m.ox + x) * s, o[1] + (m.oy + y) * s, o[0] + (m.ox + x + w) * s, o[1] + (m.oy + y + h) * s];
+        let prev = m.clip;
+        let r = if prev != 0 {
+            let p = m.rt.bough.clip_rect(prev).to_xyxy();
+            [r[0].max(p[0] as f32), r[1].max(p[1] as f32), r[2].min(p[2] as f32), r[3].min(p[3] as f32)]
+        } else {
+            r
+        };
+        m.clip = m.rt.clip_rect(r);
+        prev
+    }
+}
 impl<V, Ch: Element<V>> Element<V> for Clip<Ch> {
+    fn update(self, m: &mut Mounter<'_, V>) {
+        let prev = self.enter(m);
+        self.1.update(m);
+        m.clip = prev;
+    }
     fn mount(self, m: &mut Mounter<'_, V>) {
         let s = m.rt.scale;
         let o = m.rt.space(m.space);
@@ -699,7 +970,7 @@ pub(crate) unsafe fn mount_row<V: 'static>(rt: &mut Rt, owner: *const u8, reg: u
     let mut scope = Scope::default();
     let before = recs.len();
     {
-        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None };
+        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls: 0, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false };
         // SAFETY: see the function contract.
         f(unsafe { &*(owner as *const V) }, row, &mut m);
     }
@@ -743,8 +1014,15 @@ impl<'a, V: 'static> Element<V> for VirtualList<'a, V> {
             row_fn: self.row as usize,
         });
         m.wire(&self.scroll, patch_scroll, reg as u32, [0; 16]);
+        m.tape_push(reg as u32);
         // SAFETY: the owner pointer is the mounted owner (`App::new` / a row mount).
         unsafe { m.rt.region_initial(reg, m.owner as *const u8, *self.scroll.get(), m.recs) };
+    }
+    /// The rows are the region's (scroll-driven); a re-description only re-anchors the run.
+    fn update(self, m: &mut Mounter<'_, V>) {
+        let reg = m.tape_next() as usize;
+        m.rt.regions[reg].base_pos = m.pos;
+        m.pos += m.rt.regions[reg].rows.iter().map(|r| r.nrec as usize).sum::<usize>();
     }
 }
 
@@ -906,5 +1184,9 @@ impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a,
         m.scope.nodes.push(node);
         m.scope.runs.push(run);
         m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: pay_irun(first, self.count as u32), handle: hd.idx, clip: m.clip });
+    }
+    /// The series is wire-driven; its geometry constants are taken as fixed for the owner's life.
+    fn update(self, m: &mut Mounter<'_, V>) {
+        m.pos += 1;
     }
 }

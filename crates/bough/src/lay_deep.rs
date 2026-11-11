@@ -19,6 +19,7 @@
 //! Nothing is mirrored and nothing is marked dirty at mount: a freshly mounted group has empty caches, and
 //! the first `layout` computes it cold.
 use crate::layout::{FxBuild, LeafCtx, Spec, SpecKey};
+use bough_text::pool::GlyphPool;
 use bough_core::{Bough, Handle};
 use cephal::compute::block::BlockContext;
 use cephal::compute::plan::StylePlan;
@@ -41,12 +42,15 @@ struct DNode {
     touched: u32,
     layout: Layout,
     cache: NodeCache,
-    ctx: Option<LeafCtx>,
+    /// Index of its text state in `Deep::ctxs` (`NOCTX`: none).
+    ctx: u32,
 }
+
+const NOCTX: u32 = u32::MAX;
 
 impl DNode {
     fn blank() -> DNode {
-        DNode { style: 0, flags: 0, live: false, root: false, hgen: 0, nkids: 0, kids: Vec::new(), touched: 0, layout: Layout::ZERO, cache: NodeCache::default(), ctx: None }
+        DNode { style: 0, flags: 0, live: false, root: false, hgen: 0, nkids: 0, kids: Vec::new(), touched: 0, layout: Layout::ZERO, cache: NodeCache::default(), ctx: NOCTX }
     }
 }
 
@@ -60,6 +64,13 @@ pub struct Deep {
     changed: Vec<u32>,
     /// Out-of-flow records of containers (by node), see the module docs.
     abs: HashMap<u32, AbsoluteContext, FxBuild>,
+    /// Text states of removed leaves, waiting for their glyph blocks to be released (`Rt::reclaim`), and
+    /// released ones kept for reuse (their buffers' capacity: a mount after a teardown allocates nothing).
+    pub orphans: Vec<u32>,
+    pub recycled: Vec<u32>,
+    /// Text states of measured / sized text leaves, by index (`DNode::ctx`), and the free indices.
+    ctxs: Vec<LeafCtx>,
+    ctx_free: Vec<u32>,
 }
 
 #[inline(always)]
@@ -89,7 +100,62 @@ impl Deep {
             last_root: None,
             changed: Vec::new(),
             abs: HashMap::default(),
+            ctxs: Vec::new(),
+            ctx_free: Vec::new(),
+            orphans: Vec::new(),
+            recycled: Vec::new(),
         }
+    }
+
+    /// A text leaf state: a recycled one (buffers kept) or a new one.
+    pub fn fresh_ctx(&mut self, size_px: f32, lh_px: f32, wrap: bool) -> LeafCtx {
+        match self.recycled.pop() {
+            Some(c) => {
+                self.ctx_free.push(c);
+                std::mem::take(&mut self.ctxs[c as usize]).reset(size_px, lh_px, wrap)
+            }
+            None => LeafCtx::new(size_px, lh_px, wrap),
+        }
+    }
+
+    /// The interned style of `spec` (one hash of the spec's words; the `Style` is built once per spec).
+    pub fn style_id(&mut self, spec: &Spec, scale: f32) -> u32 {
+        match self.spec_ids.get(&SpecKey(*spec)) {
+            Some(&id) => id,
+            None => {
+                let id = self.styles.intern(spec.to_style(scale));
+                self.spec_ids.insert(SpecKey(*spec), id);
+                id
+            }
+        }
+    }
+    /// Intern a resolved style (reflection's style edits).
+    pub fn intern_style(&mut self, s: Style) -> u32 {
+        self.styles.intern(s)
+    }
+    /// The resolved style of node `n` (reflection).
+    pub fn style(&self, n: u32) -> &Style {
+        self.styles.get(self.n[n as usize].style)
+    }
+    pub fn style_of(&self, n: u32) -> u32 {
+        self.n[n as usize].style
+    }
+    /// Set node `n`'s style before it was ever laid out (a mount's operand values): no invalidation.
+    pub fn set_style_fresh(&mut self, n: u32, style: u32) {
+        let measured = self.ctx_ref(n).is_some_and(|c| c.user.is_none());
+        let keep = self.n[n as usize].flags & !META_MASK;
+        self.n[n as usize].style = style;
+        self.n[n as usize].flags = meta_bits(&self.styles, style, measured) | keep;
+    }
+
+    /// Restyle node `n` (a re-description changed its spec) and invalidate it.
+    pub fn set_style(&mut self, b: &Bough, n: u32, style: u32) {
+        let measured = self.ctx_ref(n).is_some_and(|c| c.user.is_none());
+        let keep = self.n[n as usize].flags & !META_MASK;
+        self.n[n as usize].style = style;
+        self.n[n as usize].flags = meta_bits(&self.styles, style, measured) | keep;
+        self.n[n as usize].cache.clear();
+        self.invalidate(b, n);
     }
 
     pub fn add(&mut self, hd: Handle, spec: &Spec, scale: f32, ctx: Option<LeafCtx>) -> u32 {
@@ -97,15 +163,24 @@ impl Deep {
         if self.n.len() <= i as usize {
             self.n.resize_with(i as usize + 1, DNode::blank);
         }
-        let style = match self.spec_ids.get(&SpecKey(*spec)) {
-            Some(&id) => id,
-            None => {
-                let id = self.styles.intern(spec.to_style(scale));
-                self.spec_ids.insert(SpecKey(*spec), id);
-                id
+        let style = self.style_id(spec, scale);
+        let flags = meta_bits(&self.styles, style, ctx.as_ref().is_some_and(|c| c.user.is_none()));
+        let ci = match ctx {
+            Some(c) => {
+                let ci = match self.ctx_free.pop() {
+                    Some(ci) => {
+                        self.ctxs[ci as usize] = c;
+                        ci
+                    }
+                    None => {
+                        self.ctxs.push(c);
+                        (self.ctxs.len() - 1) as u32
+                    }
+                };
+                ci
             }
+            None => NOCTX,
         };
-        let flags = meta_bits(&self.styles, style, ctx.is_some());
         let nd = &mut self.n[i as usize];
         nd.style = style;
         nd.flags = flags;
@@ -117,7 +192,10 @@ impl Deep {
         nd.touched = 0;
         nd.layout = Layout::ZERO;
         nd.cache.clear();
-        nd.ctx = ctx;
+        let old = std::mem::replace(&mut nd.ctx, ci);
+        if old != NOCTX {
+            self.orphans.push(old);
+        }
         i
     }
 
@@ -126,38 +204,26 @@ impl Deep {
         self.styles.intern(st)
     }
 
-    /// The style of node `n`.
-    pub fn style_of(&self, n: u32) -> &Style {
-        self.styles.get(self.n[n as usize].style)
-    }
-
-    /// Give a node that has never been laid out (being mounted) interned style `style`.
-    pub fn set_style_cold(&mut self, n: u32, style: u32) {
-        let measured = self.n[n as usize].ctx.is_some();
-        let flags = meta_bits(&self.styles, style, measured);
-        let nd = &mut self.n[n as usize];
-        nd.style = style;
-        nd.flags = (nd.flags & !META_MASK) | (flags & META_MASK);
-    }
-
-    /// Give node `n` interned style `style` and mark it for relayout.
-    pub fn set_style(&mut self, b: &Bough, n: u32, style: u32) {
-        let measured = self.n[n as usize].ctx.is_some();
-        let flags = meta_bits(&self.styles, style, measured);
-        let nd = &mut self.n[n as usize];
-        nd.style = style;
-        nd.flags = (nd.flags & !META_MASK) | (flags & META_MASK);
-        nd.cache.clear();
-        self.invalidate(b, n);
-    }
-
-    /// `add` with an interned style id instead of a `Spec`.
+    /// `add` with an interned style id instead of a `Spec` (layout templates, `ltemplate.rs`).
     pub fn add_style(&mut self, hd: Handle, style: u32, ctx: Option<LeafCtx>) -> u32 {
         let i = hd.idx;
         if self.n.len() <= i as usize {
             self.n.resize_with(i as usize + 1, DNode::blank);
         }
-        let flags = meta_bits(&self.styles, style, ctx.is_some());
+        let flags = meta_bits(&self.styles, style, ctx.as_ref().is_some_and(|c| c.user.is_none()));
+        let ci = match ctx {
+            Some(c) => match self.ctx_free.pop() {
+                Some(ci) => {
+                    self.ctxs[ci as usize] = c;
+                    ci
+                }
+                None => {
+                    self.ctxs.push(c);
+                    (self.ctxs.len() - 1) as u32
+                }
+            },
+            None => NOCTX,
+        };
         let nd = &mut self.n[i as usize];
         nd.style = style;
         nd.flags = flags;
@@ -169,8 +235,25 @@ impl Deep {
         nd.touched = 0;
         nd.layout = Layout::ZERO;
         nd.cache.clear();
-        nd.ctx = ctx;
+        let old = std::mem::replace(&mut nd.ctx, ci);
+        if old != NOCTX {
+            self.orphans.push(old);
+        }
         i
+    }
+
+    #[inline]
+    fn ctx_ref(&self, n: u32) -> Option<&LeafCtx> {
+        let c = self.n[n as usize].ctx;
+        (c != NOCTX).then(|| &self.ctxs[c as usize])
+    }
+
+    /// Release the glyph block of a removed leaf's text state and keep the state for reuse (`Rt::reclaim`).
+    pub fn reclaim_orphan(&mut self, pool: &mut GlyphPool) -> bool {
+        let Some(c) = self.orphans.pop() else { return false };
+        self.ctxs[c as usize].release(pool);
+        self.recycled.push(c);
+        true
     }
 
     pub fn mark_root(&mut self, n: u32) {
@@ -183,8 +266,41 @@ impl Deep {
         p.kids.push(child);
     }
 
+    /// Number of children of container `n`.
+    pub fn kid_count(&self, n: u32) -> usize {
+        self.n[n as usize].kids.len()
+    }
+    /// The children of `n` (mount order = flow order).
+    pub fn kids(&self, n: u32) -> &[u32] {
+        &self.n[n as usize].kids
+    }
+    /// Structural edit of container `n`'s children (a list region's rows): `kids[at..at+del]` becomes `ins`;
+    /// the container is invalidated (its algorithm reruns over its children at the next layout).
+    pub fn splice_kids(&mut self, b: &Bough, n: u32, at: usize, del: usize, ins: &[u32]) {
+        {
+            let nd = &mut self.n[n as usize];
+            nd.kids.splice(at..at + del, ins.iter().copied());
+            nd.nkids = nd.kids.len() as u32;
+        }
+        self.invalidate(b, n);
+    }
+    /// Rotate the last `k` children of `n` to index `at` (rows mounted at the end, then placed).
+    pub fn place_tail_kids(&mut self, n: u32, at: usize, k: usize) {
+        let kids = &mut self.n[n as usize].kids;
+        let len = kids.len();
+        if k > 0 && at + k < len {
+            kids[at..].rotate_right(k);
+        }
+    }
+    /// Overwrite `kids[at..at+new.len()]` (a permutation of them) and invalidate `n`.
+    pub fn permute_kids(&mut self, b: &Bough, n: u32, at: usize, new: &[u32]) {
+        self.n[n as usize].kids[at..at + new.len()].copy_from_slice(new);
+        self.invalidate(b, n);
+    }
+
     pub fn ctx_mut(&mut self, n: u32) -> Option<&mut LeafCtx> {
-        self.n[n as usize].ctx.as_mut()
+        let c = self.n[n as usize].ctx;
+        if c == NOCTX { None } else { Some(&mut self.ctxs[c as usize]) }
     }
 
     pub fn invalidate(&mut self, b: &Bough, n: u32) {
@@ -193,15 +309,48 @@ impl Deep {
         self.scheduler = sched;
     }
 
+    /// Remove the whole tree at `root` in one pass over its kids lists (no per-node allocation, no
+    /// lookups): every node is marked dead and clean, its kids list emptied (capacity kept), its text state
+    /// moved to the orphans (glyph blocks released later, `Rt::reclaim`). `dead` receives the node ids.
+    pub fn remove_group(&mut self, root: u32, stack: &mut Vec<u32>, dead: &mut Vec<u32>) {
+        stack.clear();
+        stack.push(root);
+        let abs = !self.abs.is_empty();
+        while let Some(i) = stack.pop() {
+            dead.push(i);
+            let nd = &mut self.n[i as usize];
+            nd.live = false;
+            nd.flags &= META_MASK;
+            nd.cache.clear();
+            stack.extend_from_slice(&nd.kids);
+            nd.kids.clear();
+            nd.nkids = 0;
+            let c = std::mem::replace(&mut nd.ctx, NOCTX);
+            if c != NOCTX {
+                self.orphans.push(c);
+            }
+            if abs {
+                self.abs.remove(&i);
+            }
+        }
+    }
+
     pub fn remove_tree(&mut self, _b: &Bough, _root: u32, all: &[u32]) {
         for &i in all {
             let nd = &mut self.n[i as usize];
             nd.live = false;
+            // a queued entry of a removed node pops as clean (see `Incremental::depth`)
+            nd.flags &= META_MASK;
             nd.cache.clear();
-            nd.ctx = None;
+            let c = std::mem::replace(&mut nd.ctx, NOCTX);
+            if c != NOCTX {
+                self.orphans.push(c);
+            }
             nd.kids.clear();
             nd.nkids = 0;
-            self.abs.remove(&i);
+            if !self.abs.is_empty() {
+                self.abs.remove(&i);
+            }
         }
     }
 
@@ -256,7 +405,7 @@ impl Deep {
                     touched: 0,
                     layout: Layout::ZERO,
                     cache: NodeCache::default(),
-                    ctx: x.ctx.clone(),
+                    ctx: x.ctx,
                 })
                 .collect(),
             styles: self.styles.clone(),
@@ -266,6 +415,10 @@ impl Deep {
             last_root: None,
             changed: Vec::new(),
             abs: HashMap::default(),
+            ctxs: self.ctxs.clone(),
+            ctx_free: Vec::new(),
+            orphans: Vec::new(),
+            recycled: Vec::new(),
         };
         cold.layout(b, root, avail);
         let mut out = Vec::new();
@@ -372,21 +525,22 @@ impl LayoutTree for DView<'_> {
     }
     #[inline]
     fn leaf_is_cheap(&self, node: NodeId) -> bool {
-        self.d.n[ix(node)].ctx.is_none()
+        !self.is_measured_leaf(node)
     }
+    /// A paragraph is measured; a one-line label is a sized leaf (its style holds its size).
     #[inline]
     fn is_measured_leaf(&self, node: NodeId) -> bool {
-        self.d.n[ix(node)].ctx.is_some()
+        self.d.ctx_ref(ix(node) as u32).is_some_and(|c| c.user.is_none())
     }
     #[inline(always)]
     fn compute_leaf(&mut self, node: NodeId, inputs: LayoutInput, _: Option<&mut BlockContext<'_>>) -> LayoutOutput {
-        if self.d.n[ix(node)].ctx.is_none() {
+        if !self.is_measured_leaf(node) {
             return cephal::compute::leaf::compute_empty_leaf_layout(self, node, inputs);
         }
         measured_leaf(self, node, inputs)
     }
     fn measure(&mut self, node: NodeId, input: MeasureInput) -> MeasureOutput {
-        match self.d.n[ix(node)].ctx.as_mut() {
+        match self.d.ctx_mut(ix(node) as u32) {
             Some(c) => c.measure(input),
             None => MeasureOutput::from_size(input.known_dimensions.unwrap_or(Size::ZERO)),
         }
@@ -482,6 +636,11 @@ impl Incremental for DView<'_> {
         Some(nid(self.b.record(p).handle))
     }
     fn depth(&self, node: NodeId) -> u32 {
+        // a node removed while queued (a list row) answers depth 0: the scheduler re-files it there and
+        // pops it clean (its flags were cleared by `remove_tree`)
+        if !self.d.n[ix(node)].live {
+            return 0;
+        }
         let r = self.r();
         self.b.depth_at(r.pos(ix(node) as u32)) as u32
     }

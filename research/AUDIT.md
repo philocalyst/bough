@@ -55,8 +55,8 @@ The fifteen items that matter most, in order:
    `V`, and every helper in the AWAGY apps is pinned to its app type (`fn row(i) -> impl Element<ScrollApp>`). The
    design's `Element<'f>` has no owner parameter; routes resolve their receiver at mount (L4).
 9. **Presentation is driven by input events, not the display.** `host.rs:330` draws a frame per NSEvent. AWAGY
-   measured ~240 presents/s on a 120 Hz panel, a 75.7 ms worst dashboard gap (vs Vizia-opt 31.0), and 13 of 480
-   Refresh clicks dropped in one run. p95 frame gap at 7 K rows is 12.4 ms against iced's 8.4–8.6 ms.
+   measured ~240 presents/s on a 120 Hz panel and a 75.7 ms worst dashboard gap (vs Vizia-opt 31.0, zgx 42.5); no
+   clicks were dropped (corrected, §15.4). p95 frame gap at 7 K rows is 12.4 ms against iced's 8.4–8.6 ms.
 10. **Lists take a fixed row count, a `fn` row builder and a viewport in coordinates** (`mlist.rs:395`,
     `elem.rs:677`). There is no `List<T>` delta on canonical, and the prelude's `.scroll()` mounts every child, so
     virtualization isn't in core.
@@ -278,7 +278,7 @@ Numbers are from this Mac unless named. Each experiment lists its gate. Preregis
 
 | # | gap (evidence) | experiment / work | gate |
 |---|---|---|---|
-| F1 | frame per NSEvent: ~240 presents/s on 120 Hz; dashboard worst gap 75.7 ms (worst of three runs: 75.7/15.3/15.1); 13/480 clicks dropped; scroll-7K p95 12.4 ms vs iced 8.4–8.6 (AWAGY) | coalesce input into display-link turns: input mutates and marks, and the CADisplayLink (or `presentAfterMinimumDuration`) draws once per refresh; clicks are never dropped because they are queued, not raced; measure input→photon too | AWAGY: presents ≤ refresh, worst dashboard gap ≤ 2 frames, zero dropped clicks over 10 runs, p95 ≤ 8.4 ms at every row count |
+| F1 | frame per NSEvent: ~240 presents/s on 120 Hz; dashboard worst gap 75.7 ms (worst of three runs: 75.7/15.3/15.1; zgx 42.5, BUI 279.8); scroll-7K p95 12.4 ms vs iced 8.4–8.6 (AWAGY) | coalesce input into display-link turns: input mutates and marks, and the CADisplayLink (or `presentAfterMinimumDuration`) draws once per refresh; clicks are never dropped because they are queued, not raced; measure input→photon too | AWAGY: presents ≤ refresh, worst dashboard gap ≤ 2 frames, zero dropped clicks over 10 runs, p95 ≤ 8.4 ms at every row count |
 | F2 | the dashboard's first-frame and anchor gaps (the 75.7 ms outlier) are unexplained | trace that run with `Prof` + `os_signpost`: shaping of 1,000 records, image decode, layout | find the cause before changing anything |
 | F3 | startup: the shader compiles from MSL source at load (no Xcode, ROUND5); `MTLCreateSystemDefaultDevice` ~22 ms; zgx startup 28.5 ms vs bough 42–59 ms (API-RESULTS 1.2) | ship a build-time metallib from wgsl-rs (bough-gpu already does it for its kernels via naga → MSL → metallib), a binary archive (`MTLBinaryArchive`), device creation overlapped with mount (`prepare` exists for direct Metal) | startup ≤ zgx on the zgx startup scene, cold and warm |
 | F4 | font tables: 120 M instructions per process (`SimpleScript::build`); teardown 0.46× zgx with repeats (API-RESULTS 1.1) | cache the built table on disk keyed by font hash (text3 has `build_cached`; verify it's on the default path) and a process-wide shaped-text cache keyed by (string, face, size) (BRIEF 7.3.7) | startup and teardown cells ≥ zgx |
@@ -532,3 +532,278 @@ bough's rounds measured per branch on a loaded machine and reported wins. Adopt 
 
 The milestone the design calls "surface complete" requires gates T1–T6 on every supported backend; bough today has
 one backend and none of the platform bar.
+
+---
+
+## 14. The rest of the design, read in full (2026-11-11, second pass)
+
+The first pass read 00–04, 07 §4–7 and 10 §1–3. This pass read the remainder of `design/final` (05, 06, 07 §1–3,
+08, 09, 10 §3–5, 11 Phases 0–4) and the supporting documents that carry the user's own notes:
+`gap-register.md` and `performance.md` in `~/Downloads/designs/reactivity`. These are the gaps that pass adds; IDs
+continue the families above.
+
+### 14.1 The user's notes in `gap-register.md` (each is a requirement)
+
+| note (verbatim, on gap) | item |
+|---|---|
+| S2 Vello/Vulkano RFC: "THIS IS INTERESTING JUST BECAUSE OF THE POINT MADE BY tronical ABOUT A BETTER WAY TO SCREENSHOT TEST, WE SHOULD SWITCH OUR SCREENSHOT TESTING FOR THIS" | **Q10**: tronical's point (slint#11451) is to test *serialised low-level scene descriptions* instead of screenshots: "higher level and more robust than screenshots (see the troubles we've had with text and skia and cross-platform output) but low-level enough to catch mistakes". It is a proposal on top of anyrender-serialize, not shipped. Slint's suite today compares against its software renderer with a near-exact threshold (0.1 max RGBA distance); Vello compares GPU with CPU by NV-FLIP (mean < 0.01). bough already has the scene description: the Bough's preorder records (kind, ink, clip, handle) plus instance and glyph-run words in the region. **Work:** a serialised scene snapshot per frame as the primary gate, renderer- and OS-independent, covering logical→physical, gradients and transforms; plus a CPU reference rasteriser with an NV-FLIP tolerance for the raster itself. Today every pixel gate compares `presented_pixels` with `reference_pixels` from the same GPU path, which proves damage exactness, not raster fidelity |
+| S3 hinting + bi-level text (zed#55214, blocked on skrifa): "DOES PARLEY FIX THIS?" | **T11**: partly. skrifa (bough vendors 0.44.0) has the hinting engine: `HintingInstance`, `HintingOptions { engine, target }`, `Target::Mono` (bi-level), `Target::Smooth { mode: SmoothMode::{Normal, Light, Lcd, VerticalLcd} }` (`vendor/skrifa/src/outline/hint.rs:92-280`), so zed#55214's "blocked on skrifa" looks out of date. parley 0.12 exposes no hinting option or hinted advances (agent-reported, uncertain). bough's atlas rasterises with swash, unhinted, A8 only. **Work:** rasterise atlas glyphs through skrifa's `HintingInstance` (mono and light targets) and feed hinted advances into the grafted shaping kernels as a font-instance option, so layout and raster agree |
+| S3 pixel snapping (slint#10962, zed#40641): "WOULD BE GREAT TO HAVE" | **T12**: a snapping policy. Slint#10962 wants absolute x/y/w/h at exact physical-pixel boundaries (tronical's workaround rounds to `1phx`). Chromium snaps at paint: round the origin, derive the far edge from origin + rounded size, and leave scroll offsets and tile phase unsnapped. WPF's `UseLayoutRounding` rounds in layout. bough snaps quad geometry to a 1/256-px grid for exact damage (`rt.rs` `snap`) and rounds spaces to device px, but has no snapping policy for borders, rules or text baselines at fractional scale. **Work:** paint-time physical-pixel snapping, on by default for borders, 1-px rules and baselines, off for transformed subtrees; `.snap(false)` per element |
+| S4 system menus, tray, file dialogs: "THIS NEEDS TO BE CLEAN AND ELEGANT AND CROSS PLATFORM" | 6.2's capabilities, in the design's form: handler parameters (`fn open(&mut self, dialogs: FileDialogs)`), named-command menu entries, never ambient |
+| S4 IME as a public API: "READ THROUGH THIS" | 6.4 now cites 07 §4's protocol in full (below, 14.4) |
+| S5 event-loop ownership / interop: "READ THROUGH THIS" | D22: `app.attach(host)` / `app.poll(deadline)` driving the same turn queue (09 §7, 07 §7) |
+| Slint/Iced: global/context state: "read through this, think we resolve" | resolved by the design (no globals, no `cx`; `Entity<T>` and inherited sources); bough also has none. No item, but the design's inherited-environment sources (07 §6) are still unbuilt (PL-items) |
+
+Unannotated gaps from the same register, all absent in bough:
+
+* window transparency/vibrancy/Mica, shadow and corner policy, control flags, window focus lifecycle (S1);
+* a software/reference renderer, device selection and device-loss recovery (S2);
+* glyph-atlas sampler filter, a public text-metrics query (S3);
+* per-output DPI on monitor move, display enumeration at startup (S6);
+* layout-level RTL mirroring, downward-inherited properties (a subtree-wide `disabled`), a virtual keyboard (Slint/Iced).
+
+### 14.2 Async (05): what `Reader` still lacks on the api branch
+
+api built `Reader<T>` with `produce(src, dst, fn(&S) -> Request<T>)`, tickets, cohorts committed in one epoch,
+`latest`, and `boundary` (loading/failed/child by clip rects). Against 05:
+
+* **A1** `signal.map_async(f)` / `try_map_async` / `compute` (CPU-pool twin) as the creation spelling, with the
+  executor chosen once at creation: an injected runtime handle (Tokio, smol or bough's own), `map_async_on`, the
+  `StampedCompletion` wake law (a `Waker` only schedules a poll). api's `produce` takes a synchronous `Request`
+  constructor and has no executor integration.
+* **A2** `reader.project(|&T| El)`, `map_ref` into a property port, `Settled<T>` via `reader.or(fallback)` (the one
+  sound `Deref`).
+* **A3** `boundary().reload_on(&input)`, first-readiness semantics, and the inspector's "declaration waterfall"
+  report.
+* **A4** `is_pending(x)` as a source.
+* **A5** the failure table (domain `E` vs superseded vs worker fault vs plugin panic) with heal-on-retry.
+* **A6** `RequestStamp` with frozen input versions (the `A → B → A` alias test).
+* **A7** the action shape: `.action(Owner::persist.with(..)).queue(Queue::Reliable).pending(..).then(..).catch(..)`,
+  with optimistic tagged deltas.
+* **A8** `Remote<T>` streams with explicit lanes (`Reliable`/`Latest`/`Coalesce`/bounded), `try_send` → `Full`,
+  prefix-loss-only delivery.
+* **A9** the entanglement rule (§9.4) as a property test: a region reads a cohort-held input's retained operand and a
+  live input's current value.
+
+### 14.3 Text (06): the model bough must grow into
+
+* **T13 One inline formatting context.**
+  * Glyphs, spacing, decorations and atoms (U+FFFC placeholders with baseline/align/break/skip-decoration) share the
+    line boxes, caret and hit test.
+  * Three style sheets (font/shape, paragraph/wrap, paint/decoration) carry `Impact`.
+  * The order of operations is fixed: transform → white-space collapse → shape → spacing → break → hang/indent →
+    align → paint. Kerning stays inside shaping; tracking is a separate step.
+  * bough has single-style labels and paragraphs.
+* **T14 Decoration layers** (document < semantic highlight < IME < selection < find) with skip-ink, as opposed to a
+  single optional underline.
+* **T15 `rich(&pieces).atom(view_fn)`** over a `List<Inline>`, with marks as interval annotations, not a span tree.
+* **T16 FlowIndex selection.**
+  * `.selectable(Select::Contain/Exclude)` gives cross-element selection over labels; copy takes a `StaticRange`
+    snapshot.
+  * Document indices are always bytes; transform, hyphenation and bidi keep mapping tables.
+* **T17 The editor kernel.**
+  * Branded `Pos<Space>` coordinates (Buffer/Inlay/Fold/Tab/Wrap/Block/Crease/Display/Multi), so `Px` is its own
+    type.
+  * The display map is a mounted, async-maintained projection behind `code(&document)`, with an async `WrapDemand`.
+  * Blocks and inlays are ordinary elements at typed positions.
+  * `MultiBuffer` composes excerpts, and N viewports run over one document.
+  * Nothing of this exists. bough's `code` port (api branch, zgx's code app) is a scene port, not this kernel.
+* **T18 Text raster policy as data** (hinting, AA, atlas sampling filter, pixel snapping), the seam T11 and T12 need.
+
+### 14.4 Platform (07 §1–4): beyond 6.1–6.4
+
+* **PL1 Window vocabulary.**
+  * `Window::utility(..).frame(..).background(..).material(Prefer::new(..).fallback(..)).shadow(..).corners(..).controls(..).level(..).hit_test(..)`.
+  * Each capability is `Prefer<T>`/`Require<T>`, never silently omitted.
+  * `Win<V>` exposes live readers (`active`, `bounds`, `scale`, `display`, `appearance`) and queued verbs
+    (`activate`, `minimize`, `start_move`, `request_attention`).
+  * bough has `.title().size()`.
+* **PL2 Renderer selection and recovery.**
+  * Selection: `Application::renderer(Auto | <backend> | ReferenceCpu | fallback list)`.
+  * Device loss keeps the CPU scene, re-uploads leased resources and publishes `Recovered` or a typed fault.
+  * Frontends are negotiated from a capability set; one backend selection per packet, pass or range.
+  * bough is Metal-or-nothing.
+* **PL3 Colour.**
+  * CSS Color 4 constructors (`Color::Red`, `oklch`, `oklab`, `color(Space::DisplayP3, ..)`), alpha via `.alpha(t)`
+    (packed `rgba(0xRRGGBBAA)` is deleted), and `mix` in oklab by default.
+  * The working space is premultiplied linear extended sRGB; surfaces are `SdrSrgb8` (default) or `ExtendedSrgb16`
+    (HDR, opt-in).
+  * Gate C10 is zero-tax: no float surface unless requested.
+  * bough's `Color` is a packed `u32` (`color.rs`, 14 lines), with sRGB-encoded blending in the kernels.
+* **PL4 Temporal graph** (`post_process(|g: TemporalGraph| ..)`: history textures, pass DAG, known vs inferred
+  motion). Absent; low priority.
+* **PL5 Media** (`IntoMedia`).
+  * Inputs: `RgbaImage`, `DynamicImage`, `Png(bytes)`, `asset!("logo.svg")`, `Uri::get(url)`, a `Reader<Frame>`.
+  * One staged pipeline: acquire → sniff → decode → orient/scale/colour plan → upload/residency.
+  * Presentation: `.fit/.sampling/.fg/.tint/.slice/.tile/.crop/.flip`.
+  * Split, budgeted caches; animated images and video as timed streams.
+  * bough has `image(&'static [u8])` (PNG).
+* **PL6 The IME wire protocol.**
+  * Target → platform: `Enable/Update/Disable(InputMethodState)` carrying a surrounding-text snapshot and revision,
+    UTF-8 and UTF-16 selection, preedit styling, the replacement range, the cursor rect in window coordinates,
+    purpose, capitalisation and direction.
+  * Platform → target: `Preedit/Commit/DeleteSurrounding/SetSelection/Candidates` tagged with the revision.
+  * Gate T2 runs a scripted IME on every backend.
+* **PL7 Capabilities are handler parameters** (`fn copy(&mut self, clipboard: Clipboard)`), not ambient context.
+
+### 14.5 Runtime (08): mechanisms bough hasn't built
+
+| design | bough | item |
+|---|---|---|
+| turn pipeline (08 §1): handler → drain sends → drain completions → speculative describe → seal producers → settle cohorts → publish atomically → layout/hit/a11y/paint | `turn`: handler → settle wires → (api) `changed` waves → re-describe → layout | **R1** speculative description and atomic publication (`LogicalDraft`/`PresentationDraft`, layout inverse-op journal) |
+| priority lanes Input/Animation/Normal/Idle; idle work aged and preemptible; input never behind cache warming | one lane | **R2** |
+| teardown/eviction protocol: owner epochs, revoke before reclaim, virtualised rows holding IME/capture unevictable | api: two-phase release (cut now, reclaim in idle frames) | **R3** the eviction veto for rows with active IME composition or pointer capture |
+| memory classes: steady-state **zero** allocation asserted per phase by a debug allocator; novelty page-granular and counted; every cache budgeted | region columns fixed at construction (`Caps`), capacity panics; caches unbudgeted | **R4** a `MemoryLedger` per window, a debug allocator hook, a pressure cascade, high-water trim; gates M0–M6 |
+| fast loop: a `PresentationResolver` (hit index + precomputed hover/active/focus variant deltas + scroll table) handles pointer and wheel with zero graph work | hover is a paint write (`hover_bg`), wheel goes through the scroller; both run inside `dispatch_event` + `frame` per event | **R5** the resolver as its own published structure, with gate FP1 (`turn_settles == 0`) |
+| `Display` into the retained buffer (derived text writes into the port's buffer, byte-compare) | `NumFmt` numeric operand (16-byte vector) for numbers; strings allocate | **R6** generalise to `impl Display` |
+| `SharedString` 24 B SSO; closure storage 3 words with counted spill | routes and map closures: 16-byte recipes, a compile-time panic past that | **R7** counted spill instead of a hard limit (also fixes usability 4.3) |
+| const subtree templates (08 §7) | `template`/`ltemplate` (raw, runtime) | D1a |
+| frame pipelining with a latency lane | the pre-armed stream + publisher thread (bough-metal), no latency lane for input during animation | **R8** |
+
+### 14.6 Boundaries (09)
+
+* **B1 A non-generic `EntityCore`.** Per-type method/drop/describe tables, so a new `Entity<Foo>` doesn't
+  monomorphise the scheduler. `Entity::new_cyclic(|me| ..)`, generation-checked `send` → `Delivery::Closed`. No
+  `Deref` (api's `Entities<T>` is a slab with generational handles; check that it has no `Deref` and add
+  `new_cyclic`).
+* **B2** open item sets through `typetag`; durable identity in three layers (`kind` + framework-minted
+  `ItemInstanceId` + item-owned `locator`/`state` bytes); `Target`/`Slot` never serialise.
+* **B3** presence as a supervised `Remote<PresenceEnvelope>` session (collaboration); far off.
+* **B4 Linking gates.** Generic instantiation count, incremental rebuild time after an app-only edit, clean link time,
+  artifact size, exported symbols (gate 10). bough has never measured compile times. Its heavily monomorphised
+  builder types (`On<LBox<Color,(Para<S>,)>, HoverBg>`) make this a real risk.
+
+### 14.7 Quality (10 §3–5) and the reference workloads (`performance.md` §4)
+
+* **Q11 Diagnostics are part of the sealed surface.**
+  * Every sealed trait gets `#[diagnostic::on_unimplemented]` text in the design's vocabulary and
+    `#[diagnostic::do_not_recommend]` on its blanket impls.
+  * A `trybuild` corpus asserts the *message text* of the top mistakes: wrong layout-family method, an escaped
+    element, a by-value signal, a captured `&self` in a projection, a mismatched route receiver, a read-only source
+    in a two-way port.
+  * bough has two `compile_fail` doctests on `sig!` and no message assertions.
+* **Q12** the `UiSnapshot` contents (10 §3) as one serialisable schema per epoch, which today is
+  `inspect.rs`'s record views plus api's reflection.
+* **Q13 "Surpasses" (10 §5)** means all of:
+  * no feature reduction;
+  * no worse slope on any locality workload;
+  * lower p50 **and** p99 input-to-present;
+  * no unaccepted regression in cold start, memory or incremental compile;
+  * no hidden work migration to upload bandwidth or threads;
+  * reproduced on two hardware classes.
+
+  bough's claims so far are instruction counts and AWAGY presentation cadence on one Mac. Input-to-present p99 has
+  never been measured.
+* **Q14 Reference workloads not yet built** (`performance.md` §4 lists 31):
+  * #3 hover storm at 120/240 Hz;
+  * #5 100 k keyed table (value/insert/remove/move/sort/filter/replace, work vs N and K);
+  * #7 editor (large rope, multi-cursor, IME echo, a huge bidi paragraph, p99);
+  * #8 kitchen sink;
+  * #9 animation tiers by phase;
+  * #12 adversarial dependency graph;
+  * #13 developer loop (clean/incremental compile, rust-analyzer latency, binary size);
+  * #14 capability-ergonomics compile-fail suite;
+  * #15–17 property lowering matrix and a 10 k-consumer palette swap;
+  * #23 retained drag protocol;
+  * #24 placement graph;
+  * #25 motion semantics;
+  * #26 canvas/shader graph;
+  * #27 inspector-disabled zero cost;
+  * #28–30 image/video/frontend equivalence;
+  * #31 history.
+
+  Partly covered: #1 idle (zero frames, measured), #2 counter locality, #4 scroll split (zgx scenes, scroll by copy),
+  #6 variable-height list (zgx vlist), #10 teardown (zgx suite), #11 cold start.
+
+### 14.8 Roadmap Phase 0 is not done
+
+11 §Phase 0 ("freeze the contracts") requires:
+
+* conformance fixtures;
+* a deterministic headless clock and event traces;
+* a first `UiSnapshot`;
+* a counter registry and frame-trace format;
+* reproducible benchmark runners;
+* pinned competitor ports;
+* a `trybuild` harness for the diagnostics corpus;
+* a panic-free lint baseline (`unwrap`/`expect`/indexing denied in kernel code, existing violations allow-listed with
+  a burn-down file).
+
+bough has the competitor ports (zgx, zgui, AWAGY) and instruction counters; the rest is missing. Phase 1's
+"legacy-view island" doesn't apply: bough is not migrating an existing GPUI app.
+
+### 14.9 From `comparison.md` and `approaches/` (A–D)
+
+* **S8** The design says "stable Rust is enough for every required semantic; nightly features are optional
+  experiments". After the api merge, bough's façade crate requires nightly for every build: it enables
+  `#![feature(type_info, ptr_metadata, rustc_attrs, const_trait_impl, const_cmp, arbitrary_self_types_pointers)]`
+  unconditionally. **Work:** gate `reflect.rs` (and the inspector's typed state panel) behind a `reflect` cargo
+  feature that is on for the inspector and tests, off by default, so the default build is stable.
+* Approach **C** (retained attribute graph) is the substrate the design selected, and bough's records + wires are
+  that substrate. Its rejected parts are not in bough: universal MVCC, and durability as a type parameter.
+* Approach **A**'s surviving ideas are also absent from bough: copyable `State<T>` keys resolved through
+  `Scope`/`Update` capabilities, no ambient runtime, one sealed `Property<T>` installer. bough's `Wired` operands
+  are the nearest equivalent (D2).
+* Approach **B** (a public branded `'ui` lifetime) is rejected for the public surface; bough agrees (no brands in
+  user code).
+* Approach **D**: `tw!` is the one sanctioned macro (D16); a `#[component]` macro is optional and last.
+
+---
+
+## 15. Failed and rejected work: what merits another try
+
+Every rejection below was read from its own dossier or results section. "Retry" means the reason it failed no
+longer holds in bough, or the representation that would change the verdict has not been tried. Ordered by expected
+value.
+
+### 15.1 Worth retrying
+
+| # | experiment (where) | why it failed | why retry, and how |
+|---|---|---|---|
+| RT1 | **Hidden-flip presentation**: show one of N fixed IOSurface layers, hide the rest (`crates/bough-metal/RESULTS.md` §12.3) | Rejected as unsafe: with fixed contents the compositor keeps all four surfaces `IOSurfaceIsInUse`, so nothing says when a hidden one may be redrawn. It was 25 K instructions/publish cheaper than a contents swap | **zgx ships exactly this** (`zgx-gpu/src/layer_present.rs`: "each surface is a tile of the plain layer, its contents set once; a frame shows its surface's tile and hides the one before", handed over at a fixed point before each refresh), and the AWAGY run verified one tile flip per shown frame (319/319 against zgx's own log). zgx makes it safe by timing (the refresh grid) instead of an in-use signal. Retry with zgx's handover schedule plus a tearing detector: stress the flip with full-surface writes and compare screen captures against the intended frames. Worth +25 K/publish, and it removes the swap's transaction |
+| RT2 | **2D binning with a parallel scatter** (bough-metal RESULTS §13: "the next structural step") | The v7 per-tile list failed (sequential row-bin scan); never built | The GPU column is bough's main loss (lab 1.7×, vlist 1.5×; BRIEF 2.6). Glyph-dense rows make each tile scan ~230 row-bin entries for ~5 glyphs. Count + prefix + scatter per (row, column chunk) is the representation change the analysis named. Highest-value GPU experiment |
+| RT3 | **Copy vs direct, chosen per frame** (archive `local/architecture-performance` retained output; bough scroll by copy; BRIEF 2.6 "a full-window copy 0.215 ms vs dense redraw 0.249 ms") | Retained copy wins sparse scenes and loses flat/full-damage ones; bough's scroll copy can't win vlist | Both campaigns lost on a *fixed* policy. `App::copy_plan` already knows the exposed area and the surface age. Build the cost model the archive listed as priority 1 (copied pixels vs repaired tiles vs glyph density), preregister the crossover workloads, and choose per frame. Cheap to try |
+| RT4 | **Zero-pixel scroll** (BRIEF 7.2.4; "multiple small layers" rejected in bough-metal §12.3 at ~37 K per changed layer) | Many layers cost a commit each | One tall layer scrolled by `contentsRect`/position is a single layer change per frame, not N; it was never measured. Pairs with RT1 |
+| RT5 | **A mount-time shaped-text cache** (bough-text RESULTS Attempt 5: caches rejected) | Shaping (~8 instr/glyph) is cheaper than hashing and lookup *per update* | The remaining loss is whole-process **remount** (zgx suite teardown 0.46× with repeats; zgx reuses a process-global text cache). Retry the cache on the mount path only, keyed by `&'static str` pointer/length or an interned id (no content hash), never on updates |
+| RT6 | **Archive mask/sample-partition GPU work** (`local/mask-grid-native` .866/.870, `mask-tiles` .923, `mask-partitions`) | Rejected for missing a **20 %** target (stream ratios 0.87–0.92 against ≤ 0.8) while every work/cadence check passed | On llvmpipe these were real 8–13 % GPU wins; bough's GPU column is losing. Classifying a tile's samples as uniform before blending matters most on glyph-dense tiles. Port only the classification idea to bough's kernels after RT2, measured with `gpu_pairs.py` |
+| RT7 | **Pixel-uniform tiles** (`local/gpu-pixel-uniform`: stripes 8.33×, text-stripes 1.30×, flat +16.6 %) | The flat-scene regression | The regression was classification overhead on scenes with nothing to gain. bough's binned kernel already has an opaque floor per tile; certify uniformity per tile at bin time and fall back for free. Medium |
+| RT8 | **Depth-gated parent routing** (`local/tree-parent-columns` deep 4.11× but scalar fallback 6.88× slower; `tree-admitted-walk` deep 3.71×, shallow +9.9 %) | Fallback paths regressed | bough's `parent`/`ancestors` lose to pointer chasing (bough-core RESULTS: 0.25× / 0.04×), and the inspector and a11y projection (6.3) will walk ancestors constantly. `local/tree-columns-selected` ("safe compact parent routing with topology proof and depth-gated batches") was the last candidate and was never compared. Retry as a lazily built parent column with a change counter, used only past a depth gate |
+| RT9 | **Text session cache** (`local/text-session-cache`: CPU-qualified, unadopted for 3.3 MB of retained scratch; `text-cache-bounded`: 45 KB, two cells > 5 %) | The memory cost, or two CPU cells | Relevant once bough's text goes through parley `Layout` (X6): parley's `LayoutContext` scratch is exactly this. Adopt the bounded variant with the cold-trim policy (`text-cache-cold-trim`: median gates pass) |
+
+### 15.2 Already adopted in effect, or superseded
+
+* Archive `local/damage-suffix` (exact unchanged-suffix trimming: **all 28 fixed workloads pass**, native 479
+  updates/8 s) and `local/patch-workspace` (**112/112 gates**, reusable text patch boxes) are wins for the clean-room
+  GPUI's draw-list/packet design. bough has no per-frame draw list or packet to trim, because records are retained
+  and the GPU reads the region. Nothing to port, but cite them as the baseline the clean-room GPUI reached.
+* `local/source-batch-publication` (typed text batches: −27 % CPU for 2–4 fields among 1,000 labels, qualified)
+  removes owner re-description for multi-field updates. bough's wires never re-describe for signal writes. After the
+  api merge, though, a handler that writes several *plain* fields re-describes the owner (D1). The lesson (keep up
+  to 4 source identities and bypass description for disjoint text sinks) applies to the lockstep walk: X2 should
+  skip subtrees whose recorded reads didn't change.
+* `local/list-overscan`, `local/list-source`, `local/native-list-parity` (qualified keyed overscan, controlled list
+  offsets): api's listview has overscan and anchored offsets; compare its gates with these dossiers' negative
+  witnesses.
+
+### 15.3 Correctly dead (don't retry without a new representation)
+
+* Per-row hover signals (O(rows) per crossing); a separate hit index (page summaries already are one);
+  swallowing content events (INPUT.md §4).
+* Per-column bar strips: 32–65 K/tick for −30 % tiles (bough-metal RESULTS).
+* GPU shaping: exact but not cheaper (bough-text Attempt 3).
+* Ligatures inside the lanes (bough-text III.4).
+* CAMetalLayer drawables, CAMetalDisplayLink and AVSampleBufferDisplayLayer as present paths: +292–700 K/frame
+  (bough-metal §12.3). zgx agrees: it keeps the AVSampleBuffer path only behind a flag for comparison.
+* Damage-lab interval lists, summed-area tables and bounded rect lists: lost to tile planes on CPU
+  (bough-damage-lab RESULTS).
+* Archive text-witness replay (15 % against a 20 % target, 10 K-label +5 %), delivery sweep (+2.6 % / +14.2 %),
+  region batching and precise scroll repair (2 of 112 cells at 1.05): these are specific to the clean-room GPUI's
+  rebuild-per-frame pipeline, which bough doesn't have.
+* Universal MVCC, a public `'ui` brand, a general `#[component]` macro (approaches B–D).
+
+### 15.4 bough results this session corrected
+
+* **AWAGY "13 of 480 clicks dropped" was wrong.** In that run the input driver itself sent only 467 Refresh clicks
+  (`events_sent` in `bench/awagy/results/results.json`), and bough counted all 467. The other two runs sent and
+  counted 480. The report (`bench/awagy/results/bough-on-awagy.html`, verdict) and item 9 of §0 are corrected; the
+  75.7 ms stall in that run is still unexplained (F2).

@@ -1,6 +1,6 @@
 use bough_text::*;
 fn main() {
-    let data = std::fs::read("/Users/mileswirht/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf").unwrap();
+    let data = std::fs::read("~/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf").unwrap();
     let t0 = std::time::Instant::now();
     let s = SimpleScript::build(&data, 0).expect("build");
     println!("built in {:?}", t0.elapsed());

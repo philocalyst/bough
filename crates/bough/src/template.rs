@@ -86,6 +86,15 @@ impl<V> Mounter<'_, V> {
 
 impl<V: 'static> Element<V> for Template<V> {
     fn mount(self, m: &mut Mounter<'_, V>) {
+        crate::describe::mount_opaque(m, |m| self.mount_in(m));
+    }
+    /// State-driven content: a re-description steps over it.
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_opaque(m);
+    }
+}
+impl<V: 'static> Template<V> {
+    fn mount_in(self, m: &mut Mounter<'_, V>) {
         let base = m.depth;
         let s = m.rt.scale;
         let (clip0, ox, oy) = (m.clip, m.ox, m.oy);
@@ -308,6 +317,7 @@ unsafe fn patch_view(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
         view.px = new_px;
         (view.handle, view.space, view.clip, view.vx, view.vy)
     };
+    // absolute (no drift); `set_space` carries the delta to nested spaces and list regions
     rt.set_space(space, [vx, vy - new_px]);
     // the content's clips move with it (parents first: they were registered in preorder)
     view_clips(rt, v);
@@ -347,6 +357,15 @@ impl<V, C> ScrollY<'_, V, C> {
 
 impl<V: 'static, C: Element<V>> Element<V> for ScrollY<'_, V, C> {
     fn mount(self, m: &mut Mounter<'_, V>) {
+        crate::describe::mount_opaque(m, |m| self.mount_in(m));
+    }
+    /// State-driven content: a re-description steps over it.
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_opaque(m);
+    }
+}
+impl<V: 'static, C: Element<V>> ScrollY<'_, V, C> {
+    fn mount_in(self, m: &mut Mounter<'_, V>) {
         let [x, y, w, h] = self.rect;
         let s = m.rt.scale;
         let before = m.recs.len();
@@ -357,7 +376,7 @@ impl<V: 'static, C: Element<V>> Element<V> for ScrollY<'_, V, C> {
         let o = m.rt.space(m.space);
         let (vx, vy) = (o[0] + (m.ox + x) * s, o[1] + (m.oy + y) * s);
         let clip = m.rt.scoped_clip([vx, vy, vx + w * s, vy + h * s], m.clip);
-        let space = m.rt.alloc_space();
+        let space = m.rt.alloc_space_in(m.space);
         let px = (*self.sig.get() * s).round();
         m.rt.set_space(space, [vx, vy - px]);
         let v = m.rt.input.views.len() as u32;
@@ -421,6 +440,8 @@ impl<'a, V, Bg, Ch> ScrollBox<'a, V, Bg, Ch> {
 
 impl<'a, V: 'static, Bg: crate::elem::IntoProp<Color, V>, Ch: Element<V>> Element<V> for ScrollBox<'a, V, Bg, Ch> {
     fn mount(self, m: &mut Mounter<'_, V>) {
+        // state lives in signals, the atlas or the region: a re-description steps over it
+        crate::describe::mount_opaque(m, move |m: &mut Mounter<'_, V>| {
         let s = m.rt.scale;
         let before = m.recs.len();
         // the port: a box in the parent's flow, the wheel target (its limit comes from the laid-out content)
@@ -457,6 +478,10 @@ impl<'a, V: 'static, Bg: crate::elem::IntoProp<Color, V>, Ch: Element<V>> Elemen
             m.rt.input.scrollers[sc as usize].root = root;
         }
         (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view) = saved;
+    })
+    }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_opaque(m);
     }
 }
 
@@ -507,6 +532,15 @@ pub fn wired_clip<T: 'static, V, F: Fn(&T) -> [f32; 4] + Copy + 'static>(m: &mut
 
 impl<'a, T: 'static, V, F: Fn(&T) -> [f32; 4] + Copy + 'static, C: Element<V>> Element<V> for ClipBy<'a, T, V, F, C> {
     fn mount(self, m: &mut Mounter<'_, V>) {
+        crate::describe::mount_opaque(m, |m| self.mount_in(m));
+    }
+    /// State-driven content: a re-description steps over it.
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_opaque(m);
+    }
+}
+impl<'a, T: 'static, V, F: Fn(&T) -> [f32; 4] + Copy + 'static, C: Element<V>> ClipBy<'a, T, V, F, C> {
+    fn mount_in(self, m: &mut Mounter<'_, V>) {
         let prev = m.clip;
         m.clip = wired_clip(m, self.sig, self.f);
         self.ch.mount(m);
@@ -586,9 +620,8 @@ impl Rt {
                 (g.base_pos, g.rows.iter().map(|x| x.nrec as usize).sum::<usize>())
             };
             for i in 0..self.regions[reg].rows.len() {
-                let sp = self.regions[reg].rows[i].space as usize;
-                self.glyphs.spaces[sp][0] += dx;
-                self.glyphs.spaces[sp][1] += dy;
+                let sp = self.regions[reg].rows[i].space;
+                self.shift_space(sp, dx, dy);
             }
             self.bough.scroll_run(base, nrec, dx, dy, old_vp.union(vp));
         }
@@ -600,6 +633,15 @@ impl Rt {
 
 impl<'a, V: 'static> Element<V> for PortList<'a, V> {
     fn mount(self, m: &mut Mounter<'_, V>) {
+        crate::describe::mount_opaque(m, |m| self.mount_in(m));
+    }
+    /// State-driven content: a re-description steps over it.
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_opaque(m);
+    }
+}
+impl<'a, V: 'static> PortList<'a, V> {
+    fn mount_in(self, m: &mut Mounter<'_, V>) {
         let s = m.rt.scale;
         let o = m.rt.space(m.space);
         let top = *self.top.get();
@@ -668,7 +710,9 @@ unsafe fn patch_offset(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8)
         return;
     }
     rt.input.offsets[w.node as usize].4 = new;
-    rt.set_space(space, [bx + new[0] as f32, by + new[1] as f32]);
+    let _ = (bx, by);
+    // relative: the space may have moved with a parent since mount
+    rt.shift_space(space, new[0] - cur[0], new[1] - cur[1]);
     let Some(pos) = rt.bough.pos_of(h) else { return };
     let end = rt.bough.subtree_end(pos);
     rt.bough.translate_run(pos + 1, end - pos - 1, new[0] - cur[0], new[1] - cur[1]);
@@ -676,12 +720,21 @@ unsafe fn patch_offset(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8)
 
 impl<V: 'static, C: Element<V>> Element<V> for Offset<'_, V, C> {
     fn mount(self, m: &mut Mounter<'_, V>) {
+        crate::describe::mount_opaque(m, |m| self.mount_in(m));
+    }
+    /// State-driven content: a re-description steps over it.
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_opaque(m);
+    }
+}
+impl<V: 'static, C: Element<V>> Offset<'_, V, C> {
+    fn mount_in(self, m: &mut Mounter<'_, V>) {
         let s = m.rt.scale;
         let o = m.rt.space(m.space);
         let (bx, by) = (o[0] + m.ox * s, o[1] + m.oy * s);
         let v = *self.sig.get();
         let cur = [(v.0 * s).round() as i32, (v.1 * s).round() as i32];
-        let space = m.rt.alloc_space();
+        let space = m.rt.alloc_space_in(m.space);
         m.rt.set_space(space, [bx + cur[0] as f32, by + cur[1] as f32]);
         let h = m.rt.bough.new_handle();
         m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: h.idx, clip: m.clip });
@@ -715,6 +768,8 @@ pub fn anchor<C>(w: f32, h: f32, content: C) -> Anchor<C> {
 
 impl<V: 'static, C: Element<V>> Element<V> for Anchor<C> {
     fn mount(self, m: &mut Mounter<'_, V>) {
+        // state lives in signals, the atlas or the region: a re-description steps over it
+        crate::describe::mount_opaque(m, move |m: &mut Mounter<'_, V>| {
         use crate::layout::{attach, Dim, Spec};
         let s = m.rt.scale;
         let hd = m.rt.bough.new_handle();
@@ -743,6 +798,10 @@ impl<V: 'static, C: Element<V>> Element<V> for Anchor<C> {
         self.content.mount(m);
         (m.space, m.ox, m.oy, m.depth, m.rt.input.mounting_view, m.rt.lay.cur) = saved;
         m.rt.lay.cur = parent;
+    })
+    }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_opaque(m);
     }
 }
 
@@ -761,6 +820,8 @@ pub fn port_list_in<'a, V>(scroll: Wired<'a, f32, V>, row_h: f32, count: usize, 
 
 impl<'a, V: 'static> Element<V> for PortListIn<'a, V> {
     fn mount(self, m: &mut Mounter<'_, V>) {
+        // state lives in signals, the atlas or the region: a re-description steps over it
+        crate::describe::mount_opaque(m, move |m: &mut Mounter<'_, V>| {
         let s = m.rt.scale;
         let lid = m.rt.lay.cur;
         assert!(lid != NONE, "port_list_in is mounted inside a laid-out box");
@@ -791,5 +852,9 @@ impl<'a, V: 'static> Element<V> for PortListIn<'a, V> {
         m.wire(&self.scroll, crate::elem::patch_scroll, reg as u32, [0; 16]);
         m.rt.add_place_hook(lid, crate::ltemplate::PlaceHook::Port { reg: reg as u32 });
         // no rows until the layout gives the port a size
+    })
+    }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_opaque(m);
     }
 }

@@ -30,6 +30,9 @@ use bough_core::{Plane, RecordInit};
 /// destinations without rerunning `view`.
 pub trait View: Sized + 'static {
     fn view(&self) -> impl Element<Self> + '_;
+    /// The one effect site: what crossed the owner's boundaries this turn (`changed.rs`). It may write
+    /// state; the writes settle in another wave of the same turn.
+    fn changed(&mut self, _d: crate::changed::Changed<'_, Self>) {}
 }
 
 pub struct Config {
@@ -42,17 +45,30 @@ pub struct Config {
     pub caps: Caps,
     /// Further faces: (logical face `text::FACE_BOLD` / `FACE_MONO` / `FACE_OBLIQUE`, font file).
     pub faces: Vec<(u8, Vec<u8>)>,
+    /// A harness option, never an application's: mount the view once and change it afterwards only through
+    /// wires, lists and readers (no re-description tape, no re-description after a handler). The scene
+    /// benchmarks set it to measure the wire path alone; `Application::run` never does, so every
+    /// application view re-describes after its handlers (`design/final/01-state.md` §2).
+    pub mount_once: bool,
 }
 
 impl Config {
     pub fn new(width_pt: f32, height_pt: f32, scale: f32, font: Vec<u8>) -> Config {
-        Config { width_pt, height_pt, scale, font, ring: 0, caps: Caps::DEFAULT, faces: Vec::new() }
+        Config { width_pt, height_pt, scale, font, ring: 0, caps: Caps::DEFAULT, faces: Vec::new(), mount_once: false }
     }
     /// Surfaces of the ring.
     pub fn surfaces(&self) -> usize {
         if self.ring == 0 { 4 } else { self.ring.min(4) }
     }
+    /// `mount_once` set (a scene benchmark measuring the wire path alone).
+    pub fn once(mut self) -> Config {
+        self.mount_once = true;
+        self
+    }
 }
+
+/// Released nodes returned to the free lists per idle frame or turn (`Rt::reclaim`).
+pub const RECLAIM_BUDGET: usize = 4096;
 
 pub const PH_UPDATE: usize = 0;
 pub const PH_TEXT: usize = 1;
@@ -154,6 +170,10 @@ pub struct App<V: View> {
     pub startup: Startup,
     /// The last drawn frame repainted the whole window (a surface with nothing reusable).
     last_full: bool,
+    /// The root's re-description tape (`describe.rs`; empty when mounted once, `Config::mount_once`).
+    tape: Vec<u32>,
+    /// `Config::mount_once`: no tape, no re-description.
+    once: bool,
 }
 
 /// Per raster worker started by [`prepare`]: (strikes, glyphs, instructions, ns), for those finished.
@@ -263,18 +283,24 @@ impl<V: View> App<V> {
         let owner = Box::new(view);
         let mut recs: Vec<RecordInit> = Vec::with_capacity(4096);
         let mut scope = Scope::default();
+        let mut tape: Vec<u32> = Vec::new();
+        let once = cfg.mount_once;
         let ptr = &*owner as *const V;
         rt.owner = ptr as *const u8;
         {
             let el = owner.view();
-            let mut m = Mounter { rt: &mut rt, owner: ptr, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None };
+            let tp: *mut Vec<u32> = if once { std::ptr::null_mut() } else { &mut tape };
+            let mut m = Mounter { rt: &mut rt, owner: ptr, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None, cls: 0, tape: tp, ti: 0, pos: 0, kid: 0, keep: false };
             el.mount(&mut m);
         }
         rt.bough.insert_run(0, &recs);
-        // layout groups of the first mount, then the measured lists' first rows
+        // layout groups of the first mount (list regions mount their first rows between its passes)
         rt.lay_flush();
-        // SAFETY: `ptr` is the owner just mounted (boxed: it never moves).
-        unsafe { rt.mregions_init(ptr as *const u8) };
+        let mut owner = owner;
+        // wires queued while mounting (a producer's first request flips its reader to pending)
+        // SAFETY: the owner just mounted, uniquely borrowed here.
+        unsafe { rt.settle(&mut *owner as *mut V as *const u8) };
+        rt.lay_flush();
         drop(scope); // the root scope lives as long as the app: nothing of it is ever released
         let mut startup = Startup { mount_ns: t_mount.elapsed().as_nanos() as u64, ..Startup::default() };
         #[cfg(target_os = "macos")]
@@ -314,6 +340,8 @@ impl<V: View> App<V> {
             trim_mark: 0,
             startup,
             last_full: true,
+            tape,
+            once,
         }
     }
 
@@ -359,13 +387,18 @@ impl<V: View> App<V> {
     /// wires), lay out what changed.
     pub fn turn(&mut self, f: impl FnOnce(&mut V)) {
         self.sync();
+        if self.reclaiming() {
+            self.rt.reclaim(RECLAIM_BUDGET);
+        }
         self.prof.reset();
+        self.rt.pubs.clear();
+        self.rt.admit();
         f(&mut self.owner);
-        let owner = &*self.owner as *const V as *const u8;
+        let owner = &mut *self.owner as *mut V as *const u8;
         // SAFETY: the owner is the mounted view; every wire was installed from a `sig!` proof for it.
         unsafe { self.rt.settle(owner) };
-        // SAFETY: as above (rows re-measured after a reactive text edit mount nothing new for another owner).
-        unsafe { self.rt.mregions_retouch(owner) };
+        self.effects();
+        self.redescribe();
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
         self.prof.mark(PH_TEXT);
@@ -389,12 +422,59 @@ impl<V: View> App<V> {
     /// The rest of a turn after `write`: settle the queued signals' wires and lay out what changed.
     pub fn flush(&mut self) {
         self.sync();
-        let owner = &*self.owner as *const V as *const u8;
+        let owner = &mut *self.owner as *mut V as *const u8;
         // SAFETY: as in `turn`.
         unsafe { self.rt.settle(owner) };
-        // SAFETY: as in `turn`.
-        unsafe { self.rt.mregions_retouch(owner) };
+        self.effects();
+        self.redescribe();
         self.rt.lay_flush();
+    }
+
+    /// A turn with no handler: admit async completions (a committed cohort's wires run in this turn).
+    pub fn poll(&mut self) {
+        self.turn(|_| {});
+    }
+    /// Run up to `n` queued async jobs (the manual executor; their completions are admitted next turn).
+    pub fn run_jobs(&mut self, n: usize) -> usize {
+        self.rt.run_jobs(n)
+    }
+
+    /// `View::changed` waves: while something crossed a boundary, show it to the owner and settle what it
+    /// wrote (at most 8 waves; a ninth is a cycle).
+    pub(crate) fn effects(&mut self) {
+        for _ in 0..8 {
+            if self.rt.pubs.is_empty() && self.rt.asy.committed.is_empty() {
+                return;
+            }
+            let d = crate::changed::Changed { pubs: &self.rt.pubs, readers: &self.rt.asy.committed, _v: std::marker::PhantomData };
+            self.owner.changed(d);
+            // other owners (list rows, entities, row-owned readers) whose own boundaries published
+            let owners = std::mem::take(&mut self.rt.pubs.owners);
+            for &(o, cls) in &owners {
+                if let Some(f) = self.rt.class_changed[cls as usize] {
+                    // SAFETY: `o` is the live owner the publishing wire ran for (a row in its list's slab, an
+                    // entity in its slab), of the class's type; settled right after with its own class.
+                    unsafe {
+                        f(o as *mut u8, &self.rt.pubs, &self.rt.asy.committed);
+                        self.rt.settle_cls(o as *const u8, cls);
+                    }
+                }
+            }
+            self.rt.pubs.clear();
+            self.rt.asy.committed.clear();
+            let owner = &mut *self.owner as *mut V as *const u8;
+            // SAFETY: as in `turn`.
+            unsafe { self.rt.settle(owner) };
+        }
+        panic!("View::changed did not settle in 8 waves (a cycle between changed and its own boundaries)");
+    }
+
+    /// Describe the view again and patch the retained records (`describe.rs`); not when mounted once.
+    pub(crate) fn redescribe(&mut self) {
+        if !self.once {
+            // SAFETY: the tape was recorded by this owner's mount at the start of the Bough.
+            unsafe { crate::describe::redescribe(&mut self.rt, &*self.owner, &mut self.tape) };
+        }
     }
 
     /// OR of the last `age` planes of both damage rings into `self.rows` (`false`: nothing damaged).
@@ -610,6 +690,10 @@ impl<V: View> App<V> {
         let core = !self.rt.bough.plane(0).is_clear();
         let paint = !self.rt.paint.plane(0).is_clear();
         if !core && !paint {
+            // an idle frame returns released subtrees' resources (`Rt::reclaim`), a budget at a time
+            if self.reclaiming() {
+                self.rt.reclaim(RECLAIM_BUDGET);
+            }
             return false;
         }
         self.prof.reset();
@@ -727,6 +811,11 @@ impl<V: View> App<V> {
     /// Surfaces in the ring.
     pub fn surfaces(&self) -> usize {
         self.held.len()
+    }
+
+    /// Are released subtrees' resources still waiting to return to the free lists (`Rt::reclaim`)?
+    pub fn reclaiming(&self) -> bool {
+        !self.rt.reclaim_q.is_empty() || !self.rt.lay.eng.orphans.is_empty()
     }
 
     /// The tile rows the last repair covered (tests and diagnostics).

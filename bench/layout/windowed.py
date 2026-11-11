@@ -4,12 +4,13 @@ Windowed adapters, 10 s runs: process CPU time per second, retired instructions 
 phys_footprint, sampled from outside with proc_pid_rusage(RUSAGE_INFO_V4) at t=1.5 s and t=9 s
 (startup and shutdown excluded). Usage: windowed.py <bough|zgx> <mode> [seconds=10]"""
 import ctypes, os, subprocess, sys, time
+import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BOUGH = os.environ.get("BOUGH_DIST", f"{ROOT}/target/fusion/dist")
-ZGXBIN = os.environ.get("ZGX_DIST", "/Users/mileswirht/projects/_ref/zgx/target/dist/examples")
+ZGXBIN = os.environ.get("ZGX_DIST", os.path.expanduser(os.environ.get('BOUGH_REF', '~/projects/_ref')) + "/zgx/target/dist/examples")
 BIN = {"bough": f"{BOUGH}/vlist_workload", "zgx": f"{ZGXBIN}/vlist_workload"}
-FONT = "/Users/mileswirht/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf"
+FONT = os.path.expanduser(os.environ.get('BOUGH_REF', '~/projects/_ref')) + "/zgx/comparisons/fonts/DejaVuSans.ttf"
 
 class V4(ctypes.Structure):
     _fields_ = [("ri_uuid", ctypes.c_uint8 * 16)] + [(n, ctypes.c_uint64) for n in (

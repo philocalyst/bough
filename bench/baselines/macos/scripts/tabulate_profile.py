@@ -1,6 +1,8 @@
 # Per-phase medians over the 'profile 120 frames' lines of each heavy_headless mode.
 import re, statistics, glob, os
-D = '/Users/mileswirht/projects/bough/bench/baselines/macos/raw/profile'
+import os
+REPO = __import__('subprocess').check_output(['git', 'rev-parse', '--show-toplevel'], cwd=os.path.dirname(os.path.abspath(__file__)), text=True).strip()
+D = REPO + '/bench/baselines/macos/raw/profile'
 phases = ['update', 'layout', 'damage', 'paint', 'encode', 'submit']
 pat = re.compile(r'(\w+) ([\d.]+)k instr ([\d.]+) us')
 lines = ['mode,lines,' + ','.join(f'{p}_kinstr_med,{p}_us_med' for p in phases)]

@@ -10,7 +10,7 @@ bough = { path = "../../crates/bough" }
 bough-metal = { path = "../../crates/bough-metal" }
 bough-text = { path = "../../crates/bough-text" }
 bough-mem = { path = "../../crates/bough-mem" }
-zgx-workload = { path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }
+zgx-workload = { git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }
 libc = "0.2"
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block"] }
 

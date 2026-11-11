@@ -38,7 +38,7 @@ fn face_files() -> Vec<(u8, Vec<u8>)> {
 }
 
 pub fn config(w: f32, h: f32) -> Config {
-    let mut c = Config::new(w, h, 1.0, font_bytes());
+    let mut c = Config::new(w, h, 1.0, font_bytes()).once();
     c.ring = ring_from_env();
     c.faces = face_files();
     c

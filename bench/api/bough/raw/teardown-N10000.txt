@@ -1,0 +1,1 @@
+10000 rows (30001 records): removal frame 0.50 ms, 3.62 M instructions (121 a record); after it, 15 frames, slowest 0.39 ms, 22.51 M instructions in all

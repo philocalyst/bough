@@ -34,7 +34,7 @@ pub fn font_bytes() -> Vec<u8> {
 const FONT_BYTES_FALLBACK: &[u8] = zgx_workload::FONT_BYTES;
 
 pub fn config(scale: f32) -> Config {
-    let mut c = Config::new(WIDTH, HEIGHT, scale, font_bytes());
+    let mut c = Config::new(WIDTH, HEIGHT, scale, font_bytes()).once();
     c.ring = std::env::var("BOUGH_RING").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     c
 }

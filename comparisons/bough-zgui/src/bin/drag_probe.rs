@@ -92,7 +92,7 @@ enum Act {
 }
 
 fn main() {
-    let cfg = |s: f32| Config::new(420.0, 200.0, s, font_bytes());
+    let cfg = |s: f32| Config::new(420.0, 200.0, s, font_bytes()).once();
     let probe = Probe { drag: Signal::new((0.0, 0.0)), dragging: Signal::new(false), words: Signal::new("drag these words".into()) };
     run_interactive(
         "Drag",

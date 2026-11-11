@@ -20,7 +20,7 @@ pub fn ring_from_env() -> usize {
 }
 
 fn cfg(w: f32, h: f32, scale: f32) -> Config {
-    let mut c = Config::new(w, h, scale, font_bytes());
+    let mut c = Config::new(w, h, scale, font_bytes()).once();
     c.ring = ring_from_env();
     c
 }

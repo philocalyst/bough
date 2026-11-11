@@ -1,0 +1,1 @@
+30000 rows (90002 nodes): removal frame 4.42 ms, 14.9 M instructions (165 a node); after it, 76 frames, slowest 30.64 ms

@@ -612,6 +612,35 @@ impl Bough {
         self.reindex_pages(at);
     }
 
+    /// Remove directory entries `[d, d+k)` (whole pages emptied by one `remove_run`) in one pass: each
+    /// column shifts its tail once and the pages after are re-indexed once (removing them one at a time
+    /// shifted the tail and re-indexed the rest `k` times).
+    fn dir_remove_range(&mut self, d: usize, k: usize) {
+        if k == 0 {
+            return;
+        }
+        if k == 1 {
+            return self.dir_remove(d);
+        }
+        for i in d..d + k {
+            // SAFETY: live page.
+            let id = unsafe { (*self.d_ptr[i]).id };
+            self.pool.free(id);
+        }
+        let n = self.d_ptr.len();
+        self.d_ptr.drain(d..d + k);
+        self.d_id.copy_within(d + k..n, d);
+        self.d_id.truncate(n - k);
+        self.d_ink.copy_within(d + k..n, d);
+        self.d_ink.truncate(n - k);
+        self.d_min_depth.drain(d..d + k);
+        self.d_len.drain(d..d + k);
+        for _ in 0..k {
+            self.prefix.shrink();
+        }
+        self.reindex_pages(d);
+    }
+
     fn dir_remove(&mut self, d: usize) {
         // SAFETY: live page.
         let id = unsafe { (*self.d_ptr[d]).id };
@@ -844,6 +873,8 @@ impl Bough {
         let mut freed = false;
         let mut trimmed: [(usize, usize); 4] = [(0, 0); 4];
         let mut ntrim = 0usize;
+        // whole pages emptied: one contiguous directory range, removed after the walk
+        let (mut full_at, mut full_n) = (usize::MAX, 0usize);
         while remaining > 0 {
             let l = self.d_len[d] as usize;
             let n = remaining.min(l - s);
@@ -872,7 +903,11 @@ impl Bough {
             }
             if n == l {
                 freed = true;
-                self.dir_remove(d);
+                if full_n == 0 {
+                    full_at = d;
+                }
+                full_n += 1;
+                d += 1;
             } else {
                 if ntrim < 4 {
                     trimmed[ntrim] = (d, n);
@@ -900,6 +935,7 @@ impl Bough {
             s = 0;
             remaining -= n;
         }
+        self.dir_remove_range(full_at, full_n);
         self.total -= len;
         if !freed && ntrim <= 4 {
             // Pure trims: add each page's negative delta instead of rebuilding.
@@ -973,6 +1009,17 @@ impl Bough {
         assert!(start + len <= self.total && to <= self.total - len);
         let mut stage = core::mem::take(&mut self.scratch);
         stage.clear();
+        self.read_run_impl(start, len, ddepth, &mut stage);
+        self.remove_impl(start, len, false, true);
+        self.insert_impl(to, &stage, false);
+        stage.clear();
+        self.scratch = stage;
+    }
+
+    fn read_run_impl(&self, start: usize, len: usize, ddepth: i32, out: &mut Vec<RecordInit>) {
+        if len == 0 {
+            return;
+        }
         let (mut d, mut s) = self.locate(start);
         let mut rem = len;
         while rem > 0 {
@@ -980,7 +1027,7 @@ impl Bough {
             let n = rem.min(l - s);
             let p = self.page(d);
             for i in s..s + n {
-                stage.push(RecordInit {
+                out.push(RecordInit {
                     depth: (p.depth[i] as i32 + ddepth) as u16,
                     ink: p.abs(p.ink[i]),
                     kind: p.kind[i],
@@ -993,10 +1040,23 @@ impl Bough {
             d += 1;
             s = 0;
         }
-        self.remove_impl(start, len, false, true);
-        self.insert_impl(to, &stage, false);
-        stage.clear();
-        self.scratch = stage;
+    }
+
+    /// Append the records `[start, start+len)` to `out` (absolute ink, handles kept): the input of a
+    /// `rewrite_run` that permutes sub-runs (a list's rows reordered).
+    pub fn read_run(&self, start: usize, len: usize, out: &mut Vec<RecordInit>) {
+        assert!(start + len <= self.total);
+        self.read_run_impl(start, len, 0, out);
+    }
+
+    /// Replace the run `[start, start+recs.len())` by `recs`, a rearrangement of the same records (their
+    /// handles stay bound and follow them). Damages the old and the new ink of the run.
+    pub fn rewrite_run(&mut self, start: usize, recs: &[RecordInit]) {
+        if recs.is_empty() {
+            return;
+        }
+        self.remove_impl(start, recs.len(), false, true);
+        self.insert_impl(start, recs, true);
     }
 
     // ------------------------------------------------------------------ translate / ink / touch

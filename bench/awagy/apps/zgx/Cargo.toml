@@ -1,0 +1,40 @@
+[workspace]
+
+[profile.production]
+inherits = "release"
+opt-level = 3
+debug = false
+lto = true
+codegen-units = 1
+strip = true
+incremental = false
+
+[package]
+name = "zgx-scroll"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# zgx 0.1.10 at upstream zeronsh/zgx 0f0a08af (2026-11-11), pinned by git rev (measured from a clone of the same
+# commit taken by path). Default features, as docs/getting-started.md's dependency lines give them, plus the full
+# `[patch.crates-io]` set that getting-started.md tells an app to add (zgx's forks of wgpu-hal, winit and the
+# AccessKit adapters; without them "Metal frames take more command buffers"). The docs give the patches as git
+# dependencies on the repository, as here (pinned to the same rev). The `production` profile is the docs' `dist` profile (release + fat LTO + 1 codegen unit) plus strip.
+[dependencies]
+zgx = { git = "https://github.com/zeronsh/zgx", rev = "0f0a08afcf8068cda9a818e9b3e0e954d6970f8f" }
+zgx-desktop = { git = "https://github.com/zeronsh/zgx", rev = "0f0a08afcf8068cda9a818e9b3e0e954d6970f8f" }
+zgx-gpu = { git = "https://github.com/zeronsh/zgx", rev = "0f0a08afcf8068cda9a818e9b3e0e954d6970f8f" }
+
+[features]
+default = ["scroll"]
+scroll = []
+dashboard = []
+
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/zeronsh/zgx", rev = "0f0a08afcf8068cda9a818e9b3e0e954d6970f8f" }
+winit = { git = "https://github.com/zeronsh/zgx", rev = "0f0a08afcf8068cda9a818e9b3e0e954d6970f8f" }
+accesskit_macos = { git = "https://github.com/zeronsh/zgx", rev = "0f0a08afcf8068cda9a818e9b3e0e954d6970f8f" }
+accesskit_windows = { git = "https://github.com/zeronsh/zgx", rev = "0f0a08afcf8068cda9a818e9b3e0e954d6970f8f" }
+accesskit_unix = { git = "https://github.com/zeronsh/zgx", rev = "0f0a08afcf8068cda9a818e9b3e0e954d6970f8f" }
+accesskit_atspi_common = { git = "https://github.com/zeronsh/zgx", rev = "0f0a08afcf8068cda9a818e9b3e0e954d6970f8f" }
+accesskit_consumer = { git = "https://github.com/zeronsh/zgx", rev = "0f0a08afcf8068cda9a818e9b3e0e954d6970f8f" }

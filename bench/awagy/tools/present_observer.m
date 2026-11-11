@@ -2,9 +2,15 @@
 // the window server, into a shared mmap'ed log the runner reads (AWAGY_PRESENT_LOG). Observed:
 //   -[CAMetalLayer nextDrawable]  (wgpu, gpui, Skia/Metal: one drawable per presented frame)
 //   CGLFlushDrawable               (OpenGL: one flush per presented frame)
+//   -[CALayer setHidden:NO] on a hidden layer whose contents are an IOSurface   (zgx's tile flips; only with
+//                                   AWAGY_OBSERVE_TILES=1: zgx sets each tile's surface once and then flips tiles)
 //   -[CALayer setContents:] with an IOSurface (bough: one surface published per presented frame)
+//   -[NSView displayIfNeeded] on a BUIKitView, recorded after it returns (BUI's Cocoa host: the CPU raster is
+//                                   drawn into the content view as a CGImage by drawRect:, once per presented frame;
+//                                   only with AWAGY_OBSERVE_BUIVIEW=1; tag 5)
 // Clock: CLOCK_UPTIME_RAW nanoseconds. Layout: u64 count, then u64 timestamps, then u8 source tags.
 #import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <IOSurface/IOSurface.h>
 #import <OpenGL/OpenGL.h>
@@ -32,6 +38,19 @@ static void hook_contents(id self, SEL s, id v) {
     if (v && CFGetTypeID((__bridge CFTypeRef)v) == IOSurfaceGetTypeID()) record(3);
     orig_contents(self, s, v);
 }
+static void (*orig_hidden)(id, SEL, BOOL);
+static void hook_hidden(id self, SEL s, BOOL hidden) {
+    if (!hidden && [(CALayer *)self isHidden]) {
+        id c = [(CALayer *)self contents];
+        if (c && CFGetTypeID((__bridge CFTypeRef)c) == IOSurfaceGetTypeID()) record(4);
+    }
+    orig_hidden(self, s, hidden);
+}
+static void (*orig_display)(id, SEL);
+static void hook_display(id self, SEL s) {
+    orig_display(self, s);
+    if (strcmp(object_getClassName(self), "BUIKitView") == 0) record(5);
+}
 static CGLError hook_flush(CGLContextObj ctx) { record(2); return CGLFlushDrawable(ctx); }
 __attribute__((used, section("__DATA,__interpose"))) static struct { const void *a, *b; } interpose[] = {
     {(const void *)hook_flush, (const void *)CGLFlushDrawable},
@@ -51,4 +70,12 @@ __attribute__((constructor)) static void init(void) {
     orig_next = (void *)method_setImplementation(m, (IMP)hook_next);
     Method c = class_getInstanceMethod([CALayer class], @selector(setContents:));
     orig_contents = (void *)method_setImplementation(c, (IMP)hook_contents);
+    if (getenv("AWAGY_OBSERVE_BUIVIEW")) {
+        Method d = class_getInstanceMethod([NSView class], @selector(displayIfNeeded));
+        orig_display = (void *)method_setImplementation(d, (IMP)hook_display);
+    }
+    if (getenv("AWAGY_OBSERVE_TILES")) {
+        Method h = class_getInstanceMethod([CALayer class], @selector(setHidden:));
+        orig_hidden = (void *)method_setImplementation(h, (IMP)hook_hidden);
+    }
 }

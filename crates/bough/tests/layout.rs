@@ -10,7 +10,7 @@ use bough::raw::*;
 const FONT: &[u8] = zgx_workload::FONT_BYTES;
 
 fn cfg(w: f32, h: f32) -> Config {
-    Config::new(w, h, 1.0, FONT.to_vec())
+    Config::new(w, h, 1.0, FONT.to_vec()).once()
 }
 
 /// Every record's (kind, depth, ink) and what the GPU draws for it (`Rt::expand_payload`: quads, glyphs of

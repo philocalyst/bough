@@ -3,16 +3,17 @@
 (ZGX_FONT_FILE = DejaVu): prints the median-of-repeats of the median / p10 / p90 CPU ns per op
 (and the [min-max] over repeats) for write and frame. Usage: micro.py [reps=3] [scenes...]"""
 import json, os, statistics, subprocess, sys
+import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # bough's dist binaries (built with CARGO_TARGET_DIR=target/fusion) and zgx's headless drivers (bench/zgx/build.sh)
 BOUGH = os.environ.get("BOUGH_DIST", f"{ROOT}/target/fusion/dist")
 ZGXH = os.environ.get("ZGX_HEADLESS", f"{ROOT}/target/zgx-headless")
-ZGXBIN = os.environ.get("ZGX_DIST", "/Users/mileswirht/projects/_ref/zgx/target/dist/examples")
+ZGXBIN = os.environ.get("ZGX_DIST", os.path.expanduser(os.environ.get('BOUGH_REF', '~/projects/_ref')) + "/zgx/target/dist/examples")
 # state / vscroll-fixed: bough-scenes' micro_bench; vscroll-variable: bough-vlist's (the layout engine)
 BIN = {"bough": f"{BOUGH}/micro_bench", "zgx": f"{ZGXBIN}/micro_bench"}
 VBIN = {"bough": f"{BOUGH}/micro_bench_vlist", "zgx": f"{ZGXBIN}/micro_bench"}
-FONT = "/Users/mileswirht/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf"
+FONT = os.path.expanduser(os.environ.get('BOUGH_REF', '~/projects/_ref')) + "/zgx/comparisons/fonts/DejaVuSans.ttf"
 
 def run(fw, scene, render):
     env = dict(os.environ, SCENE=scene, RENDER=str(render), ZGX_FONT_FILE=FONT)

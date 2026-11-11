@@ -28,7 +28,7 @@ use bough_text::{GlyphRun, Shaper, SimpleScript};
 
 /// A face's shaping state while another face is current ([`TextSys::select`]).
 struct FaceState {
-    shaper: Box<Shaper>,
+    shaper: std::sync::Arc<Shaper>,
     face: rustybuzz::Face<'static>,
     ascent: f32,
     descent: f32,
@@ -38,11 +38,10 @@ struct FaceState {
 
 impl FaceState {
     fn new(font: &[u8]) -> FaceState {
-        let script = SimpleScript::build(font, 0).expect("font has no simple-script table");
-        let leaked: &'static [u8] = Box::leak(font.to_vec().into_boxed_slice());
+        let (leaked, shaper) = font_tables(font);
         let tf = ttf_parser::Face::parse(leaked, 0).expect("font");
         FaceState {
-            shaper: Box::new(Shaper::new(script)),
+            shaper,
             face: rustybuzz::Face::from_slice(leaked, 0).expect("rustybuzz face"),
             ascent: tf.ascender() as f32,
             descent: -(tf.descender() as f32),
@@ -109,8 +108,9 @@ pub const FACE_MONO: u8 = 2;
 pub const FACE_OBLIQUE: u8 = 3;
 
 pub struct TextSys {
-    /// The current face's shaper (face 0 between operations; [`TextSys::select`]).
-    pub shaper: Box<Shaper>,
+    /// The current face's shaping tables (face 0 between operations; [`TextSys::select`]): immutable, built
+    /// once per font per process and shared by every window (`font_tables`), as a renderer's font system is.
+    pub shaper: std::sync::Arc<Shaper>,
     pub cache: GlyphCache,
     pub scratch: Vec<TInstance>,
     face: rustybuzz::Face<'static>,
@@ -135,15 +135,36 @@ pub struct TextSys {
     logical: [u8; 4],
 }
 
+/// The process-wide font table cache: (FNV-1a of the font bytes, the bytes kept for the faces, the shaper).
+#[allow(clippy::type_complexity)]
+static FONTS: std::sync::Mutex<Vec<(u64, &'static [u8], std::sync::Arc<Shaper>)>> = std::sync::Mutex::new(Vec::new());
+
+/// The font's bytes (kept for the process: the faces borrow them) and its shaping tables, built on first use.
+fn font_tables(font: &[u8]) -> (&'static [u8], std::sync::Arc<Shaper>) {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for &b in font {
+        h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let mut fonts = FONTS.lock().unwrap();
+    if let Some((_, b, s)) = fonts.iter().find(|f| f.0 == h && f.1 == font) {
+        return (b, s.clone());
+    }
+    // built once per process here, and once per font ever through bough-text's file cache
+    let script = SimpleScript::build_cached(font, 0).expect("font has no simple-script table");
+    let leaked: &'static [u8] = Box::leak(font.to_vec().into_boxed_slice());
+    let s = std::sync::Arc::new(Shaper::new(script));
+    fonts.push((h, leaked, s.clone()));
+    (leaked, s)
+}
+
 impl TextSys {
     /// `toks`: the (carved, GPU-visible) column of strike token tables.
     pub fn new(font: &[u8], toks: bough_mem::Col<TokStrike>) -> TextSys {
-        let script = SimpleScript::build_cached(font, 0).expect("font has no simple-script table");
-        let leaked: &'static [u8] = Box::leak(font.to_vec().into_boxed_slice());
+        let (leaked, shaper) = font_tables(font);
         let tf = ttf_parser::Face::parse(leaked, 0).expect("font");
         let (ascent, descent, upem) = (tf.ascender() as f32, -(tf.descender() as f32), tf.units_per_em() as f32);
         TextSys {
-            shaper: Box::new(Shaper::new(script)),
+            shaper,
             cache: GlyphCache::with_tok_column(font, toks),
             scratch: Vec::with_capacity(1024),
             face: rustybuzz::Face::from_slice(leaked, 0).expect("rustybuzz face"),
@@ -757,8 +778,9 @@ impl Rt {
             }
             other => self.texts[ti as usize].shape = other,
         }
-        // representation change (or glyph instances): rebuild, damage old and new ink
-        let old_ink = self.texts[ti as usize].ink;
+        // representation change (or glyph instances): rebuild, damage old (the record's current ink: a move
+        // translates records, not this cache) and new ink
+        let old_ink = self.cur_ink(h);
         let old = std::mem::take(&mut self.texts[ti as usize].shape);
         release(self, TextNode { shape: old, ..Default::default() });
         {

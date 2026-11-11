@@ -199,6 +199,12 @@ pub struct Node {
     pub text: u32,
     /// Layout node (index into `Rt::lay`) of an element laid out by cephal, else `NONE`.
     pub lnode: u32,
+    /// Allocation serial: tells a reused node from the one an outside table recorded (`select.rs`).
+    pub serial: u32,
+    /// Box operands (`boxops.rs`): paint offset (device px) and opacity.
+    pub tx: f32,
+    pub ty: f32,
+    pub alpha: f32,
 }
 
 impl Node {
@@ -225,6 +231,10 @@ impl Node {
             series_ok: false,
             text: NONE,
             lnode: NONE,
+            serial: 0,
+            tx: 0.0,
+            ty: 0.0,
+            alpha: 1.0,
         }
     }
 }
@@ -242,12 +252,26 @@ pub struct Wire {
     /// Next wire of the same signal (0 = end).
     pub next: u32,
     pub dead: bool,
+    /// Runs while its source is held by a pending cohort (`latest(..)` operands, reader pending wires).
+    pub latest: bool,
     pub node: u32,
+    /// Address of the head the wire was linked into. `settle` runs a wire only from that exact head: a
+    /// head moved elsewhere (a `Signal` swapped between owners or apps, a list row taken out and put back)
+    /// carries indices that are not its own, and the chain is cut there instead of being run.
+    pub head: usize,
+    /// Owner class of the owner the wire's head lives in (`changed` is shown to that owner).
+    pub cls: u32,
     pub patch: PatchFn,
     pub recipe: [u8; 16],
 }
 
+/// `View::changed` of an owner class, type-erased: `(owner, publications, committed readers)`.
+pub type ChangedFn = unsafe fn(*mut u8, &crate::changed::Pubs, &[usize]);
+
 unsafe fn nop(_: &mut Rt, _: &Wire, _: *const u8, _: *const u8) {}
+
+/// Index bits of a head (the rest are flags: `QUEUED`, `HELD`).
+pub const HEAD_IDX: u32 = (1 << 30) - 1;
 
 /// Everything created while mounting one subtree that must be released when it unmounts.
 #[derive(Default)]
@@ -257,6 +281,12 @@ pub struct Scope {
     pub runs: Vec<u32>,
     /// Layout roots (groups) created while mounting; removed from the layout engine on release.
     pub lroots: Vec<u32>,
+    /// Dynamic parts of a re-describing owner (`describe.rs`), released with their items.
+    pub dyns: Vec<u32>,
+    /// List regions mounted in this scope (`listview.rs`), released with their rows.
+    pub lregs: Vec<u32>,
+    /// Async producers declared in this scope (`reader.rs`), revoked with it.
+    pub prods: Vec<u32>,
 }
 
 pub struct RowInfo {
@@ -362,6 +392,7 @@ pub struct Rt {
     pub win_h: i32,
     next_fresh: u32,
     free_blocks: [Vec<u32>; 16],
+    free_bits: [Vec<u64>; 16],
     pub runs: Vec<Run>,
     run_free: Vec<u32>,
     pub nodes: Vec<Node>,
@@ -369,8 +400,12 @@ pub struct Rt {
     /// The wire arena and the owner offsets of wired signals: crate-private, because `settle` trusts them
     /// (every offset is an `offset_of!`-proven `Signal<_>` field, every recipe the closure its patch reads).
     pub(crate) wires: Vec<Wire>,
-    wire_free: Vec<u32>,
-    pub(crate) wired: Vec<u32>,
+    pub(crate) wire_free: Vec<u32>,
+    /// Per owner class: the offsets of its wired cells (class 0 is the app's root owner; every list
+    /// region adds one class shared by all its rows, `list.rs`).
+    pub(crate) classes: Vec<Vec<u32>>,
+    /// Per owner class: its `View::changed` (rows and entity views of a `View` type; class 0 is the app's).
+    pub(crate) class_changed: Vec<Option<ChangedFn>>,
     pub texts: Vec<crate::text::TextNode>,
     text_free: Vec<u32>,
     /// Virtual-list regions: crate-private (each holds a type-erased row function its `mount_row` trusts).
@@ -381,6 +416,11 @@ pub struct Rt {
     /// Per space: `[a-1, b, c, d-1, pivot x, pivot y, tx, ty]`, what the kernels apply to every instance and
     /// glyph run in the space (see `set_space_xform`).
     pub xforms: Col<[f32; 8]>,
+    /// Nested spaces: a space allocated under another (`alloc_space_in`) moves with it (`set_space` /
+    /// `shift_space` carry the delta to its descendants and to the list regions placed in them).
+    space_parent: Vec<u16>,
+    space_kids: Vec<Vec<u16>>,
+    pub(crate) space_regs: Vec<Vec<u32>>,
     /// Paint-only damage, advanced with the Bough's ring.
     pub paint: DamageRing,
     /// Per epoch (`epoch % RING`): its paint writes, see the module docs.
@@ -388,9 +428,23 @@ pub struct Rt {
     pub tiles_x: usize,
     pub tiles_y: usize,
     pub ctr: Counters,
-    /// The layout bridge (cephal over the mounted records) and the measured lists.
+    /// The layout bridge (cephal over the mounted records).
     pub lay: crate::layout::Lay,
-    pub mregions: Vec<crate::mlist::MRegion>,
+    /// List regions (`listview.rs`).
+    pub lists: crate::listview::Lists,
+    /// Reflection (`reflect.rs`): wired fields' descriptors, element type names by record handle.
+    pub reflect: crate::reflect::Reflect,
+    /// Released subtrees whose resources return to the free lists at the next frames (`reclaim`).
+    pub(crate) reclaim_q: Vec<Scope>,
+    /// Dynamic parts of re-describing owners (`describe.rs`).
+    pub dyns: crate::describe::Dyns,
+    /// Entity views (`entity.rs`), async producers / cohort / executor (`reader.rs`), and this turn's
+    /// publications for `View::changed` (`changed.rs`).
+    pub(crate) eviews: Vec<crate::entity::EView>,
+    pub asy: crate::reader::Async,
+    pub(crate) pubs: crate::changed::Pubs,
+    pub(crate) selects: crate::select::Selects,
+    next_serial: u32,
     /// Pointer, hover, focus, routes (input.rs).
     pub input: crate::input::Input,
     /// Running transitions and the frame clock (transition.rs).
@@ -469,13 +523,15 @@ impl Rt {
             win_h,
             next_fresh: 0,
             free_blocks: Default::default(),
+            free_bits: Default::default(),
             runs: vec![Run::default()],
             run_free: Vec::new(),
             nodes: vec![Node::blank()],
             node_free: Vec::new(),
-            wires: vec![Wire { next: 0, dead: true, node: 0, patch: nop, recipe: [0; 16] }],
+            wires: vec![Wire { next: 0, dead: true, latest: false, node: 0, head: 0, cls: 0, patch: nop, recipe: [0; 16] }],
             wire_free: Vec::new(),
-            wired: Vec::new(),
+            classes: vec![Vec::new()],
+            class_changed: vec![None],
             texts: Vec::new(),
             text_free: Vec::new(),
             regions: Vec::new(),
@@ -483,13 +539,24 @@ impl Rt {
             space_free: Vec::new(),
             next_space: 1,
             xforms,
+            space_parent: Vec::new(),
+            space_kids: Vec::new(),
+            space_regs: Vec::new(),
             paint: DamageRing::new(win_w, win_h),
             paint_log: Default::default(),
             tiles_x: tx,
             tiles_y: ty,
             ctr: Counters::default(),
             lay: crate::layout::Lay::new(scale),
-            mregions: Vec::new(),
+            lists: Default::default(),
+            reclaim_q: Vec::new(),
+            reflect: Default::default(),
+            dyns: Default::default(),
+            eviews: Vec::new(),
+            asy: Default::default(),
+            pubs: Default::default(),
+            selects: Default::default(),
+            next_serial: 0,
             input: Default::default(),
             transitions: Default::default(),
             images: Default::default(),
@@ -520,11 +587,57 @@ impl Rt {
         self.bough.scroll_run_copy(start, len, 0, dy, vp, |kind, payload| scroll_band(inst, kind, payload));
     }
 
+    /// A record's ink as the Bough holds it now (moves translate records, not the elements' cached inks).
+    #[inline]
+    pub(crate) fn cur_ink(&self, h: bough_core::Handle) -> NRect {
+        self.bough.pos_of(h).map_or(NRect::EMPTY, |p| self.bough.ink_at(p))
+    }
+
     // ------------------------------------------------------------------ spaces and clips
-    /// Set space `s`'s translation (device px; rounded: spaces are integral, text pens snap to pixels).
+    /// Set space `s`'s translation (device px; rounded: spaces are integral, text pens snap to pixels). The
+    /// spaces nested in it move with it.
     #[inline]
     pub fn set_space(&mut self, s: u16, v: [f32; 2]) {
-        self.glyphs.spaces[s as usize] = [v[0].round() as i32, v[1].round() as i32];
+        let new = [v[0].round() as i32, v[1].round() as i32];
+        let old = self.glyphs.spaces[s as usize];
+        self.glyphs.spaces[s as usize] = new;
+        if new != old && (self.space_kids.get(s as usize).is_some_and(|k| !k.is_empty()) || self.space_regs.get(s as usize).is_some_and(|r| !r.is_empty())) {
+            self.carry_space(s, new[0] - old[0], new[1] - old[1]);
+        }
+    }
+    /// Move space `s` (and what is nested in it) by `(dx, dy)` device px.
+    #[inline]
+    pub fn shift_space(&mut self, s: u16, dx: i32, dy: i32) {
+        let sp = &mut self.glyphs.spaces[s as usize];
+        sp[0] += dx;
+        sp[1] += dy;
+        if (dx != 0 || dy != 0) && (self.space_kids.get(s as usize).is_some_and(|k| !k.is_empty()) || self.space_regs.get(s as usize).is_some_and(|r| !r.is_empty())) {
+            self.carry_space(s, dx, dy);
+        }
+    }
+    /// `s` moved by `(dx, dy)`: so do its descendants; the list regions placed in any of them keep their rows
+    /// where they are (their spaces moved, and the records with the move's own `scroll_run`) and re-window
+    /// (what they show may have changed: an exposure).
+    fn carry_space(&mut self, s: u16, dx: i32, dy: i32) {
+        let mut stack = vec![s];
+        while let Some(x) = stack.pop() {
+            if x != s {
+                let sp = &mut self.glyphs.spaces[x as usize];
+                sp[0] += dx;
+                sp[1] += dy;
+            }
+            if let Some(regs) = self.space_regs.get(x as usize) {
+                for &r in regs {
+                    let reg = &mut self.lists.regs[r as usize];
+                    reg.placed_at[0] += dx as i64;
+                    reg.placed_at[1] += dy as i64;
+                    reg.dirty = true;
+                }
+            }
+            if let Some(k) = self.space_kids.get(x as usize) {
+                stack.extend_from_slice(k);
+            }
+        }
     }
     #[inline]
     pub fn space(&self, s: u16) -> [f32; 2] {
@@ -572,22 +685,91 @@ impl Rt {
         self.bough.set_run_xform(pos, end - pos, m, [o[0] + c[0], o[1] + c[1]], t);
     }
 
+    /// A space nested in `parent` (it moves with it).
+    pub fn alloc_space_in(&mut self, parent: u16) -> u16 {
+        let s = self.alloc_space();
+        let n = s.max(parent) as usize + 1;
+        if self.space_parent.len() < n {
+            self.space_parent.resize(n, u16::MAX);
+            self.space_kids.resize_with(n, Vec::new);
+        }
+        self.space_parent[s as usize] = parent;
+        self.space_kids[parent as usize].push(s);
+        s
+    }
     pub fn free_space(&mut self, s: u16) {
+        if let Some(&p) = self.space_parent.get(s as usize) {
+            if p != u16::MAX {
+                let k = &mut self.space_kids[p as usize];
+                if let Some(i) = k.iter().rposition(|&x| x == s) {
+                    k.swap_remove(i);
+                }
+                self.space_parent[s as usize] = u16::MAX;
+            }
+            for c in std::mem::take(&mut self.space_kids[s as usize]) {
+                self.space_parent[c as usize] = u16::MAX;
+            }
+        }
         self.space_free.push(s);
+    }
+    /// List region `reg` is placed in space `s` (it re-windows when `s` moves).
+    pub(crate) fn space_reg(&mut self, s: u16, reg: u32, on: bool) {
+        if self.space_regs.len() <= s as usize {
+            self.space_regs.resize_with(s as usize + 1, Vec::new);
+        }
+        let v = &mut self.space_regs[s as usize];
+        if on {
+            v.push(reg);
+        } else if let Some(i) = v.iter().position(|&x| x == reg) {
+            v.swap_remove(i);
+        }
     }
 
     // ------------------------------------------------------------------ instance runs
+    #[inline]
+    fn bfree(&self, c: usize, b: u32) -> bool {
+        let i = (b >> c) as usize;
+        self.free_bits[c].get(i / 64).is_some_and(|w| w >> (i % 64) & 1 != 0)
+    }
+    #[inline]
+    fn set_bfree(&mut self, c: usize, b: u32, v: bool) {
+        let i = (b >> c) as usize;
+        let w = &mut self.free_bits[c];
+        if w.len() <= i / 64 {
+            w.resize(i / 64 + 1, 0);
+        }
+        if v {
+            w[i / 64] |= 1 << (i % 64);
+        } else {
+            w[i / 64] &= !(1 << (i % 64));
+        }
+    }
+    fn push_free(&mut self, c: usize, b: u32) {
+        self.set_bfree(c, b, true);
+        self.free_blocks[c].push(b);
+    }
+    /// Pop a free block of class `c` (the stacks keep stale entries of blocks merged since: the bitmap is
+    /// the truth, so a buddy lookup is one bit test instead of a free-list scan).
+    fn pop_free(&mut self, c: usize) -> Option<u32> {
+        while let Some(b) = self.free_blocks[c].pop() {
+            if self.bfree(c, b) {
+                self.set_bfree(c, b, false);
+                return Some(b);
+            }
+        }
+        None
+    }
     /// A block of `1 << class` instances: a free block of that class, else a split of a larger free block, else
     /// fresh column (aligned to its size, so buddies pair up). Blocks are buddy-coalesced when freed, so a long
     /// run of rows of varying sizes (a list jumping about) cannot fragment the column away.
     fn alloc_block(&mut self, class: u8) -> u32 {
-        if let Some(b) = self.free_blocks[class as usize].pop() {
+        if let Some(b) = self.pop_free(class as usize) {
             return b;
         }
         for c in class as usize + 1..16 {
-            if let Some(b) = self.free_blocks[c].pop() {
+            if let Some(b) = self.pop_free(c) {
                 for lower in (class as usize..c).rev() {
-                    self.free_blocks[lower].push(b + (1 << lower));
+                    self.push_free(lower, b + (1 << lower));
                 }
                 return b;
             }
@@ -602,7 +784,7 @@ impl Rt {
             while a + (1 << c) > b {
                 c -= 1;
             }
-            self.free_blocks[c as usize].push(a);
+            self.push_free(c as usize, a);
             a += 1 << c;
         }
         self.next_fresh = b + size;
@@ -612,16 +794,14 @@ impl Rt {
         let (mut b, mut c) = (first, class as usize);
         while c < 15 {
             let buddy = b ^ (1 << c);
-            match self.free_blocks[c].iter().position(|&x| x == buddy) {
-                Some(i) => {
-                    self.free_blocks[c].swap_remove(i);
-                    b = b.min(buddy);
-                    c += 1;
-                }
-                None => break,
+            if !self.bfree(c, buddy) {
+                break;
             }
+            self.set_bfree(c, buddy, false);
+            b = b.min(buddy);
+            c += 1;
         }
-        self.free_blocks[c].push(b);
+        self.push_free(c, b);
     }
     /// A run with capacity for at least `n` instances (power-of-two size classes, buddy blocks).
     pub fn alloc_run(&mut self, n: usize) -> u32 {
@@ -648,6 +828,8 @@ impl Rt {
     pub fn alloc_node(&mut self) -> u32 {
         let mut n = Node::blank();
         n.live = true;
+        self.next_serial = self.next_serial.wrapping_add(1);
+        n.serial = self.next_serial;
         if let Some(i) = self.node_free.pop() {
             n.series = std::mem::take(&mut self.nodes[i as usize].series);
             self.nodes[i as usize] = n;
@@ -680,18 +862,32 @@ impl Rt {
         self.text_free.push(t);
     }
 
-    /// Install a wire on the signal whose head is `head` (the signal lives at `owner + off`).
+    /// Install a wire on the cell whose head is `head` (the cell lives at `owner + off`, owner class `cls`).
     ///
     /// # Safety
-    /// `off` must be the `offset_of!`-proven offset of a `Signal<T>` field of the owner type, `head` that
-    /// signal's head, and `patch` monomorphised for that `T` (and `recipe` holding what it reads).
-    pub(crate) unsafe fn add_wire(&mut self, head: &std::cell::Cell<u32>, off: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
+    /// `off` must be the `offset_of!`-proven offset of a headed cell field of the class's owner type, `head`
+    /// that cell's head, and `patch` monomorphised for the cell's type (and `recipe` holding what it reads).
+    pub(crate) unsafe fn add_wire(&mut self, head: &std::cell::Cell<u32>, off: u32, cls: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
+        let addr = head as *const _ as usize;
         let h = head.get();
-        let first = h & !crate::signal::QUEUED;
-        if first == 0 {
-            self.wired.push(off);
+        let mut first = h & HEAD_IDX;
+        // a chain that is not this head's own (moved in from elsewhere) is dropped, never extended
+        if first != 0 && self.wires.get(first as usize).is_none_or(|w| w.head != addr) {
+            first = 0;
         }
-        let w = Wire { next: first, dead: false, node, patch, recipe };
+        let c = &mut self.classes[cls as usize];
+        if !c.contains(&off) {
+            c.push(off);
+        }
+        // `latest` wires (producers, `latest(..)` operands) stay at the front of the chain: they run before a
+        // held source's other wires are skipped (`run_head`), whatever the declaration order
+        let mut after = 0u32;
+        let mut p = first;
+        while p != 0 && self.wires[p as usize].latest && self.wires[p as usize].head == addr {
+            after = p;
+            p = self.wires[p as usize].next;
+        }
+        let w = Wire { next: if after == 0 { first } else { p }, dead: false, latest: false, node, head: addr, cls, patch, recipe };
         let idx = if let Some(i) = self.wire_free.pop() {
             self.wires[i as usize] = w;
             i
@@ -699,49 +895,100 @@ impl Rt {
             self.wires.push(w);
             (self.wires.len() - 1) as u32
         };
-        head.set(idx | (h & crate::signal::QUEUED));
+        assert!(idx <= HEAD_IDX, "wire arena full");
+        if after == 0 {
+            head.set(idx | (h & !HEAD_IDX));
+        } else {
+            self.wires[after as usize].next = idx;
+        }
         idx
     }
 
-    /// Run every queued signal's wires. Dead wires are unlinked as they are met.
+    /// A new owner class (list rows, entities): its wired offsets start empty.
+    pub(crate) fn new_class(&mut self) -> u32 {
+        self.classes.push(Vec::new());
+        self.class_changed.push(None);
+        (self.classes.len() - 1) as u32
+    }
+
+    /// Run every queued cell's wires of the root owner. Dead wires are unlinked as they are met.
     ///
     /// # Safety
-    /// `owner` must point at the live owner whose wired signals were installed through `Wired` (every
-    /// offset in `wired` is an `offset_of!`-proven `Signal<_>` field of it; the head is the first field of
-    /// every `Signal`, `#[repr(C)]`).
+    /// `owner` must point at the live root owner whose wired cells were installed through `sig!` proofs
+    /// (every offset in class 0 is an `offset_of!`-proven headed field of it; the head is the first field of
+    /// every cell, `#[repr(C)]`), and be derived from a unique borrow (list patches write their cell).
     pub unsafe fn settle(&mut self, owner: *const u8) {
+        loop {
+            unsafe { self.settle_cls(owner, 0) };
+            if !std::mem::take(&mut self.asy.rescan) {
+                break;
+            }
+        }
+        self.lists_end_turn();
+    }
+
+    /// `settle` for the owner at `owner` of class `cls` (a list row, an entity).
+    ///
+    /// # Safety
+    /// As `settle`, for the class's owner type.
+    pub(crate) unsafe fn settle_cls(&mut self, owner: *const u8, cls: u32) {
         let mut k = 0;
-        while k < self.wired.len() {
-            let off = self.wired[k] as usize;
+        while k < self.classes[cls as usize].len() {
+            let off = self.classes[cls as usize][k] as usize;
             k += 1;
-            // SAFETY: see the function contract: a Signal<_> lives at owner + off, its head first.
+            // SAFETY: see the function contract: a headed cell lives at owner + off, its head first.
             let sig = unsafe { owner.add(off) };
             let head = unsafe { &*(sig as *const std::cell::Cell<u32>) };
             let h = head.get();
             if h & crate::signal::QUEUED == 0 {
                 continue;
             }
-            head.set(h & !crate::signal::QUEUED);
-            let mut i = h & !crate::signal::QUEUED;
-            let mut prev = 0u32;
-            while i != 0 {
-                let w = self.wires[i as usize];
-                if w.dead {
-                    // unlink
+            unsafe { self.run_head(head, sig, owner) };
+        }
+    }
+
+    /// Run the wires of one queued head (clears QUEUED; a HELD head runs only its `latest` wires).
+    ///
+    /// # Safety
+    /// `sig` is the cell whose head is `head`, inside the live owner `owner` its wires were installed for.
+    pub(crate) unsafe fn run_head(&mut self, head: &std::cell::Cell<u32>, sig: *const u8, owner: *const u8) {
+        let addr = head as *const _ as usize;
+        let h = head.get();
+        head.set(h & !crate::signal::QUEUED);
+        let mut i = h & HEAD_IDX;
+        let mut prev = 0u32;
+        while i != 0 {
+            let w = match self.wires.get(i as usize) {
+                Some(w) if w.head == addr => *w,
+                // not this head's chain (see `Wire::head`): cut it here
+                _ => {
                     if prev == 0 {
-                        head.set(w.next | (head.get() & crate::signal::QUEUED));
+                        head.set(head.get() & !HEAD_IDX);
                     } else {
-                        self.wires[prev as usize].next = w.next;
+                        self.wires[prev as usize].next = 0;
                     }
-                    self.wire_free.push(i);
-                } else {
-                    self.ctr.wires_run += 1;
-                    // SAFETY: the wire was installed for this signal's type and the owner's type.
-                    unsafe { (w.patch)(self, &w, sig, owner) };
-                    prev = i;
+                    break;
                 }
-                i = w.next;
+            };
+            if w.dead {
+                // unlink
+                if prev == 0 {
+                    head.set(w.next | (head.get() & !HEAD_IDX));
+                } else {
+                    self.wires[prev as usize].next = w.next;
+                }
+                self.wires[i as usize].head = 0;
+                self.wire_free.push(i);
+            } else {
+                // re-read: a producer running first may have just put this source on hold
+                if head.get() & crate::signal::HELD == 0 || w.latest {
+                    self.ctr.wires_run += 1;
+                    // SAFETY: the wire was installed for this cell's type and the owner's type.
+                    unsafe { (w.patch)(self, &w, sig, owner) };
+                }
+                prev = i;
             }
+            i = w.next;
         }
     }
 
@@ -769,15 +1016,27 @@ impl Rt {
         if moved == 0 {
             return;
         }
-        let (inst, margin, hd, space) = (self.runs[n.run as usize].first, n.margin, n.handle, n.space);
+        let (inst, margin, hd, space, tx, ty) = (self.runs[n.run as usize].first, n.margin, n.handle, n.space, n.tx, n.ty);
         let n = &mut self.nodes[node as usize];
         (n.x, n.y, n.w, n.h) = (x, y, w, h);
+        // a box translation (boxops' `translate` operand) offsets the drawn box, not the laid-out one
         let p = self.inst_mut(inst);
-        p.pos = [x, y];
+        p.pos = [x + tx, y + ty];
         p.size = [w, h];
         let band = edge_band_of(p);
-        let ink = self.ink_rect(space, x, y, w, h, margin);
+        let ink = self.ink_rect(space, x + tx, y + ty, w, h, margin);
         self.bough.set_ink_handle_edges(hd, ink, moved, band);
+    }
+
+    /// Re-derive a quad node's ink and write it through: the old and the new ink are damaged even when the
+    /// rounded rects are equal (a sub-pixel change of an edge still changes its anti-aliased pixels).
+    #[inline]
+    pub fn quad_ink(&mut self, node: u32) {
+        let n = &self.nodes[node as usize];
+        let ink = self.ink_rect(n.space, n.x + n.tx, n.y + n.ty, n.w, n.h, n.margin);
+        let h = n.handle;
+        self.bough.touch_handle(h);
+        self.bough.set_ink_handle(h, ink);
     }
 
     /// A paint-only write to `h`'s record (colour, glyph alphas) from state hash `old` to `new`: its visible
@@ -844,19 +1103,67 @@ impl Rt {
     }
 
     // ------------------------------------------------------------------ release
-    pub fn release_scope(&mut self, s: Scope) {
-        for w in s.wires {
+    /// Release what a subtree held. Two phases (`reclaim`): **now**, everything that could still reach the
+    /// subtree is cut (its wires die, its layout groups leave the engine, its list regions stop), which is
+    /// O(wires + layout nodes) of flag writes; **later**, at the next frames' `reclaim`, its nodes, texts,
+    /// instance runs, glyph blocks and dynamic items return to their free lists. The removal frame pays
+    /// only the cut and bough-core's O(pages) run removal.
+    pub fn release_scope(&mut self, mut s: Scope) {
+        self.cut_scope(&mut s);
+        if !(s.nodes.is_empty() && s.runs.is_empty() && s.dyns.is_empty()) {
+            self.reclaim_q.push(s);
+        }
+    }
+
+    fn cut_scope(&mut self, s: &mut Scope) {
+        for w in s.wires.drain(..) {
             self.wires[w as usize].dead = true;
         }
-        for n in s.nodes {
-            self.free_node(n);
-        }
-        for r in s.runs {
-            self.free_run(r);
-        }
-        for r in s.lroots {
+        for r in s.lroots.drain(..) {
             self.lay_remove_root(r);
         }
+        for r in s.lregs.drain(..) {
+            self.lr_release_region(r as usize);
+        }
+        for p in s.prods.drain(..) {
+            self.revoke_producer(p);
+        }
+        // dynamic items are cut now too (their wires may sit on live signals)
+        for &d in &s.dyns {
+            let mut items = std::mem::take(&mut self.dyns.parts[d as usize]);
+            for it in &mut items {
+                self.cut_scope(&mut it.scope);
+            }
+            self.dyns.parts[d as usize] = items;
+        }
+    }
+
+    /// Return up to about `budget` released nodes to the free lists (see `release_scope`); returns whether
+    /// anything is still waiting.
+    pub fn reclaim(&mut self, mut budget: usize) -> bool {
+        while budget > 0 {
+            let Some(mut s) = self.reclaim_q.pop() else { break };
+            while budget > 0 {
+                if let Some(n) = s.nodes.pop() {
+                    self.free_node(n);
+                } else if let Some(r) = s.runs.pop() {
+                    self.free_run(r);
+                } else if let Some(d) = s.dyns.pop() {
+                    self.release_dyn(d);
+                } else {
+                    break;
+                }
+                budget -= 1;
+            }
+            if !(s.nodes.is_empty() && s.runs.is_empty() && s.dyns.is_empty()) {
+                self.reclaim_q.push(s);
+            }
+        }
+        // layout leaves' glyph blocks; their states are kept for reuse
+        while budget > 0 && self.lay.eng.reclaim_orphan(&mut self.glyphs) {
+            budget -= 1;
+        }
+        !self.reclaim_q.is_empty() || !self.lay.eng.orphans.is_empty()
     }
 
     // ------------------------------------------------------------------ virtual-list regions
@@ -961,8 +1268,8 @@ impl Rt {
             (r.base_pos, r.rows.iter().map(|x| x.nrec as usize).sum::<usize>(), r.vp)
         };
         for i in 0..self.regions[reg].rows.len() {
-            let s = self.regions[reg].rows[i].space as usize;
-            self.glyphs.spaces[s][1] -= dy;
+            let s = self.regions[reg].rows[i].space;
+            self.shift_space(s, 0, -dy);
         }
         self.scroll_copy(base, nrec, -dy, vp);
         let surv_start = old_range.start.max(new_range.start);

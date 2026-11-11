@@ -1,0 +1,3 @@
+boxes[wires]: 33.2 us per frame, 539.7 k instructions per frame
+boxes[quads]: 12.1 us per frame, 216.3 k instructions per frame
+boxes[lanes]: 6.9 us per frame, 121.2 k instructions per frame

@@ -156,3 +156,117 @@ operand.
 | text wire with a 6-char number (format + shape + instances) | < 500 instructions |
 | idle | 0 instructions, no wakeups |
 | mount of a 1,000-record static template | one copy + operand writes |
+
+## As built in round 3 (branch `api`; measurements in `crates/bough/API-RESULTS.md`)
+
+What the contract above promised and the façade now has, and where the implementation changed it.
+
+**`List<T>`** (`list.rs`, `listview.rs`). A field of an owner. Items live in a slab of 64-item chunks that
+never move, so an item is an *owner* at a stable address; `order` is a vector of slot ids; `Slot<T>` is
+(index, generation). Ops: `push insert remove pop take(slot) clear truncate retain move_to move_before swap
+reverse sort_by sort_by_key edit(pos) edit_slot(slot) set`; reads: `len get slot get_slot position iter
+slots` (no `Deref<[T]>`: the store is chunked, not contiguous). Each op appends to a per-turn delta log
+(`Insert Remove Move Permute Edit`) only while the list is displayed; a slot freed this turn is reused only
+after the turn settles, so a log entry never names two items.
+`list(sig!(self.items))` (rows are `T: View`, mounted by `T::view`) or `list_with(sig!(..), fn(&T, &mut
+Mounter<T>))` shows it as a **stack of rows**: the container is a sized leaf of its parent's layout (the
+region applies its padding and gap), every row's top box is a layout group of its own in a space of its
+own, and row `k` sits at a prefix sum of the heights before it. Contract change: a list region is always
+a vertical stack (no `horizontal`, no flex distribution among rows) — that is what lets an edit lay out
+one row and a splice move the rest by space writes. `sig!(self.items)` proves any headed cell, not only
+`Signal` (`signal::Headed`).
+
+**`Entities<T>` / `Entity<T>`** (`entity.rs`). The slab is a field (`Entities::with_capacity` carves whole
+chunks up front); `Entity<T>` is a `Copy` generational handle; `get`/`inspect` read, `edit` mutates (logged
+once per turn), `remove` kills the handle. `entity_view(sig!(self.docs), handle)` mounts `T::view` with
+the entity as owner (several views of one entity follow its edits). Contract change: mutation is a direct
+`edit` inside the owning turn, not a queued `send`; an entity view inside a re-describing owner is not
+supported.
+
+**`Reader<T>`** (`reader.rs`). A field (no `Deref`). `produce(sig!(self.query), sig!(self.results), f)`
+declares the producer in the view (`f: fn(&S) -> Request<T>`, a `Send` closure); it runs whenever the
+source's value changes (frozen input compared by `==`), at mount too (fetch high). The executor is
+`Exec::Manual` (deterministic: `App::run_jobs`) or `Exec::Threads`. Completions are admitted at the start of
+the next turn (`App::turn`/`poll`) by ticket; a superseded one is dropped. Pending holds: the reader keeps
+its last value, the source that began the cohort is `HELD` (a bit in its wire head: the settle scan skips
+its non-`latest` wires), `latest(sig!(..).map(f))` opts a sink out. When every member of the cohort is
+staged, all commit in one turn (one epoch). Operands: `sig!(self.r).map(|v: Option<&T>| ..)` (before first
+readiness `None`), `sig!(self.r).pending().map(|p: bool| ..)`; `Reader::latest()`, `is_pending()`. Not
+built: `boundary().loading(..)`, faults/`try_map_async`, `project` regions.
+
+**`FIXED`** (`describe.rs`). Default `false`, as the contract says: every `App::turn` re-describes the
+owner and walks the new description in lockstep with the retained records (tape of node ids in preorder;
+`Option`/`Vec`/`each` are dynamic parts, realigned positionally and spliced as preorder runs). Every scene
+that mounts once declares `const FIXED: bool = true`. Restrictions: a layout box cannot gain or lose its
+paint between descriptions, a laid-out text cannot change its font size.
+
+**`changed`** (`changed.rs`). `fn changed(&mut self, d: Changed<'_, Self>)` on `View`: `d.list(sig!(..))`
+(the turn's ops), `d.entities(sig!(..))` (edited slab indices), `d.reader(sig!(..))` (committed this turn);
+writes settle in the same turn (at most 8 waves). Root owner only; no `#[derive(Delta)]`.
+
+**New operands and elements.** `sig!(self.sel).select(key, on, off)`: all selects of one signal share one
+keyed wire (a change patches the old key's and the new key's destinations only). `lanes(n, sig!(self.t),
+|t, i| Lane { .. })`: `n` quads as one record and one instance run, evaluated in one pass.
+
+**Soundness additions.** A wire records the address of the head it was linked into; `settle` and
+`add_wire` cut a chain whose wire does not match (a `Signal` moved between owners or apps, a list item
+taken out and put back), so an index from another arena is never run. A list item leaves the slab with
+its heads cleared; its row's own wires are freed at once.
+
+## Round 4 (branch `api`): reflection, virtualization as exposure, interface cleanup
+
+**Reflection, typed, no opt-in** (`reflect.rs`). Built on rustc's compile-time type reflection
+(`#![feature(type_info)]`, this toolchain): `reflect::schema::<T>()` is a `const` per type, a preorder of
+nodes (kind, field / variant name, the compiler's offset, size, child count) with, per node, the vtables of
+`Debug`, bough's `Edit` (write from text), a blanket `Meta` (type name; raw-pointer receivers, so the schema
+names types it has no value of) and bough's `Items` (a container's children: `Vec`, `Option`, `Box`, `Cell`,
+`RefCell`, `Rc`/`Arc` read-only, `List`, `Reader` read-only), each found by `TypeId::trait_info_of` at
+compile time. Nothing is derived or registered in any component crate. A struct whose first field is a
+`WireHead` is a reactive cell (`Signal`, `List`, `Reader`, `Entities` now all start with one): a `Signal`'s
+node is its value, and an edit through reflection queues the cell's head, so it runs as an ordinary write
+(wires, damage, effects). Safe API: `reflect::fields_of(&v)`, `reflect::set_in(&mut v, "a.b[3].c", "text")`;
+on `App`: `reflect_fields`, `reflect_set` (a turn), `reflect_records` (records with element type, layout
+box, style, paint, text), `reflect_style` / `reflect_set_style` (cephal's `Style`, itself reflected),
+`reflect_set_color`, `reflect_stubs`. Limits: enums are listed with every variant and field in the schema
+but not opened in a value walk (the active variant index is not available; `discriminant_value` is the
+declared discriminant), `Option` opens through `Items`; std containers are opaque (shown by `Debug`); a
+schema holds at most 256 nodes (`truncated`); `TypeId::info` ICEs on tuple types in this toolchain, so tuples
+are recognised by a trait first. A `TypeId` from the schema never leaves `reflect.rs` (no downcasting).
+
+**Virtualization is exposure, not a list option** (`listview.rs`, `rt.rs`). Every list region (`list`,
+`list_with`, `index_list`) mounts only the rows meeting what is visible of it: its own viewport when it has
+one (`.viewport()` / `.scroll(sig!(..))`), otherwise its clip ∩ the window. No flag turns this on. The
+window follows any exposure: the region's scroll; its container moving (layout, or an enclosing space
+moving: spaces now nest, `alloc_space_in`, and `set_space` / `shift_space` carry the move to nested spaces
+and to the regions placed in them, which re-window); the visible rect changing (window resize, a clip
+changing, a sibling revealing it). Rows leaving it are released (two-phase teardown); their state lives in
+the list (or the owner, for index rows), so materialize → dematerialize → materialize returns the same
+pixels. The unmounted runs are typed placeholders (`Rt::stubs`, `Rt::stub_at`, `App::reflect_stubs`:
+region, rows, extent), sized by the region's extent index (`mlist::HeightIndex`, measured heights, the
+estimate for rows never mounted; without `.estimate()` the first rows measured set it); cephal sees the
+container as a sized leaf of the index's total. Nested regions (a list in a row of a list) count their rows'
+records in the enclosing row (`lr_count`), so releasing the outer row releases them.
+Representation differs from the lead's "stub record" idea in one place: placeholders are not Bough records
+(the presenter dispatches on payload, so a non-empty ink would draw), and exposure is detected as a change
+of what a region sees (O(regions) per flush), not by walking page summaries for stub inks. The extent
+index is per region, not in the Bough's page summaries. Not unified: the template `virtual_list` (zgui's
+long list: absolute rows with no layout) is still its own mechanism.
+
+**Interface cleanup and soundness** (each kept or tightened STATUS §4):
+* `Wired::proven` (a public `unsafe` constructor taking an offset and an unrelated accessor) is gone; a field
+  `[Signal<T>; N]` is proven by `sig!(self.counts)` and indexed by `.at(i)` (checked), which was the one use.
+* Routes (`on_click`, `on_press`, `on_hover`, `on_key`, `on_drag`), `scrolls` and `text_field` are refused at
+  mount (a panic, not UB) inside a list row or an entity view: `App` dispatches them with the root owner, so a
+  row-typed route would have been called with the wrong owner (found by the widgets and mail ports).
+* `Lists::regs` is private (`regs()` reads): a region's index names its monomorphised row functions, so a
+  reordered table reachable from `app.rt` would have run them on the wrong source.
+* `List` and `Entities` slab chunks are held by raw pointers from `Box::into_raw` (`list::Chunk`): an item's
+  address carries the allocation's provenance, so `List::edit` and owner writes never go through a pointer
+  derived from a shared borrow of the list.
+* A moved text's damage: a text rebuilt after its row or scroll view moved damaged its cached ink (where it
+  was laid out) instead of the record's (where it is): the stale glyphs stayed on screen (found by the
+  reflection pixel gate, reproduced with direct writes). Old ink is now read from the Bough (`Rt::cur_ink`).
+* Unchanged on purpose: `sig!` keeps its two forms (`self.path` in a `View`, `v: Type => path` for a value);
+  `prove` stays `#[doc(hidden)] pub unsafe` (the macro's expansion needs a public path); `App::frame` is the
+  only frame entry point on this branch; `NumFmt` stays re-exported at the root for `.num(f, fmt)`;
+  `Mounter`'s fields stay crate-private (custom elements outside the crate remain a gap).

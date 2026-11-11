@@ -14,7 +14,7 @@ impl View for Empty {
 fn main() {
     let start = Instant::now();
     let font = bough_zgui::font_bytes();
-    let mut app = App::new(Empty, Config::new(960.0, 720.0, 2.0, font), true);
+    let mut app = App::new(Empty, Config::new(960.0, 720.0, 2.0, font).once(), true);
     let created = start.elapsed();
     let mut run = bough_text::GlyphRun::default();
     for size in [14.0f32, 14.0, 14.0, 14.0] {

@@ -5,18 +5,19 @@ phys_footprint, sampled from outside with proc_pid_rusage(RUSAGE_INFO_V4) at t=1
 (mode is ignored by animate and blink; vlist: scroll|fling|jump). The adapter's own report line (ticks / animation_frames fps / blink_frames)
 is printed last."""
 import ctypes, os, subprocess, sys, time
+import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # bough's dist binaries (built with CARGO_TARGET_DIR=target/fusion) and zgx's headless drivers (bench/zgx/build.sh)
 BOUGH = os.environ.get("BOUGH_DIST", f"{ROOT}/target/fusion/dist")
 ZGXH = os.environ.get("ZGX_HEADLESS", f"{ROOT}/target/zgx-headless")
-ZGXBIN = os.environ.get("ZGX_DIST", "/Users/mileswirht/projects/_ref/zgx/target/dist/examples")
+ZGXBIN = os.environ.get("ZGX_DIST", os.path.expanduser(os.environ.get('BOUGH_REF', '~/projects/_ref')) + "/zgx/target/dist/examples")
 BIN = {("bough", "heavy"): f"{BOUGH}/heavy_workload", ("zgx", "heavy"): f"{ZGXBIN}/heavy_workload",
        ("bough", "lab"): f"{BOUGH}/lab_workload", ("zgx", "lab"): f"{ZGXBIN}/component_workload",
        ("bough", "animate"): f"{BOUGH}/animate_workload", ("zgx", "animate"): f"{ZGXBIN}/animation_workload",
        ("bough", "blink"): f"{BOUGH}/blink_workload", ("zgx", "blink"): f"{ZGXBIN}/blink_workload",
        ("bough", "vlist"): f"{BOUGH}/vlist_workload", ("zgx", "vlist"): f"{ZGXBIN}/vlist_workload"}
-FONT = "/Users/mileswirht/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf"
+FONT = os.path.expanduser(os.environ.get('BOUGH_REF', '~/projects/_ref')) + "/zgx/comparisons/fonts/DejaVuSans.ttf"
 
 class V4(ctypes.Structure):
     _fields_ = [("ri_uuid", ctypes.c_uint8 * 16)] + [(n, ctypes.c_uint64) for n in (

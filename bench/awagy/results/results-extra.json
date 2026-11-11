@@ -1,0 +1,513 @@
+{
+ "zgx": {
+  "scroll-1000": [
+   {
+    "frames": 326,
+    "fps": 108.66666666666667,
+    "p95_ms": 16.755417,
+    "p99_ms": 16.867375,
+    "median_ms": 8.333146,
+    "max_gap_ms": 25.029792,
+    "cpu_ms": 511.312625,
+    "rss_mib": 92.5625,
+    "footprint_mib": 151.31536865234375,
+    "events": 792
+   },
+   {
+    "frames": 337,
+    "fps": 112.33333333333333,
+    "p95_ms": 16.625334,
+    "p99_ms": 16.814333,
+    "median_ms": 8.334291,
+    "max_gap_ms": 16.846042,
+    "cpu_ms": 411.3215,
+    "rss_mib": 92.703125,
+    "footprint_mib": 151.44024658203125,
+    "events": 791
+   },
+   {
+    "frames": 320,
+    "fps": 106.66666666666667,
+    "p95_ms": 16.736375,
+    "p99_ms": 25.082791,
+    "median_ms": 8.3352915,
+    "max_gap_ms": 55.842041,
+    "cpu_ms": 520.9949583333333,
+    "rss_mib": 91.484375,
+    "footprint_mib": 150.6591796875,
+    "events": 791
+   }
+  ],
+  "scroll-3000": [
+   {
+    "frames": 333,
+    "fps": 111.0,
+    "p95_ms": 16.717833,
+    "p99_ms": 16.874,
+    "median_ms": 8.337291,
+    "max_gap_ms": 25.129959,
+    "cpu_ms": 502.59195833333325,
+    "rss_mib": 106.890625,
+    "footprint_mib": 161.89337158203125,
+    "events": 792
+   },
+   {
+    "frames": 327,
+    "fps": 109.0,
+    "p95_ms": 16.676625,
+    "p99_ms": 16.79325,
+    "median_ms": 8.336417,
+    "max_gap_ms": 16.888959,
+    "cpu_ms": 667.776375,
+    "rss_mib": 107.15625,
+    "footprint_mib": 158.28411865234375,
+    "events": 792
+   },
+   {
+    "frames": 335,
+    "fps": 111.66666666666667,
+    "p95_ms": 16.645041,
+    "p99_ms": 16.786167,
+    "median_ms": 8.335708,
+    "max_gap_ms": 16.825583,
+    "cpu_ms": 729.932375,
+    "rss_mib": 111.703125,
+    "footprint_mib": 161.2528076171875,
+    "events": 792
+   }
+  ],
+  "scroll-5000": [
+   {
+    "frames": 330,
+    "fps": 110.0,
+    "p95_ms": 16.681417,
+    "p99_ms": 16.754458,
+    "median_ms": 8.336542,
+    "max_gap_ms": 16.828125,
+    "cpu_ms": 704.1526666666666,
+    "rss_mib": 127.34375,
+    "footprint_mib": 169.81536865234375,
+    "events": 792
+   },
+   {
+    "frames": 342,
+    "fps": 114.0,
+    "p95_ms": 9.107542,
+    "p99_ms": 16.736459,
+    "median_ms": 8.334083,
+    "max_gap_ms": 16.813833,
+    "cpu_ms": 690.0947916666668,
+    "rss_mib": 124.296875,
+    "footprint_mib": 171.90911865234375,
+    "events": 792
+   },
+   {
+    "frames": 329,
+    "fps": 109.66666666666667,
+    "p95_ms": 16.694416,
+    "p99_ms": 16.82275,
+    "median_ms": 8.344,
+    "max_gap_ms": 25.031667,
+    "cpu_ms": 750.419625,
+    "rss_mib": 127.703125,
+    "footprint_mib": 172.14337158203125,
+    "events": 792
+   }
+  ],
+  "scroll-7000": [
+   {
+    "frames": 334,
+    "fps": 111.33333333333333,
+    "p95_ms": 16.663084,
+    "p99_ms": 16.798041,
+    "median_ms": 8.3371665,
+    "max_gap_ms": 25.014625,
+    "cpu_ms": 752.3584583333334,
+    "rss_mib": 134.296875,
+    "footprint_mib": 178.596435546875,
+    "events": 792
+   },
+   {
+    "frames": 335,
+    "fps": 111.66666666666667,
+    "p95_ms": 16.679333,
+    "p99_ms": 16.793583,
+    "median_ms": 8.342292,
+    "max_gap_ms": 16.8145,
+    "cpu_ms": 775.3766666666666,
+    "rss_mib": 137.046875,
+    "footprint_mib": 178.64349365234375,
+    "events": 792
+   },
+   {
+    "frames": 328,
+    "fps": 109.33333333333333,
+    "p95_ms": 16.7215,
+    "p99_ms": 16.980708,
+    "median_ms": 8.335875000000001,
+    "max_gap_ms": 33.298208,
+    "cpu_ms": 724.1790416666665,
+    "rss_mib": 141.96875,
+    "footprint_mib": 180.69012451171875,
+    "events": 792
+   }
+  ],
+  "dashboard": [
+   {
+    "worst_gap_ms": 42.461542,
+    "presents_per_phase": [
+     140,
+     142,
+     137,
+     225
+    ],
+    "p95_ms": 25.179,
+    "median_ms": 8.418125,
+    "frames": 643,
+    "rss_mean_mib": 122.2065625,
+    "footprint_mean_mib": 164.8403076171875,
+    "cpu_ms": 3577.4188749999994,
+    "phases": [
+     {
+      "phase": "typing",
+      "events_sent": 480
+     },
+     {
+      "phase": "refresh",
+      "events_sent": 480
+     },
+     {
+      "phase": "toggle",
+      "events_sent": 480
+     },
+     {
+      "phase": "scroll",
+      "events_sent": 480
+     }
+    ]
+   },
+   {
+    "worst_gap_ms": 32.881,
+    "presents_per_phase": [
+     160,
+     138,
+     142,
+     208
+    ],
+    "p95_ms": 24.788875,
+    "median_ms": 8.445833,
+    "frames": 647,
+    "rss_mean_mib": 138.70773909395973,
+    "footprint_mean_mib": 176.2342377733064,
+    "cpu_ms": 3523.718875,
+    "phases": [
+     {
+      "phase": "typing",
+      "events_sent": 480
+     },
+     {
+      "phase": "refresh",
+      "events_sent": 480
+     },
+     {
+      "phase": "toggle",
+      "events_sent": 480
+     },
+     {
+      "phase": "scroll",
+      "events_sent": 480
+     }
+    ]
+   },
+   {
+    "worst_gap_ms": 42.135,
+    "presents_per_phase": [
+     150,
+     155,
+     139,
+     208
+    ],
+    "p95_ms": 24.964334,
+    "median_ms": 8.444667,
+    "frames": 651,
+    "rss_mean_mib": 136.4671875,
+    "footprint_mean_mib": 175.42810709635415,
+    "cpu_ms": 3669.117083333333,
+    "phases": [
+     {
+      "phase": "typing",
+      "events_sent": 480
+     },
+     {
+      "phase": "refresh",
+      "events_sent": 480
+     },
+     {
+      "phase": "toggle",
+      "events_sent": 480
+     },
+     {
+      "phase": "scroll",
+      "events_sent": 480
+     }
+    ]
+   }
+  ]
+ },
+ "bui": {
+  "scroll-1000": [
+   {
+    "frames": 415,
+    "fps": 138.33333333333334,
+    "p95_ms": 11.722042,
+    "p99_ms": 14.344917,
+    "median_ms": 6.854958,
+    "max_gap_ms": 28.085041,
+    "cpu_ms": 2670.7446666666665,
+    "rss_mib": 145.71875,
+    "footprint_mib": 235.3465576171875,
+    "events": 792
+   },
+   {
+    "frames": 416,
+    "fps": 138.66666666666666,
+    "p95_ms": 12.225792,
+    "p99_ms": 15.069708,
+    "median_ms": 6.8074375,
+    "max_gap_ms": 27.57675,
+    "cpu_ms": 2646.45625,
+    "rss_mib": 110.3125,
+    "footprint_mib": 222.86248779296875,
+    "events": 792
+   },
+   {
+    "frames": 412,
+    "fps": 137.33333333333334,
+    "p95_ms": 12.152792,
+    "p99_ms": 15.2715,
+    "median_ms": 6.8737705,
+    "max_gap_ms": 26.665625,
+    "cpu_ms": 2620.8764166666665,
+    "rss_mib": 120.59375,
+    "footprint_mib": 231.5811767578125,
+    "events": 792
+   }
+  ],
+  "scroll-3000": [
+   {
+    "frames": 337,
+    "fps": 112.33333333333333,
+    "p95_ms": 10.034916,
+    "p99_ms": 15.766958,
+    "median_ms": 8.77925,
+    "max_gap_ms": 44.841792,
+    "cpu_ms": 2925.5783749999996,
+    "rss_mib": 140.203125,
+    "footprint_mib": 241.0028076171875,
+    "events": 792
+   },
+   {
+    "frames": 338,
+    "fps": 112.66666666666667,
+    "p95_ms": 10.004625,
+    "p99_ms": 17.920333,
+    "median_ms": 8.791291999999999,
+    "max_gap_ms": 39.4175,
+    "cpu_ms": 2947.831958333333,
+    "rss_mib": 141.125,
+    "footprint_mib": 243.6434326171875,
+    "events": 792
+   },
+   {
+    "frames": 283,
+    "fps": 94.33333333333333,
+    "p95_ms": 11.171375,
+    "p99_ms": 17.376083,
+    "median_ms": 10.484708,
+    "max_gap_ms": 70.878625,
+    "cpu_ms": 2914.183291666667,
+    "rss_mib": 135.859375,
+    "footprint_mib": 235.8779296875,
+    "events": 792
+   }
+  ],
+  "scroll-5000": [
+   {
+    "frames": 245,
+    "fps": 81.66666666666667,
+    "p95_ms": 13.343791,
+    "p99_ms": 14.336,
+    "median_ms": 11.976125,
+    "max_gap_ms": 21.613084,
+    "cpu_ms": 3030.7966666666666,
+    "rss_mib": 159.4375,
+    "footprint_mib": 249.4403076171875,
+    "events": 792
+   },
+   {
+    "frames": 243,
+    "fps": 81.0,
+    "p95_ms": 13.522917,
+    "p99_ms": 20.758791,
+    "median_ms": 11.949334,
+    "max_gap_ms": 39.891125,
+    "cpu_ms": 2978.5356666666667,
+    "rss_mib": 153.75,
+    "footprint_mib": 248.9560546875,
+    "events": 792
+   },
+   {
+    "frames": 246,
+    "fps": 82.0,
+    "p95_ms": 13.23475,
+    "p99_ms": 13.633417,
+    "median_ms": 12.020208,
+    "max_gap_ms": 18.084083,
+    "cpu_ms": 2979.6703333333335,
+    "rss_mib": 165.1875,
+    "footprint_mib": 261.1124267578125,
+    "events": 792
+   }
+  ],
+  "scroll-7000": [
+   {
+    "frames": 62,
+    "fps": 20.666666666666668,
+    "p95_ms": 68.8735,
+    "p99_ms": 196.000625,
+    "median_ms": 39.563479,
+    "max_gap_ms": 196.000625,
+    "cpu_ms": 2845.831375,
+    "rss_mib": 205.296875,
+    "footprint_mib": 216.1121826171875,
+    "events": 792
+   },
+   {
+    "frames": 63,
+    "fps": 21.0,
+    "p95_ms": 59.150833,
+    "p99_ms": 170.778042,
+    "median_ms": 39.466958,
+    "max_gap_ms": 170.778042,
+    "cpu_ms": 2900.1377916666665,
+    "rss_mib": 225.71875,
+    "footprint_mib": 232.47174072265625,
+    "events": 792
+   },
+   {
+    "frames": 64,
+    "fps": 21.333333333333332,
+    "p95_ms": 69.876083,
+    "p99_ms": 99.62875,
+    "median_ms": 40.5799375,
+    "max_gap_ms": 99.62875,
+    "cpu_ms": 2930.933333333333,
+    "rss_mib": 221.625,
+    "footprint_mib": 219.2215576171875,
+    "events": 792
+   }
+  ],
+  "dashboard": [
+   {
+    "worst_gap_ms": 27.150333,
+    "presents_per_phase": [
+     410,
+     137,
+     161,
+     115
+    ],
+    "p95_ms": 18.768292,
+    "median_ms": 9.9288545,
+    "frames": 822,
+    "rss_mean_mib": 171.13822916666666,
+    "footprint_mean_mib": 258.3906579589844,
+    "cpu_ms": 7136.366541666667,
+    "phases": [
+     {
+      "phase": "typing",
+      "events_sent": 480
+     },
+     {
+      "phase": "refresh",
+      "events_sent": 480
+     },
+     {
+      "phase": "toggle",
+      "events_sent": 480
+     },
+     {
+      "phase": "scroll",
+      "events_sent": 480
+     }
+    ]
+   },
+   {
+    "worst_gap_ms": 279.788166,
+    "presents_per_phase": [
+     381,
+     136,
+     157,
+     108
+    ],
+    "p95_ms": 17.880083,
+    "median_ms": 9.822416,
+    "frames": 781,
+    "rss_mean_mib": 172.35811661073825,
+    "footprint_mean_mib": 259.7104357008966,
+    "cpu_ms": 6938.653333333333,
+    "phases": [
+     {
+      "phase": "typing",
+      "events_sent": 480
+     },
+     {
+      "phase": "refresh",
+      "events_sent": 480
+     },
+     {
+      "phase": "toggle",
+      "events_sent": 480
+     },
+     {
+      "phase": "scroll",
+      "events_sent": 480
+     }
+    ],
+    "retries": 1
+   },
+   {
+    "worst_gap_ms": 37.423291,
+    "presents_per_phase": [
+     436,
+     126,
+     151,
+     115
+    ],
+    "p95_ms": 19.289167,
+    "median_ms": 9.129042,
+    "frames": 827,
+    "rss_mean_mib": 168.79729446308724,
+    "footprint_mean_mib": 254.6521245969222,
+    "cpu_ms": 7215.156916666666,
+    "phases": [
+     {
+      "phase": "typing",
+      "events_sent": 480
+     },
+     {
+      "phase": "refresh",
+      "events_sent": 480
+     },
+     {
+      "phase": "toggle",
+      "events_sent": 479
+     },
+     {
+      "phase": "scroll",
+      "events_sent": 480
+     }
+    ]
+   }
+  ]
+ }
+}

@@ -36,7 +36,7 @@ impl View for Plot {
 }
 
 pub fn config(font: Vec<u8>) -> Config {
-    let mut c = Config::new(WIDTH, HEIGHT, 1.0, font);
+    let mut c = Config::new(WIDTH, HEIGHT, 1.0, font).once();
     c.ring = std::env::var("BOUGH_RING").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     c
 }

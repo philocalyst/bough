@@ -2,10 +2,10 @@
 # bough's side of the zgui suite (headless, RENDER=0 unless set), each scenario in its own process, 3 runs;
 # raw output to bench/results/input/bough/. zgui's side: bench/results/input/zgui/SUMMARY.md.
 cd "$(dirname "$0")/../.."
-B=${BOUGH_DIST:-/Users/mileswirht/projects/bough/target/input/dist}
+B=${BOUGH_DIST:-$(git rev-parse --show-toplevel)/target/input/dist}
 O=bench/results/input/bough
 mkdir -p $O
-export ZGX_FONT_FILE=/Users/mileswirht/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf
+export ZGX_FONT_FILE=${BOUGH_REF:-$HOME/projects/_ref}/zgx/comparisons/fonts/DejaVuSans.ttf
 uptime > $O/uptime.txt
 for run in 1 2 3; do
   for s in idle hover-storm scroll cold-start kitchen-sink app-shell thread-resize cold-start-dump kitchen-sink-dump app-shell-dump first-pixel first-pixel-serial first-pixel-dump; do

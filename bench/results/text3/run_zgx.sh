@@ -1,7 +1,7 @@
 #!/bin/sh
 # zgx's text workloads on this Mac (release builds of 06debe9d from bench/zgx/build_text.sh): whole-run
 # instructions retired and peak footprint from /usr/bin/time -l, plus each program's own output.
-B=${ZGX_BIN:-/Users/mileswirht/projects/bough/target/text3-zgxbin}
+B=${ZGX_BIN:-$(git rev-parse --show-toplevel)/target/text3-zgxbin}
 OUT=${1:-/dev/stdout}
 run() { name=$1; shift; echo "== $name ($*)"; /usr/bin/time -l "$@" 2>/tmp/zgx_time_$$ | tail -12; grep -E "instructions retired|peak memory footprint|maximum resident" /tmp/zgx_time_$$; }
 {

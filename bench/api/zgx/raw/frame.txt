@@ -1,0 +1,3 @@
+paint-only (opacity + text colour)     277 nodes  damage  0.0% in  0.0 rects    0.0 draws    0.0 quads  update   4.8  flush    0.6  render    0.1  total    5.5 µs/frame
+layout inside fixed slots              277 nodes  damage  0.0% in  0.0 rects    0.0 draws    0.0 quads  update   0.4  flush    1.2  render    0.1  total    1.6 µs/frame
+layout up to the root (fold grows)     277 nodes  damage  0.0% in  0.0 rects    0.0 draws    0.0 quads  update   0.4  flush  264.8  render  233.5  total  498.8 µs/frame

@@ -1,0 +1,2 @@
+first frame   mount+layout 30.122 ms  render 14.468 ms  (mean of 100)
+resize step   layout       3.576 ms  render 7.765 ms  (mean of 400)

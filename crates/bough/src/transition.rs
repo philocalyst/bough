@@ -325,6 +325,10 @@ impl<'a, T: Lerp, V> IntoProp<T, V> for Transit<Wired<'a, T, V>> {
         m.wire(&self.w, patch_transit::<T>, node, recipe);
         init
     }
+    /// At a re-description the wire keeps driving the transition; the value is its target.
+    fn value(self) -> T {
+        *self.w.get()
+    }
 }
 
 impl<'a, T: 'static, V, F, P: Lerp> IntoProp<P, V> for Transit<WMap<'a, T, V, F>>
@@ -341,5 +345,8 @@ where
         unsafe { std::ptr::write_unaligned(recipe.as_mut_ptr().add(4) as *mut F, self.w.f) };
         m.wire(&self.w.w, patch_transit_map::<T, P, F>, node, recipe);
         init
+    }
+    fn value(self) -> P {
+        (self.w.f)(self.w.w.get())
     }
 }

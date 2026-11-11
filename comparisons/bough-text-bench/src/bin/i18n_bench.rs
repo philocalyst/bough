@@ -12,7 +12,7 @@ fn main() {
     let (rows, frames): (usize, u32) = (env("ROWS", 1000usize).min(MAX_ROWS), env("FRAMES", 600));
     let render = env("RENDER", 0) != 0;
     let view = Inbox { counts: std::array::from_fn(|i| Signal::new(i as u32)), rows, template: tpl };
-    let cfg = Config::new(1200.0, 900.0, 2.0, font_bytes());
+    let cfg = Config::new(1200.0, 900.0, 2.0, font_bytes()).once();
     let mut app = App::new(view, cfg, render);
     app.frame();
     let (t0, i0) = (Instant::now(), instrs());

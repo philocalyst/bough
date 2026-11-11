@@ -1,0 +1,6 @@
+per update: instructions (k)
+  template       bough     1.90k
+  function-prop  bough     1.25k
+  rows           bough   182.70k
+  rows-in-place  bough   182.39k
+  handler        bough     3.66k

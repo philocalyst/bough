@@ -9,7 +9,7 @@
 :root {
   --bg: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
   --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
-  --accent: #2a78d6; --field: #b9b7ae; --field-hover: #9e9c93; --warn-ink: #8a4b00; --warn-bg: #fff3dc;
+  --accent: #2a78d6; --extra: #c2692a; --field: #b9b7ae; --field-hover: #9e9c93; --warn-ink: #8a4b00; --warn-bg: #fff3dc;
   --good-ink: #006300; --bad-ink: #a12a2a;
   --display: "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -18,12 +18,12 @@
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   --bg: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
   --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
-  --accent: #3987e5; --field: #5a5954; --field-hover: #78766f; --warn-ink: #f2c46b; --warn-bg: #2b2210;
+  --accent: #3987e5; --extra: #e08a4b; --field: #5a5954; --field-hover: #78766f; --warn-ink: #f2c46b; --warn-bg: #2b2210;
   --good-ink: #0ca30c; --bad-ink: #e66767; color-scheme: dark; } }
 :root[data-theme="dark"] {
   --bg: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
   --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
-  --accent: #3987e5; --field: #5a5954; --field-hover: #78766f; --warn-ink: #f2c46b; --warn-bg: #2b2210;
+  --accent: #3987e5; --extra: #e08a4b; --field: #5a5954; --field-hover: #78766f; --warn-ink: #f2c46b; --warn-bg: #2b2210;
   --good-ink: #0ca30c; --bad-ink: #e66767; color-scheme: dark; }
 body { background: var(--bg); color: var(--ink); font: 15px/1.55 var(--sans); }
 .wrap { max-width: 980px; margin: 0 auto; padding-block: 40px 72px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 40px; }
@@ -61,6 +61,7 @@ section { display: grid; gap: 16px; min-width: 0; }
 .chart svg text.na { fill: var(--muted); font-style: italic; }
 .bar { fill: var(--field); }
 .bar.self { fill: var(--accent); }
+.bar.extra { fill: var(--extra); }
 .bar.est { fill: var(--field); fill-opacity: 0.45; }
 .chart svg text.estv { fill: var(--ink-2); font-weight: 500; }
 .bar-hit { fill: transparent; cursor: default; }
@@ -99,7 +100,7 @@ a { color: var(--accent); }
   <header style="display:grid;gap:12px">
     <div class="eyebrow">Benchmark evaluation · areweactuallyguiyet.mespin.me workloads</div>
     <h1>bough on AWAGY</h1>
-    <p class="lede">bough, run through the two workloads of <a href="https://areweactuallyguiyet.mespin.me/">Are we actually GUI yet?</a> on this Mac, next to the site’s own two Vizia apps, built and measured here the same way. The site's own collection was on Linux at 144 Hz and cannot include bough, so its numbers appear only as context.</p>
+    <p class="lede">bough, run through the two workloads of <a href="https://areweactuallyguiyet.mespin.me/">Are we actually GUI yet?</a> on this Mac, next to the site’s own two Vizia apps, built and measured here the same way, and next to two frameworks the site does not register, zgx and BUI (Blender’s UI as a library), measured here with the same protocol. The site's own collection was on Linux at 144 Hz and cannot include bough, so its numbers appear only as context.</p>
   </header>
 
   <section class="verdict card" aria-labelledby="v-h">
@@ -107,13 +108,15 @@ a { color: var(--accent); }
     __VERDICT__
   </section>
 
+__EXTRA__
+
   <section aria-labelledby="s-h">
     <div style="display:grid;gap:6px">
       <h2 id="s-h">Scroll</h2>
       <p class="lede">A non-virtualized list of N rows, each 960 × 48 with an alternating background and “Item N”. Wheel input at 144 events/s reversing every half second; 1 s warm-up, 3 s measured, 3 repetitions. Bars are the median; whiskers the range.</p>
     </div>
     <div class="filters" role="group" aria-label="Row count"><span>Rows</span><div class="seg" id="rows"></div></div>
-    <div class="legend"><span><i style="background:var(--accent)"></i>bough</span><span><i style="background:var(--field)"></i>Vizia, the site’s apps built here</span></div>
+    <div class="legend"><span><i style="background:var(--accent)"></i>bough</span><span><i style="background:var(--field)"></i>Vizia, the site’s apps built here</span><span><i style="background:var(--extra)"></i>zgx and BUI, measured here, not in the site’s collection</span></div>
     <div class="charts" id="scroll-charts"></div>
     <div class="table-scroll"><table id="scroll-table"></table></div>
   </section>
@@ -139,10 +142,10 @@ a { color: var(--accent); }
   <section aria-labelledby="a-h">
     <div style="display:grid;gap:6px">
       <h2 id="a-h">Every registered framework</h2>
-      <p class="lede">All eighteen apps the site registers, with bough. Six are measured on this Mac. The other twelve are <strong>estimates</strong>: the site’s Linux numbers converted with factors calibrated on the frameworks measured on both machines. A whisker on an estimate is the spread of those factors, not a run-to-run range.</p>
+      <p class="lede">All eighteen apps the site registers, with bough. Six are measured on this Mac. The other twelve are <strong>estimates</strong>: the site’s Linux numbers converted with factors calibrated on the frameworks measured on both machines. A whisker on an estimate is the spread of those factors, not a run-to-run range. zgx and BUI are not in the site’s registry: they are measured here, have no site anchor and are not part of the calibration.</p>
     </div>
     <div class="filters" role="group" aria-label="Row count for every framework"><span>Rows</span><div class="seg" id="rows-all"></div></div>
-    <div class="legend"><span><i style="background:var(--accent)"></i>bough</span><span><i style="background:var(--field)"></i>measured here</span><span><i style="background:var(--field);opacity:.45"></i>estimated (≈)</span></div>
+    <div class="legend"><span><i style="background:var(--accent)"></i>bough</span><span><i style="background:var(--field)"></i>measured here</span><span><i style="background:var(--extra)"></i>zgx, BUI: measured here, no site anchor</span><span><i style="background:var(--field);opacity:.45"></i>estimated (≈)</span></div>
     <div class="charts" id="all-charts"></div>
     <div class="table-scroll"><table id="all-table"></table></div>
     <div class="card" style="gap:10px">
@@ -172,7 +175,7 @@ a { color: var(--accent); }
         <dt>bough</dt><dd><code>comparisons/bough-awagy</code>, written only with bough’s application surface: flow layout by cephal, <code>div().scroll(..)</code>, <code>text</code>, <code>button</code>, <code>image</code>, <code>text_input</code>, routes as methods, <code>Application::run</code>.</dd>
       </dl>
       <dl>
-        <dt>Presents</dt><dd>MangoHud does not exist on macOS. An injected library records each frame handed to the window server: a Metal drawable taken (wgpu, GPUI, Skia), an OpenGL flush (egui’s glow), or an IOSurface published (bough). The window and statistics are the site’s <code>frames.py</code> rules: anchored on a frame, gaps from the previous frame, the trailing silence counted, ceiling-index percentiles.</dd>
+        <dt>Presents</dt><dd>MangoHud does not exist on macOS. An injected library records each frame handed to the window server: a Metal drawable taken (wgpu, GPUI, Skia), an OpenGL flush (egui’s glow), an IOSurface published (bough), a tile of a plain layer shown (zgx: <code>-[CALayer setHidden:NO]</code> on an IOSurface-backed layer), or a view drawn by <code>displayIfNeeded</code> (BUI’s CPU raster). The window and statistics are the site’s <code>frames.py</code> rules: anchored on a frame, gaps from the previous frame, the trailing silence counted, ceiling-index percentiles.</dd>
         <dt>Input</dt><dd>The harness’s schedule as macOS events. The pointer is moved over the window and wheel and clicks are real pointer input, routed by the window server, as XTest’s are on Linux. Keys are posted to the app’s process only, so they can never land in another app. Each app was activated, and runs whose window became covered were rejected.</dd>
         <dt>Memory and CPU</dt><dd><code>proc_pid_rusage</code>: resident memory (the site’s RSS), plus macOS’s physical footprint, which also counts the GPU driver’s memory; CPU time inside the measured window.</dd>
       </dl>
@@ -231,7 +234,7 @@ function barChart(host, title, sub, unit, items, { better = "lower", digits = 1,
     const bw = Math.max(2, x(Math.min(it.v, max)) - L), bh = 16;
     const hit = el("rect", { class: "bar-hit", x: 0, y, width: W, height: rowH, tabindex: 0 }, g);
     const p = `M${L},${cy - bh / 2} h${Math.max(0, bw - 4)} a4,4 0 0 1 4,4 v${bh - 8} a4,4 0 0 1 -4,4 h${-Math.max(0, bw - 4)} z`;
-    el("path", { class: "bar" + (self ? " self" : "") + (it.est ? " est" : ""), d: p }, g);
+    el("path", { class: "bar" + (self ? " self" : "") + (it.est ? " est" : "") + (DATA.extra.includes(it.app) ? " extra" : ""), d: p }, g);
     if (!off && it.lo != null && it.hi != null && it.hi > it.lo && it.hi <= max) {
       el("line", { class: "whisker", x1: x(it.lo), x2: x(it.hi), y1: cy, y2: cy }, g);
       el("line", { class: "whisker", x1: x(it.lo), x2: x(it.lo), y1: cy - 4, y2: cy + 4 }, g);
@@ -241,7 +244,7 @@ function barChart(host, title, sub, unit, items, { better = "lower", digits = 1,
     const vt = el("text", { x: vx, y: cy + 4, class: it.est ? "estv" : "val", "text-anchor": off ? "end" : "start" }, g);
     vt.textContent = (it.est ? "≈" : "") + fmt(it.v, digits) + (off ? " · off scale" : "");
     if (off) vt.setAttribute("style", "paint-order: stroke; stroke: var(--surface); stroke-width: 4px");
-    const lines = [`${it.est ? "≈" : ""}${fmt(it.v, digits)} ${unit}`, (DATA.names[it.app] || it.app) + (it.est ? " · estimated" : it.earlier ? " · measured in the earlier run" : "")];
+    const lines = [`${it.est ? "≈" : ""}${fmt(it.v, digits)} ${unit}`, (DATA.names[it.app] || it.app) + (it.est ? " · estimated" : it.earlier ? " · measured in the earlier run" : DATA.extra.includes(it.app) ? " · measured here, no site anchor" : "")];
     if (it.est) lines.push(`estimate range ${fmt(it.lo, digits)}–${fmt(it.hi, digits)}`);
     else if (it.n > 1) lines.push(`range ${fmt(it.lo, digits)}–${fmt(it.hi, digits)} over ${it.n} runs`);
     if (it.extra) lines.push(it.extra);
@@ -334,7 +337,7 @@ renderScroll(); renderScrollTable();
   const tb = document.createElement("tbody");
   for (const a of apps) {
     const s = DATA.site[a], r = document.createElement("tr");
-    const cells = a === "bough" ? ["bough", "not in the site’s collection", "", "", "", "", ""] : [DATA.names[a] || a, fmt(s.fps1000, 1), fmt(s.fps7000, 1), fmt(s.p95_7000, 1), fmt(s.max7000, 1), fmt(s.worst, 1), fmt(s.rss, 1)];
+    const cells = a === "bough" || DATA.extra.includes(a) ? [DATA.names[a] || a, "not in the site’s collection", "", "", "", "", ""] : [DATA.names[a] || a, fmt(s.fps1000, 1), fmt(s.fps7000, 1), fmt(s.p95_7000, 1), fmt(s.max7000, 1), fmt(s.worst, 1), fmt(s.rss, 1)];
     cells.forEach(c => { const td = document.createElement("td"); td.textContent = c; r.append(td); });
     tb.append(r);
   }
@@ -381,11 +384,11 @@ renderScroll(); renderScrollTable();
   for (const a of order) {
     const r = document.createElement("tr"); if (a === "bough") r.className = "self";
     const m = A.measured[a], e = A.est[a];
-    const src = m ? (a === "bough" ? "measured" : m.earlier ? "measured (earlier run)" : "measured") : "estimated";
+    const src = m ? (a === "bough" ? "measured" : m.extra ? "measured here, no site anchor" : m.earlier ? "measured (earlier run)" : "measured") : "estimated";
     const f1 = val(a, "1000", "fps"), f7 = val(a, "7000", "fps"), p7 = val(a, "7000", "p95_ms");
     const rss = m ? { v: m.dash.rss_mean_mib } : e?.dash?.rss_mean_mib ? { ...e.dash.rss_mean_mib, est: true } : null;
     const sz = A.size.measured[a] ? { v: A.size.measured[a] / 1048576 } : A.size.est[a] ? { v: A.size.est[a].v / 1048576, est: true } : null;
-    const worst = a === "bough" ? "not in the site’s collection" : fmt(m ? m.dash.worst_site : e?.dash?.worst_site, 1);
+    const worst = a === "bough" || (m && m.extra) ? "not in the site’s collection" : fmt(m ? m.dash.worst_site : e?.dash?.worst_site, 1);
     [N[a] || a, src, cell(f1, 1), cell(f7, 1), cell(p7, 1), cell(rss, 1), cell(sz, 2), worst].forEach(c => { const td = document.createElement("td"); td.textContent = c; r.append(td); });
     tb.append(r);
   }

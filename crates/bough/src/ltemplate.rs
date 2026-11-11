@@ -309,10 +309,10 @@ impl<T: crate::transition::Lerp, V> Restyled<T, V> for crate::transition::Transi
         let mut recipe = [0u8; 16];
         recipe[..4].copy_from_slice(&id.to_le_bytes());
         m.wire(&self.w, crate::transition::patch_transit::<T>, lid, recipe);
-        let mut st = m.rt.lay.eng.style_of(lid).clone();
+        let mut st = m.rt.lay.eng.style(lid).clone();
         f(&init, &mut st);
         let sid = m.rt.lay.eng.intern(st);
-        m.rt.lay.eng.set_style_cold(lid, sid);
+        m.rt.lay.eng.set_style_fresh(lid, sid);
     }
 }
 
@@ -323,10 +323,10 @@ fn restyle_wired<T: 'static, V, F: Fn(&T, &mut Style) + Copy + 'static>(m: &mut 
     unsafe { std::ptr::write_unaligned(r.as_mut_ptr() as *mut F, f) };
     m.wire(&sig, patch_restyle::<T, F>, lid, r);
     // the initial value applies at mount (the node's style starts as the template's; it is laid out cold)
-    let mut st = m.rt.lay.eng.style_of(lid).clone();
+    let mut st = m.rt.lay.eng.style(lid).clone();
     f(sig.get(), &mut st);
     let id = m.rt.lay.eng.intern(st);
-    m.rt.lay.eng.set_style_cold(lid, id);
+    m.rt.lay.eng.set_style_fresh(lid, id);
 }
 
 /// # Safety
@@ -484,6 +484,8 @@ fn mount_element<V: 'static>(m: &mut Mounter<'_, V>, n: &LNode, ids: &mut [u32],
 
 impl<V: 'static> Element<V> for LTemplate<V> {
     fn mount(self, m: &mut Mounter<'_, V>) {
+        // state lives in signals, the atlas or the region: a re-description steps over it
+        crate::describe::mount_opaque(m, move |m: &mut Mounter<'_, V>| {
         let base = m.depth;
         let (clip0, cur0) = (m.clip, m.rt.lay.cur);
         let avail0 = m.rt.lay.mount_avail;
@@ -581,6 +583,10 @@ impl<V: 'static> Element<V> for LTemplate<V> {
         m.rt.lay.cur = cur0;
         m.rt.lay.mount_avail = avail0;
         m.space = space0;
+    })
+    }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_opaque(m);
     }
 }
 
@@ -611,7 +617,7 @@ impl Rt {
     /// Change layout node `lid`'s style (`f` edits a copy of the current one; the result is interned) and
     /// queue its group for layout: a resizable panel's basis, a splitter.
     pub fn lay_restyle(&mut self, lid: u32, f: impl FnOnce(&mut Style)) {
-        let mut st = self.lay.eng.style_of(lid).clone();
+        let mut st = self.lay.eng.style(lid).clone();
         f(&mut st);
         let id = self.lay.eng.intern(st);
         self.lay.eng.set_style(&self.bough, lid, id);

@@ -1,0 +1,4 @@
+dashboard: feed tick, sorted by price: 51.53 ms, 22.69 M instructions
+dashboard: sort: 7.58 ms, 19.32 M instructions
+dashboard: sort, a column not sorted by last: 86.58 ms, 51.07 M instructions
+dashboard: filter keystroke: 22.85 ms, 27.76 M instructions

@@ -53,7 +53,7 @@ fn i18n_rows_and_locale_switch_are_pixel_exact_at_every_ring_age() {
     for ring in 1..=4 {
         LOCALE.with(|l| l.set(0));
         let mut counts: Vec<u32> = (0..rows as u32).collect();
-        let mut cfg = Config::new(1200.0, 900.0, 1.0, font_bytes());
+        let mut cfg = Config::new(1200.0, 900.0, 1.0, font_bytes()).once();
         cfg.ring = ring;
         let mut app = App::new(inbox(&counts, false), cfg, true);
         app.frame();
@@ -78,7 +78,7 @@ fn i18n_rows_and_locale_switch_are_pixel_exact_at_every_ring_age() {
             }
         }
         let px = app.presented_pixels();
-        let mut cfg = Config::new(1200.0, 900.0, 1.0, font_bytes());
+        let mut cfg = Config::new(1200.0, 900.0, 1.0, font_bytes()).once();
         cfg.ring = ring;
         let mut fresh = App::new(inbox(&counts, false), cfg, true);
         fresh.frame();
@@ -118,7 +118,7 @@ mod edited_rows {
         fn view(&self) -> impl Element<Self> + '_ {
             (
                 quad(0.0, 0.0, 360.0, 600.0).bg(rgb(0x0e1218)),
-                measured_list(sig!(self.scroll), 1000, 60.0, [0.0, 0.0, 360.0, 600.0], 2, |d: &Edits, i, m: &mut Mounter<'_, Edits>| m.mount(row(d, i))),
+                index_list(1000, |d: &Edits, i, m: &mut Mounter<'_, Edits>| m.mount(row(d, i))).w(360.0).h(600.0).scroll(sig!(self.scroll)).estimate(60.0).overscan(2),
             )
         }
     }
@@ -132,14 +132,16 @@ mod edited_rows {
 fn reactive_row_edits_update_the_prefix_index() {
     use edited_rows::*;
     fn index_follows(app: &App<Edits>, ctx: &str) {
-        let r = &app.rt.mregions[0];
-        for (k, row) in r.rows.iter().enumerate() {
+        // the list regions of api's listview (`index_list`): the window is positions `lo..lo + rows.len()`, and an
+        // index height is the row's pitch (height + gap; no gap here)
+        let r = &app.rt.lists.regs()[0];
+        for (k, row) in r.rows.iter().enumerate().filter(|(_, row)| row.mounted && row.root != u32::MAX) {
             let laid = app.rt.lay.root_height(row.root).round() as i32;
-            assert_eq!(r.idx.height(r.range.start + k), laid, "{ctx}: row {} index height != its layout", r.range.start + k);
+            assert_eq!(r.idx.height(r.lo + k), laid, "{ctx}: row {} index height != its layout", r.lo + k);
         }
     }
     for ring in 1..=4 {
-        let mut cfg = Config::new(360.0, 600.0, 2.0, font_bytes());
+        let mut cfg = Config::new(360.0, 600.0, 2.0, font_bytes()).once();
         cfg.ring = ring;
         let mut app = App::new(Edits { scroll: Signal::new(0.0), edit: Signal::new(0) }, cfg, true);
         app.frame();
@@ -161,7 +163,7 @@ fn reactive_row_edits_update_the_prefix_index() {
             if step == 12 {
                 // still at the top: the retained list equals a fresh mount at the same edit
                 let px = app.presented_pixels();
-                let mut cfg = Config::new(360.0, 600.0, 2.0, font_bytes());
+                let mut cfg = Config::new(360.0, 600.0, 2.0, font_bytes()).once();
                 cfg.ring = ring;
                 let mut fresh = App::new(Edits { scroll: Signal::new(0.0), edit: Signal::new(12) }, cfg, true);
                 fresh.frame();

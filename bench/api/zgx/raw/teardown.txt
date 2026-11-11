@@ -1,0 +1,3 @@
+2000 rows (6002 nodes): removal frame 0.17 ms, 1.1 M instructions (184 a node); after it, 3 frames, slowest 1.05 ms
+10000 rows (30002 nodes): removal frame 1.43 ms, 5.4 M instructions (180 a node); after it, 17 frames, slowest 1.21 ms
+30000 rows (90002 nodes): removal frame 36.69 ms, 13.6 M instructions (152 a node); after it, 87 frames, slowest 58.08 ms

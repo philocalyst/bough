@@ -1,0 +1,2 @@
+per update: instructions (k) and allocations, Luau against Rust
+  template       luau     19.9k    5.0 | rust     11.2k    3.0 | luau/rust  1.78x

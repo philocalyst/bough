@@ -1,7 +1,9 @@
 # Parses raw/micro/*.out (one JSON line per figure) into micro.csv, and prints
 # per-configuration medians across the 3 repeats of median/p10/p90 (ns per op).
 import csv, glob, json, os, re, statistics, sys
-RAW = '/Users/mileswirht/projects/bough/bench/baselines/macos/raw/micro'
+import os
+REPO = __import__('subprocess').check_output(['git', 'rev-parse', '--show-toplevel'], cwd=os.path.dirname(os.path.abspath(__file__)), text=True).strip()
+RAW = REPO + '/bench/baselines/macos/raw/micro'
 rows = []
 for path in sorted(glob.glob(os.path.join(RAW, '*.out'))):
     name = os.path.basename(path)[:-4]

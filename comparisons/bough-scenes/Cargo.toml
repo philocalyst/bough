@@ -8,7 +8,7 @@ description = "zgx's lab, animate, blink and micro_bench scenes on the bough fac
 [dependencies]
 bough = { path = "../../crates/bough" }
 bough-metal = { path = "../../crates/bough-metal" }
-zgx-workload = { path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }
+zgx-workload = { git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }
 libc = "0.2"
 
 [[bin]]

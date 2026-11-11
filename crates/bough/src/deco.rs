@@ -410,6 +410,8 @@ impl<A> Image<A> {
 
 impl<V: 'static, A: IntoProp<f32, V>> Element<V> for Image<A> {
     fn mount(self, m: &mut Mounter<'_, V>) {
+        // state lives in signals, the atlas or the region: a re-description steps over it
+        crate::describe::mount_opaque(m, move |m: &mut Mounter<'_, V>| {
         let s = m.rt.scale;
         let (wp, hp) = ((self.w * s).round().max(1.0), (self.h * s).round().max(1.0));
         let uv = m.rt.images.svg(self.svg, wp as u32, hp as u32);
@@ -420,6 +422,10 @@ impl<V: 'static, A: IntoProp<f32, V>> Element<V> for Image<A> {
         let a = self.angle.lower::<ApplyAngle>(m, node);
         let inst = m.rt.runs[m.rt.nodes[node as usize].run as usize].first;
         m.rt.inst_mut(inst).radius = a;
+    })
+    }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_opaque(m);
     }
 }
 
@@ -457,6 +463,8 @@ impl DecoBox {
 
 impl<V: 'static> Element<V> for DecoBox {
     fn mount(self, m: &mut Mounter<'_, V>) {
+        // state lives in signals, the atlas or the region: a re-description steps over it
+        crate::describe::mount_opaque(m, move |m: &mut Mounter<'_, V>| {
         let s = m.rt.scale;
         let (x, y, w, h, r) = ((m.ox + self.x) * s, (m.oy + self.y) * s, self.w * s, self.h * s, self.radius * s);
         for sh in self.shadows.iter().rev() {
@@ -472,6 +480,10 @@ impl<V: 'static> Element<V> for DecoBox {
             margin = 1.0;
         }
         mount_deco(m, ins, x, y, w, h, margin);
+    })
+    }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_opaque(m);
     }
 }
 

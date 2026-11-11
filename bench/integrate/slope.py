@@ -9,12 +9,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # bough's dist binaries (built with CARGO_TARGET_DIR=target/fusion) and zgx's headless drivers (bench/zgx/build.sh)
 BOUGH = os.environ.get("BOUGH_DIST", f"{ROOT}/target/fusion/dist")
 ZGXH = os.environ.get("ZGX_HEADLESS", f"{ROOT}/target/zgx-headless")
-ZGXBIN = os.environ.get("ZGX_DIST", "/Users/mileswirht/projects/_ref/zgx/target/dist/examples")
+ZGXBIN = os.environ.get("ZGX_DIST", os.path.expanduser(os.environ.get('BOUGH_REF', '~/projects/_ref')) + "/zgx/target/dist/examples")
 BIN = {("bough", "heavy"): f"{BOUGH}/heavy_headless", ("zgx", "heavy"): f"{ZGXBIN}/heavy_headless",
        ("bough", "lab"): f"{BOUGH}/lab_headless", ("zgx", "lab"): f"{ZGXH}/workload_headless",
        ("bough", "animate"): f"{BOUGH}/animate_headless", ("zgx", "animate"): f"{ZGXH}/animation_headless",
        ("bough", "vlist"): f"{BOUGH}/vlist_headless", ("zgx", "vlist"): f"{ZGXH}/vlist_headless"}
-FONT = "/Users/mileswirht/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf"
+FONT = os.path.expanduser(os.environ.get('BOUGH_REF', '~/projects/_ref')) + "/zgx/comparisons/fonts/DejaVuSans.ttf"
 
 def instr(fw, scene, mode, render, n):
     env = dict(os.environ, ZGX_MODE=mode, RENDER=str(render), ZGX_FONT_FILE=FONT)

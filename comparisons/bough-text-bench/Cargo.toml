@@ -11,5 +11,5 @@ bough-text = { path = "../../crates/bough-text" }
 bough-metal = { path = "../../crates/bough-metal" }
 bough-mem = { path = "../../crates/bough-mem" }
 bough-vlist = { path = "../bough-vlist" }
-zgx-workload = { path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }
+zgx-workload = { git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }
 rustybuzz = "0.20"

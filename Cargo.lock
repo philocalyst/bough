@@ -95,6 +95,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-app-mail-dash"
+version = "0.0.0"
+dependencies = [
+ "bough",
+ "bough-core",
+ "bough-metal",
+ "bough-text",
+ "zgx-workload",
+]
+
+[[package]]
+name = "bough-app-sketch-code"
+version = "0.0.0"
+dependencies = [
+ "bough",
+ "bough-core",
+ "bough-metal",
+ "bough-text",
+ "zgx-workload",
+]
+
+[[package]]
 name = "bough-awagy"
 version = "0.0.0"
 dependencies = [
@@ -170,6 +192,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-suite"
+version = "0.0.0"
+dependencies = [
+ "bough",
+ "bough-core",
+ "bough-metal",
+ "bough-text",
+ "rustybuzz",
+ "ttf-parser",
+ "zgx-workload",
+]
+
+[[package]]
 name = "bough-text"
 version = "0.0.0"
 dependencies = [
@@ -211,6 +246,17 @@ dependencies = [
  "bough-text",
  "cephal",
  "libc",
+ "zgx-workload",
+]
+
+[[package]]
+name = "bough-widgets"
+version = "0.0.0"
+dependencies = [
+ "bough",
+ "bough-core",
+ "bough-metal",
+ "bough-text",
  "zgx-workload",
 ]
 
@@ -297,9 +343,9 @@ dependencies = [
 
 [[package]]
 name = "crc32fast"
-version = "1.5.4"
+version = "1.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f97d3416d5337d15c4b0d78c8c91df922ca143f57ec20e2d1c188333047ef04"
+checksum = "2b929dd2a135771f40afabd1073f85eed59c800b7c61901e5c254270497dad64"
 dependencies = [
  "cfg-if",
 ]
@@ -380,9 +426,9 @@ dependencies = [
 
 [[package]]
 name = "flate2"
-version = "1.1.10"
+version = "1.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
+checksum = "626d4928326b646e70f65ed36fc7cf9f206bdb68a0019ee7c6b4709da4e084c4"
 dependencies = [
  "crc32fast",
  "miniz_oxide 0.9.1",
@@ -1478,9 +1524,9 @@ dependencies = [
 
 [[package]]
 name = "svgtypes"
-version = "0.16.1"
+version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "695b5790b3131dafa99b3bbfd25a216edb3d216dad9ca208d4657bfb8f2abc3d"
+checksum = "9f12b12995e3638c70618c1facb1ce65302f6a6f706b675f07c58a5d7391120e"
 dependencies = [
  "kurbo",
  "siphasher",

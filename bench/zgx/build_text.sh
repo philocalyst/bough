@@ -4,9 +4,9 @@
 # land in $OUT (default target/text3-zgxbin). The zgx checkout itself is never touched.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-ZGX=${ZGX:-/Users/mileswirht/projects/_ref/zgx}
-COPY=${ZGX_COPY:-/Users/mileswirht/projects/bough/target/text3-zgx}
-OUT=${OUT:-/Users/mileswirht/projects/bough/target/text3-zgxbin}
+ZGX=${ZGX:-${BOUGH_REF:-$HOME/projects/_ref}/zgx}
+COPY=${ZGX_COPY:-$(git rev-parse --show-toplevel)/target/text3-zgx}
+OUT=${OUT:-$(git rev-parse --show-toplevel)/target/text3-zgxbin}
 [ -d "$COPY/.git" ] || git clone --shared --quiet "$ZGX" "$COPY"
 git -C "$COPY" checkout --quiet 06debe9d
 cp "$ROOT/bench/zgx/font_probe.rs" "$ROOT/bench/zgx/text_bench_dejavu.rs" "$COPY/crates/zgx-gpu/examples/"

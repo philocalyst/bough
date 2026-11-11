@@ -17,8 +17,8 @@ objc2-foundation = "0.3"
 objc2-metal = "0.3"
 rustybuzz = "0.20"
 libc = "0.2"
-zgx-workload = { package = "zgx-workload", path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }
-cosmic-text = { package = "zgx-cosmic-text", path = "/Users/mileswirht/projects/_ref/zgx/vendor/cosmic-text", default-features = false, features = ["std", "swash", "shape-run-cache"] }
+zgx-workload = { package = "zgx-workload", git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }
+cosmic-text = { package = "zgx-cosmic-text", git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3", default-features = false, features = ["std", "swash", "shape-run-cache"] }
 ttf-parser = "0.25"
 # Unmodified upstream parley from crates.io: the reference every graft is gated against.
 parley_upstream = { package = "parley", version = "=0.11.1", default-features = false, features = ["std", "system"] }

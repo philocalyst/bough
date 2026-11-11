@@ -5,7 +5,7 @@
 # vlist_headless.rs, added to a clone so the zgx checkout stays untouched).
 set -eu
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-ZGX=${ZGX:-/Users/mileswirht/projects/_ref/zgx}
+ZGX=${ZGX:-${BOUGH_REF:-$HOME/projects/_ref}/zgx}
 COPY=${ZGX_COPY:-$ROOT/target/zgxcopy}
 [ -d "$COPY/.git" ] || git clone --shared --quiet "$ZGX" "$COPY"
 git -C "$COPY" checkout --quiet 06debe9d

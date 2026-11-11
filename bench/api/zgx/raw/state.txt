@@ -1,0 +1,10 @@
+map_copy          2880.52 µs per update
+nested_copy        140.92 µs per update
+equal_copy        2400.52 µs per update
+push                 3.46 µs per update
+push_short           0.16 µs per update
+map_set_key          0.27 µs per update
+nested_set_key       0.62 µs per update
+equal_set_key        0.26 µs per update
+map_update        2838.12 µs per update
+map_patch          103.93 µs per update

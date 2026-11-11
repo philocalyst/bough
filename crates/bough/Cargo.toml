@@ -37,4 +37,4 @@ sabotage_copy = []
 
 [dev-dependencies]
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }
-zgx-workload = { path = "/Users/mileswirht/projects/_ref/zgx/comparisons/workload" }
+zgx-workload = { git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }

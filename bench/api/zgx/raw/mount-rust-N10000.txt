@@ -1,0 +1,2 @@
+10000 rows; instructions (M), allocations per node and time per phase:
+  rust  build     41.1 M   1.0    3.87 ms | mount+layout    496.5 M   3.7  446.63 ms | teardown     89.1 M   0.0   83.40 ms | 30002 nodes

@@ -48,7 +48,7 @@ struct Bench {
 impl Bench {
     /// The scene's operation: scroll `STEP` points, past the end back to the top.
     fn step(&mut self) {
-        let end = self.app.rt.mregion_content_height_pt(0) - micro::VIEWPORT;
+        let end = self.app.rt.list_content_height_pt(0) - micro::VIEWPORT;
         let next = *self.app.owner.scroll + micro::STEP;
         set_scroll(&mut self.app, if next > end { 0. } else { next });
     }

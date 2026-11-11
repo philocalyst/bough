@@ -15,6 +15,28 @@ INPUT = os.path.join(TOOLS, "awagy_input")
 CAP = 1 << 20
 FONT = os.path.expanduser("~/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf")
 
+# Frameworks measured here with no site anchor (zgx, BUI): how each is observed. Both are ordinary binaries in
+# bins/<app>-<scroll|dashboard>, launched like every other app; neither presents through a CAMetalLayer drawable.
+#  - zgx presents through its own IOSurface tiles on a plain CALayer (contents set once per tile, then tiles are
+#    shown/hidden in a Core Animation transaction), so the observer also hooks `-[CALayer setHidden:NO]` on
+#    tiles (AWAGY_OBSERVE_TILES=1; tag 4): one record per tile flip.
+#  - BUI (blenderui, Blender's UI as a C kit + Rust crate) draws on macOS with its CPU raster into an NSView
+#    (drawRect: draws the raster as a CGImage after setNeedsDisplayInRect + displayIfNeeded, once per frame), so
+#    the observer hooks `-[NSView displayIfNeeded]` on BUIKitView (AWAGY_OBSERVE_BUIVIEW=1; tag 5, recorded
+#    when the call returns, i.e. after the frame was drawn into the view). BUI_FONT replaces BUI's embedded Inter
+#    with the DejaVu Sans file every app's text uses.
+# Only these record tags count as frames for an app (all tags for the others). zgx also sets each new tile's
+# IOSurface as layer contents (tag 3) when it allocates a surface, which is not a shown frame; verified against
+# zgx's own ZGX_PRESENT_LOG: tag 4 equals its "plain-set" lines 1:1 (319 of 319 over a scroll, 0.01-0.22 ms apart).
+PRESENT_TAGS = {"zgx": {4}, "bui": {5}}
+APP_ENV = {"zgx": {"AWAGY_OBSERVE_TILES": "1"}, "bui": {"AWAGY_OBSERVE_BUIVIEW": "1", "BUI_FONT": FONT}}
+
+
+def command(bins, app, bench):
+    """The launch command of `app`'s `bench` ("scroll"/"dashboard"), or None when it has none."""
+    exe = os.path.join(bins, f"{app}-{bench}")
+    return [exe] if os.path.exists(exe) else None
+
 
 class RusageInfoV4(ctypes.Structure):
     _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(n, ctypes.c_uint64) for n in (
@@ -54,14 +76,18 @@ def now_ns():
     return time.clock_gettime_ns(time.CLOCK_UPTIME_RAW)
 
 
-def read_presents(path):
+def app_of(cmd):
+    return os.path.basename(cmd[0]).rsplit("-", 1)[0]
+
+
+def read_presents(path, want=None):
     with open(path, "rb") as f:
         m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
         n = min(struct.unpack_from("<Q", m, 0)[0], CAP)
         stamps = list(struct.unpack_from(f"<{n}Q", m, 8))
         tags = list(m[8 + CAP * 8: 8 + CAP * 8 + n])
         m.close()
-    return sorted(zip(stamps, tags))
+    return sorted(p for p in zip(stamps, tags) if want is None or p[1] in want)
 
 
 def summarize(frames, start_ns, end_ns):
@@ -80,18 +106,20 @@ def summarize(frames, start_ns, end_ns):
 
 
 def launch(binary, env_extra, log):
-    env = dict(os.environ, AWAGY_PRESENT_LOG=log, DYLD_INSERT_LIBRARIES=DYLIB, ZGX_FONT_FILE=FONT, BOUGH_FONT=FONT, **env_extra)
-    p = subprocess.Popen([binary], env=env, stdout=subprocess.DEVNULL, stderr=open(log + ".stderr", "w"))
+    cmd = list(binary)
+    app = os.path.basename(cmd[0]).rsplit("-", 1)[0]
+    env = dict(os.environ, AWAGY_PRESENT_LOG=log, DYLD_INSERT_LIBRARIES=DYLIB, ZGX_FONT_FILE=FONT, BOUGH_FONT=FONT, **APP_ENV.get(app, {}), **env_extra)
+    p = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=open(log + ".stderr", "w"))
     out = subprocess.run([INPUT, "window", str(p.pid)], capture_output=True, text=True, timeout=30).stdout.split()
     if len(out) != 4:
         p.kill()
-        raise RuntimeError(f"{binary}: no window")
+        raise RuntimeError(f"{cmd[0]}: no window")
     x, y, w, h = map(float, out)
     # as the harness's xdo_activate_window, verified: the app is active and its window uncovered
     state = subprocess.run([INPUT, "activate", str(p.pid)], capture_output=True, text=True).stdout.strip()
     if state != "front":
         p.kill()
-        raise RuntimeError(f"{os.path.basename(binary)}: window covered after activation")
+        raise RuntimeError(f"{os.path.basename(cmd[0])}: window covered after activation")
     # the content area is the bottom 700 points of the window (the title bar is above it)
     return p, (x, y + h - 700.0, w, 700.0)
 
@@ -136,7 +164,7 @@ def run_scroll(binary, rows, warmup, duration, rate=144, tag=None):
             raise RuntimeError("window covered during the measurement")
         drv = type("D", (), {"stdout": out})
         d = json.loads(drv.stdout)
-        frames = [t for t, _ in read_presents(log)]
+        frames = [t for t, _ in read_presents(log, PRESENT_TAGS.get(app_of(binary)))]
         warm_end = d["start_ns"] + int(warmup * 1e9)
         anchor = next((t for t in frames if t >= warm_end), None)
         if anchor is None or anchor + int(duration * 1e9) > d["end_ns"]:
@@ -179,12 +207,15 @@ def run_dashboard(binary, warmup, rate=240, phase=2.0, tag=None):
             raise RuntimeError("window covered during the measurement")
         drv = type("D", (), {"stdout": out})
         d = json.loads(drv.stdout)
-        frames = [t for t, _ in read_presents(log)]
+        frames = [t for t, _ in read_presents(log, PRESENT_TAGS.get(app_of(binary)))]
         start, end = d["start_ns"], d["start_ns"] + int(4 * phase * 1e9)
         # the anchor: the first frame at or after the workload start (pre-workload idle excluded); the window
         # runs to the workload's end, its trailing silence included
         anchor = next((t for t in frames if t >= start), end)
-        s = summarize(frames, anchor, end)
+        if anchor >= end:  # nothing presented in the whole workload: the gap is the whole workload (as scroll's zero-FPS rule)
+            s = {"frames": 0, "p95_ms": None, "median_ms": None, "max_gap_ms": (end - start) / 1e6}
+        else:
+            s = summarize(frames, anchor, end)
         inwin = [r for t, r in samples if start <= t <= end]
         per_phase = [sum(1 for t in frames if start + i * int(phase * 1e9) < t <= start + (i + 1) * int(phase * 1e9)) for i in range(4)]
         return {"worst_gap_ms": s["max_gap_ms"], "presents_per_phase": per_phase, "p95_ms": s["p95_ms"], "median_ms": s["median_ms"], "frames": s["frames"],
@@ -197,6 +228,21 @@ def run_dashboard(binary, warmup, rate=240, phase=2.0, tag=None):
         for f in (log, log + ".stderr"):
             try: os.remove(f)
             except OSError: pass
+
+
+def retried(fn, tries=4):
+    """A rejected run (window covered, no window) is run again, as the protocol says; the last error is kept if all fail."""
+    for k in range(tries):
+        try:
+            res = fn()
+            if k:
+                res["retries"] = k
+            return res
+        except Exception as e:
+            err = e
+            print("  rejected:", e, flush=True)
+            time.sleep(2.0)
+    return {"error": str(err)}
 
 
 def main():
@@ -213,28 +259,28 @@ def main():
     if SHOTS:
         os.makedirs(SHOTS, exist_ok=True)
     results = json.load(open(a.out)) if os.path.exists(a.out) else {}
+    lock = os.path.join(os.path.dirname(TOOLS), "MEASURING.lock")  # the parent session pauses its heavy work while it exists
+    save = lambda: json.dump(results, open(a.out, "w"), indent=1)  # after every run, never only at the end
     for app in a.apps:
         r = results.setdefault(app, {})
-        if not a.skip_scroll and os.path.exists(os.path.join(a.bins, f"{app}-scroll")):
-            for rows in a.rows:
-                reps = []
-                for i in range(a.reps):
-                    try:
-                        reps.append(run_scroll(os.path.join(a.bins, f"{app}-scroll"), rows, a.warmup, a.duration, tag=f"{app}-scroll-{rows}" if i == 0 else None))
-                    except Exception as e:
-                        reps.append({"error": str(e)})
-                    print(app, "scroll", rows, i, {k: (round(v, 2) if isinstance(v, float) else v) for k, v in reps[-1].items()}, flush=True)
-                r[f"scroll-{rows}"] = reps
-        if not a.skip_dashboard and os.path.exists(os.path.join(a.bins, f"{app}-dashboard")):
-            reps = []
-            for i in range(a.dashboard_reps):
-                try:
-                    reps.append(run_dashboard(os.path.join(a.bins, f"{app}-dashboard"), a.warmup, tag=f"{app}-dashboard" if i == 0 else None))
-                except Exception as e:
-                    reps.append({"error": str(e)})
-                print(app, "dashboard", i, {k: (round(v, 2) if isinstance(v, float) else v) for k, v in reps[-1].items() if k != "phases"}, flush=True)
-            r["dashboard"] = reps
-        json.dump(results, open(a.out, "w"), indent=1)
+        open(lock, "w").write(f"run.py measuring {app} -> {a.out}, started {time.strftime('%H:%M:%S')}\n")
+        try:
+            if not a.skip_scroll and command(a.bins, app, "scroll"):
+                for rows in a.rows:
+                    reps = r[f"scroll-{rows}"] = []
+                    for i in range(a.reps):
+                        reps.append(retried(lambda: run_scroll(command(a.bins, app, "scroll"), rows, a.warmup, a.duration, tag=f"{app}-scroll-{rows}" if i == 0 else None)))
+                        print(app, "scroll", rows, i, {k: (round(v, 2) if isinstance(v, float) else v) for k, v in reps[-1].items()}, flush=True)
+                        save()
+            if not a.skip_dashboard and command(a.bins, app, "dashboard"):
+                reps = r["dashboard"] = []
+                for i in range(a.dashboard_reps):
+                    reps.append(retried(lambda: run_dashboard(command(a.bins, app, "dashboard"), a.warmup, tag=f"{app}-dashboard" if i == 0 else None)))
+                    print(app, "dashboard", i, {k: (round(v, 2) if isinstance(v, float) else v) for k, v in reps[-1].items() if k != "phases"}, flush=True)
+                    save()
+        finally:
+            try: os.remove(lock)
+            except OSError: pass
 
 
 if __name__ == "__main__":

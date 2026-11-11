@@ -8,8 +8,8 @@ checkout (its binaries, builds, font); bough's apps come from $BOUGH_TARGET
 (default $BOUGH_ROOT/target/fusion/dist) and are never built here: build them
 first with
 
-    cd /Users/mileswirht/projects/bough && RUSTC_WRAPPER= PATH=~/.local/share/cargo/bin:$PATH \\
-      CARGO_TARGET_DIR=/Users/mileswirht/projects/bough/target/fusion \\
+    cd <repo> && RUSTC_WRAPPER= PATH=~/.local/share/cargo/bin:$PATH \\
+      CARGO_TARGET_DIR=<repo>/target/fusion \\
       cargo build --profile dist -p bough-heavy -p bough-scenes -p bough-vlist
 
 Runs are written to bench/windowed/results/ (not zgx's docs/results), and
@@ -81,18 +81,20 @@ covered window may stop presenting), and keep the rest of the desktop still.
 Writes bench/windowed/results/latest-macos[-<scene>]-<date>-<zgx commit>.
 """
 import argparse, csv, datetime, hashlib, json, os, plistlib, re, signal, statistics, subprocess, sys, time
+import os
+REPO = __import__('subprocess').check_output(['git', 'rev-parse', '--show-toplevel'], cwd=os.path.dirname(os.path.abspath(__file__)), text=True).strip()
 from pathlib import Path
 
 # bough: this copy's own directory (its helpers: preflight.py, staging.py and
 # the Swift tools), and the zgx checkout it measures beside (ZGX_ROOT).
 BENCH = Path(__file__).resolve().parent
-ROOT = Path(os.environ.get('ZGX_ROOT', '/Users/mileswirht/projects/_ref/zgx'))
+ROOT = Path(os.environ.get('ZGX_ROOT', os.path.expanduser(os.environ.get('BOUGH_REF', '~/projects/_ref')) + '/zgx'))
 sys.path.insert(0, str(BENCH))
 import preflight  # noqa: E402
 import staging  # noqa: E402
 from staging import CWD, clean_env, stage  # noqa: E402
 # bough's checkout, and where its dist apps are (built separately, never here).
-BOUGH_ROOT = Path(os.environ.get('BOUGH_ROOT', '/Users/mileswirht/projects/bough'))
+BOUGH_ROOT = Path(os.environ.get('BOUGH_ROOT', REPO))
 BOUGH_TARGET = Path(os.environ.get('BOUGH_TARGET', BOUGH_ROOT / 'target/fusion/dist'))
 BOUGH_BUILD = (f'cd {BOUGH_ROOT} && RUSTC_WRAPPER= PATH=~/.local/share/cargo/bin:$PATH '
                f'CARGO_TARGET_DIR={BOUGH_TARGET.parent} '

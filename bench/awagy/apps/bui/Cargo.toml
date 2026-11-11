@@ -1,0 +1,28 @@
+[workspace]
+
+[profile.production]
+inherits = "release"
+opt-level = 3
+debug = false
+lto = true
+codegen-units = 1
+strip = true
+incremental = false
+
+[package]
+name = "bui-scroll"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# blenderui (BUI's Rust crate, github.com/ppmpreetham/BUI at d6be0397, 2026-11-11) by path from the fresh clone in
+# src/bui-upstream, default features (as `cargo add blenderui` gives them). It is imported under the name `gpui`
+# (`package = "blenderui"`) so the site's gpui sources compile with their `use gpui::...` lines unchanged; this is
+# BUI's documented gpui-compatible syntax. Its C kit is built by cmake from the same clone.
+[dependencies]
+gpui = { package = "blenderui", git = "https://github.com/ppmpreetham/BUI", rev = "d6be039772e1ca804ec4277f1249bc601d94cb21" }
+
+[features]
+default = ["scroll"]
+scroll = []
+dashboard = []

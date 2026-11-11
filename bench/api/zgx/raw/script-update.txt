@@ -1,0 +1,6 @@
+per update: instructions (k) and allocations, Luau against Rust
+  template       luau     19.8k    5.0 | rust     11.2k    3.0 | luau/rust  1.77x
+  function-prop  luau    743.2k    0.2 | rust    267.9k    0.2 | luau/rust  2.77x
+  rows           luau   1904.2k  654.1 | rust    570.1k   81.3 | luau/rust  3.34x
+  rows-in-place  luau    753.2k  129.1 | rust    569.4k   81.3 | luau/rust  1.32x
+  handler        luau     90.3k   36.0 | rust     48.2k   29.0 | luau/rust  1.87x

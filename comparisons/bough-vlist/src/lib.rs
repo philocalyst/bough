@@ -1,5 +1,6 @@
 //! zgx's vlist scene (`zgx_workload::vlist`) as a bough view: 100,000 (or `rows`) chat rows of
-//! wrapped text in a measured virtual list, laid out by cephal. Geometry, fonts, line height, widths,
+//! wrapped text in a virtual list region (an index source scrolled through a viewport: the one list
+//! mechanism, `bough::listview`; row `i` is a pure function of `i`), laid out by cephal. Geometry, fonts, line height, widths,
 //! colours, the image placeholder and the modes come from the workload functions.
 use bough::layout::prelude::*;
 use bough::raw::*;
@@ -16,7 +17,7 @@ pub const OVERSCAN: usize = 2;
 
 /// One chat row: padding 16/10, gap 6, background by parity; an author + time line (20 pt), the wrapped
 /// text at `TEXT_WIDTH`, and for one row in four a 160 x 90 image placeholder.
-pub fn chat_row(index: usize) -> impl Element<VList> {
+pub fn chat_row<V: 'static>(index: usize) -> impl Element<V> {
     let f = |s: String, c: u32| label(s).font(vlist::FONT_SIZE, vlist::LINE_HEIGHT).color(rgb(c));
     column((
         row((f(vlist::author(index), vlist::AUTHOR), f(vlist::time(index), vlist::MUTED))).gap(8.).h(vlist::LINE_HEIGHT),
@@ -40,7 +41,7 @@ impl View for VList {
     fn view(&self) -> impl Element<Self> + '_ {
         (
             quad(0.0, 0.0, vlist::WIDTH, vlist::HEIGHT).bg(rgb(vlist::BACKGROUND)),
-            measured_list(sig!(self.scroll), self.rows, ESTIMATE, [0.0, 0.0, vlist::WIDTH, vlist::HEIGHT], OVERSCAN, |_, i, m: &mut Mounter<'_, VList>| m.mount(chat_row(i))),
+            index_list(self.rows, |_, i, m: &mut Mounter<'_, VList>| m.mount(chat_row(i))).w(vlist::WIDTH).h(vlist::HEIGHT).scroll(sig!(self.scroll)).estimate(ESTIMATE).overscan(OVERSCAN),
         )
     }
 }
@@ -50,7 +51,7 @@ pub fn font_bytes() -> Vec<u8> {
 }
 
 pub fn config(scale: f32) -> Config {
-    let mut c = Config::new(vlist::WIDTH, vlist::HEIGHT, scale, font_bytes());
+    let mut c = Config::new(vlist::WIDTH, vlist::HEIGHT, scale, font_bytes()).once();
     c.ring = std::env::var("BOUGH_RING").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     c
 }
@@ -61,9 +62,9 @@ pub fn config(scale: f32) -> Config {
 /// back so the next tick continues from where the list is.
 pub fn step(app: &mut App<VList>, mode: Mode, tick: u64) {
     let next = match vlist::jump(tick) {
-        Some(row) if mode == Mode::Jump => app.rt.mregion_row_offset_pt(0, row),
+        Some(row) if mode == Mode::Jump => app.rt.list_row_offset_pt(0, row),
         _ => {
-            let max = (app.rt.mregion_content_height_pt(0) - vlist::HEIGHT).max(0.);
+            let max = (app.rt.list_content_height_pt(0) - vlist::HEIGHT).max(0.);
             let moved = *app.owner.scroll + vlist::delta(mode, tick);
             if moved > max { 0. } else { moved }
         }
@@ -75,7 +76,7 @@ pub fn set_scroll(app: &mut App<VList>, v: f32) {
     app.turn(|d| {
         d.scroll.set(v);
     });
-    let at = app.rt.mregion_scroll_pt(0);
+    let at = app.rt.list_scroll_pt(0);
     app.owner.scroll.set_silent(at);
 }
 
@@ -84,13 +85,13 @@ pub fn probe(app: &mut App<VList>) -> String {
     let mut measured = Vec::new();
     for row in probe_set() {
         for _ in 0..2 {
-            let off = app.rt.mregion_row_offset_pt(0, row);
+            let off = app.rt.list_row_offset_pt(0, row);
             set_scroll(app, off);
             for _ in 0..6 {
                 app.frame();
             }
         }
-        measured.push((row, app.rt.mregion_row_height_pt(0, row)));
+        measured.push((row, app.rt.list_row_height_pt(0, row)));
     }
     vlist::probe_report(&measured, vlist::WIDTH)
 }

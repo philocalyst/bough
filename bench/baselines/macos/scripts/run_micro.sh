@@ -2,8 +2,8 @@
 # Headless microbenchmarks (zgx micro_bench, GPUI Fast gpui-fast-micro), 3 repeats each.
 # Raw stdout/stderr per run under raw/micro/. Font: DejaVu Sans via ZGX_FONT_FILE.
 set -u
-ZGX=/Users/mileswirht/projects/_ref/zgx
-OUT=/Users/mileswirht/projects/bough/bench/baselines/macos/raw/micro
+ZGX=${BOUGH_REF:-$HOME/projects/_ref}/zgx
+OUT=$(git rev-parse --show-toplevel)/bench/baselines/macos/raw/micro
 export ZGX_FONT_FILE=$ZGX/comparisons/fonts/DejaVuSans.ttf
 MICRO=$ZGX/target/dist/examples/micro_bench
 GPUI_MICRO=$ZGX/comparisons/gpui-fast-micro/target/dist/zgx-compare-gpui-fast-micro

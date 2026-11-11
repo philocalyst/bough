@@ -196,6 +196,8 @@ fn resample(src: &[u8], sw: u32, sh: u32, dst: &mut [u8], dw: u32, dh: u32) {
 
 impl<V: 'static> Element<V> for ImageBox {
     fn mount(self, m: &mut Mounter<'_, V>) {
+        // state lives in signals, the atlas or the region: a re-description steps over it
+        crate::describe::mount_opaque(m, move |m: &mut Mounter<'_, V>| {
         let s = m.rt.scale;
         let hd = m.rt.bough.new_handle();
         let lid = m.rt.lay.eng.add(hd, &self.spec, s, None);
@@ -220,6 +222,10 @@ impl<V: 'static> Element<V> for ImageBox {
         let node = crate::deco::mount_deco(m, ins, 0.0, 0.0, 0.0, 0.0, 1.0);
         m.depth -= 1;
         m.rt.add_place_hook(lid, crate::ltemplate::PlaceHook::Deco { node, dx: 0.0, dy: 0.0, grow: 0.0, sized: true });
+    })
+    }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_opaque(m);
     }
 }
 
@@ -244,7 +250,13 @@ impl<V> TextInput<'_, V> {
 
 impl<V: 'static> Element<V> for TextInput<'_, V> {
     fn mount(self, m: &mut Mounter<'_, V>) {
+        // state lives in signals, the atlas or the region: a re-description steps over it
+        crate::describe::mount_opaque(m, move |m: &mut Mounter<'_, V>| {
         let field = crate::input::text_field(self.sig).rect(0.0, 0.0, self.w, self.h).font(14.0).colors(rgb(0xffffff), rgb(0xb4b4b4), rgb(0x000000)).rounded(6.0);
         crate::template::anchor(self.w, self.h, field).mount(m)
+    })
+    }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        crate::describe::update_opaque(m);
     }
 }

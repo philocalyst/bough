@@ -58,7 +58,7 @@ fn run(nodes: usize, edits: usize, fixed: bool) {
     let per: usize = std::env::var("PER").ok().and_then(|v| v.parse().ok()).unwrap_or(500);
     let cols = (nodes / 4 / per).max(1);
     let total_nodes = cols * per * 4 + cols + 1;
-    let mut cfg = Config::new(4000.0, 3000.0, 1.0, FONT.to_vec());
+    let mut cfg = Config::new(4000.0, 3000.0, 1.0, FONT.to_vec()).once();
     cfg.caps.pages = (total_nodes / 8).max(512);
     let t0 = instrs();
     let mut app = App::new(Big { s: Signal::new("aaaa bbbb".into()), cols, per, fixed }, cfg, false);

@@ -1,0 +1,2 @@
+per update: instructions (k) and allocations, Luau against Rust
+  handler        luau     90.3k   36.0 | rust     48.3k   29.0 | luau/rust  1.87x

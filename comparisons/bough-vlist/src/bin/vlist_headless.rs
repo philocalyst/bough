@@ -51,7 +51,7 @@ fn main() {
     }
     let t1 = bough_metal::perf::snap();
     let measured = ticks.saturating_sub(60).max(1) as f64;
-    let m = app.rt.mregions[0].stats;
+    let m = app.rt.lists.regs()[0].stats;
     println!("repaired tiles/frame {:.1}", tiles as f64 / frames.max(1) as f64);
     println!(
         "{mode:?} render={render}: {:.4} ms/tick, frames presented {frames}/{ticks}, instr/tick (after 60 warm-up ticks) {:.0}, ri_instructions total {}, footprint {:.1} MB, rows mounted {} unmounted {} passes {} height changes {}, layouts {} nodes written {}, fallbacks {}",
@@ -85,8 +85,8 @@ fn main() {
         for (i, name) in bough::layout::LP_NAMES.iter().enumerate() {
             print!("  {name} {:.0}", (app.rt.lay.prof.acc[i] - warm.4[i]) as f64 / n);
         }
-        let mounted = app.rt.mregions[0].stats.rows_mounted.max(1) as f64;
-        print!("\nper mounted row ({} rows):", app.rt.mregions[0].stats.rows_mounted);
+        let mounted = app.rt.lists.regs()[0].stats.rows_mounted.max(1) as f64;
+        print!("\nper mounted row ({} rows):", app.rt.lists.regs()[0].stats.rows_mounted);
         for (i, name) in bough::layout::LP_NAMES.iter().enumerate() {
             print!("  {name} {:.0}", app.rt.lay.prof.acc[i] as f64 / mounted);
         }
