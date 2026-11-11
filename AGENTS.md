@@ -1,37 +1,58 @@
 # Working in this repository
 
 Two implementations share it. **bough** (the workspace at the repository root: `crates/`, `comparisons/`, `bench/`,
-`vendor/`) is the active one. **`reactivity/`** is the preserved clean-room GPUI rework, with its own workspace and
+`vendor/`) is the active one, worked as a relay of lanes (`docs/LANES.md`). **`reactivity/`** is the preserved clean-room GPUI rework, with its own workspace and
 the workflow in the second half of this file. The design both answer to is `designs/reactivity/` (start with
 `final/00-model.md`). The work list is `research/AUDIT.md`.
 
-## bough workflow
+## bough: lanes, ownership and evidence
 
+Read `README.md`, `CONTRIBUTING.md`, `docs/LANES.md`, `docs/AVENUES.md`, `docs/SETTLED.md` and the AUDIT sections your
+lane cites before starting work. Preserve pinned baselines and settled exclusions.
+
+- **Lanes.** Each session owns one lane's `docs/lanes/<lane>/` (public reports and frozen cards) and its ignored
+  `runtime/lanes/<lane>/` (scratch, logs, handoffs). The lanes are `platform-host`, `platform-capabilities`,
+  `surface-api`, `async-entities`, `text`, `style-motion-media`, `gpu`, `pacing`, `memory`, `components`,
+  `developer-loop`, `verification` and `independent-review`. Their backlogs are in `docs/AVENUES.md`.
+  - Don't overwrite another lane, the shared docs (README, AUDIT, BRIEF, STATUS), the gates or root manifests.
+    Shared changes go through a reviewable patch that the coordinator integrates.
+  - No session accepts its own result: `independent-review` replays it.
+- **Continuation.** `runtime/lanes/<lane>/STATE.md` is the canonical continuation. Before returning, save the
+  decision, the state reached (CONTRIBUTING's states) and the next bounded card.
+- **Cards first.** Freeze a card (`docs/CARD.md`) before building or measuring. Record dependencies, outcomes, costs
+  and negative results.
+  - Public reports must be understandable without the runtime logs.
+  - Private logs, transcripts and local absolute paths stay in `runtime/`.
 - **Toolchain.** `rust-toolchain.toml` pins nightly-2026-10-17. Put rustup's proxies first on `PATH` and clear
-  `RUSTC_WRAPPER`. A system cargo that ignores the pin fails on `#![feature]`.
-- **Targets.** Give each concurrent lane its own `CARGO_TARGET_DIR`; never share one between worktrees.
-- **Application code and new benchmarks use `bough::prelude` only.** `bough::raw` (coordinates, templates,
-  `Mounter`) is for the existing scene ports. Port them when the prelude can express them (AUDIT §11).
-- **No `FIXED`-style switches on `View`.** Views re-describe after their handlers (design 01 §2). Mount-once exists
-  only as the harness option `Config::once()` for benchmarks that measure the wire path alone.
-- **Measure alone.** Nothing else heavy runs during a measurement: no builds, no tests, no other benchmark. Use a
-  lock file when an agent runs measurements, and have every other process check it before starting heavy work.
+  `RUSTC_WRAPPER`; a system cargo that ignores the pin fails on `#![feature]`.
+- **Targets.** Give each concurrent lane its own `CARGO_TARGET_DIR`; never share one between worktrees. Preserve other
+  sessions' uncommitted work and worktrees.
+- **Measure alone.**
+  - Nothing else heavy runs during a measurement: no builds, no tests, no other benchmark. A session that measures
+    holds a lock file for the whole batch, and every other session checks it before heavy work.
   - Report every cell, including losses.
-  - Preregister thresholds before measuring.
-  - Keep a negative control (a deliberately broken variant that must fail the gate).
+  - Preregister thresholds.
+  - Keep a negative control (a deliberately broken variant that must fail).
   - Reject a change that regresses any fixed cell past its limit, whatever it wins elsewhere (AUDIT §10).
-- **Record attempts.** Each area's `RESULTS.md` says what was tried, kept and rejected, and why. Rejected attempts
-  stay recorded. AUDIT §15 re-reads them for merit.
-- **Gates are pixel-exact.** Retained frames must equal a full redraw at every ring age, and a fresh mount must equal
-  the retained tree. A new optimisation lands with its oracle and a mutant that fails it.
-- **Unsafe.** Every `unsafe` keeps a `// SAFETY:` argument. New unsafe invariants get a test of their own.
-- **Vendored crates** (`vendor/`) are plain source copies. Every local edit is listed in `vendor/README.md`. Grafts
-  into parley are twin-gated against unmodified upstream (`crates/bough-text/tests/parley_twin.rs`).
-- **Formatting.** Format only intended files with `rustfmt --edition 2024 --config skip_children=true`.
-  `cargo fmt --all` reaches into vendored path dependencies.
-- **Paths.** No absolute paths in manifests or scripts. External comparison sources are pinned git revisions
-  (zeronsh/zgx, ppmpreetham/BUI), and scripts take `BOUGH_REF` for local reference checkouts.
-- **Commits.** Say what was verified and what was not. Push to this repository (`main`, `bough/*`).
+- **Surfaces.** Application code and new benchmarks use `bough::prelude` only. `bough::raw` (coordinates, templates,
+  `Mounter`) is for the existing scene ports. Views re-describe after their handlers; the only mount-once switch is
+  the harness option `Config::once()`.
+- **Gates are pixel-exact.** A retained frame equals a full redraw at every ring age, and a fresh mount equals the
+  retained tree. A new optimisation lands with its oracle and a mutant that fails it.
+- **Code hygiene.**
+  - Every `unsafe` keeps a `// SAFETY:` argument, and new unsafe invariants get their own test.
+  - Vendored crates (`vendor/`) are plain copies, with every edit listed in `vendor/README.md`. Parley grafts are
+    twin-gated against unmodified upstream.
+  - Format only intended files (`rustfmt --edition 2024 --config skip_children=true`). `cargo fmt --all` reaches
+    into vendored path dependencies.
+  - No absolute paths in manifests or scripts. Competitor sources are pinned git revisions; scripts take `BOUGH_REF`
+    for local reference checkouts.
+- **Authority.**
+  - Remote hosts need an explicit, live allocation from the user; an idle server is not one.
+  - Don't message outside people or other sessions without the user's direction.
+  - This repository is public. Everything committed or written in a PR is visible.
+- **Commits.** Say what was verified and what was not. Integrations go to `main`; lane work goes on
+  `lane/<lane>/<topic>` branches.
 
 ---
 

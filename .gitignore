@@ -55,3 +55,6 @@ xcuserdata/
 manifest.json
 *.trace
 research/src/
+
+# Lane runtime state, scratch output, handoffs (docs/lanes/<lane>/ holds the public reports)
+runtime/
