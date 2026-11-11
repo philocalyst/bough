@@ -1,0 +1,30 @@
+[package]
+name = "bough-guibench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+[dependencies]
+bough = { path = "../../crates/bough" }
+bough-metal = { path = "../../crates/bough-metal" }
+
+[[bin]]
+name = "bough-bench"
+path = "src/main.rs"
+
+[profile.release]
+debug = 1
+lto = "thin"
+
+[patch.crates-io]
+wgpu-hal = { path = "../../vendor/wgpu-hal" }
+wgpu-types = { path = "../../vendor/wgpu-types" }
+naga = { path = "../../vendor/naga" }
+
+[patch."https://github.com/schell/wgsl-rs"]
+wgsl-rs = { path = "../../vendor/wgsl-rs/crates/wgsl-rs" }
+wgsl-rs-macros = { path = "../../vendor/wgsl-rs/crates/wgsl-rs-macros" }
+wgsl-rs-ir = { path = "../../vendor/wgsl-rs/crates/wgsl-rs-ir" }

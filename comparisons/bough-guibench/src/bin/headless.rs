@@ -1,0 +1,51 @@
+use bough_guibench::{
+    cli::{self, Scenario, Variant},
+    driver,
+    model::{Coarse, Fine, Rows},
+};
+fn main() {
+    let mut args = std::env::args().skip(1);
+    let mut shared = Vec::new();
+    let mut op = "mount".to_owned();
+    let mut repeats = 0;
+    let mut render = false;
+    let mut gate = false;
+    let mut ring = 4;
+    let mut mutant = false;
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--op" => op = args.next().expect("--op value"),
+            "--repeats" => repeats = args.next().expect("--repeats value").parse().unwrap(),
+            "--render" => render = true,
+            "--gate" => gate = true,
+            "--ring" => ring = args.next().expect("--ring value").parse().unwrap(),
+            "--mutant" => mutant = true,
+            _ => shared.push(a),
+        }
+    }
+    let s = cli::require(
+        cli::parse(shared.into_iter()).unwrap(),
+        &[Variant::Fine, Variant::Coarse],
+    )
+    .unwrap();
+    assert!((1..=4).contains(&ring));
+    match s {
+        Scenario::Rows { count } => {
+            driver::headless(Rows::new(count), &op, repeats, render, gate, ring)
+        }
+        Scenario::Table {
+            count,
+            variant,
+            ticker: None,
+        } => match variant {
+            Variant::Coarse => {
+                driver::headless(Coarse::new(count, mutant), &op, repeats, render, gate, ring)
+            }
+            _ => driver::headless(Fine::new(count, mutant), &op, repeats, render, gate, ring),
+        },
+        _ => {
+            eprintln!("scenario not implemented in rows/table stage: {s:?}");
+            std::process::exit(2);
+        }
+    }
+}
