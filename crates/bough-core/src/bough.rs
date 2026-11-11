@@ -1840,6 +1840,13 @@ impl Bough {
                     pm &= pm - 1;
                     let p = self.page(d);
                     stat!(0, 1);
+                    if p.is_xf() {
+                        // A transformed page stores local inks: the lane tests below would compare them
+                        // against an absolute threshold. Test each record's transformed bounds instead
+                        // (out of line: a transformed page holds one transformed subtree).
+                        self.cull_xf_page::<TILES, POS>(d, bbox, clip, plane, out);
+                        continue;
+                    }
                     let src: *const u32 = if POS {
                         let s0 = self.start_of(d) as u32;
                         for (i, v) in iota.iter_mut().enumerate() {
@@ -1886,6 +1893,27 @@ impl Bough {
                 }
             }
             cb += 64;
+        }
+    }
+
+    /// The cull of one transformed page: record by record on the absolute bounds of the transformed
+    /// (and clipped) ink, the same bounds `hit` and the directory summary use.
+    #[inline(never)]
+    fn cull_xf_page<const TILES: bool, const POS: bool>(&self, d: usize, bbox: NRect, clip: NRect, plane: &Plane, out: &mut Vec<u32>) {
+        let p = self.page(d);
+        let base = if POS { self.start_of(d) as u32 } else { 0 };
+        for s in 0..self.d_len[d] as usize {
+            let v = self.visible_in(p, s);
+            if v.intersect(bbox).is_empty() {
+                continue;
+            }
+            if TILES {
+                let c = v.intersect(clip);
+                if c.is_empty() || !plane.hits(c, self.ring.window) {
+                    continue;
+                }
+            }
+            out.push(if POS { base + s as u32 } else { p.payload[s] });
         }
     }
 

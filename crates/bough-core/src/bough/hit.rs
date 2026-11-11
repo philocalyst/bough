@@ -281,7 +281,9 @@ impl Bough {
         if age as usize >= RING {
             return false;
         }
-        (0..=age).all(|b| !self.ring.plane(b).hits(cell, self.ring.window))
+        // A scroll by copy moves records without marking the tiles the copy supplies, so the planes alone
+        // do not see it: an epoch whose scroll record meets the cell voids it too (round 6).
+        (0..=age).all(|b| !self.ring.plane(b).hits(cell, self.ring.window) && self.ring.scroll(b).is_none_or(|r| r.clip.intersect(cell).is_empty()))
     }
 
     /// The first record at or after `pos` whose kind has a bit of `flag`: a scan of the kind column, 64
