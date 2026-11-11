@@ -1,7 +1,7 @@
 //! Cold first pixel, headless (round 4): wall time from `main` to the heavy dashboard's first frame complete on the
 //! GPU, split into App::new (device + region + mount + layout + shaping) and the first frame. Prints the epoch time
 //! of the first pixel too, so a launcher can add exec + dyld (bench/floor/first_pixel.py).
-use bough::prelude::*;
+use bough::raw::*;
 use bough_heavy::*;
 use zgx_workload::heavy::*;
 
