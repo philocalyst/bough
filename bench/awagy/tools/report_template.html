@@ -61,6 +61,8 @@ section { display: grid; gap: 16px; min-width: 0; }
 .chart svg text.na { fill: var(--muted); font-style: italic; }
 .bar { fill: var(--field); }
 .bar.self { fill: var(--accent); }
+.bar.est { fill: var(--field); fill-opacity: 0.45; }
+.chart svg text.estv { fill: var(--ink-2); font-weight: 500; }
 .bar-hit { fill: transparent; cursor: default; }
 .bar-hit:hover + .bar:not(.self), g.row:focus-within .bar:not(.self) { fill: var(--field-hover); }
 .whisker { stroke: var(--ink-2); stroke-width: 1.5; }
@@ -133,6 +135,22 @@ a { color: var(--accent); }
     <div class="charts" id="size-charts"></div>
   </section>
 
+
+  <section aria-labelledby="a-h">
+    <div style="display:grid;gap:6px">
+      <h2 id="a-h">Every registered framework</h2>
+      <p class="lede">All eighteen apps the site registers, with bough. Six are measured on this Mac. The other twelve are <strong>estimates</strong>: the site’s Linux numbers converted with factors calibrated on the frameworks measured on both machines. A whisker on an estimate is the spread of those factors, not a run-to-run range.</p>
+    </div>
+    <div class="filters" role="group" aria-label="Row count for every framework"><span>Rows</span><div class="seg" id="rows-all"></div></div>
+    <div class="legend"><span><i style="background:var(--accent)"></i>bough</span><span><i style="background:var(--field)"></i>measured here</span><span><i style="background:var(--field);opacity:.45"></i>estimated (≈)</span></div>
+    <div class="charts" id="all-charts"></div>
+    <div class="table-scroll"><table id="all-table"></table></div>
+    <div class="card" style="gap:10px">
+      <h3>How the estimates were made</h3>
+      <div id="cal-notes" style="display:grid;gap:8px;color:var(--ink-2);font-size:14px;max-width:72ch"></div>
+    </div>
+  </section>
+
   <section aria-labelledby="e-h">
     <h2 id="e-h">What each app showed</h2>
     <p class="lede">Captured during the measurement: the scroll app at 7,000 rows, and the dashboard in its scroll phase. Vizia’s dashboard draws each 64 px image as a 2 × 2 tiling; that is the site’s app as published. A run whose window was covered was rejected, not reported.</p>
@@ -183,7 +201,7 @@ function hideTip() { tip.hidden = true; }
 function el(tag, attrs, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); parent && parent.append(e); return e; }
 
 // One emphasis bar chart: rows = frameworks, sorted best first; whiskers = repetition range; `ref` = a reference line.
-function barChart(host, title, sub, unit, items, { better = "lower", digits = 1, ref = null, refLabel = "" } = {}) {
+function barChart(host, title, sub, unit, items, { better = "lower", digits = 1, ref = null, refLabel = "", clipAt = null } = {}) {
   const card = document.createElement("div"); card.className = "card chart";
   const h = document.createElement("h3"); h.textContent = title;
   const sm = document.createElement("small"); sm.textContent = sub; h.append(sm); card.append(h);
@@ -191,7 +209,7 @@ function barChart(host, title, sub, unit, items, { better = "lower", digits = 1,
   valid.sort((a, b) => better === "lower" ? a.v - b.v : b.v - a.v);
   const rows = [...valid, ...invalid];
   const W = 460, L = 132, Rm = 64, rowH = 30, top = 8, H = top + rows.length * rowH + 22;
-  const max = Math.max(ref ?? 0, ...valid.map(i => i.hi ?? i.v)) * 1.04 || 1;
+  const max = clipAt ?? (Math.max(ref ?? 0, ...valid.map(i => i.hi ?? i.v)) * 1.04 || 1);
   const x = v => L + (W - L - Rm) * v / max;
   const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${title}, ${sub}` });
   const step = niceStep(max);
@@ -209,18 +227,23 @@ function barChart(host, title, sub, unit, items, { better = "lower", digits = 1,
     const g = el("g", { class: "row" }, svg);
     const name = el("text", { x: L - 10, y: cy + 4, "text-anchor": "end", class: self ? "self" : "" }, g); name.textContent = DATA.names[it.app] || it.app;
     if (it.v == null) { const t = el("text", { x: L + 8, y: cy + 4, class: "na" }, g); t.textContent = it.why || "no valid run"; return; }
-    const bw = Math.max(2, x(it.v) - L), bh = 16;
+    const off = clipAt != null && it.v > clipAt;
+    const bw = Math.max(2, x(Math.min(it.v, max)) - L), bh = 16;
     const hit = el("rect", { class: "bar-hit", x: 0, y, width: W, height: rowH, tabindex: 0 }, g);
     const p = `M${L},${cy - bh / 2} h${Math.max(0, bw - 4)} a4,4 0 0 1 4,4 v${bh - 8} a4,4 0 0 1 -4,4 h${-Math.max(0, bw - 4)} z`;
-    el("path", { class: "bar" + (self ? " self" : ""), d: p }, g);
-    if (it.lo != null && it.hi != null && it.hi > it.lo) {
+    el("path", { class: "bar" + (self ? " self" : "") + (it.est ? " est" : ""), d: p }, g);
+    if (!off && it.lo != null && it.hi != null && it.hi > it.lo && it.hi <= max) {
       el("line", { class: "whisker", x1: x(it.lo), x2: x(it.hi), y1: cy, y2: cy }, g);
       el("line", { class: "whisker", x1: x(it.lo), x2: x(it.lo), y1: cy - 4, y2: cy + 4 }, g);
       el("line", { class: "whisker", x1: x(it.hi), x2: x(it.hi), y1: cy - 4, y2: cy + 4 }, g);
     }
-    const vt = el("text", { x: Math.max(x(it.v), x(it.hi ?? it.v)) + 6, y: cy + 4, class: "val" }, g); vt.textContent = fmt(it.v, digits);
-    const lines = [`${fmt(it.v, digits)} ${unit}`, DATA.names[it.app] || it.app];
-    if (it.n > 1) lines.push(`range ${fmt(it.lo, digits)}–${fmt(it.hi, digits)} over ${it.n} runs`);
+    const vx = off ? x(max) - 6 : Math.min(x(max), Math.max(x(it.v), x(Math.min(it.hi ?? it.v, max)))) + 6;
+    const vt = el("text", { x: vx, y: cy + 4, class: it.est ? "estv" : "val", "text-anchor": off ? "end" : "start" }, g);
+    vt.textContent = (it.est ? "≈" : "") + fmt(it.v, digits) + (off ? " · off scale" : "");
+    if (off) vt.setAttribute("style", "paint-order: stroke; stroke: var(--surface); stroke-width: 4px");
+    const lines = [`${it.est ? "≈" : ""}${fmt(it.v, digits)} ${unit}`, (DATA.names[it.app] || it.app) + (it.est ? " · estimated" : it.earlier ? " · measured in the earlier run" : "")];
+    if (it.est) lines.push(`estimate range ${fmt(it.lo, digits)}–${fmt(it.hi, digits)}`);
+    else if (it.n > 1) lines.push(`range ${fmt(it.lo, digits)}–${fmt(it.hi, digits)} over ${it.n} runs`);
     if (it.extra) lines.push(it.extra);
     for (const ev of ["pointermove", "focus"]) hit.addEventListener(ev, e => showTip(e, lines));
     for (const ev of ["pointerleave", "blur"]) hit.addEventListener(ev, hideTip);
@@ -316,5 +339,68 @@ renderScroll(); renderScrollTable();
     tb.append(r);
   }
   t.append(tb);
+}
+
+{
+  const A = DATA.all, N = A.names, order = A.order.filter((a, i, l) => l.indexOf(a) === i);
+  let rowsAll = "7000";
+  const val = (a, n, f) => {
+    const m = A.measured[a];
+    if (m) return { app: a, v: m.scroll[n][f], earlier: m.earlier };
+    const e = A.est[a]?.scroll?.[n]?.[f];
+    return e ? { app: a, v: e.v, lo: e.lo, hi: e.hi, est: true } : { app: a, v: null, why: "no site value" };
+  };
+  function render() {
+    const host = document.getElementById("all-charts"); host.replaceChildren();
+    const n = rowsAll, rl = Number(n).toLocaleString();
+    barChart(host, "Presents per second", `${rl} rows · higher is better`, "frames/s", order.map(a => val(a, n, "fps")), { better: "higher", digits: 1, ref: 120, refLabel: "120 Hz" });
+    barChart(host, "p95 present gap", `${rl} rows · lower is better`, "ms", order.map(a => val(a, n, "p95_ms")), { digits: 1, clipAt: 100 });
+    barChart(host, "Dashboard mean resident memory", "lower is better", "MiB", order.map(a => {
+      const m = A.measured[a]; if (m) return { app: a, v: m.dash.rss_mean_mib, earlier: m.earlier };
+      const e = A.est[a]?.dash?.rss_mean_mib; return e ? { app: a, v: e.v, lo: e.lo, hi: e.hi, est: true } : { app: a, v: null, why: "not in the site’s dashboard run" };
+    }), { digits: 1 });
+    barChart(host, "Executable size", "macOS arm64 · smaller is better", "MiB", order.map(a => {
+      const m = A.size.measured[a]; if (m) return { app: a, v: m / 1048576 };
+      const e = A.size.est[a]; return e ? { app: a, v: e.v / 1048576, lo: e.lo / 1048576, hi: e.hi / 1048576, est: true } : { app: a, v: null, why: "no site size" };
+    }), { digits: 2 });
+  }
+  const seg = document.getElementById("rows-all");
+  for (const r of DATA.rows) {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = r.toLocaleString(); b.setAttribute("aria-pressed", String(String(r) === rowsAll));
+    b.addEventListener("click", () => { rowsAll = String(r); for (const x of seg.children) x.setAttribute("aria-pressed", String(x === b)); render(); });
+    seg.append(b);
+  }
+  render();
+  // table: every framework, measured or estimated
+  const t = document.getElementById("all-table");
+  const head = ["Framework", "Source", "1K fps", "7K fps", "7K p95 ms", "Dashboard RSS MiB", "Size MiB", "Dashboard worst gap ms (Linux, site)"];
+  const thead = document.createElement("thead"), tr = document.createElement("tr");
+  head.forEach(h => { const th = document.createElement("th"); th.textContent = h; tr.append(th); }); thead.append(tr); t.append(thead);
+  const tb = document.createElement("tbody");
+  const cell = (o, d) => o == null || o.v == null ? "—" : (o.est ? "≈" : "") + fmt(o.v, d);
+  for (const a of order) {
+    const r = document.createElement("tr"); if (a === "bough") r.className = "self";
+    const m = A.measured[a], e = A.est[a];
+    const src = m ? (a === "bough" ? "measured" : m.earlier ? "measured (earlier run)" : "measured") : "estimated";
+    const f1 = val(a, "1000", "fps"), f7 = val(a, "7000", "fps"), p7 = val(a, "7000", "p95_ms");
+    const rss = m ? { v: m.dash.rss_mean_mib } : e?.dash?.rss_mean_mib ? { ...e.dash.rss_mean_mib, est: true } : null;
+    const sz = A.size.measured[a] ? { v: A.size.measured[a] / 1048576 } : A.size.est[a] ? { v: A.size.est[a].v / 1048576, est: true } : null;
+    const worst = a === "bough" ? "not in the site’s collection" : fmt(m ? m.dash.worst_site : e?.dash?.worst_site, 1);
+    [N[a] || a, src, cell(f1, 1), cell(f7, 1), cell(p7, 1), cell(rss, 1), cell(sz, 2), worst].forEach(c => { const td = document.createElement("td"); td.textContent = c; r.append(td); });
+    tb.append(r);
+  }
+  t.append(tb);
+  // calibration notes, from the numbers themselves
+  const C = A.cal, nn = d => d == null ? "—" : d.toFixed(2);
+  const notes = [
+    `Anchors: ${C.fps_cap.anchors.map(a => N[a] || a).join(", ")}, measured on both machines. bough is not an anchor, since the site never ran it.`,
+    `Presents per second, apps held at the refresh limit on Linux (at least 137 of 144 Hz): ${nn(C.fps_cap.median)} of this Mac’s 120 Hz (anchor range ${nn(C.fps_cap.lo)}–${nn(C.fps_cap.hi)}, ${C.fps_cap.n} pairs). CPU-bound apps: Linux value × ${nn(C.fps_cpu.median)} (${nn(C.fps_cpu.lo)}–${nn(C.fps_cpu.hi)}, ${C.fps_cpu.n} pairs), capped at 120.`,
+    `p95 present gap, with the axis cut at 100 ms so Blinc’s and Whisker’s estimates run off scale: Linux value × ${nn(C.p95_ms_cap.median)} for apps at the refresh limit (${nn(C.p95_ms_cap.lo)}–${nn(C.p95_ms_cap.hi)}), × ${nn(C.p95_ms_cpu.median)} for CPU-bound apps (${nn(C.p95_ms_cpu.lo)}–${nn(C.p95_ms_cpu.hi)}).`,
+    `Dashboard resident memory: Linux value × ${nn(C.rss.median)} (${nn(C.rss.lo)}–${nn(C.rss.hi)}). Executable size: Linux x86_64 size × ${nn(A.size.ratio?.median)}, from ${(A.size.ratio?.anchors || []).map(a => N[a] || a).join(" and ")} alone (the site publishes no size for Vizia (optimized)), so these size estimates rest on one framework and carry no range.`,
+    `Not estimated: the longest gap (anchor ratios span ${nn(C.max_gap_ms_cap.lo)}× to ${nn(C.max_gap_ms_cap.hi)}×) and the dashboard’s worst gap (anchor ratios from about 0.06× to 5×). Both are single stalls, not rates; the site’s Linux worst gaps are listed unconverted. CPU time is not estimated because the site’s latest collection publishes none.`,
+    `Least reliable: GPUI and GPUI Fast use a different renderer on macOS (Metal) than on Linux, so their CPU-bound Linux numbers may not carry over. Blinc and Whisker show under 1 present per second on the site, which suggests they did not animate under its harness; their estimates inherit that.`,
+  ];
+  const host = document.getElementById("cal-notes");
+  for (const n of notes) { const p = document.createElement("p"); p.textContent = n; host.append(p); }
 }
 </script>

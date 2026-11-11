@@ -1,4 +1,4 @@
-<p>bough wins every scroll measure and most dashboard measures by a wide margin. It loses two dashboard results: the site’s headline number, because one of its three runs stalled once, and click accuracy in that same run.</p>
+<p><strong>Against the site’s two Vizia apps, measured side by side:</strong> bough wins every scroll measure and most dashboard measures by a wide margin. It loses two dashboard results: the site’s headline number, because one of its three runs stalled once, and click accuracy in that same run.</p>
 <ul>
   <li><span class="tag win">Win</span><strong>Scroll at 7,000 rows:</strong>
     <ul>
@@ -22,6 +22,20 @@
     </ul></li>
   <li><span class="tag loss">Loss</span><strong>Dashboard worst gap, the site’s headline:</strong> the site keeps the worst gap across runs, which gives 75.7 ms for bough against 31.0 ms for Vizia (optimized). bough’s other two runs were 15.3 and 15.1 ms, lower than every Vizia run. The stall fell in the Refresh phase, and its cause has not been found.</li>
   <li><span class="tag loss">Loss</span><strong>Clicks counted:</strong> in the run that was captured on screen (the one with the stall), bough’s counter shows 467 of the 480 Refresh clicks the harness sent at 240 a second. Vizia shows 480 and Vizia (optimized) 479. bough dropped clicks under that rate.</li>
+</ul>
+
+<h3>Against every registered framework</h3>
+<p>Six frameworks are measured on this Mac and twelve are estimated from the site’s Linux numbers (see “Every registered framework”).</p>
+<ul>
+  <li><span class="tag even">Tied</span><strong>Presents per second:</strong> bough is highest at both 1,000 and 7,000 rows, but every leader sits within about 3 frames of this display’s 120 Hz limit, so on this measure the field is effectively tied.</li>
+  <li><span class="tag loss">Loss</span><strong>Steadiness (p95 gap):</strong> iced, measured here, presents more evenly: 8.4–8.6 ms against bough’s 12.4–12.9 ms. Slint was also steadier at 1,000 rows (9.3 ms). bough ranks second of 17 at 7,000 rows and third of 18 at 1,000. bough is observed when it publishes a surface and the others when they take a drawable, so part of the gap may be where the clock is read; it is reported as measured.</li>
+  <li><span class="tag win">Win</span><strong>Memory:</strong> lowest dashboard resident memory of the 15 frameworks with a value: 66 MiB, against 120 MiB for iced, the next lowest, which was measured.</li>
+  <li><span class="tag win">Win</span><strong>Executable size:</strong> smallest of all 18, at 2.7 MiB. The next smallest is egui at about 4.0 MiB, an estimate.</li>
+  <li><span class="tag even">Not compared</span><strong>Dashboard worst gap and CPU:</strong> the site’s worst gaps are single Linux stalls that do not convert across machines, and its latest collection publishes no CPU time. Among the measured frameworks:
+    <ul>
+      <li>bough’s worst dashboard gap was 75.7 ms in the head-to-head run and 39.4 ms in the earlier run;</li>
+      <li>iced’s was 19.0 ms, and egui’s 31.9 ms.</li>
+    </ul></li>
 </ul>
 <div class="note">These are not the site’s numbers:
   <ul>
