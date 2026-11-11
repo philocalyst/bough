@@ -82,3 +82,20 @@ do not revisit:  RESULTS 12.3's present paths (CAMetalLayer drawables, CAMetalDi
                  AVSampleBufferDisplayLayer, many small layers); the publisher thread and pre-armed stream
                  (RESULTS 14.2); the content-addressed ring; per-row hover signals; a separate hit index.
 ```
+
+## Amendment 1 (after the first functional run of the build, before any measurement batch)
+
+A single smoke run of the first build (one dashboard run, shortened phases; taken while another lane held the
+measurement lock, so only its shape counts) showed the pacer presenting every *other* refresh in the click and
+typing phases (60 commits/s, input-to-vsync p50 12.6 ms): the link paused at the first callback after a latch that
+found nothing new, and the next input then waited for the link to restart and for the following refresh's latch.
+Changes, mechanism otherwise as frozen:
+
+1. The latch is armed by the drain itself whenever damage is pending, for the first target whose latch time is
+   still ahead, computed from the refresh phase the link last reported (extrapolated over at most 1 s); the
+   callback arms it only when the drain could not (no phase yet) or for animations.
+2. The link pauses after 3 consecutive callbacks with nothing pending or animating (hysteresis), not 1.
+3. Input animations are stepped at the latch to the target vsync (sampled for the moment they are shown), not at
+   the callback; the `BOUGH_LATCH=tick` comparison variant steps and presents at the callback.
+
+Gates and thresholds unchanged.

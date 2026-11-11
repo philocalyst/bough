@@ -342,14 +342,16 @@ fn observe_resize<V: View>(host: &bough_metal::app::Host, app: &Rc<RefCell<App<V
 /// The interactive host's frame pacer (main thread only): docs/lanes/pacing/cards/2026-11-11-display-paced-input.md.
 ///
 /// * Input is queued by the event monitor and drained when the run loop is about to wait (`pump`): one turn
-///   per queued item, as soon as the main thread is free.
+///   per queued item, as soon as the main thread is free (state is current; only frames wait).
 /// * A drain that left damage presents at once if the display link is idle and the last present is at least
 ///   one refresh old: sparse input keeps frame-per-event's latency and cost (no link wake, RESULTS 12.2).
-/// * Otherwise the damage waits for the display link: its callback (vsync V, target T) steps the input
-///   animations and arms ONE latch at T - `lead`, which drains the queue again and presents through the
-///   publisher thread. So at most one present per refresh, input sampled as late as the deadline allows,
-///   and animation commits follow the vsync instead of the next input event.
-/// * A callback with nothing pending and nothing animating pauses the link: idle is zero wakeups.
+/// * Otherwise one latch is armed at T - `lead`, T the first refresh target whose latch is still ahead (the
+///   link's last target, or the vsync phase it left, extrapolated): the latch drains the queue again, steps
+///   the input animations to T (they are sampled for the moment they are shown) and presents through the
+///   publisher thread. So at most one present per refresh and input sampled as late as the deadline allows.
+/// * The display link runs while input or animation keeps coming: it keeps the phase and arms the latch
+///   for animations. After `IDLE_CALLBACKS` callbacks with nothing pending or animating it pauses: idle is
+///   zero wakeups.
 struct Pacer {
     q: RefCell<pace::InputQueue>,
     /// Damage waits for the latch.
@@ -362,14 +364,24 @@ struct Pacer {
     /// How long before the target vsync the latch runs: the frame's CPU part, the GPU, the publisher's
     /// wake and the commit.
     lead: f64,
-    last_vsync: Cell<Option<f64>>,
+    /// The link's last target vsync (the refresh phase), host seconds.
+    last_target: Cell<Option<f64>>,
+    /// The target the animations were last stepped to.
+    anim_target: Cell<Option<f64>>,
+    idle_callbacks: Cell<u32>,
     latch: RefCell<Option<objc2::rc::Retained<NSTimer>>>,
-    latch_armed: Cell<bool>,
+    /// The target the armed latch presents for (`None`: not armed).
+    latch_target: Cell<Option<f64>>,
     /// `BOUGH_NOFRAME`: turns only (drag_probe's "frames off" accounting).
     noframe: bool,
-    /// Frame-log builds only (`BOUGH_LATCH=tick`): present at the link callback instead of the latch.
+    /// Frame-log builds only (`BOUGH_LATCH=tick`): present at the link callback instead of a latch.
     at_tick: bool,
 }
+
+/// Callbacks with nothing to do before the link pauses (hysteresis: a 240 Hz storm's gaps never pause it).
+const IDLE_CALLBACKS: u32 = 3;
+/// A latch closer than this is run at once.
+const LATCH_MIN: f64 = 0.0002;
 
 impl Pacer {
     fn new(max_fps: f64) -> Pacer {
@@ -388,9 +400,11 @@ impl Pacer {
             last_present: Cell::new(0.0),
             period: Cell::new(1.0 / max_fps.max(1.0)),
             lead,
-            last_vsync: Cell::new(None),
+            last_target: Cell::new(None),
+            anim_target: Cell::new(None),
+            idle_callbacks: Cell::new(0),
             latch: RefCell::new(None),
-            latch_armed: Cell::new(false),
+            latch_target: Cell::new(None),
             noframe: std::env::var_os("BOUGH_NOFRAME").is_some(),
             at_tick,
         }
@@ -401,8 +415,8 @@ impl Pacer {
     }
 
     fn start_link(&self, link: &objc2_quartz_core::CADisplayLink) {
+        self.idle_callbacks.set(0);
         if !self.link_on.replace(true) {
-            self.last_vsync.set(None);
             link.setPaused(false);
             fl::note(fl::N_LINK, 1, 0);
         }
@@ -411,9 +425,37 @@ impl Pacer {
     fn stop_link(&self, link: &objc2_quartz_core::CADisplayLink) {
         if self.link_on.replace(false) {
             link.setPaused(true);
-            self.last_vsync.set(None);
+            self.anim_target.set(None);
             fl::note(fl::N_LINK, 0, 0);
         }
+    }
+
+    /// Arm the latch for the first target whose latch time is still ahead, from the refresh phase the link
+    /// reported (extrapolated over at most a second). Returns false without a phase (the next callback arms).
+    fn arm(&self, now: f64) -> bool {
+        let Some(mut t) = self.last_target.get() else { return false };
+        let p = self.period.get();
+        if now - t > 1.0 {
+            return false;
+        }
+        if t - self.lead < now + LATCH_MIN {
+            t += ((now + LATCH_MIN + self.lead - t) / p).ceil() * p;
+        }
+        if self.latch_target.get().is_some_and(|armed| armed <= t + 1e-4) {
+            return true; // an earlier (or the same) latch presents it
+        }
+        self.latch_target.set(Some(t));
+        fl::note(fl::N_LATCH, fl::secs_to_ns(t), fl::secs_to_ns(t - self.lead));
+        if let Some(timer) = self.latch.borrow().as_ref() {
+            timer.setFireDate(&objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(t - self.lead - now));
+        }
+        true
+    }
+
+    /// Step the input animations to target `t` (they are sampled for the vsync that shows them).
+    fn animate<V: View>(&self, a: &mut App<V>, t: f64) -> bool {
+        let dt = self.anim_target.replace(Some(t)).map_or(self.period.get(), |l| (t - l).clamp(0.0, 0.05)) as f32;
+        a.tick(dt)
     }
 
     /// Present now through the publisher thread.
@@ -441,8 +483,8 @@ impl Pacer {
             }
             return;
         }
+        let now = objc2_quartz_core::CACurrentMediaTime();
         if a.has_damage() {
-            let now = objc2_quartz_core::CACurrentMediaTime();
             if !self.link_on.get() && now - self.last_present.get() >= self.period.get() {
                 // the first present of a refresh: from the event
                 self.present(app, &mut a, trim);
@@ -450,12 +492,17 @@ impl Pacer {
                 self.pending.set(true);
             }
         }
-        if self.pending.get() || a.animating() {
+        let animating = a.animating();
+        if self.pending.get() || animating {
             self.start_link(link);
+            if !self.at_tick {
+                self.arm(now);
+            }
         }
     }
 
-    /// The display link's callback: step the input animations to this refresh, then arm the latch (or pause).
+    /// The display link's callback: keep the refresh phase; arm the latch while anything is pending or
+    /// animating, else count towards pausing.
     fn on_vsync<V: View>(&self, app: &Rc<RefCell<App<V>>>, link: &objc2_quartz_core::CADisplayLink, trim: &Rc<Trim>) {
         let (v, t) = (link.timestamp(), link.targetTimestamp());
         if fl::ON {
@@ -464,38 +511,49 @@ impl Pacer {
         if t > v && t - v < 0.05 {
             self.period.set(t - v);
         }
+        self.last_target.set(Some(t));
         let Ok(mut a) = app.try_borrow_mut() else { return };
-        fl::turn_begin(fl::K_TICK, 0);
-        let dt = self.last_vsync.replace(Some(v)).map_or(self.period.get(), |l| (v - l).clamp(0.0, 0.05)) as f32;
-        let animated = a.tick(dt);
-        fl::turn_end();
         if self.noframe {
-            if !animated {
+            fl::turn_begin(fl::K_TICK, 0);
+            if !self.animate(&mut a, t) {
+                self.stop_link(link);
+            }
+            fl::turn_end();
+            return;
+        }
+        let busy = self.pending.get() || a.has_damage() || a.animating();
+        if !busy {
+            self.idle_callbacks.set(self.idle_callbacks.get() + 1);
+            if self.idle_callbacks.get() >= IDLE_CALLBACKS {
                 self.stop_link(link);
             }
             return;
         }
-        if self.pending.get() || a.has_damage() {
-            self.pending.set(true);
-            let delay = t - self.lead - objc2_quartz_core::CACurrentMediaTime();
-            if self.at_tick || delay <= 0.0002 {
+        self.idle_callbacks.set(0);
+        if self.at_tick {
+            // the comparison variant: animations and the frame at the callback
+            fl::turn_begin(fl::K_TICK, 0);
+            self.animate(&mut a, t);
+            fl::turn_end();
+            if self.pending.get() || a.has_damage() {
                 self.present(app, &mut a, trim);
-            } else if !self.latch_armed.replace(true) {
-                fl::note(fl::N_LATCH, fl::secs_to_ns(t), fl::secs_to_ns(t - self.lead));
-                if let Some(timer) = self.latch.borrow().as_ref() {
-                    timer.setFireDate(&objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(delay));
-                }
             }
-        } else if !animated {
-            self.stop_link(link);
+            return;
         }
+        let now = objc2_quartz_core::CACurrentMediaTime();
+        self.arm(now);
     }
 
-    /// The latch: the last inputs, then one frame.
+    /// The latch: the last inputs, the animations stepped to the target, then one frame.
     fn on_latch<V: View>(&self, app: &Rc<RefCell<App<V>>>, trim: &Rc<Trim>) {
-        self.latch_armed.set(false);
+        let Some(t) = self.latch_target.take() else { return };
         let Ok(mut a) = app.try_borrow_mut() else { return };
         pace::drain(&self.q, &mut a);
+        if a.animating() {
+            fl::turn_begin(fl::K_TICK, 0);
+            self.animate(&mut a, t);
+            fl::turn_end();
+        }
         if a.has_damage() {
             self.present(app, &mut a, trim);
         }
@@ -639,7 +697,10 @@ pub fn run_interactive<V: View>(
                             fl::turn_begin(fl::K_TIMER, 0);
                             if a.next_blink().is_some() && a.tick(half as f32) {
                                 if pacer.link_on.get() {
-                                    pacer.pending.set(a.has_damage() || pacer.pending.get());
+                                    if a.has_damage() {
+                                        pacer.pending.set(true);
+                                        pacer.arm(objc2_quartz_core::CACurrentMediaTime());
+                                    }
                                 } else {
                                     let drew = a.frame_paced();
                                     after_frame(&app, &trim, &mut a, drew);
