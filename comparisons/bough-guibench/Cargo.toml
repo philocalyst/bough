@@ -10,6 +10,8 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 bough = { path = "../../crates/bough" }
 bough-metal = { path = "../../crates/bough-metal" }
+block2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["block2"] }
 
 [[bin]]
 name = "bough-bench"

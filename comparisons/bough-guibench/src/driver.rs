@@ -41,6 +41,19 @@ pub trait Bench: View {
     fn selection(&self) -> Option<u64> {
         None
     }
+    fn clock(&mut self) {}
+    fn period(&self) -> Option<f64> {
+        None
+    }
+    fn ticks(&self) -> u64 {
+        0
+    }
+    fn updates(&self) -> usize {
+        0
+    }
+    fn query(&self) -> Option<&str> {
+        None
+    }
     fn header() -> bool;
     fn rows(&self) -> usize;
 }
@@ -62,6 +75,19 @@ impl Bench for Rows {
     }
 }
 impl Bench for Coarse {
+    fn updates(&self) -> usize {
+        self.timer.map_or(0, |t| t.updates)
+    }
+    fn clock(&mut self) {
+        self.clock();
+    }
+    fn period(&self) -> Option<f64> {
+        self.timer.map(|t| t.interval_ms as f64 / 1000.0)
+    }
+    fn ticks(&self) -> u64 {
+        *self.ticks
+    }
+
     fn copy_state(&self) -> Self {
         self.snapshot()
     }
@@ -79,6 +105,19 @@ impl Bench for Coarse {
     }
 }
 impl Bench for Fine {
+    fn updates(&self) -> usize {
+        self.timer.map_or(0, |t| t.updates)
+    }
+    fn clock(&mut self) {
+        self.clock();
+    }
+    fn period(&self) -> Option<f64> {
+        self.timer.map(|t| t.interval_ms as f64 / 1000.0)
+    }
+    fn ticks(&self) -> u64 {
+        *self.ticks
+    }
+
     fn copy_state(&self) -> Self {
         self.snapshot()
     }
@@ -96,13 +135,79 @@ impl Bench for Fine {
     }
 }
 
+impl Bench for crate::scenarios::Search {
+    fn copy_state(&self) -> Self {
+        self.snapshot()
+    }
+    fn data(&self) -> Vec<spec::Row> {
+        self.rows.clone()
+    }
+    fn rows(&self) -> usize {
+        self.rows.len()
+    }
+    fn header() -> bool {
+        true
+    }
+    fn query(&self) -> Option<&str> {
+        Some(&self.query)
+    }
+}
+impl Bench for crate::scenarios::Spinner {
+    fn copy_state(&self) -> Self {
+        self.snapshot()
+    }
+    fn data(&self) -> Vec<spec::Row> {
+        self.rows.clone()
+    }
+    fn rows(&self) -> usize {
+        self.rows.len()
+    }
+    fn header() -> bool {
+        true
+    }
+    fn clock(&mut self) {
+        self.clock();
+    }
+    fn period(&self) -> Option<f64> {
+        Some(0.016)
+    }
+    fn ticks(&self) -> u64 {
+        self.ticks
+    }
+}
+impl Bench for crate::scenarios::Virtual {
+    fn copy_state(&self) -> Self {
+        Self {
+            count: self.count,
+            y: Signal::new(*self.y),
+        }
+    }
+    fn data(&self) -> Vec<spec::Row> {
+        vec![]
+    }
+    fn rows(&self) -> usize {
+        self.count
+    }
+    fn header() -> bool {
+        false
+    }
+}
+
+/// Same callback used by the native NSTimer and the headless clock input.
+pub fn deliver_clock<V: Bench>(a: &mut App<V>) {
+    a.turn(|v| v.clock());
+}
+
 pub fn focus<V: Bench>(a: &mut App<V>) {
     if V::header() {
-        let pos = (0..a.record_count())
-            .find(|&p| a.record_view(p).kind & 0x40 != 0)
-            .expect("root key listener is focusable");
+        let Some(pos) = (0..a.record_count()).find(|&p| a.record_view(p).kind & 0x40 != 0) else {
+            return;
+        };
         let handle = a.rt.bough.handle_at(pos);
         a.set_focus(handle, false);
+        if a.owner.query().is_some() {
+            a.key_down(Key::End, Mods::default());
+        }
     }
 }
 pub fn window<V: Bench>(view: V, title: &str) -> ! {
@@ -117,9 +222,39 @@ pub fn window<V: Bench>(view: V, title: &str) -> ! {
         seconds,
         |_, a| {
             focus(&mut a.borrow_mut());
+            if let Some(period) = a.borrow().owner.period() {
+                use block2::RcBlock;
+                use objc2_foundation::{NSRunLoop, NSTimer};
+                let app = a.clone();
+                let block = RcBlock::new(move |_: std::ptr::NonNull<NSTimer>| {
+                    let mut app = app.borrow_mut();
+                    deliver_clock(&mut app);
+                    app.frame_paced();
+                });
+                // SAFETY: host startup runs on AppKit's main thread; the block owns the Rc<App>,
+                // and the timer is retained by that thread's run loop for its callback lifetime.
+                let timer =
+                    unsafe { NSTimer::timerWithTimeInterval_repeats_block(period, true, &block) };
+                // SAFETY: this is the same main thread; the timer and callback remain run-loop owned.
+                unsafe {
+                    NSRunLoop::mainRunLoop()
+                        .addTimer_forMode(&timer, objc2_foundation::NSRunLoopCommonModes)
+                };
+            }
         },
         |a| {
-            eprintln!("window frames={} records={}", a.frames, a.record_count());
+            eprintln!(
+                "window frames={} records={} ticks={}",
+                a.frames,
+                a.record_count(),
+                a.owner.ticks()
+            );
+            if std::env::var_os("GUIBENCH_EXPECT_TICKS").is_some() {
+                assert!(
+                    a.owner.ticks() > 0,
+                    "timer integration: callback owns live app"
+                );
+            }
         },
     );
 }
@@ -148,6 +283,20 @@ pub fn input<V: Bench>(a: &mut App<V>, op: &str, undo: bool) {
             a.pointer_down(640.0, 56.0, Button::Primary);
             a.pointer_up(640.0, 56.0, Button::Primary);
         }
+        "ticker" | "spinner" => deliver_clock(a),
+        "typing" | "filter" | "filter-nochange" => a.key_down(
+            if undo {
+                Key::Backspace
+            } else {
+                Key::Char(if op == "filter" { 'z' } else { 'a' })
+            },
+            Mods::default(),
+        ),
+        "resize" => a.resize(
+            if undo { 1280.0 } else { 640.0 },
+            if undo { 800.0 } else { 480.0 },
+        ),
+        "scale" => panic!("UNSUPPORTED: no live scale-change host entry point"),
         "mount" => (),
         _ => panic!("unsupported operation {op}"),
     }
@@ -210,7 +359,9 @@ fn pixels<V: Bench>(a: &mut App<V>, ring: usize) {
     let shown = a.presented_pixels();
     let retained = a.reference_pixels();
     compare(&shown, &retained, "presented-full");
-    let mut c = config(1.0);
+    let mut c = config(a.rt.scale);
+    c.width_pt = a.rt.win_w as f32 / a.rt.scale;
+    c.height_pt = a.rt.win_h as f32 / a.rt.scale;
     c.ring = ring;
     let mut fresh = App::new(a.owner.copy_state(), c, true);
     focus(&mut fresh);
@@ -225,7 +376,13 @@ fn pixels<V: Bench>(a: &mut App<V>, ring: usize) {
 }
 fn layout<V: Bench>(a: &mut App<V>) {
     let p = a.presented_pixels();
-    let checks = if V::header() {
+    let checks = if a.owner.rows() < 2 {
+        if V::header() {
+            vec![(640, 20, spec::HEADER_BG), (640, 784, spec::ROW_EVEN)]
+        } else {
+            vec![(640, 784, spec::ROW_EVEN)]
+        }
+    } else if V::header() {
         vec![
             (640, 20, spec::HEADER_BG),
             (640, 56, spec::ROW_EVEN),
@@ -278,6 +435,10 @@ pub fn headless<V: Bench>(
         a.key_down(f_key(6), Mods::default());
         a.frame();
     }
+    if op == "filter-nochange" {
+        a.key_down(Key::Char('z'), Mods::default());
+        a.frame();
+    }
     let mut expected = a.owner.data();
     let count = if op == "truncate" {
         expected.len() - spec::APPEND
@@ -293,8 +454,19 @@ pub fn headless<V: Bench>(
     for _ in 0..repeats {
         for undo in [false, true] {
             input(&mut a, op, undo);
-            a.frame();
+            if op == "ticker" || op == "spinner" {
+                a.frame_paced();
+            } else {
+                a.frame();
+            }
             if gate {
+                if op == "ticker" {
+                    let tick = a.owner.ticks();
+                    let updates = a.owner.updates();
+                    for i in spec::ticker_positions(expected.len(), updates) {
+                        expected[i].value = spec::ticker_value(expected[i].id, tick);
+                    }
+                }
                 if let Some(op) = spec_op(op, undo) {
                     op.apply(&mut expected, &mut ids, count);
                 }
@@ -311,6 +483,24 @@ pub fn headless<V: Bench>(
                         } else {
                             expected.first().map(|r| r.id)
                         }
+                    );
+                }
+                if matches!(op, "typing" | "filter" | "filter-nochange") {
+                    let expected_query = if undo {
+                        if op == "filter-nochange" { "z" } else { "" }
+                    } else {
+                        if op == "filter" {
+                            "z"
+                        } else if op == "filter-nochange" {
+                            "za"
+                        } else {
+                            "a"
+                        }
+                    };
+                    assert_eq!(
+                        a.owner.query(),
+                        Some(expected_query),
+                        "text input semantics"
                     );
                 }
                 if op == "hover" {

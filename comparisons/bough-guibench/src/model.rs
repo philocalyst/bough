@@ -25,9 +25,9 @@ fn border<V: 'static>() -> impl Element<V> {
         .shrink(0.0)
         .bg(rgb(spec::ROW_BORDER))
 }
-fn header<V: 'static>(count: usize) -> impl Element<V> {
+fn header<V: 'static>(status: String) -> impl Element<V> {
     column((
-        row((text(spec::status(count)).color(rgb(spec::LABEL_COLOR)),))
+        row((text(status).color(rgb(spec::LABEL_COLOR)),))
             .w_pct(1.0)
             .h(spec::HEADER_HEIGHT - spec::BORDER_HEIGHT)
             .shrink(0.0)
@@ -85,6 +85,8 @@ pub struct Coarse {
     pub y: Signal<f32>,
     pub mutant: bool,
     pub plain: bool,
+    pub timer: Option<crate::cli::Ticker>,
+    pub ticks: Signal<u64>,
 }
 impl Coarse {
     pub fn new(count: usize, mutant: bool) -> Self {
@@ -97,6 +99,15 @@ impl Coarse {
             y: Signal::new(0.0),
             mutant,
             plain: false,
+            timer: None,
+            ticks: Signal::new(0),
+        }
+    }
+    pub fn clock(&mut self) {
+        let Some(t) = self.timer else { return };
+        *self.ticks += 1;
+        for i in spec::ticker_positions(self.rows.len(), t.updates) {
+            self.rows[i].value = spec::ticker_value(self.rows[i].id, *self.ticks);
         }
     }
     fn select(&mut self, id: u64) {
@@ -120,6 +131,8 @@ impl Coarse {
             y: Signal::new(*self.y),
             mutant: self.mutant,
             plain: self.plain,
+            timer: self.timer,
+            ticks: Signal::new(*self.ticks),
         }
     }
 }
@@ -141,7 +154,11 @@ impl View for Coarse {
             }))
         };
         column((
-            header(self.rows.len()),
+            header(if self.timer.is_some() {
+                spec::ticker_status(self.rows.len(), *self.ticks)
+            } else {
+                spec::status(self.rows.len())
+            }),
             (!self.plain).then(|| {
                 div()
                     .w_pct(1.0)
@@ -208,6 +225,8 @@ pub struct Fine {
     pub y: Signal<f32>,
     pub mutant: bool,
     pub plain: bool,
+    pub timer: Option<crate::cli::Ticker>,
+    pub ticks: Signal<u64>,
 }
 impl Fine {
     pub fn new(count: usize, mutant: bool) -> Self {
@@ -221,6 +240,16 @@ impl Fine {
             y: Signal::new(0.0),
             mutant,
             plain: false,
+            timer: None,
+            ticks: Signal::new(0),
+        }
+    }
+    pub fn clock(&mut self) {
+        let Some(t) = self.timer else { return };
+        *self.ticks += 1;
+        for i in spec::ticker_positions(self.rows.len(), t.updates) {
+            let row = self.rows.edit(i);
+            row.value.set(spec::ticker_value(row.id, *self.ticks));
         }
     }
     pub fn data(&self) -> Vec<Row> {
@@ -236,6 +265,8 @@ impl Fine {
         out.ids = self.ids.clone();
         out.count = self.count;
         out.plain = self.plain;
+        out.timer = self.timer;
+        out.ticks = Signal::new(*self.ticks);
         out.y = Signal::new(*self.y);
         for r in self.rows.iter() {
             let item = FineRow::new(r.row());
@@ -317,7 +348,11 @@ impl Fine {
 impl View for Fine {
     fn view(&self) -> impl Element<Self> + '_ {
         column((
-            header(self.rows.len()),
+            header(if self.timer.is_some() {
+                spec::ticker_status(self.rows.len(), *self.ticks)
+            } else {
+                spec::status(self.rows.len())
+            }),
             (!self.plain).then(|| {
                 div()
                     .w_pct(1.0)
@@ -366,4 +401,24 @@ fn key_op(key: Option<Key>) -> Option<Op> {
         }
         _ => None,
     }
+}
+
+/// Static spec row shared by later scenario views (still prelude only).
+pub fn plain_row<V: 'static>(r: &Row) -> impl Element<V> + use<V> {
+    column((contents!(r.label.clone(), r.value.to_string()), border()))
+        .w_pct(1.0)
+        .h(spec::ROW_HEIGHT)
+        .shrink(0.0)
+        .bg(rgb(spec::ROW_EVEN))
+}
+pub fn striped_row<V: 'static>(i: usize) -> impl Element<V> {
+    column((
+        contents!(spec::row_label(i), spec::value(i as u64).to_string()),
+        border(),
+    ))
+    .w_pct(1.0)
+    .h(spec::ROW_HEIGHT)
+    .shrink(0.0)
+    .bg(rgb(spec::row_background(i)))
+    .hover_bg(rgb(spec::ROW_HOVER))
 }

@@ -2,4 +2,5 @@
 pub mod cli;
 pub mod driver;
 pub mod model;
+pub mod scenarios;
 pub mod spec;

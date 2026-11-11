@@ -1,3 +1,14 @@
+# Checkpoint: stopped at the lead’s request
+
+See [HANDOFF.md](HANDOFF.md) for current scope, all evidence, mechanisms and continuation traps.
+The map is partial: 161 completed instruction/correctness cells and six additional N=100 smoke cells.
+**Correction:** fine `list()` mounts by exposure even without `.viewport()`. Existing fine results do not test
+5,000 mounted rows. Default-capacity failure and the linear mounted-record sum remain unverified.
+Search and virtual scroll fail the retained/fresh gate. All eight scenario ports now dispatch; the adversarial
+matrix remains unimplemented. The historical reports below are preserved, not current completion claims.
+
+---
+
 # Completion run in progress (lead review resumed)
 
 The lead authorized continuous completion and calling-thread instruction counts under load. The root lock repair

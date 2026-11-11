@@ -2,6 +2,7 @@ use bough_guibench::{
     cli::{self, Scenario, Variant},
     driver,
     model::{Coarse, Fine, Rows},
+    scenarios::{Search, Spinner, Virtual},
 };
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -26,7 +27,12 @@ fn main() {
         }
     }
     let s = cli::require(
-        cli::parse(shared.into_iter()).unwrap(),
+        cli::parse(
+            shared
+                .into_iter()
+                .map(|s| if s == "resize" { "rows".to_owned() } else { s }),
+        )
+        .unwrap(),
         &[Variant::Fine, Variant::Coarse],
     )
     .unwrap();
@@ -38,22 +44,29 @@ fn main() {
         Scenario::Table {
             count,
             variant,
-            ticker: None,
+            ticker,
         } => match variant {
             Variant::Coarse => {
                 let mut v = Coarse::new(count, mutant);
                 v.plain = plain;
+                v.timer = ticker;
                 driver::headless(v, &op, repeats, render, gate, ring)
             }
             _ => {
                 let mut v = Fine::new(count, mutant);
                 v.plain = plain;
+                v.timer = ticker;
                 driver::headless(v, &op, repeats, render, gate, ring)
             }
         },
-        _ => {
-            eprintln!("scenario not implemented in rows/table stage: {s:?}");
-            std::process::exit(2);
+        Scenario::Search { count, filter } => {
+            driver::headless(Search::new(count, filter), &op, repeats, render, gate, ring)
+        }
+        Scenario::Spinner { count } => {
+            driver::headless(Spinner::new(count), &op, repeats, render, gate, ring)
+        }
+        Scenario::Virtual { count } => {
+            driver::headless(Virtual::new(count), &op, repeats, render, gate, ring)
         }
     }
 }

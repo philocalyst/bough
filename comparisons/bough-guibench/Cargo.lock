@@ -89,8 +89,10 @@ dependencies = [
 name = "bough-guibench"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "bough",
  "bough-metal",
+ "objc2-foundation",
 ]
 
 [[package]]
