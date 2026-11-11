@@ -602,6 +602,9 @@ pub(crate) enum PlaceHook {
     /// A decoration (deco.rs) at the box offset by (dx, dy): grown by `grow` on every side and sized with
     /// the box (a shadow), or keeping its own size (an icon).
     Deco { node: u32, dx: f32, dy: f32, grow: f32, sized: bool },
+    /// A scroll box's port (`LBox::scroll`): the view's origin follows the box, and the wheel limit uses the
+    /// box's height.
+    ScrollPort { view: u32, scroller: u32 },
 }
 
 impl Rt {
@@ -683,6 +686,13 @@ impl Rt {
             PlaceHook::Anchor { view } => {
                 let o = self.space(space);
                 crate::template::move_view(self, view, o[0] + ax, o[1] + ay);
+            }
+            PlaceHook::ScrollPort { view, scroller } => {
+                let o = self.space(space);
+                crate::template::move_view(self, view, o[0] + ax, o[1] + ay);
+                if scroller != NONE {
+                    self.input.scrollers[scroller as usize].port_h = h / self.scale;
+                }
             }
             PlaceHook::Xform { space: s, handle, xf } => {
                 let _ = space;

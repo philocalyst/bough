@@ -1,0 +1,39 @@
+<p>bough wins every scroll measure and most dashboard measures by a wide margin. It loses two dashboard results: the site’s headline number, because one of its three runs stalled once, and click accuracy in that same run.</p>
+<ul>
+  <li><span class="tag win">Win</span><strong>Scroll at 7,000 rows:</strong>
+    <ul>
+      <li>presents per second: 120.0, the display’s limit, against 112.0 for Vizia (optimized) and 22.3 for Vizia;</li>
+      <li>p95 gap: 12.4 ms against 16.8 and 60.1 ms;</li>
+      <li>longest gap: 14.1 ms against 33.0 and 76.3 ms.</li>
+    </ul>
+    At 1,000 rows all three sit near the display’s limit.</li>
+  <li><span class="tag win">Win</span><strong>Work and memory:</strong>
+    <ul>
+      <li>CPU in the 3 s window at 7,000 rows: 121 ms against 1,369 ms (11×) and 8,626 ms (71×);</li>
+      <li>resident memory: 68 MiB against 438 and 441 MiB;</li>
+      <li>physical footprint, which also counts the GPU driver’s memory: 175 MiB against 435 and 430 MiB.</li>
+    </ul></li>
+  <li><span class="tag win">Win</span><strong>Executable:</strong> 2.7 MiB against 18.7 and 18.8 MiB. bough loads its font from a file at run time; Vizia carries fonts in its binary.</li>
+  <li><span class="tag win">Win</span><strong>Dashboard, the rest:</strong>
+    <ul>
+      <li>p95 gap: 9.2 ms against 16.4 and 35.3 ms;</li>
+      <li>mean resident memory: 66 MiB against 160 and 164 MiB;</li>
+      <li>CPU: 2.1 s against 4.6 and 9.8 s over the 8 s workload.</li>
+    </ul></li>
+  <li><span class="tag loss">Loss</span><strong>Dashboard worst gap, the site’s headline:</strong> the site keeps the worst gap across runs, which gives 75.7 ms for bough against 31.0 ms for Vizia (optimized). bough’s other two runs were 15.3 and 15.1 ms, lower than every Vizia run. The stall fell in the Refresh phase, and its cause has not been found.</li>
+  <li><span class="tag loss">Loss</span><strong>Clicks counted:</strong> in the run that was captured on screen (the one with the stall), bough’s counter shows 467 of the 480 Refresh clicks the harness sent at 240 a second. Vizia shows 480 and Vizia (optimized) 479. bough dropped clicks under that rate.</li>
+</ul>
+<div class="note">These are not the site’s numbers:
+  <ul>
+    <li>bough runs only on macOS (Metal), and the site’s harness is Linux with X11 and MangoHud, so the site cannot list it;</li>
+    <li>everything here was measured on one Mac with a 120 Hz display, against the site’s 144 Hz Linux machine;</li>
+    <li>MangoHud and xdotool were replaced by an injected present observer and macOS events, keeping the site’s schedule and statistics.</li>
+  </ul></div>
+<div>What running the workloads exposed in bough:
+  <ul>
+    <li><strong>New pieces were needed.</strong> Its application surface lacked a scroll container, images and a text input in flow, so <code>div().scroll(..)</code>, <code>image</code> and <code>text_input</code> were built for this.</li>
+    <li><strong>Fixed capacities.</strong> Its fixed-capacity glyph column overflowed on the dashboard until its capacity was raised.</li>
+    <li><strong>Frames beyond the display.</strong> It presents a frame for every input event, about 240 a second in the dashboard, twice what the display can show.</li>
+    <li><strong>Dropped clicks.</strong> 13 of 480 clicks were lost in one run (above).</li>
+    <li><strong>No select-all.</strong> Its text field has no select-all, so the harness’s “clear the input” step deleted one character.</li>
+  </ul></div>

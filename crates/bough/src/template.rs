@@ -394,6 +394,72 @@ impl<V: 'static, C: Element<V>> Element<V> for ScrollY<'_, V, C> {
     }
 }
 
+/// A laid-out scroll box (`LBox::scroll`, the design's `.scroll(&self.scroll)`). The port is a box in its
+/// parent's flow: it is the wheel target, painted with the box's background. The content is a layout group
+/// of its own, in a scroll view whose clip and origin follow the port wherever layout puts it. `sig` is the
+/// offset (points); the wheel's limit is the content's laid-out height less the port's.
+pub struct ScrollBox<'a, V, Bg, Ch> {
+    port: crate::layout::LBox<Bg, ()>,
+    content: crate::layout::LBox<Color, Ch>,
+    sig: Wired<'a, f32, V>,
+    line: f32,
+}
+impl<'a, V, Bg, Ch> ScrollBox<'a, V, Bg, Ch> {
+    pub(crate) fn new(port: crate::layout::LBox<Bg, ()>, content: crate::layout::LBox<Color, Ch>, sig: Wired<'a, f32, V>) -> Self {
+        ScrollBox { port, content, sig, line: 48.0 }
+    }
+    /// Points per wheel line.
+    pub fn line(mut self, l: f32) -> Self {
+        self.line = l;
+        self
+    }
+    /// One more child of the scrolled content.
+    pub fn child<X>(self, x: X) -> ScrollBox<'a, V, Bg, (Ch, X)> {
+        ScrollBox { port: self.port, content: self.content.child(x), sig: self.sig, line: self.line }
+    }
+}
+
+impl<'a, V: 'static, Bg: crate::elem::IntoProp<Color, V>, Ch: Element<V>> Element<V> for ScrollBox<'a, V, Bg, Ch> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        let s = m.rt.scale;
+        let before = m.recs.len();
+        // the port: a box in the parent's flow, the wheel target (its limit comes from the laid-out content)
+        self.port.scrolls(self.sig, self.line, 0.0).mount(m);
+        let lid = m.rt.lay.last_box;
+        let handle = m.rt.bough.handle_gen(m.recs[before].handle);
+        let clip = m.rt.layout_clip(lid, m.clip);
+        let space = m.rt.alloc_space();
+        let px = (*self.sig.get() * s).round();
+        m.rt.set_space(space, [0.0, -px]);
+        let v = m.rt.input.views.len() as u32;
+        m.rt.input.views.push(ScrollView { handle, space, clip, vx: 0.0, vy: 0.0, px, clips: Vec::new(), nested: Vec::new(), tips: Vec::new(), root: NONE, follows: false, inset_w: 0.0 });
+        if let Some(outer) = m.rt.input.mounting_view {
+            m.rt.input.views[outer as usize].nested.push(v);
+        }
+        let a = m.rt.input.act_of_handle(handle);
+        let sc = m.rt.input.acts[a as usize].scroll;
+        m.rt.add_place_hook(lid, crate::ltemplate::PlaceHook::ScrollPort { view: v, scroller: sc });
+        m.wire(&self.sig, patch_view, v, [0; 16]);
+        let saved = (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view);
+        m.space = space;
+        m.ox = 0.0;
+        m.oy = 0.0;
+        m.clip = clip;
+        m.depth += 1;
+        m.rt.input.mounting_view = Some(v);
+        let roots_before = m.scope.lroots.len();
+        let lay_cur = m.rt.lay.cur;
+        m.rt.lay.cur = NONE; // the content is a layout group of its own
+        self.content.mount(m);
+        m.rt.lay.cur = lay_cur;
+        if let Some(&root) = m.scope.lroots.get(roots_before) {
+            m.rt.input.views[v as usize].root = root;
+            m.rt.input.scrollers[sc as usize].root = root;
+        }
+        (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view) = saved;
+    }
+}
+
 // =============================================================================== wired clips and port lists
 
 /// Children clipped to a rect that a signal moves: `f(&value)` gives (x, y, w, h) points in the current

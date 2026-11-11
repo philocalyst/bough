@@ -1,0 +1,20 @@
+[package]
+name = "bough-awagy"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "areweactuallyguiyet.mespin.me's scroll and dashboard workloads, written on bough's design surface (bough::prelude only)"
+
+[[bin]]
+name = "bough-awagy"
+path = "src/main.rs"
+
+[features]
+# As the site's apps: exactly one of the two workloads.
+default = ["scroll"]
+scroll = []
+dashboard = []
+
+[dependencies]
+bough = { path = "../../crates/bough" }
+

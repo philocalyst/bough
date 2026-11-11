@@ -32,7 +32,7 @@ pub mod prelude {
     pub use crate::sig;
     pub use crate::signal::Signal;
     pub use crate::transition::{Curve, Ease};
-    pub use crate::ui::{button, div, text, Application, Flex, Window};
+    pub use crate::ui::{button, div, image, text, text_input, Application, Flex, Window};
 }
 
 /// The scene-level surface the benchmark ports are written in: absolutely placed quads and text, templates,

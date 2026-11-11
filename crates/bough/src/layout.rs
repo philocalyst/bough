@@ -809,6 +809,8 @@ pub struct Lay {
     kids: Vec<u32>,
     /// Roots whose text changed reactively since the last flush (for lists to re-measure rows).
     pub touched_roots: Vec<u32>,
+    /// The layout node of the last box mounted (a scroll box reads its port's node here).
+    pub last_box: u32,
 }
 
 impl Lay {
@@ -818,6 +820,7 @@ impl Lay {
             prof: LProf { on: false, acc: [0; 8], last: 0, ovh: 0 },
             info: Vec::new(),
             cur: NONE,
+            last_box: NONE,
             mount_avail: (0.0, f32::NAN),
             pending: Vec::new(),
             ready: Vec::new(),
@@ -1169,6 +1172,13 @@ pub fn block(w: f32, h: f32) -> LBox<Color, ()> {
     b
 }
 
+/// Routes and hover keep the element's layout style reachable: `button("Refresh").w(160.0)`.
+impl<E: Styled, O> Styled for crate::input::On<E, O> {
+    fn spec_mut(&mut self) -> &mut Spec {
+        self.0.spec_mut()
+    }
+}
+
 impl<Bg, Ch> Styled for LBox<Bg, Ch> {
     fn spec_mut(&mut self) -> &mut Spec {
         &mut self.spec
@@ -1192,6 +1202,22 @@ impl<Bg, Ch> LBox<Bg, Ch> {
     /// One more child in flow: the one child verb (`div()` is born empty; `column`/`row` take theirs).
     pub fn child<X>(self, x: X) -> LBox<Bg, (Ch, X)> {
         LBox { spec: self.spec, draw: self.draw, bg: self.bg, radius: self.radius, border: self.border, ch: (self.ch, x) }
+    }
+    /// A scroll box (the design's `.scroll(&self.scroll)`): the box is sized and placed by its parent's
+    /// layout, its children are laid out as content that scrolls inside it, and `sig` is the offset (points).
+    /// Size, margin and flex-item settings stay on the box; direction, gap, padding and alignment go to the
+    /// content.
+    pub fn scroll<'a, V>(self, sig: crate::signal::Wired<'a, f32, V>) -> crate::template::ScrollBox<'a, V, Bg, Ch> {
+        let mut port = Spec::new(false, false);
+        let c = &self.spec;
+        (port.w, port.h, port.min_w, port.min_h, port.margin) = (c.w, c.h, c.min_w, c.min_h, c.margin);
+        (port.grow, port.shrink, port.self_align, port.abs, port.relative) = (c.grow, c.shrink, c.self_align, c.abs, c.relative);
+        let mut content = Spec::new(true, c.column);
+        (content.gap, content.pad, content.items, content.justify) = (c.gap, c.pad, c.items, c.justify);
+        content.w = Dim::Pct(1.0);
+        let port = LBox { spec: port, draw: true, bg: self.bg, radius: self.radius, border: self.border, ch: () };
+        let content = LBox { spec: content, draw: false, bg: Color(0), radius: 0.0, border: None, ch: self.ch };
+        crate::template::ScrollBox::new(port, content, sig)
     }
     /// Apply a layout recipe (`const BAR: Flex = Flex::row().align(Align::Center).gap(8.0)`).
     pub fn layout(mut self, f: crate::ui::Flex) -> Self {
@@ -1242,6 +1268,7 @@ where
         let hd = m.rt.bough.new_handle();
         let lid = m.rt.lay.eng.add(hd, &self.spec, s, None);
         let parent = attach(m, lid);
+        m.rt.lay.last_box = lid;
         if self.draw {
             let node = m.rt.alloc_node();
             let bg = self.bg.lower::<ApplyBg>(m, node);

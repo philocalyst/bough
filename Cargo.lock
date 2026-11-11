@@ -87,10 +87,18 @@ dependencies = [
  "objc2-io-surface",
  "objc2-metal",
  "objc2-quartz-core",
+ "png",
  "resvg",
  "rustybuzz",
  "ttf-parser",
  "zgx-workload",
+]
+
+[[package]]
+name = "bough-awagy"
+version = "0.0.0"
+dependencies = [
+ "bough",
 ]
 
 [[package]]
