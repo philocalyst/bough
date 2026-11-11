@@ -5,7 +5,7 @@ Usage: run_measurements.py slopes|pairs|timing|stats|cpu OUTPUT_DIR
 BOUGH_DIST, ZGX_DIST, ZGX_HEADLESS, BOUGH_REF, FLOOR_TOOLS select frozen artifacts.
 R6_TIMING/R6_STATS select diagnostic directories. No build occurs here.
 """
-import json, os, pathlib, subprocess, sys, time
+import json, os, pathlib, re, subprocess, sys, time
 root = pathlib.Path.cwd()
 out = pathlib.Path(sys.argv[2]); out.mkdir(parents=True, exist_ok=True)
 lock = pathlib.Path(os.environ['BOUGH_MEASURE_LOCK'])
@@ -33,6 +33,9 @@ def guarded_run(args, **kw):
     (out/f'load-{serial:04d}-after.txt').write_text(after)
     assert not [line for line in after.splitlines() if is_heavy(line)], 'heavy work started during measurement'
     assert p.returncode == 0, (args, p.returncode, p.stderr)
+    if phase in ('slopes','pairs'):
+        m = re.search(r'gpu_seconds=([0-9.]+) clients=(\d+) gpu_mhz=([0-9.]+)',p.stderr)
+        assert m and float(m[1]) > 0 and int(m[2]) > 0 and float(m[3]) > 0, ('missing GPU accounting',p.stderr)
     return p
 subprocess.run = guarded_run
 if phase == 'slopes':
