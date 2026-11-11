@@ -90,3 +90,13 @@ Then source levers, each with G1 byte-identity against the production baseline:
 | S4 | rustybuzz as a capability linked only when an app asks for text beyond Latin-1 (semantics change: recorded as a capability cut, not a free win) | ~360 KB |
 | S5 | per-view monomorphisation: `App<V>`'s view-independent bodies behind one non-generic function | part of 76-125 KB |
 | S6 | float parsing of environment variables, other always-linked `core::fmt` | ~12 KB |
+
+## Amendment 2 (the instruction gate's resolution; before any lever was gated)
+
+Negative control (c), an A-vs-A run of the production binaries, at the slope scripts' own spread (TICKS 300 vs 600,
+animate 600 vs 1200, vlist 600 vs 3600; median of 3, vlist 5) gave B/A from 0.860 (animate R0) to 1.047 (lab both
+R1): process start-up variance divided by only 300 frames swamps a 2 % threshold. With ten times the spread
+(`LONG=10`: TICKS 300 vs 3300, animate 600 vs 6600, vlist 600 vs 30600) and median of 5, the same control gave
+0.996-1.002 at RENDER=0 and 0.998-1.009 at RENDER=1. G3 is therefore run as `LONG=10 REPS=5 bench/size/hot_ab.py`
+(same method and binaries, longer spread), threshold unchanged at 1.02 per cell; the measured noise floor is 0.4 %
+(R0) and 0.9 % (R1). Raw: `runtime/` logs, quoted in the results report.
