@@ -16,6 +16,10 @@ objc2-foundation = { version = "0.3" }
 objc2-metal = { version = "0.3", features = ["objc2-io-surface", "dispatch2", "block2", "objc2-core-foundation"] }
 objc2-io-surface = { version = "0.3", features = ["objc2-core-foundation"] }
 objc2-core-foundation = { version = "0.3" }
+objc2-quartz-core = { version = "0.3", features = ["objc2-metal", "objc2-core-foundation", "block2"] }
+dispatch2 = "0.3"
+libc = "0.2"
+bough-metal = { path = "../bough-metal" }
 
 [build-dependencies]
 wgsl-rs = { git = "https://github.com/schell/wgsl-rs", rev = "b2de16a1b81e67d76bc265c296184f882864badb", default-features = false }
@@ -24,7 +28,3 @@ naga = { version = "29.0.4", features = ["wgsl-in", "msl-out"] }
 [dev-dependencies]
 # the `#[wgsl]` macro's generated `__validate_wgsl` tests (naga validation of every module); tests only
 wgsl-rs = { git = "https://github.com/schell/wgsl-rs", rev = "b2de16a1b81e67d76bc265c296184f882864badb", default-features = false, features = ["validation"] }
-
-[target.'cfg(target_os = "macos")'.dev-dependencies]
-# halprobe compares against the direct-Metal presenter and reuses its slot writer
-bough-metal = { path = "../bough-metal" }

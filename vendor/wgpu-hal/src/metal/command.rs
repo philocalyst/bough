@@ -449,6 +449,15 @@ impl super::CommandState {
     }
 }
 
+/// bough extension (vendor/README.md): the open compute pass's Metal encoder (between `begin_compute_pass` and
+/// `end_compute_pass`), for a pass whose bindings and dispatches the caller issues itself. The hal's binding
+/// state is not updated by such calls; use it for whole passes only.
+impl super::CommandEncoder {
+    pub fn raw_compute_encoder(&self) -> Option<&ProtocolObject<dyn MTLComputeCommandEncoder>> {
+        self.state.compute.as_deref()
+    }
+}
+
 impl crate::CommandEncoder for super::CommandEncoder {
     type A = super::Api;
 

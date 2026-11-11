@@ -74,6 +74,7 @@ version = "0.0.0"
 dependencies = [
  "block2",
  "bough-core",
+ "bough-gpu",
  "bough-mem",
  "bough-metal",
  "bough-text",
@@ -140,12 +141,15 @@ name = "bough-gpu"
 version = "0.1.0"
 dependencies = [
  "bough-metal",
+ "dispatch2",
+ "libc",
  "naga",
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",
  "objc2-io-surface",
  "objc2-metal",
+ "objc2-quartz-core",
  "wgpu-hal",
  "wgpu-types",
  "wgsl-rs",

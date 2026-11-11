@@ -74,7 +74,9 @@ fn bindless(msl: &str) -> String {
             in_sig = false;
             out.push_str(line);
             out.push('\n');
-            out.push_str("    const device BoughBind& __fb = *reinterpret_cast<const device BoughBind*>(reinterpret_cast<const device char*>(&POOL) + 128);\n");
+            if fetch.contains("__fb.") {
+                out.push_str("    const device BoughBind& __fb = *reinterpret_cast<const device BoughBind*>(reinterpret_cast<const device char*>(&POOL) + 128);\n");
+            }
             out.push_str(&fetch);
             continue;
         }
@@ -90,7 +92,7 @@ fn bindless(msl: &str) -> String {
 fn main() {
     println!("cargo:rerun-if-changed=src/shaders");
     let out = std::env::var("OUT_DIR").unwrap();
-    let modules: &[(&wgsl_rs::Source, &[&str])] = &[(&shaders::copy::copy::WGSL_SOURCE, &["fs_copy"]), (&shaders::compact::compact::WGSL_SOURCE, &["fs_compact_test"])];
+    let modules: &[(&wgsl_rs::Source, &[&str])] = &[(&shaders::copy::copy::WGSL_SOURCE, &["fs_copy"]), (&shaders::compact::compact::WGSL_SOURCE, &["fs_compact_test"]), (&shaders::raster::raster::WGSL_SOURCE, &["fs_bin", "fs_tile"])];
     let mut airs = Vec::new();
     let mut no_compiler = false;
     for (src, entries) in modules.iter() {
