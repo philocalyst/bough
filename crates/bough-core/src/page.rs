@@ -389,6 +389,19 @@ impl Drop for PagePool {
 }
 
 impl PagePool {
+    /// The pool's pages (the region arena, or boxed heap pages) and its tables, as ledger lines.
+    pub fn ledger(&self, l: &mut bough_mem::Ledger) {
+        use bough_mem::Scales::Content;
+        match &self.arena {
+            Some(a) => l.col("core", a, Content),
+            None => {
+                let b = self.pages.len() * size_of::<Page>();
+                l.many("core", "pages (boxed)", Content, b, b);
+            }
+        }
+        l.vec("core", "page pointers", &self.pages, self.pages.capacity(), Content);
+        l.vec("core", "page free list", &self.free, self.free.capacity(), Content);
+    }
     pub fn new() -> Self {
         PagePool { pages: Vec::new(), free: Vec::new(), arena: None }
     }

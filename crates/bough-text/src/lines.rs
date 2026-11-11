@@ -181,6 +181,11 @@ pub fn split_lines(t: &[u8], out: &mut Vec<(u32, u32)>) {
 }
 
 impl LineSet {
+    /// Heap bytes this line set holds (memory ledger only).
+    pub fn heap_bytes(&self) -> usize {
+        let r = size_of::<LineRec>();
+        (self.lines.capacity() + self.shaped.capacity() + self.table.capacity()) * r + self.text.capacity() + self.spans.capacity() * 8 + self.used.capacity()
+    }
     /// An empty set (no lines, no headers yet).
     pub fn new(style: LineStyle) -> LineSet {
         LineSet { lines: Vec::new(), text: Vec::new(), first: 0, cap: 0, style, max_lines: 0, spans: Vec::new(), shaped: Vec::new(), table: Vec::new(), used: Vec::new() }

@@ -22,6 +22,8 @@
 //! unique owner of its elements: all access goes through `&self`/`&mut self`.
 #![allow(clippy::len_without_is_empty)]
 
+pub mod count;
+
 use std::alloc::{Layout, alloc_zeroed, dealloc, realloc};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
@@ -94,6 +96,10 @@ impl Region {
     /// Bytes carved so far.
     pub fn used(&self) -> usize {
         self.next
+    }
+    /// Resident and dirty bytes of the whole region now (diagnostics, [`residency`]).
+    pub fn residency(&self) -> (usize, usize) {
+        residency(self.inner.base.as_ptr(), self.inner.len)
     }
 
     /// Reserve `bytes` raw bytes (aligned to `align`, at least [`COL_ALIGN`]); returns their offset.
@@ -312,6 +318,175 @@ impl<T: Copy> Col<T> {
     pub unsafe fn set_len(&mut self, n: usize) {
         debug_assert!(n <= self.cap);
         self.len = n;
+    }
+}
+
+impl<T> Col<T> {
+    /// This column's line in a memory ledger (diagnostics; never on a frame path): elements in use, the
+    /// capacity's bytes, and how many of the pages under the capacity are resident and dirty now.
+    pub fn mem(&self) -> ColMem {
+        let elem = size_of::<T>();
+        let reserved = if elem == 0 { 0 } else { self.cap * elem };
+        let (resident, dirty) = if reserved == 0 { (0, 0) } else { residency(self.ptr.as_ptr() as *const u8, reserved) };
+        ColMem { name: self.name, elem, len: self.len, cap: self.cap, carved: self.region.is_some(), resident, dirty }
+    }
+}
+
+/// One column's memory (see [`Col::mem`]). `resident` / `dirty` count whole VM pages overlapping the
+/// capacity, so neighbours sharing a page are counted by both (the ledger reports the region's pages once).
+#[derive(Clone, Copy, Debug)]
+pub struct ColMem {
+    pub name: &'static str,
+    pub elem: usize,
+    pub len: usize,
+    pub cap: usize,
+    pub carved: bool,
+    pub resident: usize,
+    pub dirty: usize,
+}
+
+impl ColMem {
+    pub fn used_bytes(&self) -> usize {
+        self.len * self.elem
+    }
+    pub fn cap_bytes(&self) -> usize {
+        self.cap * self.elem
+    }
+}
+
+/// The VM page size (16 KB on Apple silicon).
+pub fn vm_page() -> usize {
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn getpagesize() -> i32;
+        }
+        // SAFETY: no arguments, no preconditions.
+        (unsafe { getpagesize() }) as usize
+    }
+    #[cfg(not(unix))]
+    {
+        4096
+    }
+}
+
+/// Resident and dirty (modified) bytes of the VM pages overlapping `[ptr, ptr + len)`, by `mincore`
+/// (diagnostics: one system call and one byte per page). Pages are whole: a range sharing a page with
+/// something else is charged that page. `(0, 0)` where `mincore` is unavailable or fails.
+pub fn residency(ptr: *const u8, len: usize) -> (usize, usize) {
+    #[cfg(unix)]
+    {
+        if len == 0 {
+            return (0, 0);
+        }
+        unsafe extern "C" {
+            fn mincore(addr: *const u8, len: usize, vec: *mut u8) -> i32;
+        }
+        const INCORE: u8 = 0x1;
+        // MINCORE_MODIFIED and MINCORE_MODIFIED_OTHER (xnu `sys/mman.h`)
+        const MODIFIED: u8 = 0x4 | 0x10;
+        let pg = vm_page();
+        let start = ptr as usize & !(pg - 1);
+        let end = (ptr as usize + len).next_multiple_of(pg);
+        let n = (end - start) / pg;
+        let mut v = vec![0u8; n];
+        // SAFETY: `start` is page-aligned, `v` holds one byte per page of [start, end); mincore only reads
+        // the page tables (an unmapped page makes it fail, which we report as zero).
+        if unsafe { mincore(start as *const u8, end - start, v.as_mut_ptr()) } != 0 {
+            return (0, 0);
+        }
+        let res = v.iter().filter(|&&b| b & INCORE != 0).count() * pg;
+        let dirty = v.iter().filter(|&&b| b & INCORE != 0 && b & MODIFIED != 0).count() * pg;
+        (res, dirty)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (ptr, len);
+        (0, 0)
+    }
+}
+
+/// A memory ledger: one line per holder (diagnostics: built on demand, never on a frame path).
+#[derive(Clone, Debug, Default)]
+pub struct Ledger {
+    pub lines: Vec<Line>,
+}
+
+/// What a holder's size follows: the mounted content (rows, records, glyphs), the window (surfaces, tile
+/// rows), or neither (process constants: fonts, tables, pipelines).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scales {
+    Content,
+    Window,
+    Fixed,
+}
+
+/// Where a holder's bytes live.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Space {
+    /// A region column (inside the shared GPU buffer when windowed).
+    Region,
+    /// The Rust heap.
+    Heap,
+    /// A GPU object (texture, buffer, IOSurface) outside the region.
+    Gpu,
+}
+
+#[derive(Clone, Debug)]
+pub struct Line {
+    pub group: &'static str,
+    pub name: String,
+    pub space: Space,
+    pub scales: Scales,
+    /// Bytes holding live elements.
+    pub used: usize,
+    /// Bytes reserved (capacity).
+    pub reserved: usize,
+    /// Resident and dirty bytes when measured (`None`: not measurable here; then the reservation is
+    /// what it costs, e.g. small heap blocks that are fully written).
+    pub resident: Option<usize>,
+    pub dirty: Option<usize>,
+}
+
+/// Heap allocations at least this large are measured with `mincore` (malloc serves them from whole
+/// pages); smaller ones are charged their capacity.
+const MEASURE_HEAP: usize = 64 << 10;
+
+impl Ledger {
+    pub fn push(&mut self, group: &'static str, name: impl Into<String>, space: Space, scales: Scales, used: usize, reserved: usize, resident: Option<usize>, dirty: Option<usize>) {
+        self.lines.push(Line { group, name: name.into(), space, scales, used, reserved, resident, dirty });
+    }
+    /// A column (region-carved or owned).
+    pub fn col<T>(&mut self, group: &'static str, c: &Col<T>, scales: Scales) {
+        let m = c.mem();
+        let space = if m.carved { Space::Region } else { Space::Heap };
+        self.push(group, m.name, space, scales, m.used_bytes(), m.cap_bytes(), Some(m.resident), Some(m.dirty));
+    }
+    /// A heap vector (its own block only; nested heap blocks are the caller's to add).
+    pub fn vec<T>(&mut self, group: &'static str, name: impl Into<String>, v: &[T], cap: usize, scales: Scales) {
+        let e = size_of::<T>();
+        self.heap(group, name, scales, v.len() * e, cap * e, v.as_ptr() as *const u8);
+    }
+    /// A heap block of `reserved` bytes at `ptr` (`used` of them live).
+    pub fn heap(&mut self, group: &'static str, name: impl Into<String>, scales: Scales, used: usize, reserved: usize, ptr: *const u8) {
+        let (resident, dirty) = if reserved >= MEASURE_HEAP {
+            let (r, d) = residency(ptr, reserved);
+            (Some(r.min(reserved)), Some(d.min(reserved)))
+        } else {
+            (None, None)
+        };
+        self.push(group, name, Space::Heap, scales, used, reserved, resident, dirty);
+    }
+    /// Many small heap blocks summed (nested vectors, strings, boxes): `n` blocks, `used` / `reserved` bytes.
+    pub fn many(&mut self, group: &'static str, name: impl Into<String>, scales: Scales, used: usize, reserved: usize) {
+        self.push(group, name, Space::Heap, scales, used, reserved, None, None);
+    }
+    /// Lines whose resident bytes are known, else their reservation.
+    pub fn cost(l: &Line) -> usize {
+        l.resident.unwrap_or(l.reserved)
+    }
+    pub fn total(&self, space: Space) -> usize {
+        self.lines.iter().filter(|l| l.space == space).map(Ledger::cost).sum()
     }
 }
 

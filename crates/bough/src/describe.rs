@@ -31,6 +31,18 @@ pub struct Dyns {
 }
 
 impl Dyns {
+    /// Dynamic parts (`each`, conditionals) as memory-ledger lines: one item per dynamic child, each with
+    /// its scope and its re-description tape.
+    pub fn ledger(&self, l: &mut bough_mem::Ledger) {
+        use bough_mem::Scales::Content;
+        let items: usize = self.parts.iter().map(|p| p.len()).sum();
+        let blocks: usize = self.parts.iter().map(|p| p.capacity() * size_of::<DynItem>()).sum::<usize>() + self.parts.capacity() * 24 + self.free.capacity() * 4;
+        l.many("describe", format!("dynamic items ({items})"), Content, blocks, blocks);
+        let scopes: usize = self.parts.iter().flatten().map(|d| d.scope.heap_bytes()).sum();
+        l.many("describe", "dynamic item scopes", Content, scopes, scopes);
+        let tapes: usize = self.parts.iter().flatten().map(|d| d.tape.capacity() * 4).sum();
+        l.many("describe", "dynamic item tapes", Content, tapes, tapes);
+    }
     fn alloc(&mut self) -> u32 {
         match self.free.pop() {
             Some(i) => i,

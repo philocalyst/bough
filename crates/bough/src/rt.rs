@@ -289,6 +289,13 @@ pub struct Scope {
     pub prods: Vec<u32>,
 }
 
+impl Scope {
+    /// Heap bytes of the scope's lists (memory ledger).
+    pub fn heap_bytes(&self) -> usize {
+        (self.nodes.capacity() + self.wires.capacity() + self.runs.capacity() + self.lroots.capacity() + self.dyns.capacity() + self.lregs.capacity() + self.prods.capacity()) * 4
+    }
+}
+
 pub struct RowInfo {
     pub nrec: u32,
     pub space: u16,
@@ -568,6 +575,65 @@ impl Rt {
     /// The region's first byte (header and frame slots are addressed from it).
     pub fn region_base(&self) -> *mut u8 {
         self._region.base()
+    }
+
+    /// Every table the runtime holds, as memory-ledger lines (diagnostics: walks the tables; never on a
+    /// frame path). Region columns report their resident pages; heap blocks their capacities (mincore
+    /// for the large ones).
+    pub fn ledger(&self, l: &mut bough_mem::Ledger) {
+        use bough_mem::Scales::{Content, Window};
+        const G: &str = "runtime";
+        let (rr, rd) = self._region.residency();
+        l.push("region", "whole region (header, slots, every column)", bough_mem::Space::Region, Content, self._region.used(), self._region.len(), Some(rr), Some(rd));
+        let slots = 3 * Layout::slot_bytes(self.layout.w, self.layout.h.max(MAX_WINDOW));
+        l.push("region", "header + 3 frame slots", bough_mem::Space::Region, Window, HDR_BYTES + slots, HDR_BYTES + slots, None, None);
+        // the instance and transform columns are addressable whole (`set_len(cap)`): what is in use is the
+        // allocators' high-water marks
+        let m = self.inst.mem();
+        l.push(G, "instances", bough_mem::Space::Region, Content, self.next_fresh as usize * m.elem, m.cap_bytes(), Some(m.resident), Some(m.dirty));
+        let m = self.xforms.mem();
+        l.push(G, "xforms", bough_mem::Space::Region, Content, self.next_space as usize * m.elem, m.cap_bytes(), Some(m.resident), Some(m.dirty));
+        self.bough.ledger(l);
+        self.glyphs.ledger(l);
+        self.text.ledger(l);
+        let sb = Scope::heap_bytes;
+        l.vec(G, "nodes", &self.nodes, self.nodes.capacity(), Content);
+        let series: usize = self.nodes.iter().map(|n| n.series.capacity() * 4).sum();
+        l.many(G, "node series", Content, series, series);
+        l.vec(G, "node free list", &self.node_free, self.node_free.capacity(), Content);
+        l.vec(G, "wires", &self.wires, self.wires.capacity(), Content);
+        l.vec(G, "wire free list", &self.wire_free, self.wire_free.capacity(), Content);
+        let cl: usize = self.classes.iter().map(|c| c.capacity() * 4).sum::<usize>() + self.classes.capacity() * 24 + self.class_changed.capacity() * 8;
+        l.many(G, "owner classes", Content, cl, cl);
+        l.vec(G, "instance runs", &self.runs, self.runs.capacity(), Content);
+        let fb: usize = self.free_blocks.iter().map(|v| v.capacity() * 4).sum::<usize>() + self.free_bits.iter().map(|v| v.capacity() * 8).sum::<usize>() + self.run_free.capacity() * 4;
+        l.many(G, "instance free lists", Content, fb, fb);
+        l.vec(G, "text nodes", &self.texts, self.texts.capacity(), Content);
+        let (mut strings, mut shapes) = (0usize, 0usize);
+        for t in &self.texts {
+            strings += t.text.capacity();
+            shapes += match &t.shape {
+                crate::text::TShape::None | crate::text::TShape::Glyphs { .. } => 0,
+                crate::text::TShape::Label(_) => size_of::<bough_text::pool::Label>(),
+                crate::text::TShape::Set(s) => size_of::<bough_text::lines::LineSet>() + s.heap_bytes(),
+                crate::text::TShape::Lines { widths, spans, .. } => widths.capacity() * 4 + spans.capacity() * 8,
+            };
+        }
+        l.many(G, "text node strings", Content, strings, strings);
+        l.many(G, "text node shapes (labels, line sets, line tables)", Content, shapes, shapes);
+        let rg: usize = self.regions.iter().map(|r| r.rows.capacity() * size_of::<RowInfo>() + r.rows.iter().map(|x| sb(&x.scope)).sum::<usize>()).sum::<usize>() + self.regions.capacity() * size_of::<VRegion>();
+        l.many(G, "virtual-list regions (raw)", Content, rg, rg);
+        let sp: usize = (self.space_free.capacity() + self.space_parent.capacity()) * 2 + self.space_kids.iter().map(|k| k.capacity() * 2 + 24).sum::<usize>() + self.space_regs.iter().map(|k| k.capacity() * 4 + 24).sum::<usize>() + self.clip_dedupe.capacity() * 12;
+        l.many(G, "spaces and clip dedupe", Content, sp, sp);
+        l.many(G, "paint damage ring", Window, self.paint.heap_bytes(), self.paint.heap_bytes());
+        let rq: usize = self.reclaim_q.iter().map(sb).sum::<usize>() + self.reclaim_q.capacity() * size_of::<Scope>();
+        l.many(G, "reclaim queue", Content, rq, rq);
+        self.lay.ledger(l);
+        self.lists.ledger(l);
+        self.dyns.ledger(l);
+        l.vec(G, "reflection type names", &self.reflect.types, self.reflect.types.capacity(), Content);
+        self.images.ledger(l);
+        self.input.ledger(l);
     }
 
     // ------------------------------------------------------------------ instances

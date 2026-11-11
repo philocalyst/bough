@@ -137,6 +137,13 @@ impl Default for Para {
 }
 
 impl Para {
+    /// Heap bytes this paragraph holds: (hot half: text, words, the wrap; cold half, if carved). Memory
+    /// ledger only.
+    pub fn heap_bytes(&self) -> (usize, usize) {
+        let hot = self.text.capacity() + self.words.capacity() * size_of::<Word>() + self.wrap.lines.capacity() * 8;
+        let cold = self.cold.as_ref().map_or(0, |c| size_of::<Cold>() + c.runs.capacity() * size_of::<Run>() + c.prev.lines.capacity() * 8 + c.old_l.capacity() * 8);
+        (hot, cold)
+    }
     fn cold(&mut self) -> &mut Cold {
         self.cold.get_or_insert_with(|| {
             COLD_HALVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

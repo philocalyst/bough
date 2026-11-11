@@ -855,6 +855,17 @@ pub struct Lay {
 }
 
 impl Lay {
+    /// The layout bridge and engine as memory-ledger lines.
+    pub fn ledger(&self, l: &mut bough_mem::Ledger) {
+        use bough_mem::Scales::Content;
+        const G: &str = "layout";
+        self.eng.ledger(l);
+        l.vec(G, "layout node info (LInfo)", &self.info, self.info.capacity(), Content);
+        let q = (self.pending.capacity() + self.ready.capacity() + self.dirty.capacity() + self.kids.capacity() + self.stack_ids.capacity()) * 4 + self.stack.capacity() * 16;
+        l.many(G, "layout queues and stacks", Content, q, q);
+        let sp = self.specs.capacity() * (size_of::<(u32, Spec)>() + 1);
+        l.many(G, "size-operand specs (map)", Content, self.specs.len() * size_of::<(u32, Spec)>(), sp);
+    }
     pub fn new(scale: f32) -> Lay {
         let mut prof = LProf { on: false, acc: [0; 8], last: 0, ovh: 0 };
         if std::env::var_os("BOUGH_LPROF").is_some() {

@@ -209,6 +209,27 @@ impl GlyphCache {
         GlyphCache { toks, ..GlyphCache::new(font) }
     }
 
+    /// The cache as memory-ledger lines: the font copies it keeps, the CPU atlas, the strikes' tables and
+    /// the (carved) token column. The rasterizer's scratch (`ScaleContext`) is not counted.
+    pub fn ledger(&self, l: &mut bough_mem::Ledger) {
+        use bough_mem::Scales::{Content, Fixed};
+        const G: &str = "text";
+        l.vec(G, "glyph cache font copy", &self.font, self.font.capacity(), Fixed);
+        let fb: usize = self.faces.iter().map(|f| f.capacity()).sum();
+        l.many(G, "glyph cache face copies", Fixed, fb, fb);
+        let a = &self.atlas;
+        l.vec(G, "atlas (CPU copy, R8)", &a.pixels, a.pixels.capacity(), Content);
+        l.vec(G, "atlas shelves", &a.shelves, a.shelves.capacity(), Content);
+        let (mut used, mut res) = (0, 0);
+        for s in &self.strikes {
+            used += s.entries.len() * size_of::<Entry>() + size_of::<[Entry; 128]>();
+            res += s.entries.capacity() * size_of::<Entry>() + size_of::<[Entry; 128]>();
+        }
+        l.vec(G, "strikes", &self.strikes, self.strikes.capacity(), Content);
+        l.many(G, "strike entry tables", Content, used, res);
+        l.col(G, &self.toks, Content);
+    }
+
     /// Region offset of strike 0's token table (`None` when not carved).
     pub fn tok_offset(&self) -> Option<usize> {
         self.toks.region_offset()

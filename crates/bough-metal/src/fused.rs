@@ -1349,6 +1349,46 @@ impl Fused {
     pub fn surface_bytes(&self) -> u64 {
         self.surfs.iter().filter(|s| s.touched.get()).map(|s| s.io.alloc_size() as u64).sum()
     }
+
+    /// The presenter's GPU objects for a memory ledger (diagnostics; a few Metal property reads).
+    pub fn gpu_mem(&self) -> GpuMem {
+        let surf = |s: &Surface| (s.io.alloc_size(), s.touched.get(), s.volatile.get(), s.io.is_in_use());
+        GpuMem {
+            surfaces: self.surfs.iter().map(surf).collect(),
+            scratch: self.scratch.as_ref().map(surf),
+            region_len: self.pool_len,
+            region_allocated: MTLResource::allocatedSize(&*self.pool),
+            atlas: MTLResource::allocatedSize(&*self.atlas),
+            atlas_dims: self.atlas_dims,
+            image_atlas: self.img.as_ref().map_or(0, |t| MTLResource::allocatedSize(&**t)),
+            bins: MTLResource::allocatedSize(&*self.bins),
+            bin_cap: self.bin_cap,
+            counts: MTLResource::allocatedSize(&*self.counts),
+            warm: self.warm.as_ref().map_or(0, |w| MTLResource::allocatedSize(&*w.tiny)),
+            device_allocated: self.device.currentAllocatedSize(),
+        }
+    }
+}
+
+/// [`Fused::gpu_mem`]: bytes of each GPU object the presenter holds.
+#[derive(Clone, Debug, Default)]
+pub struct GpuMem {
+    /// Per ring surface: (IOSurface allocation size, drawn at least once, purgeable-volatile, in use by the
+    /// compositor).
+    pub surfaces: Vec<(usize, bool, bool, bool)>,
+    /// The reference render's private surface, if one was made.
+    pub scratch: Option<(usize, bool, bool, bool)>,
+    pub region_len: usize,
+    pub region_allocated: usize,
+    pub atlas: usize,
+    pub atlas_dims: (u32, u32),
+    pub image_atlas: usize,
+    pub bins: usize,
+    pub bin_cap: u32,
+    pub counts: usize,
+    pub warm: usize,
+    /// `MTLDevice.currentAllocatedSize`: every allocation the device made for this process.
+    pub device_allocated: usize,
 }
 
 /// Copy the OR-ed tile rows (`rows[ty]`, bit tx = tile) into frame slot `k` as damaged-row records (see the

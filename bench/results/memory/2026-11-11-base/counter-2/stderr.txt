@@ -1,0 +1,1 @@
+ledger-harness: frames 34 steady ticks 60..393 allocations 862 (2.59/tick); rust live 3245505 B, allocs 1960; footprint 54315584 B peak 129550912 B

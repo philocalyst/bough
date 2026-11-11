@@ -127,6 +127,23 @@ impl Application {
         let _ = WINDOW.set((w.size.0, w.size.1, default_font()));
         crate::backend::host::run_interactive(&title, window_config, w.view, 0.0, |_, _| {}, |_| {})
     }
+
+    /// `run` for measurement harnesses (not an application API): the same window, configuration and input
+    /// path, plus `start(host, app)` once the first frame is up (a harness installs its timers there: an
+    /// in-process scroll through `App::wheel_points`, a ledger sample) and an exit after `seconds`, after
+    /// `report(app)`.
+    #[cfg(target_os = "macos")]
+    pub fn run_harness<D: IntoWindow>(
+        root: D,
+        seconds: f64,
+        start: impl FnOnce(&bough_metal::app::Host, std::rc::Rc<std::cell::RefCell<crate::app::App<D::View>>>) + 'static,
+        report: impl FnOnce(&mut crate::app::App<D::View>) + 'static,
+    ) -> ! {
+        let w = root.into_window();
+        let title = if w.title.is_empty() { "bough".to_string() } else { w.title };
+        let _ = WINDOW.set((w.size.0, w.size.1, default_font()));
+        crate::backend::host::run_interactive(&title, window_config, w.view, seconds, start, report)
+    }
 }
 
 /// A raster image (PNG bytes) in flow, sized by layout (by default its pixel size, in points). The pixels are

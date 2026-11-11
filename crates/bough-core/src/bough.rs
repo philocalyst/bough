@@ -216,6 +216,25 @@ impl Bough {
     pub fn pool(&self) -> &PagePool {
         &self.pool
     }
+    /// Every column and table this Bough holds, as memory-ledger lines (diagnostics; never on a frame path).
+    pub fn ledger(&self, l: &mut bough_mem::Ledger) {
+        use bough_mem::Scales::{Content, Window};
+        const G: &str = "core";
+        self.pool.ledger(l);
+        l.col(G, &self.d_id, Content);
+        l.col(G, &self.d_ink, Content);
+        l.col(G, &self.clips, Content);
+        l.vec(G, "dir page pointers", &self.d_ptr, self.d_ptr.capacity(), Content);
+        l.vec(G, "dir min depth", &self.d_min_depth, self.d_min_depth.capacity(), Content);
+        l.vec(G, "dir lengths", &self.d_len, self.d_len.capacity(), Content);
+        l.vec(G, "dir chunk inks", &self.c_ink, self.c_ink.capacity(), Content);
+        l.many(G, "page-start prefix", Content, self.prefix.heap_bytes(), self.prefix.heap_bytes());
+        l.vec(G, "handle table", &self.htab, self.htab.capacity(), Content);
+        l.vec(G, "handle free list", &self.hfree, self.hfree.capacity(), Content);
+        l.vec(G, "insert scratch", &self.scratch, self.scratch.capacity(), Content);
+        l.vec(G, "dirty scratch", &self.dirty_scratch, self.dirty_scratch.capacity(), Content);
+        l.many(G, "damage ring planes", Window, self.ring.heap_bytes(), self.ring.heap_bytes());
+    }
     pub fn window(&self) -> NRect {
         self.ring.window
     }

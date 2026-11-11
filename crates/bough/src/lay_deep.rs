@@ -90,6 +90,52 @@ fn meta_bits(styles: &StyleTable, style: u32, measured: bool) -> u8 {
 }
 
 impl Deep {
+    /// The engine's columns as memory-ledger lines: nodes (style index, layout, answer cache pointer, kids),
+    /// the boxed answer caches, the text leaves' states (shaped run, text, wraps, paragraph halves), the
+    /// interned styles and the maps.
+    pub fn ledger(&self, l: &mut bough_mem::Ledger) {
+        use bough_mem::Scales::Content;
+        const G: &str = "layout";
+        l.vec(G, "layout nodes (DNode)", &self.n, self.n.capacity(), Content);
+        let kids: usize = self.n.iter().map(|d| d.kids.capacity() * 4).sum();
+        l.many(G, "layout node child lists", Content, kids, kids);
+        // cephal's cache box is private: its size is measured once through the counting allocator (when
+        // the binary installs it; otherwise only the count is reported). Spill boxes (> 3 entries) are not
+        // counted here (they fall in the ledger's residual).
+        let caches = self.n.iter().filter(|d| !d.cache.is_empty()).count();
+        // a clone of a live box allocates exactly what the box holds (Inner, plus a spill box if it has one)
+        let per = match self.n.iter().find(|d| !d.cache.is_empty()) {
+            Some(d) if bough_mem::count::installed() => {
+                let before = bough_mem::count::live();
+                let c = d.cache.clone();
+                let b = bough_mem::count::live().saturating_sub(before);
+                drop(c);
+                b
+            }
+            _ => 0,
+        };
+        let cb = caches * per;
+        l.many(G, format!("layout answer caches ({caches} boxed, {per} B each)"), Content, cb, cb);
+        l.vec(G, "text leaf states (LeafCtx)", &self.ctxs, self.ctxs.capacity(), Content);
+        let (mut run, mut text, mut hot, mut cold) = (0usize, 0usize, 0usize, 0usize);
+        for c in &self.ctxs {
+            run += c.run.gid.capacity() * 2 + c.run.x.capacity() * 4 + c.run.cluster.capacity() * 4;
+            text += c.text.capacity() + c.starts.capacity() * 4;
+            let (h, k) = c.para.heap_bytes();
+            hot += h;
+            cold += k;
+        }
+        l.many(G, "text leaf shaped runs (gid, x, cluster)", Content, run, run);
+        l.many(G, "text leaf text + line starts", Content, text, text);
+        l.many(G, "paragraph hot halves (text, words, wrap)", Content, hot, hot);
+        l.many(G, "paragraph cold halves", Content, cold, cold);
+        let maps = self.spec_ids.capacity() * (size_of::<(SpecKey, u32)>() + 1) + self.abs.capacity() * (size_of::<(u32, AbsoluteContext)>() + 1);
+        l.many(G, "spec intern map + out-of-flow map", Content, maps, maps);
+        let misc = (self.changed.capacity() + self.orphans.capacity() + self.recycled.capacity() + self.ctx_free.capacity()) * 4;
+        l.many(G, "engine queues", Content, misc, misc);
+        let st = self.styles.len() * (size_of::<Style>() + 24);
+        l.many(G, format!("interned styles ({})", self.styles.len()), Content, st, st);
+    }
     pub fn new() -> Deep {
         Deep {
             n: Vec::new(),

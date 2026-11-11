@@ -1,0 +1,6 @@
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+
+thread 'main' (3656589) panicked at crates/bough-metal/src/fused.rs:876:13:
+GPU frame 249 did not finish within 5 s (stream batches: ["MTLCommandBufferStatus(4) None", "MTLCommandBufferStatus(5) Some(NSError { code: 2, localizedDescription: \"Caused GPU Timeout Error (00000002:kIOGPUCommandBufferCallbackErrorTimeout)\", domain: \"MTLCommandBufferErrorDomain\", userInfo: {\"NSLocalizedDescription\": <__NSCFString: 0x6000001e59e0>, \"NSUnderlyingError\": <NSError: 0x600002bfa400>}, .. })"])
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

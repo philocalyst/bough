@@ -844,6 +844,14 @@ impl<V: View> App<V> {
         false
     }
 
+    /// The App's own tables (re-description tape, tile-row buffers), as memory-ledger lines (`ledger.rs`).
+    pub(crate) fn ledger_app(&self, l: &mut bough_mem::Ledger) {
+        use bough_mem::Scales;
+        l.vec("app", "re-description tape", &self.tape, self.tape.capacity(), Scales::Content);
+        let rows = self.rows.capacity() * 16 + 2 * size_of::<Plane>() + self.held.capacity() * 8 + self.last_use.capacity() * 8;
+        l.many("app", "tile-row buffer and repair planes", Scales::Window, rows, rows);
+    }
+
     /// Surfaces in the ring.
     pub fn surfaces(&self) -> usize {
         self.held.len()
