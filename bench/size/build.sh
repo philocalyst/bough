@@ -9,8 +9,11 @@
 #   CONFIG    extra `--config` arguments, space separated (e.g. profile overrides: CONFIG="profile.x.opt-level='s'")
 #   FLAGS     rustflags appended to the root .cargo/config.toml's (v0 mangling, --cfg tokio_unstable), which RUSTFLAGS
 #             would otherwise replace
-#   STD       1: rebuild std (-Z build-std=std,panic_abort --target aarch64-apple-darwin) with STD_FEATURES
-#             (default optimize_for_size,panic_immediate_abort; "none" for no features)
+#   STD       1: rebuild std (-Z build-std=std,panic_abort --target aarch64-apple-darwin) with STD_FEATURES:
+#             "default" (std's own default set: backtrace, panic-unwind), "none" (no features), or a list
+#             (e.g. optimize_for_size). The panic strategy is the profile's (CONFIG profile.<p>.panic=...;
+#             "immediate-abort" needs ZFLAGS=-Zpanic-immediate-abort)
+#   ZFLAGS    extra cargo -Z flags
 #   FEATURES  extra cargo features for every package built (e.g. bough/sabotage_copy)
 #   MAP       a directory: also link an unstripped twin of the counter (and apps with SET apps/all) with an ld64 map
 # Uses the caller's CARGO_TARGET_DIR (the worktree's target). Prints each executable's size.
@@ -24,11 +27,12 @@ base="-C symbol-mangling-version=v0 --cfg tokio_unstable"
 export RUSTFLAGS="$base ${FLAGS:-}"
 args="--profile $PROFILE"
 for c in ${CONFIG:-}; do args="$args --config $c"; done
+for z in ${ZFLAGS:-}; do args="$args $z"; done
 dir=$T/$PROFILE
 if [ "${STD:-0}" = 1 ]; then
-  sf=${STD_FEATURES:-optimize_for_size,panic_immediate_abort}
+  sf=${STD_FEATURES:-default}
   args="$args -Z build-std=std,panic_abort --target aarch64-apple-darwin"
-  [ "$sf" = none ] || args="$args -Z build-std-features=$sf"
+  case "$sf" in default) ;; none) args="$args -Z build-std-features=";; *) args="$args -Z build-std-features=$sf";; esac
   dir=$T/aarch64-apple-darwin/$PROFILE
 fi
 feat=""; [ -n "${FEATURES:-}" ] && feat="--features $FEATURES"
@@ -61,5 +65,5 @@ if [ "$SET" = gate ] || [ "$SET" = all ]; then
   b -p bough --example counter_gate $feat
   cp "$dir/examples/counter_gate" "$OUT/counter_gate"
 fi
-for f in "$OUT"/*; do [ -x "$f" ] && [ -f "$f" ] && printf '%10d  %s\n' "$(stat -f %z "$f")" "$(basename "$f")"; done
+for f in "$OUT"/*; do [ -x "$f" ] && [ -f "$f" ] && printf '%10d  %s\n' "$(/usr/bin/stat -f %z "$f")" "$(basename "$f")"; done
 exit 0

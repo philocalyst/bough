@@ -47,7 +47,8 @@ pub enum ShaderSource {
     Runtime,
 }
 
-pub static SHADER_SRC: &str = include_str!("shader.metal");
+/// `shader.metal` without comments or indentation (`build.rs`): the source compiled when there is no metallib.
+pub static SHADER_SRC: &str = include_str!(concat!(env!("OUT_DIR"), "/shader.min.metal"));
 pub static METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.metallib"));
 
 /// The shader library: the embedded metallib, or, when the build had no Metal compiler (empty `METALLIB`),
