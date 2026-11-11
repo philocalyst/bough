@@ -5,12 +5,12 @@ IOReport (GPU Mcycles/s = GPU seconds x MHz / wall, zgx's suite metric), and the
 over the same seconds (it composites every app: noisy while the desktop is busy). No root, no Screen
 Recording. Holds the windowed lock for the run. Usage: windowed_gpu.py <bough|zgx> <scene> <mode> [seconds=10]
 (scenes as bench/integrate/windowed.py). Prints one JSON line."""
-import json, os, subprocess, sys, time
+import json, os, subprocess, sys, tempfile, time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "integrate"))
 from windowed import BIN, FONT
 
 TOOLS = os.environ.get("FLOOR_TOOLS", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "bough", "target", "floor-tools"))
-LOCK = "/private/tmp/claude-501/bough-windowed.lock"
+LOCK = os.environ.get("BOUGH_WINDOWED_LOCK", os.path.join(tempfile.gettempdir(), "bough-windowed.lock"))
 
 def run(fw, scene, mode, seconds=10.0, t0=1.5, t1=9.0):
     env = dict(os.environ, ZGX_MODE=mode, ZGX_SECONDS=str(seconds), ZGX_FONT_FILE=FONT)

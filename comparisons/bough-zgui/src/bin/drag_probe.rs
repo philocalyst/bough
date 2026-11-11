@@ -5,7 +5,7 @@
 //! cost of making and posting the events, less the same span held still. bough's drag preview is an
 //! `offset` group following the pointer (one space write and one `translate_run` per move).
 //!
-//!   drag_probe            (windowed: take /private/tmp/claude-501/bough-windowed.lock first)
+//!   drag_probe            (windowed: take the windowed lock first: $BOUGH_WINDOWED_LOCK, default $TMPDIR/bough-windowed.lock)
 use bough::backend::host::run_interactive;
 use bough::raw::*;
 use bough_zgui::font_bytes;
