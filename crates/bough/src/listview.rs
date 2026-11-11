@@ -327,6 +327,9 @@ unsafe fn index_slot_at(_: *const u8, p: usize) -> u32 {
     p as u32
 }
 /// An index source's rows are owned by the source's owner itself.
+///
+/// # Safety
+/// None needed: returns `o` unread.
 unsafe fn index_item(o: *const u8, _: u32) -> *const u8 {
     o
 }
@@ -691,6 +694,9 @@ impl Rt {
 
     /// Replay list `l`'s delta log on region `reg`'s window (see the module docs), rebuild the index from the
     /// lowest position the log touched, then settle the edited rows.
+    ///
+    /// # Safety
+    /// `l` points at the live `List<T>` registered for region `reg` (the wire contract of `patch_list`).
     unsafe fn lr_replay<T: 'static>(&mut self, reg: usize, l: *const List<T>) {
         let lp = l as *const u8;
         self.lists.regs[reg].list = lp;
@@ -1468,6 +1474,7 @@ unsafe fn patch_list<T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: 
         rt.pubs.list(sig as usize, reg.log().0);
     }
     rt.pubs.owner(_owner as usize, w.cls);
+    // SAFETY: the contract: `l` is the live `List<T>` field of the owner and `w.node` its region.
     unsafe { rt.lr_replay::<T>(w.node as usize, l) };
 }
 
