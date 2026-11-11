@@ -247,3 +247,74 @@ pub fn exit_after(host: &bough_metal::app::Host, secs: f64) {
     unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&t, NSRunLoopCommonModes) };
     std::mem::forget(t);
 }
+
+#[link(name = "CoreVideo", kind = "framework")]
+unsafe extern "C" {
+    fn CVDisplayLinkCreateWithCGDisplay(display: u32, out: *mut *mut std::ffi::c_void) -> i32;
+    fn CVDisplayLinkSetOutputCallback(
+        link: *mut std::ffi::c_void,
+        cb: extern "C" fn(
+            *mut std::ffi::c_void,
+            *const u8,
+            *const u8,
+            u64,
+            *mut u64,
+            *mut std::ffi::c_void,
+        ) -> i32,
+        ctx: *mut std::ffi::c_void,
+    ) -> i32;
+    fn CVDisplayLinkStart(link: *mut std::ffi::c_void) -> i32;
+    fn CVDisplayLinkStop(link: *mut std::ffi::c_void) -> i32;
+}
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGMainDisplayID() -> u32;
+}
+
+/// `CVTimeStamp.hostTime` (offset 16) in host ns.
+fn cv_host_ns(ts: *const u8) -> u64 {
+    // SAFETY: `ts` points at a CVTimeStamp (80 bytes; hostTime is the u64 at offset 16), valid for the call.
+    let ticks = unsafe { std::ptr::read_unaligned(ts.add(16) as *const u64) };
+    let (n, d) = bough_metal::framelog::timebase();
+    (ticks as u128 * n as u128 / d as u128) as u64
+}
+
+extern "C" fn on_vsync(
+    _l: *mut std::ffi::c_void,
+    now: *const u8,
+    out: *const u8,
+    _fi: u64,
+    _fo: *mut u64,
+    _c: *mut std::ffi::c_void,
+) -> i32 {
+    bough_metal::framelog::vsync_ns(cv_host_ns(now), cv_host_ns(out), 1);
+    0
+}
+
+/// A measurement-only vsync recorder: a CVDisplayLink on the main display, on its own thread, writing
+/// one `TAG_VSYNC` row (source 1) per refresh, so input and commit times can be placed against the
+/// refresh timeline whether or not the host's own display link runs. It wakes the process once per
+/// refresh while it runs: start it for a workload, stop it before an idle window.
+pub struct VsyncRecorder(*mut std::ffi::c_void);
+// SAFETY: a CVDisplayLink may be started and stopped from any thread.
+unsafe impl Send for VsyncRecorder {}
+
+impl VsyncRecorder {
+    pub fn start() -> VsyncRecorder {
+        let mut l = std::ptr::null_mut();
+        // SAFETY: creates a link for the main display and starts it; the callback touches only the frame log.
+        unsafe {
+            CVDisplayLinkCreateWithCGDisplay(CGMainDisplayID(), &mut l);
+            CVDisplayLinkSetOutputCallback(l, on_vsync, std::ptr::null_mut());
+            CVDisplayLinkStart(l);
+        }
+        VsyncRecorder(l)
+    }
+}
+
+impl Drop for VsyncRecorder {
+    fn drop(&mut self) {
+        // SAFETY: the link created in `start`; stopping waits for an in-flight callback.
+        unsafe { CVDisplayLinkStop(self.0) };
+    }
+}

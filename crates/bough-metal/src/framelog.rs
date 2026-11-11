@@ -62,6 +62,7 @@ pub const N_GPU_WAIT: u64 = 12; // the CPU waited for the GPU's last frame befor
 pub const N_DRAIN: u64 = 13; // the residency set grew: pre-armed frames drained one by one (a = µs, b = frames)
 pub const N_PREPARE: u64 = 14; // a surface made ready (a = µs, b = 1 first use, 2 purged, 4 was volatile)
 pub const N_UPLOAD: u64 = 15; // an atlas upload (a = µs, b = 1 glyph atlas, 2 glyph atlas resized, 3 images)
+pub const N_LATCH: u64 = 16; // a latch armed (a = the target vsync, b = the latch time; host ns)
 
 #[cfg(feature = "framelog")]
 mod imp {
@@ -83,6 +84,10 @@ mod imp {
     thread_local! {
         static CUR: [Cell<u64>; 16] = const { [const { Cell::new(0) }; 16] };
         static OPEN: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub fn timebase() -> (u64, u64) {
+        tb()
     }
 
     fn tb() -> (u64, u64) {
@@ -326,6 +331,38 @@ pub fn vsync(_ts: f64, _target: f64) {
         0,
         0,
     ]);
+}
+
+/// A vsync from a measurement recorder (host ns): the vsync, the output time it reports, a source tag.
+#[inline(always)]
+pub fn vsync_ns(_ts: u64, _target: u64, _src: u64) {
+    #[cfg(feature = "framelog")]
+    imp::push([
+        TAG_VSYNC,
+        _ts,
+        _target,
+        imp::now_ns(),
+        _src,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ]);
+}
+
+/// The host clock's timebase (numer, denom: ticks * numer / denom = ns).
+pub fn timebase() -> (u64, u64) {
+    #[cfg(feature = "framelog")]
+    return imp::timebase();
+    #[cfg(not(feature = "framelog"))]
+    (1, 1)
 }
 
 /// A note: what, a, b (stamped now).

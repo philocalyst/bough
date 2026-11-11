@@ -68,6 +68,7 @@ fn dashboard_script(t: Target, rate: f64, phase: f64, warm: f64, tail: f64) {
     drive::key(&t, 0, "a", Flags::CMD);
     drive::key(&t, 51, "\u{7f}", Flags::NONE);
     std::thread::sleep(std::time::Duration::from_secs_f64(warm));
+    let vsyncs = drive::VsyncRecorder::start();
     let started = fl::now_ns();
     let step = (1e9 / rate) as u64;
     for i in 0..4u64 {
@@ -118,6 +119,7 @@ fn dashboard_script(t: Target, rate: f64, phase: f64, warm: f64, tail: f64) {
         eprintln!("phase {i}: {n} events");
     }
     fl::note(fl::N_PHASE, 4, fl::now_ns());
+    drop(vsyncs);
     if tail > 0.0 {
         idle_window("tail", tail);
     }
@@ -132,6 +134,7 @@ fn scroll_script(t: Target, rate: f64, secs: f64, tail: f64) {
     std::thread::sleep(std::time::Duration::from_millis(50));
     drive::mouse(&t, EvKind::MOVE, x, y, 2);
     std::thread::sleep(std::time::Duration::from_millis(50));
+    let vsyncs = drive::VsyncRecorder::start();
     let start = fl::now_ns();
     fl::note(fl::N_PHASE, 0, start);
     let end = start + (secs * 1e9) as u64;
@@ -154,6 +157,7 @@ fn scroll_script(t: Target, rate: f64, secs: f64, tail: f64) {
         drive::sleep_until(next.min(end));
     }
     fl::note(fl::N_PHASE, 1, fl::now_ns());
+    drop(vsyncs);
     eprintln!("scroll: {n} wheel events");
     if tail > 0.0 {
         idle_window("tail", tail);

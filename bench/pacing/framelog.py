@@ -20,7 +20,7 @@ TURN, PUB, VSYNC, NOTE, EVENT = 1, 2, 3, 4, 5
 KIND = {1: "move", 2: "down", 3: "up", 4: "wheel", 5: "key", 6: "tick", 7: "timer", 8: "resize", 9: "leave", 10: "paced", 11: "other"}
 M_EVENT, M_DISPATCH, M_SYNC, M_SETTLE, M_DESCRIBE, M_LAYOUT, M_FRAME, M_PICK, M_SLOT, M_END, M_FID, M_FLAGS, M_CPU, M_FLT = range(2, 16)
 NOTES = {1: "superseded", 2: "ring-wait", 3: "trim", 4: "warm-blit", 5: "link", 6: "bins", 7: "posted", 8: "occlusion", 9: "held-back", 10: "phase", 11: "wakeups",
-         12: "gpu-wait", 13: "drain", 14: "prepare", 15: "upload"}
+         12: "gpu-wait", 13: "drain", 14: "prepare", 15: "upload", 16: "latch"}
 DASH_PHASES = ["typing", "refresh", "toggle", "scroll"]
 
 
@@ -52,7 +52,10 @@ def analyse(rows, scene=None, ngaps=5):
     pubs = [r for r in rows if r[0] == PUB]
     notes = [r for r in rows if r[0] == NOTE]
     events = [r for r in rows if r[0] == EVENT]
-    vs = sorted(r[1] for r in rows if r[0] == VSYNC)
+    # the refresh timeline: the measurement recorder's vsyncs (source 1) when present, else the host link's
+    vrows = [r for r in rows if r[0] == VSYNC]
+    vs = sorted(r[1] for r in vrows if r[4] == 1) or sorted(r[1] for r in vrows if r[4] == 0)
+    link_ticks = sorted(r[3] for r in vrows if r[4] == 0)
     posted = [r for r in notes if r[1] == 7]
     phases = sorted((r[3], r[4]) for r in notes if r[1] == 10)
     if scene is None:
@@ -74,6 +77,10 @@ def analyse(rows, scene=None, ngaps=5):
     # inputs that left something to show -> the first frame at or after their turn
     frames = [t for t in turns if t[M_FID] > 0]
     fdisp = [t[M_DISPATCH] for t in frames]
+
+    def next_vsync(c):
+        i = bisect.bisect_left(vs, c)
+        return vs[i] if i < len(vs) else None
 
     def shown_at(t):
         """Commit end of the first committed publication including turn `t`'s effect."""
@@ -97,13 +104,14 @@ def analyse(rows, scene=None, ngaps=5):
         w["presents"] = len(cs)
         w["presents_per_s"] = len(cs) / ((b - a) / 1e9)
         w["refreshes"] = sum(1 for v in vs if a < v <= b)
+        w["link_callbacks"] = sum(1 for v in link_ticks if a < v <= b)
         w["commit_interval_ms"] = dist(iv)
         w["worst_gap_ms"] = max([trailing, *iv]) if iv else trailing
         ins = [t for t in turns if a <= t[M_DISPATCH] < b and t[1] <= 5]
         w["inputs"] = len(ins)
         w["posted"] = sum(1 for p in posted if a <= p[2] < b)
         by_kind = defaultdict(list)
-        lat_all = []
+        lat_all, lat_vs = [], []
         for t in ins:
             if not (t[M_FLAGS] >> 3) & 1:
                 continue
@@ -113,7 +121,17 @@ def analyse(rows, scene=None, ngaps=5):
             ms = (s - t[M_EVENT]) / 1e6
             by_kind[KIND[t[1]]].append(ms)
             lat_all.append(ms)
+            v = next_vsync(s)
+            if v is not None:
+                lat_vs.append((v - t[M_EVENT]) / 1e6)
         w["input_to_commit_ms"] = dist(lat_all)
+        w["input_to_vsync_after_commit_ms"] = dist(lat_vs)
+        # commits per refresh interval (a value above 1 is a present the display never showed)
+        per = defaultdict(int)
+        for c in cs:
+            i = bisect.bisect_left(vs, c)
+            per[i] += 1
+        w["refreshes_with_2plus_commits"] = sum(1 for k, n in per.items() if n > 1)
         w["input_to_commit_by_kind_ms"] = {k: dist(v) for k, v in sorted(by_kind.items())}
         w["turn_ms"] = dist([(t[M_END] - t[M_DISPATCH]) / 1e6 for t in turns if a <= t[M_DISPATCH] < b])
         w["input_turn_ms"] = dist([(t[M_END] - t[M_DISPATCH]) / 1e6 for t in ins])
@@ -168,9 +186,10 @@ def main():
     a = ap.parse_args()
     out = analyse(load(a.log), a.scene, a.gaps)
     for name, w in out["windows"].items():
-        print(f"[{name}] presents {w['presents']} ({w['presents_per_s']:.1f}/s, refreshes seen {w['refreshes']}), worst gap {w['worst_gap_ms']:.2f} ms, inputs {w['inputs']} of {w['posted']} posted")
+        print(f"[{name}] presents {w['presents']} ({w['presents_per_s']:.1f}/s), refreshes {w['refreshes']}, link callbacks {w['link_callbacks']}, worst gap {w['worst_gap_ms']:.2f} ms, inputs {w['inputs']} of {w['posted']} posted")
         print(f"   commit interval ms  {fmt(w['commit_interval_ms'])}")
         print(f"   input->commit ms    {fmt(w['input_to_commit_ms'])}")
+        print(f"   input->vsync ms     {fmt(w['input_to_vsync_after_commit_ms'])}   (the first vsync at or after the commit; refreshes with 2+ commits: {w['refreshes_with_2plus_commits']})")
         for k, d in w["input_to_commit_by_kind_ms"].items():
             print(f"     {k:6s}            {fmt(d)}")
         print(f"   input turn ms       {fmt(w['input_turn_ms'])}")
