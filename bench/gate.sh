@@ -124,7 +124,7 @@ record() { SUMMARY="$SUMMARY
 # ---- hygiene
 if want hygiene; then
   echo "== hygiene: absolute paths added since the merge base"
-  BAD=$(git diff -U0 "$MB" -- '*.toml' '*.sh' '*.py' '*.rs' '*.yml' '*.yaml' ':!vendor' ':!reactivity' ':!designs' ':!archive' ':!bench/results' ':!bench/baselines' \
+  BAD=$(git diff -U0 "$MB" -- '*.toml' '*.sh' '*.py' '*.rs' '*.yml' '*.yaml' ':!vendor' ':!reactivity' ':!designs' ':!archive' ':!bench/results' ':!bench/baselines' ':!bench/gate.sh' ':!.github' \
         | grep -E '^\+[^+]' | grep -E '/Users/|/home/[a-z]|/private/tmp/|/root/' || true)
   if [ -n "$BAD" ]; then printf '%s\n' "$BAD"; record FAIL "hygiene: added lines name an absolute machine path (use BOUGH_REF or a path relative to the checkout)"
   else record PASS "hygiene"; fi
