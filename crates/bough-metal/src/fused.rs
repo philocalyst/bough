@@ -421,6 +421,13 @@ impl Publisher {
             .name("bough-publish".into())
             .spawn(move || {
                 let objs = objs;
+                // the publisher is on the input-to-commit path: it runs at the main thread's QoS, so a loaded
+                // machine delays it no more than the input turn (the pacing lane's trace measured 4-17 ms
+                // post-to-take delays at the default QoS under load; frame-log builds can opt out to compare)
+                if !(crate::framelog::ON && std::env::var("BOUGH_PUB_QOS").is_ok_and(|v| v == "default")) {
+                    // SAFETY: sets this thread's own QoS class.
+                    unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0) };
+                }
                 Publisher::run(&s2, &objs)
             })
             .expect("publisher thread");

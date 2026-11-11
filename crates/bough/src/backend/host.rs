@@ -236,6 +236,7 @@ pub fn run_window_linked<V: View>(
 
 // =============================================================================== interactive windows
 
+use super::pace::{self, In};
 use crate::input::{Button, Key, Mods};
 use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType};
 
@@ -269,51 +270,59 @@ fn mods_of(e: &NSEvent) -> Mods {
     }
 }
 
-/// Deliver one AppKit event to the app (window coordinates, top-left origin). Returns whether it was input.
-pub fn dispatch_event<V: View>(a: &mut App<V>, e: &NSEvent, content_h: f64) -> bool {
+/// The inputs of one AppKit event (window coordinates, top-left origin), in order; none if it is not input.
+pub fn inputs_of(e: &NSEvent, content_h: f64, mut f: impl FnMut(In)) {
     let loc = e.locationInWindow();
     let (x, y) = (loc.x as f32, (content_h - loc.y) as f32);
     match e.r#type() {
-        NSEventType::MouseMoved | NSEventType::LeftMouseDragged | NSEventType::RightMouseDragged | NSEventType::OtherMouseDragged => a.pointer_move(x, y),
-        NSEventType::LeftMouseDown => a.pointer_down(x, y, Button::Primary),
-        NSEventType::LeftMouseUp => a.pointer_up(x, y, Button::Primary),
-        NSEventType::RightMouseDown => a.pointer_down(x, y, Button::Secondary),
-        NSEventType::RightMouseUp => a.pointer_up(x, y, Button::Secondary),
-        NSEventType::MouseExited => a.pointer_leave(),
-        NSEventType::ScrollWheel => {
-            let dy = e.scrollingDeltaY() as f32;
-            if e.hasPreciseScrollingDeltas() {
-                a.wheel_points(x, y, -dy);
-            } else {
-                a.wheel(x, y, 0.0, -dy);
-            }
-        }
+        NSEventType::MouseMoved | NSEventType::LeftMouseDragged | NSEventType::RightMouseDragged | NSEventType::OtherMouseDragged => f(In::Move { x, y }),
+        NSEventType::LeftMouseDown => f(In::Down { x, y, button: Button::Primary }),
+        NSEventType::LeftMouseUp => f(In::Up { x, y, button: Button::Primary }),
+        NSEventType::RightMouseDown => f(In::Down { x, y, button: Button::Secondary }),
+        NSEventType::RightMouseUp => f(In::Up { x, y, button: Button::Secondary }),
+        NSEventType::MouseExited => f(In::Leave),
+        NSEventType::ScrollWheel => f(In::Wheel { x, y, dy: -e.scrollingDeltaY() as f32, precise: e.hasPreciseScrollingDeltas() }),
         NSEventType::KeyDown => {
-            let m = mods_of(e);
-            for k in key_of(e) {
-                a.key_down(k, m);
+            let mods = mods_of(e);
+            for key in key_of(e) {
+                f(In::Key { key, mods });
             }
         }
-        _ => return false,
+        _ => {}
     }
-    true
+}
+
+/// Deliver one AppKit event to the app at once (window coordinates, top-left origin). Returns whether it
+/// was input. (The interactive host queues instead: `run_interactive`.)
+pub fn dispatch_event<V: View>(a: &mut App<V>, e: &NSEvent, content_h: f64) -> bool {
+    let mut any = false;
+    inputs_of(e, content_h, |i| {
+        pace::apply(a, i);
+        any = true;
+    });
+    any
 }
 
 /// Window resize (live or not): every size step relays the view out (`App::resize`) and draws a full frame
 /// at the new size into surfaces of that size; the publisher commits it with the layer's new frame in one
 /// transaction (bough-metal `Fused::resize`), so no frame is dropped and none is shown stretched.
-fn observe_resize<V: View>(host: &bough_metal::app::Host, app: &Rc<RefCell<App<V>>>, trim: &Rc<Trim>, content_h: &Rc<Cell<f64>>) {
+fn observe_resize<V: View>(host: &bough_metal::app::Host, app: &Rc<RefCell<App<V>>>, trim: &Rc<Trim>, content_h: &Rc<Cell<f64>>, pacer: &Rc<Pacer>) {
     use objc2_foundation::{NSNotification, NSNotificationCenter};
-    let (app, trim, content_h, window) = (app.clone(), trim.clone(), content_h.clone(), host.window.clone());
+    let (app, trim, content_h, window, pacer) = (app.clone(), trim.clone(), content_h.clone(), host.window.clone(), pacer.clone());
     let blk = RcBlock::new(move |_n: NonNull<NSNotification>| {
         let size = window.contentView().map_or(window.frame().size, |v| v.frame().size);
         content_h.set(size.height);
         if let Ok(mut a) = app.try_borrow_mut() {
+            // the inputs queued before the resize go first
+            pace::drain(&pacer.q, &mut a);
             fl::turn_begin(fl::K_RESIZE, 0);
             a.resize(size.width as f32, size.height as f32);
             let drew = a.frame();
             after_frame(&app, &trim, &mut a, drew);
             fl::turn_end();
+            if drew {
+                pacer.presented();
+            }
         }
     });
     // SAFETY: AppKit posts window notifications on the main thread, where the app lives, and the block runs
@@ -330,11 +339,200 @@ fn observe_resize<V: View>(host: &bough_metal::app::Host, app: &Rc<RefCell<App<V
     std::mem::forget(blk);
 }
 
-/// An interactive window: AppKit's mouse, wheel and key events go to the app's input turns (a local event
-/// monitor; the window accepts mouse-moved events), each followed by a frame; while an input animation runs
-/// (a glide, a tooltip fade) the display link ticks it and draws, and it pauses when nothing animates.
-/// `start(host, app)` runs once the first frame is up (a probe installs its timers there). After `seconds`
-/// (if > 0) `report` runs and the process exits.
+/// The interactive host's frame pacer (main thread only): docs/lanes/pacing/cards/2026-11-11-display-paced-input.md.
+///
+/// * Input is queued by the event monitor and drained when the run loop is about to wait (`pump`): one turn
+///   per queued item, as soon as the main thread is free.
+/// * A drain that left damage presents at once if the display link is idle and the last present is at least
+///   one refresh old: sparse input keeps frame-per-event's latency and cost (no link wake, RESULTS 12.2).
+/// * Otherwise the damage waits for the display link: its callback (vsync V, target T) steps the input
+///   animations and arms ONE latch at T - `lead`, which drains the queue again and presents through the
+///   publisher thread. So at most one present per refresh, input sampled as late as the deadline allows,
+///   and animation commits follow the vsync instead of the next input event.
+/// * A callback with nothing pending and nothing animating pauses the link: idle is zero wakeups.
+struct Pacer {
+    q: RefCell<pace::InputQueue>,
+    /// Damage waits for the latch.
+    pending: Cell<bool>,
+    link_on: Cell<bool>,
+    /// Host-clock seconds (`CACurrentMediaTime`) of the last present.
+    last_present: Cell<f64>,
+    /// The refresh period (the link's target - timestamp; at first 1 / the screen's maximum rate).
+    period: Cell<f64>,
+    /// How long before the target vsync the latch runs: the frame's CPU part, the GPU, the publisher's
+    /// wake and the commit.
+    lead: f64,
+    last_vsync: Cell<Option<f64>>,
+    latch: RefCell<Option<objc2::rc::Retained<NSTimer>>>,
+    latch_armed: Cell<bool>,
+    /// `BOUGH_NOFRAME`: turns only (drag_probe's "frames off" accounting).
+    noframe: bool,
+    /// Frame-log builds only (`BOUGH_LATCH=tick`): present at the link callback instead of the latch.
+    at_tick: bool,
+}
+
+impl Pacer {
+    fn new(max_fps: f64) -> Pacer {
+        let mut lead = 0.003;
+        let mut at_tick = false;
+        if fl::ON {
+            if let Some(us) = std::env::var("BOUGH_LEAD_US").ok().and_then(|s| s.parse::<f64>().ok()) {
+                lead = us * 1e-6;
+            }
+            at_tick = std::env::var("BOUGH_LATCH").is_ok_and(|v| v == "tick");
+        }
+        Pacer {
+            q: RefCell::new(pace::InputQueue::new()),
+            pending: Cell::new(false),
+            link_on: Cell::new(false),
+            last_present: Cell::new(0.0),
+            period: Cell::new(1.0 / max_fps.max(1.0)),
+            lead,
+            last_vsync: Cell::new(None),
+            latch: RefCell::new(None),
+            latch_armed: Cell::new(false),
+            noframe: std::env::var_os("BOUGH_NOFRAME").is_some(),
+            at_tick,
+        }
+    }
+
+    fn presented(&self) {
+        self.last_present.set(objc2_quartz_core::CACurrentMediaTime());
+    }
+
+    fn start_link(&self, link: &objc2_quartz_core::CADisplayLink) {
+        if !self.link_on.replace(true) {
+            self.last_vsync.set(None);
+            link.setPaused(false);
+            fl::note(fl::N_LINK, 1, 0);
+        }
+    }
+
+    fn stop_link(&self, link: &objc2_quartz_core::CADisplayLink) {
+        if self.link_on.replace(false) {
+            link.setPaused(true);
+            self.last_vsync.set(None);
+            fl::note(fl::N_LINK, 0, 0);
+        }
+    }
+
+    /// Present now through the publisher thread.
+    fn present<V: View>(&self, app: &Rc<RefCell<App<V>>>, a: &mut App<V>, trim: &Rc<Trim>) {
+        self.pending.set(false);
+        fl::turn_begin(fl::K_PACED, 0);
+        let drew = a.frame();
+        after_frame(app, trim, a, drew);
+        fl::turn_end();
+        if drew {
+            self.presented();
+        }
+    }
+
+    /// The run loop is about to wait: drain what AppKit delivered, then present or defer.
+    fn pump<V: View>(&self, app: &Rc<RefCell<App<V>>>, link: &objc2_quartz_core::CADisplayLink, trim: &Rc<Trim>) {
+        if self.q.borrow().is_empty() {
+            return;
+        }
+        let Ok(mut a) = app.try_borrow_mut() else { return };
+        pace::drain(&self.q, &mut a);
+        if self.noframe {
+            if a.animating() {
+                self.start_link(link);
+            }
+            return;
+        }
+        if a.has_damage() {
+            let now = objc2_quartz_core::CACurrentMediaTime();
+            if !self.link_on.get() && now - self.last_present.get() >= self.period.get() {
+                // the first present of a refresh: from the event
+                self.present(app, &mut a, trim);
+            } else {
+                self.pending.set(true);
+            }
+        }
+        if self.pending.get() || a.animating() {
+            self.start_link(link);
+        }
+    }
+
+    /// The display link's callback: step the input animations to this refresh, then arm the latch (or pause).
+    fn on_vsync<V: View>(&self, app: &Rc<RefCell<App<V>>>, link: &objc2_quartz_core::CADisplayLink, trim: &Rc<Trim>) {
+        let (v, t) = (link.timestamp(), link.targetTimestamp());
+        if fl::ON {
+            fl::vsync(v, t);
+        }
+        if t > v && t - v < 0.05 {
+            self.period.set(t - v);
+        }
+        let Ok(mut a) = app.try_borrow_mut() else { return };
+        fl::turn_begin(fl::K_TICK, 0);
+        let dt = self.last_vsync.replace(Some(v)).map_or(self.period.get(), |l| (v - l).clamp(0.0, 0.05)) as f32;
+        let animated = a.tick(dt);
+        fl::turn_end();
+        if self.noframe {
+            if !animated {
+                self.stop_link(link);
+            }
+            return;
+        }
+        if self.pending.get() || a.has_damage() {
+            self.pending.set(true);
+            let delay = t - self.lead - objc2_quartz_core::CACurrentMediaTime();
+            if self.at_tick || delay <= 0.0002 {
+                self.present(app, &mut a, trim);
+            } else if !self.latch_armed.replace(true) {
+                fl::note(fl::N_LATCH, fl::secs_to_ns(t), fl::secs_to_ns(t - self.lead));
+                if let Some(timer) = self.latch.borrow().as_ref() {
+                    timer.setFireDate(&objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(delay));
+                }
+            }
+        } else if !animated {
+            self.stop_link(link);
+        }
+    }
+
+    /// The latch: the last inputs, then one frame.
+    fn on_latch<V: View>(&self, app: &Rc<RefCell<App<V>>>, trim: &Rc<Trim>) {
+        self.latch_armed.set(false);
+        let Ok(mut a) = app.try_borrow_mut() else { return };
+        pace::drain(&self.q, &mut a);
+        if a.has_damage() {
+            self.present(app, &mut a, trim);
+        }
+        self.pending.set(false);
+    }
+}
+
+thread_local! {
+    static PUMP: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+unsafe extern "C-unwind" fn before_waiting(_o: *mut objc2_core_foundation::CFRunLoopObserver, _a: objc2_core_foundation::CFRunLoopActivity, _i: *mut std::ffi::c_void) {
+    PUMP.with(|p| {
+        if let Some(f) = p.borrow().as_ref() {
+            f();
+        }
+    });
+}
+
+/// Run `f` on the main thread whenever its run loop is about to wait (every mode: live resize, menus).
+fn on_before_waiting(f: impl Fn() + 'static) {
+    use objc2_core_foundation::{kCFRunLoopCommonModes, CFRunLoop, CFRunLoopActivity, CFRunLoopObserver};
+    PUMP.with(|p| *p.borrow_mut() = Some(Box::new(f)));
+    // SAFETY: a repeating observer with a plain callback and no context; it lives as long as the process.
+    let obs = unsafe { CFRunLoopObserver::new(None, CFRunLoopActivity::BeforeWaiting.0, true, 0, Some(before_waiting), std::ptr::null_mut()) }.expect("run-loop observer");
+    // SAFETY: the main run loop and the common modes constant.
+    let modes = unsafe { kCFRunLoopCommonModes };
+    CFRunLoop::main().expect("main run loop").add_observer(Some(&obs), modes);
+    std::mem::forget(obs);
+}
+
+/// An interactive window: AppKit's mouse, wheel and key events are queued by a local event monitor (the
+/// window accepts mouse-moved events) and run as input turns when the run loop is about to wait; frames
+/// are paced by [`Pacer`] (at most one present per refresh; the first of a burst straight from the event,
+/// the rest at a latch just before the vsync; input animations step on the display link, which pauses when
+/// nothing is pending or animating). `start(host, app)` runs once the first frame is up (a probe installs
+/// its timers there). After `seconds` (if > 0) `report` runs and the process exits.
 pub fn run_interactive<V: View>(
     title: &str,
     make_cfg: fn(f32) -> Config,
@@ -347,7 +545,7 @@ pub fn run_interactive<V: View>(
     let (w, h) = (probe.width_pt as f64, probe.height_pt as f64);
     drop(probe);
     let mut init = Some((view, start, report));
-    let mut state: Option<(Rc<RefCell<App<V>>>, Option<std::time::Instant>)> = None;
+    let mut state: Option<(Rc<RefCell<App<V>>>, Rc<Pacer>)> = None;
     let trim = Rc::new(Trim::default());
     bough_metal::app::run_sized(title, w, h, move |host, link| {
         if let Some((view, start, report)) = init.take() {
@@ -355,39 +553,28 @@ pub fn run_interactive<V: View>(
             app.frame();
             let app = Rc::new(RefCell::new(app));
             host.window.setAcceptsMouseMovedEvents(true);
+            // the display's own rate for input motion (ProMotion: the link otherwise follows the system's choice)
+            let max_fps = host.window.screen().map_or(120, |s| s.maximumFramesPerSecond()) as f32;
+            link.setPreferredFrameRateRange(objc2_quartz_core::CAFrameRateRange { minimum: max_fps, maximum: max_fps, preferred: max_fps });
+            let pacer = Rc::new(Pacer::new(max_fps as f64));
+            pacer.presented();
             // the content height flips AppKit's coordinates; it follows the window (live resize)
             let content_h = Rc::new(Cell::new(h));
-            observe_resize(host, &app, &trim, &content_h);
+            observe_resize(host, &app, &trim, &content_h, &pacer);
             {
-                let (app, trim, host2, content_h) = (app.clone(), trim.clone(), host.clone(), content_h.clone());
+                // the monitor only queues: the turns run when the run loop is about to wait
+                let (pacer, content_h) = (pacer.clone(), content_h.clone());
                 let blk = RcBlock::new(move |e: NonNull<NSEvent>| -> *mut NSEvent {
                     // SAFETY: AppKit hands the monitor a live event for the duration of the call.
                     let ev = unsafe { e.as_ref() };
-                    if let Ok(mut a) = app.try_borrow_mut() {
-                        if fl::ON {
-                            let (k, t) = (turn_kind(ev), fl::secs_to_ns(ev.timestamp()));
-                            let seq = if k == fl::K_KEY || k == fl::K_WHEEL { 0 } else { ev.eventNumber() as u64 };
-                            fl::event(k, t, seq, 0);
-                            fl::turn_begin(k, t);
-                        }
-                        if dispatch_event(&mut a, ev, content_h.get()) {
-                            if fl::ON {
-                                // the input left something to show (damage, or an input animation started)
-                                fl::or(fl::M_FLAGS, ((a.has_damage() || a.animating()) as u64) << 3);
-                            }
-                            if std::env::var_os("BOUGH_NOFRAME").is_none() {
-                                let drew = a.frame();
-                                after_frame(&app, &trim, &mut a, drew);
-                            }
-                            if a.animating() {
-                                if fl::ON && host2.link.isPaused() {
-                                    fl::note(fl::N_LINK, 1, 0);
-                                }
-                                host2.link.setPaused(false);
-                            }
-                        }
-                        fl::turn_end();
+                    let t = if fl::ON { fl::secs_to_ns(ev.timestamp()) } else { 0 };
+                    if fl::ON {
+                        let k = turn_kind(ev);
+                        let seq = if k == fl::K_KEY || k == fl::K_WHEEL { 0 } else { ev.eventNumber() as u64 };
+                        fl::event(k, t, seq, 0);
                     }
+                    let mut q = pacer.q.borrow_mut();
+                    inputs_of(ev, content_h.get(), |i| q.push(i, t));
                     e.as_ptr()
                 });
                 let mask = NSEventMask::MouseMoved
@@ -404,6 +591,25 @@ pub fn run_interactive<V: View>(
                 let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &blk) };
                 std::mem::forget(monitor);
                 std::mem::forget(blk);
+            }
+            {
+                let (app, pacer, trim, host2) = (app.clone(), pacer.clone(), trim.clone(), host.clone());
+                on_before_waiting(move || pacer.pump(&app, &host2.link, &trim));
+            }
+            {
+                // the latch: one reusable timer, armed per refresh by `on_vsync` (a repeating timer whose next
+                // fire date is set; between latches it waits a year)
+                let (app, trim, weak) = (app.clone(), trim.clone(), Rc::downgrade(&pacer));
+                let blk = RcBlock::new(move |_t: NonNull<NSTimer>| {
+                    if let Some(p) = weak.upgrade() {
+                        p.on_latch(&app, &trim);
+                    }
+                });
+                let year = 365.0 * 86400.0;
+                let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(year, true, &blk) };
+                t.setTolerance(0.0);
+                unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&t, objc2_foundation::NSRunLoopCommonModes) };
+                *pacer.latch.borrow_mut() = Some(t);
             }
             if seconds > 0.0 {
                 let host = host.clone();
@@ -423,16 +629,24 @@ pub fn run_interactive<V: View>(
             }
             {
                 // the caret blink: a flip every half period while a field is focused (paint writes: after two
-                // frames the ring's surfaces hold both states and a flip costs no GPU work)
-                let (app, trim) = (app.clone(), trim.clone());
+                // frames the ring's surfaces hold both states and a flip costs no GPU work). A clock source: its
+                // frame is paced, unless the display link is running, when the latch publishes it with the rest
+                let (app, trim, pacer) = (app.clone(), trim.clone(), pacer.clone());
                 let half = app.borrow().rt.input.blink_half as f64;
                 if half > 0.0 {
                     let blk = RcBlock::new(move |_t: NonNull<NSTimer>| {
                         if let Ok(mut a) = app.try_borrow_mut() {
                             fl::turn_begin(fl::K_TIMER, 0);
                             if a.next_blink().is_some() && a.tick(half as f32) {
-                                let drew = a.frame_paced();
-                                after_frame(&app, &trim, &mut a, drew);
+                                if pacer.link_on.get() {
+                                    pacer.pending.set(a.has_damage() || pacer.pending.get());
+                                } else {
+                                    let drew = a.frame_paced();
+                                    after_frame(&app, &trim, &mut a, drew);
+                                    if drew {
+                                        pacer.presented();
+                                    }
+                                }
                             }
                             fl::turn_end();
                         }
@@ -449,28 +663,11 @@ pub fn run_interactive<V: View>(
                 h(host);
             }
             link.setPaused(true);
-            state = Some((app, None));
+            state = Some((app, pacer));
             return;
         }
-        if let Some((app, last)) = &mut state {
-            let Ok(mut a) = app.try_borrow_mut() else { return };
-            if fl::ON {
-                fl::vsync(link.timestamp(), link.targetTimestamp());
-            }
-            fl::turn_begin(fl::K_TICK, 0);
-            let now = std::time::Instant::now();
-            let dt = last.map_or(1.0 / 120.0, |l| now.duration_since(l).as_secs_f32().min(0.05));
-            *last = Some(now);
-            if !a.tick(dt) {
-                link.setPaused(true);
-                fl::note(fl::N_LINK, 0, 0);
-                *last = None;
-                fl::turn_end();
-                return;
-            }
-            let drew = a.frame_paced();
-            after_frame(app, &trim, &mut a, drew);
-            fl::turn_end();
+        if let Some((app, pacer)) = &state {
+            pacer.on_vsync(app, link, &trim);
         }
     })
 }

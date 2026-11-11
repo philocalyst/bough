@@ -40,6 +40,9 @@ sabotage_copy = []
 # The frame log (bough-metal src/framelog.rs) and the in-process input driver (backend/drive.rs): diagnostics, compiled
 # out without it.
 framelog = ["bough-metal/framelog"]
+# Gate sabotage (pacing G2): the input queue also merges a click into an adjacent identical click; the storm test
+# must fail with it.
+sabotage_coalesce = []
 
 [dev-dependencies]
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }
