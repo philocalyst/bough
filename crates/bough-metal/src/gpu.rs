@@ -54,7 +54,9 @@ pub static METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.me
 /// `shader.metal` compiled from source.
 pub fn load_library(device: &ProtocolObject<dyn MTLDevice>) -> Retained<ProtocolObject<dyn MTLLibrary>> {
     if METALLIB.is_empty() {
-        let s = NSString::from_str(SHADER_SRC);
+        // a build without a Metal compiler (kernel development): `BOUGH_MSL` names a source to compile instead
+        let over = std::env::var_os("BOUGH_MSL").map(|p| std::fs::read_to_string(p).expect("BOUGH_MSL"));
+        let s = NSString::from_str(over.as_deref().unwrap_or(SHADER_SRC));
         device.newLibraryWithSource_options_error(&s, None).expect("msl compile")
     } else {
         let data = DispatchData::from_static_bytes(METALLIB);

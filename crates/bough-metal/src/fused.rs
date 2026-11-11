@@ -246,6 +246,24 @@ impl Warm {
 
 // ------------------------------------------------------------------ the frame stream's encoder
 
+/// The three pipelines of one generation of the kernels (`fs_bin`, `fs_tile`, `fs_copy`): the presenter's own,
+/// or the frozen original ones the gates compare against (`oracle.metal`).
+struct Psos {
+    bin: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    tile: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    copy: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+}
+
+impl Psos {
+    fn new(device: &Dev, lib: &ProtocolObject<dyn MTLLibrary>) -> Psos {
+        let pso = |name: &NSString| {
+            let f = lib.newFunctionWithName(name).expect("kernel");
+            device.newComputePipelineStateWithFunction_error(&f).expect("compute pso")
+        };
+        Psos { bin: pso(ns_string!("fs_bin")), tile: pso(ns_string!("fs_tile")), copy: pso(ns_string!("fs_copy")) }
+    }
+}
+
 /// What encoding a frame needs, shared by the main thread and the publisher thread (which keeps the stream
 /// armed, so no encode or commit runs on the input thread): the stream queue and event, the region, both
 /// pipelines, the slot offsets, and the arming state behind one lock (two threads never arm overlapping
@@ -254,9 +272,7 @@ struct Kern {
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     ev: Retained<ProtocolObject<dyn MTLSharedEvent>>,
     pool: Retained<ProtocolObject<dyn MTLBuffer>>,
-    pso_bin: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    pso_tile: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    pso_copy: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    psos: Psos,
     slots: [std::sync::atomic::AtomicU32; 3],
     batch: std::sync::atomic::AtomicUsize,
     /// Mirror of `arm.armed_upto` for a lock-free "already armed?" test.
@@ -278,6 +294,11 @@ impl Kern {
     /// region and the slot offset (everything else is in the bind table). `indirect`: the dispatch sizes come
     /// from the slot (pre-armed frames); otherwise `nrows` / `ntiles`.
     fn encode(&self, cmd: &ProtocolObject<dyn MTLCommandBuffer>, k: usize, nrows: u32, ntiles: u32, indirect: bool) {
+        self.encode_with(&self.psos, cmd, k, nrows, ntiles, indirect);
+    }
+
+    /// `encode` through the pipelines `psos` (the presenter's own, or the oracle's).
+    fn encode_with(&self, psos: &Psos, cmd: &ProtocolObject<dyn MTLCommandBuffer>, k: usize, nrows: u32, ntiles: u32, indirect: bool) {
         let slot = self.slots[k].load(Relaxed);
         let enc = cmd.computeCommandEncoder().expect("compute encoder");
         let offs = [slot, 0];
@@ -286,10 +307,10 @@ impl Kern {
             enc.setBytes_length_atIndex(NonNull::new(offs.as_ptr() as *mut _).unwrap(), 8, 1);
             // the scroll copy (0 threadgroups without one): disjoint from the tiles the repair writes, so no
             // barrier orders it against the tile pass
-            enc.setComputePipelineState(&self.pso_copy);
+            enc.setComputePipelineState(&psos.copy);
             let tgc = MTLSize { width: 32, height: 8, depth: 1 };
             enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, slot as usize + 32, tgc);
-            enc.setComputePipelineState(&self.pso_bin);
+            enc.setComputePipelineState(&psos.bin);
             let tg = MTLSize { width: 256, height: 1, depth: 1 };
             if indirect {
                 enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, slot as usize, tg);
@@ -297,7 +318,7 @@ impl Kern {
                 enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: nrows as usize, height: 1, depth: 1 }, tg);
             }
             enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
-            enc.setComputePipelineState(&self.pso_tile);
+            enc.setComputePipelineState(&psos.tile);
             let tg2 = MTLSize { width: 16, height: 16, depth: 1 };
             if indirect {
                 enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, slot as usize + 12, tg2);
@@ -544,6 +565,11 @@ pub struct Fused {
     pending: Option<usize>,
     /// The surface the last calling-thread commit put on screen.
     last_main: usize,
+    /// The frozen original kernels (`oracle.metal`), compiled at the first reference render.
+    oracle: Option<Psos>,
+    /// `BOUGH_AB` set: time the kernels against the oracle's at draws 60, 120 and 180 (`ab_probe`).
+    ab: bool,
+    ab_draw: u32,
 }
 
 /// Byte offset of the bind table in the region header (`FBind` in shader.metal).
@@ -575,9 +601,7 @@ pub struct GpuPrep {
     device: Dev,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     aux: Retained<ProtocolObject<dyn MTLCommandQueue>>,
-    pso_bin: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    pso_tile: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    pso_copy: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    psos: Psos,
     res: Option<PrepRes>,
     /// Instructions the building thread retired (thread_selfcounts) and its wall time.
     pub instructions: u64,
@@ -612,19 +636,13 @@ impl GpuPrep {
         let queue = device.newCommandQueue().expect("queue");
         let aux = device.newCommandQueue().expect("aux queue");
         let lib = crate::gpu::load_library(&device);
-        let pso = |name: &NSString| {
-            let f = lib.newFunctionWithName(name).expect("kernel");
-            device.newComputePipelineStateWithFunction_error(&f).expect("compute pso")
-        };
-        let pso_bin = pso(ns_string!("fs_bin"));
-        let pso_tile = pso(ns_string!("fs_tile"));
-        let pso_copy = pso(ns_string!("fs_copy"));
+        let psos = Psos::new(&device, &lib);
         let res = dims.map(|(w, h, surfaces, bin_cap)| {
             let (atlas, bins, counts) = Fused::new_bins(&device, h, bin_cap);
             let surfs = (0..surfaces.clamp(1, MAX_SURFACES)).map(|_| Fused::new_surface(&device, w, h)).collect();
             ((w, h, surfaces, bin_cap), atlas, bins, counts, surfs)
         });
-        GpuPrep { device, queue, aux, pso_bin, pso_tile, pso_copy, res, instructions: thread_instructions() - i0, nanos: t0.elapsed().as_nanos() as u64 }
+        GpuPrep { device, queue, aux, psos, res, instructions: thread_instructions() - i0, nanos: t0.elapsed().as_nanos() as u64 }
     }
 }
 
@@ -676,7 +694,7 @@ impl Fused {
     }
 
     fn with_pool(prep: GpuPrep, src: PoolSrc, w: usize, h: usize, scale: f64, surfaces: usize, bin_cap: u32) -> Fused {
-        let GpuPrep { device, queue, aux, pso_bin, pso_tile, pso_copy, res, .. } = prep;
+        let GpuPrep { device, queue, aux, psos, res, .. } = prep;
         let (pool, region_len, pool_keep) = match src {
             PoolSrc::Alloc(len) => (device.newBufferWithLength_options(len, MTLResourceOptions::StorageModeShared).expect("region buffer"), len, None),
             PoolSrc::Wrap { ptr, len, keep } => {
@@ -698,9 +716,7 @@ impl Fused {
             queue: queue.clone(),
             ev: device_ev.clone(),
             pool: pool.clone(),
-            pso_bin: pso_bin.clone(),
-            pso_tile: pso_tile.clone(),
-            pso_copy,
+            psos,
             slots: Default::default(),
             batch: std::sync::atomic::AtomicUsize::new(16),
             armed: AtomicU64::new(0),
@@ -748,6 +764,9 @@ impl Fused {
             img: None,
             pending: None,
             last_main: NONE_SURF,
+            oracle: None,
+            ab: std::env::var_os("BOUGH_AB").is_some(),
+            ab_draw: 0,
         };
         // the residency set is what makes the bind table's resources reachable (encoders bind nothing else)
         {
@@ -1150,6 +1169,9 @@ impl Fused {
         unsafe { (*(self.pool_ptr as *mut FHdr)).n_dir = n_dir };
         // the slot names the target; the pre-encoded frame names none
         debug_assert!(copy.is_none() || (copy.src as usize != target && self.surfs[copy.src as usize].touched.get()));
+        if self.ab {
+            self.ab_probe(target, rows, full, n_dir, copy);
+        }
         let (nt, _) = self.write_slot(k, target as u32, rows, full, copy);
         self.release(k, nt);
         if self.publish {
@@ -1281,9 +1303,41 @@ impl Fused {
         read_io(&self.surfs[i].io, self.w, self.h)
     }
 
-    /// A from-scratch full redraw of the current region through the same kernels into a private surface.
+    /// The frozen original kernels (the shader as of the round-6 base, `oracle.metal`), compiled on first use.
+    /// They read the same region, slots and bind table: every layout change since is an append.
+    fn oracle(&mut self) {
+        if self.oracle.is_none() {
+            let src = NSString::from_str(include_str!("oracle.metal"));
+            let lib = self.device.newLibraryWithSource_options_error(&src, None).expect("oracle msl compile");
+            self.oracle = Some(Psos::new(&self.device, &lib));
+        }
+    }
+
+    /// A from-scratch full redraw of the current region into a private surface, through the presenter's
+    /// kernels AND through the original ones (`oracle.metal`): the two must agree byte for byte (a panic
+    /// otherwise), so a gate that compares a retained frame with this compares it with the original raster,
+    /// and no mechanism added to the kernels can hide a dropped or reordered entry in both of its own renders.
     pub fn reference_pixels(&mut self, n_dir: u32) -> Vec<u8> {
+        let ours = self.full_redraw(n_dir, false);
+        let orig = self.full_redraw(n_dir, true);
+        if ours != orig {
+            let n = ours.chunks(4).zip(orig.chunks(4)).filter(|(a, b)| a != b).count();
+            let first = ours.chunks(4).zip(orig.chunks(4)).position(|(a, b)| a != b).unwrap();
+            panic!("the kernels' full redraw differs from the original kernels' in {n} pixels (first at {}, {})", first % self.w, first / self.w);
+        }
+        orig
+    }
+
+    /// The original kernels' full redraw alone (the independent raster oracle).
+    pub fn oracle_pixels(&mut self, n_dir: u32) -> Vec<u8> {
+        self.full_redraw(n_dir, true)
+    }
+
+    fn full_redraw(&mut self, n_dir: u32, oracle: bool) -> Vec<u8> {
         self.sync();
+        if oracle {
+            self.oracle();
+        }
         if self.scratch.is_none() {
             self.scratch = Some(Self::new_surface(&self.device, self.w, self.h));
         }
@@ -1298,7 +1352,7 @@ impl Fused {
         unsafe { (*(self.pool_ptr.add(FBIND_OFF) as *mut FBind)).t[0] = rid(&s) };
         let (nt, nr) = self.write_slot(2, 0, &[], true, &SlotCopy::NONE);
         let cmd = self.aux.commandBuffer().expect("command buffer");
-        self.encode(&cmd, 2, nr, nt, false);
+        self.kern.encode_with(if oracle { self.oracle.as_ref().unwrap() } else { &self.kern.psos }, &cmd, 2, nr, nt, false);
         cmd.commit();
         cmd.waitUntilCompleted();
         self.write_binds();
@@ -1316,7 +1370,16 @@ impl Fused {
     /// `copy`: a scroll copy first (RESULTS §15; `SlotCopy::NONE` for none).
     #[allow(clippy::too_many_arguments)]
     pub fn bench_frames(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32, reps: usize, debug: u32, copy: &SlotCopy) -> f64 {
+        self.bench_frames_with(false, target, rows, full, n_dir, reps, debug, copy)
+    }
+
+    /// `bench_frames` through the presenter's kernels or the original ones (`oracle`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn bench_frames_with(&mut self, oracle: bool, target: usize, rows: &[u128], full: bool, n_dir: u32, reps: usize, debug: u32, copy: &SlotCopy) -> f64 {
         self.sync();
+        if oracle {
+            self.oracle();
+        }
         self.prepare_target(target);
         // SAFETY: header fields `n_dir`, `debug`; the GPU is idle (synced above).
         unsafe {
@@ -1329,13 +1392,48 @@ impl Fused {
         let (nt, nr) = self.write_slot(2, target as u32, rows, full, copy);
         let cmd = self.aux.commandBuffer().expect("command buffer");
         for _ in 0..reps {
-            self.encode(&cmd, 2, nr, nt, false);
+            self.kern.encode_with(if oracle { self.oracle.as_ref().unwrap() } else { &self.kern.psos }, &cmd, 2, nr, nt, false);
         }
         cmd.commit();
         cmd.waitUntilCompleted();
         // SAFETY: as above; the GPU is idle again.
         unsafe { (*(self.pool_ptr as *mut FHdr)).debug = 0 };
         (cmd.GPUEndTime() - cmd.GPUStartTime()) * 1e3 / reps as f64
+    }
+
+    /// Kernel A/B on the frame about to be drawn (`BOUGH_AB`, draws 60 / 120 / 180): the presenter's kernels
+    /// against the original ones, interleaved in alternating order, 100 back-to-back frames each (the GPU
+    /// saturated: its clock is steady, so the ratio holds under load); whole frame and repair without the
+    /// scroll copy. The two retained results must be the same bytes.
+    #[cold]
+    fn ab_probe(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32, copy: &SlotCopy) {
+        self.ab_draw += 1;
+        if ![60, 120, 180].contains(&self.ab_draw) {
+            return;
+        }
+        let tiles: u32 = if full { self.lay.tiles_x() * self.lay.tiles_y() } else { rows.iter().map(|r| r.count_ones()).sum() };
+        eprintln!("AB frame={} size={}x{} full={} tiles={} copy={}", self.ab_draw, self.w, self.h, full, tiles, !copy.is_none() && !full);
+        let cycles: usize = std::env::var("BOUGH_AB").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 1).unwrap_or(6);
+        for cycle in 0..cycles {
+            let mut cases = vec![(false, "whole"), (true, "whole"), (false, "repair"), (true, "repair")];
+            if cycle % 2 != 0 {
+                cases.reverse();
+            }
+            for (oracle, name) in cases {
+                let cp = if name == "whole" { copy } else { &SlotCopy::NONE };
+                let ms = self.bench_frames_with(oracle, target, rows, full, n_dir, 100, 0, cp);
+                eprintln!("AB_TIME frame={} cycle={} k={} case={} us={:.3}", self.ab_draw, cycle, if oracle { "ref" } else { "new" }, name, ms * 1e3);
+            }
+        }
+        self.bench_frames_with(true, target, rows, full, n_dir, 1, 0, copy);
+        let a = read_io(&self.surfs[target].io, self.w, self.h);
+        // the frame as the stream will draw it: the target holds it when the probe returns
+        self.bench_frames_with(false, target, rows, full, n_dir, 1, 0, copy);
+        let b = read_io(&self.surfs[target].io, self.w, self.h);
+        let bad = a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| x != y).count();
+        eprintln!("AB_PIXEL frame={} different_pixels={}", self.ab_draw, bad);
+        // `BOUGH_AB_LOOSE`: a timing experiment that is not meant to be exact (a floor, a disabled stage)
+        assert!(bad == 0 || std::env::var_os("BOUGH_AB_LOOSE").is_some(), "the kernels' retained frame differs from the original kernels'");
     }
 
     /// Did a row bin overflow in the last frame and stay unrepaired? (tests: always false after a sync, since
