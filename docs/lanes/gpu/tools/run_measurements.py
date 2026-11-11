@@ -20,8 +20,15 @@ def guarded_run(args, **kw):
     global serial
     # Keep result metadata and all child output. Reject silent process failures.
     serial += 1
+    processes = original_run(['ps','-axo','pid,pcpu,comm'],capture_output=True,text=True).stdout
+    (out/f'load-{serial:04d}-before.txt').write_text(processes)
+    heavy = [line for line in processes.splitlines() if pathlib.Path(line.split()[-1]).name in ('rustc','clang','clang++','ninja','cc1')]
+    assert not heavy, ('heavy work during measurement', heavy)
     p = original_run(args, **kw)
     (out/f'child-{serial:04d}.json').write_text(json.dumps({'args':args, 'returncode':p.returncode,'stdout':p.stdout,'stderr':p.stderr}))
+    after = original_run(['ps','-axo','pid,pcpu,comm'],capture_output=True,text=True).stdout
+    (out/f'load-{serial:04d}-after.txt').write_text(after)
+    assert not [line for line in after.splitlines() if pathlib.Path(line.split()[-1]).name in ('rustc','clang','clang++','ninja','cc1')], 'heavy work started during measurement'
     assert p.returncode == 0, (args, p.returncode, p.stderr)
     return p
 subprocess.run = guarded_run
