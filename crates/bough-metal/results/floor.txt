@@ -1,0 +1,19 @@
+| operation (per iteration) | instr | CPU us | wall us |
+|---|---|---|---|
+| snap() itself (proc_pid_rusage) | 5725 | 0.3 | 0.3 |
+| commandBuffer + commit + waitUntilCompleted (empty) | 112164 | 35.8 | 53.8 |
+| commandBuffer + commit, no wait (empty) | 50592 | 13.4 | 7.0 |
+| tiny repair (16x16, 1 draw): encode+commit, wait=completed | 241486 | 164.3 | 667.6 |
+| tiny repair (16x16, 1 draw): encode+commit, wait=scheduled | 228090 | 87.3 | 100.5 |
+| tiny repair (16x16, 1 draw): encode+commit, no wait (poll) | 180093 | 60.0 | 55.5 |
+| tiny repair (16x16, 1 draw): encode+commit, completed handler | 239298 | 139.9 | 465.1 |
+| tiny repair: UNRETAINED-refs cmdbuf, encode+commit+wait=scheduled | 220028 | 92.8 | 130.4 |
+| tiny repair: retained cmdbuf, encode+commit+wait=scheduled (same loop, for A/B) | 220120 | 80.5 | 88.8 |
+| tiny repair: encode only, no commit (cmdbuf dropped via enqueue-less path is invalid, so: encode+commit+drain every 8) | 163131 | 50.3 | 59.0 |
+| full repaint (1470 inst, 1 draw): encode+commit+wait | 239388 | 167.6 | 872.3 |
+| whole-texture blit copy 1920x1440 (private->private) + wait | 188359 | 89.0 | 297.5 |
+GPU ms (median of 300) empty command buffer: 0.000  p99 0.000
+GPU ms (median of 300) tiny 16x16 repair: 0.014  p99 0.282
+GPU ms (median of 300) 400px-tall viewport repair (1488x400): 0.075  p99 0.368
+GPU ms (median of 300) full repaint (DontCare load): 0.214  p99 0.529
+GPU ms (median of 300) whole-texture blit copy: 0.086  p99 0.651

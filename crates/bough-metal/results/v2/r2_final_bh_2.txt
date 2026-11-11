@@ -1,0 +1,22 @@
+
+### strategy `b-iosurface-handler` damage-mode `stencil` link-pause false
+
+| scenario | frames | process instr / frame | main-thread in-tick instr (med) | publish-thread instr / publish | GPU ms med / p99 | tick interval med / p99 | publish interval med / p99 | present->publish-commit ms med | CPU us / frame (all threads) | wakeups / frame |
+|---|---|---|---|---|---|---|---|---|---|---|
+| idle | 168 ticks in 1.40 s | **5445402 instr/s** | NaN (tick body) | - | - | - | - | - | 4.2 ms CPU/s | 121.3 wakeups/s |
+| one-colour | 168 | **481454** | 83436 | - | 0.141 / 1.036 | 8.33 / 8.33 | NaN / NaN | NaN | 280.4 | 1.04 |
+| scatter-80 | 169 | **477495** | 156987 | - | 0.423 / 1.033 | 8.33 / 8.33 | NaN / NaN | NaN | 275.2 | 1.01 |
+| scroll-400 | 168 | **533123** | 211056 | - | 0.333 / 1.055 | 8.33 / 8.33 | NaN / NaN | NaN | 255.2 | 1.01 |
+| full | 168 | **379490** | 58858 | - | 0.584 / 1.227 | 8.33 / 8.33 | NaN / NaN | NaN | 239.8 | 1.01 |
+| toggle | 169 | **379222** | 59822 | - | 0.154 / 0.974 | 8.33 / 8.33 | NaN / NaN | NaN | 259.7 | 1.01 |
+| sparse (13 changes, 169 ticks) | 13 | **980292** | 85310 | - | 0.344 / 1.069 | NaN / NaN | NaN / NaN | NaN | 751.4 | 14.08 |
+
+threads [idle] (us per run): main#259 5768.0us, ?#21251 59.0us, ?#42243 37.0us
+threads [one-colour] (us per frame): ?#21251 108.0us, main#259 88.2us, ?#42243 84.2us, com.apple.NSEventThread#39971 0.1us
+threads [scatter-80] (us per frame): ?#42243 102.1us, main#259 100.0us, ?#21251 57.6us, ?#8707 15.6us
+threads [scroll-400] (us per frame): main#259 92.9us, ?#8707 89.1us, ?#26115 47.2us
+threads [full] (us per frame): main#259 82.2us, ?#8707 80.8us, ?#26115 76.9us
+threads [toggle] (us per frame): ?#8707 87.7us, main#259 85.7us, ?#26115 71.6us, ?#21251 14.9us
+threads [sparse] (us per frame): main#259 573.7us, ?#21251 95.0us, ?#8707 84.5us
+memory: RSS 36.4 MB, phys_footprint 159.0 MB, MTLDevice.currentAllocatedSize 42.1 MB, surfaces 33.2 MB
+IOSurfaceIsInUse before each present, histogram by bit pattern (bit0 = surface about to be drawn, bit1 = next, bit2 = the one presented last frame): [1, 0, 0, 0, 42, 0, 842, 0]; skips 0

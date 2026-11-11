@@ -1,0 +1,20 @@
+wrote /Users/mileswirht/projects/bough/bench/baselines/macos/raw/micro.csv (54 rows)
+framework  scene                  RENDER figure            median (ns)             p10 (ns)             p90 (ns)  reps
+gpui-fast  state                  n/a    frame  957,800 [952,600-972,000] 845,100 [841,000-848,400] 1,464,200 [1,434,700-1,489,200]  3
+gpui-fast  state                  n/a    write              40 [40-60]           20 [20-40]          60 [60-100]  3
+zgx        state                  0      frame     2,200 [2,200-2,300]  2,100 [2,000-2,100]  2,500 [2,400-5,900]  3
+zgx        state                  0      write       1,020 [980-1,040]        780 [760-860]  1,120 [1,080-2,040]  3
+zgx        state                  1      frame  141,600 [133,600-168,100] 75,400 [71,900-76,000] 314,000 [305,300-320,200]  3
+zgx        state                  1      write     1,580 [1,540-1,800]  1,380 [1,240-1,420]  2,280 [1,700-2,880]  3
+gpui-fast  vscroll-fixed          n/a    frame  37,600 [37,200-37,900] 34,400 [34,300-34,600] 67,300 [45,700-68,500]  3
+gpui-fast  vscroll-fixed          n/a    write              80 [60-80]           40 [40-60]        100 [100-220]  3
+zgx        vscroll-fixed          0      frame     4,000 [3,800-4,000]  3,600 [3,500-3,600] 9,800 [4,300-10,500]  3
+zgx        vscroll-fixed          0      write     1,200 [1,180-3,060]  1,180 [1,160-1,200]  3,220 [1,200-3,880]  3
+zgx        vscroll-fixed          1      frame  201,000 [187,300-235,400] 104,200 [103,600-125,900] 347,800 [340,400-363,400]  3
+zgx        vscroll-fixed          1      write     2,100 [2,040-2,240]  1,920 [1,820-1,980]  4,460 [2,980-5,380]  3
+gpui-fast  vscroll-variable       n/a    frame  162,400 [159,800-167,800] 133,700 [131,300-134,300] 219,400 [198,600-258,600]  3
+gpui-fast  vscroll-variable       n/a    write           160 [160-160]        120 [120-140]        180 [180-200]  3
+zgx        vscroll-variable       0      frame     7,100 [7,100-7,300]        900 [900-900] 13,000 [12,100-13,700]  3
+zgx        vscroll-variable       0      write     7,140 [7,040-7,260]  6,460 [6,440-6,480] 8,660 [7,940-10,040]  3
+zgx        vscroll-variable       1      frame  213,800 [206,600-222,200] 115,500 [108,900-128,500] 340,900 [302,600-378,200]  3
+zgx        vscroll-variable       1      write     8,520 [8,460-8,580]  7,760 [7,740-7,900] 10,040 [9,840-10,180]  3

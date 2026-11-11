@@ -1,0 +1,15 @@
+[package]
+name = "bough-text-bench"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Text round 3: zgx's and zgui's text workloads ported to bough (label churn, heavy's text, text_bench, editor_streaming, i18n_bench, code_editor_bench), with their correctness gates"
+
+[dependencies]
+bough = { path = "../../crates/bough" }
+bough-text = { path = "../../crates/bough-text" }
+bough-metal = { path = "../../crates/bough-metal" }
+bough-mem = { path = "../../crates/bough-mem" }
+bough-vlist = { path = "../bough-vlist" }
+zgx-workload = { git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }
+rustybuzz = "0.20"

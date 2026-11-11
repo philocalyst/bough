@@ -1,0 +1,1 @@
+4000 rows: 3.37 M instructions, 4.604 ms per tick

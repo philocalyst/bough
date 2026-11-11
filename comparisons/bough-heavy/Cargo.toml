@@ -1,0 +1,25 @@
+[package]
+name = "bough-heavy"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "zgx's heavy dashboard scene on the bough façade: windowed and headless adapters"
+
+[dependencies]
+bough = { path = "../../crates/bough" }
+bough-metal = { path = "../../crates/bough-metal" }
+zgx-workload = { git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }
+libc = "0.2"
+
+[[bin]]
+name = "heavy_workload"
+path = "src/bin/heavy_workload.rs"
+[[bin]]
+name = "heavy_headless"
+path = "src/bin/heavy_headless.rs"
+[[bin]]
+name = "heavy_shot"
+path = "src/bin/heavy_shot.rs"
+[[bin]]
+name = "frame_diff"
+path = "src/bin/frame_diff.rs"

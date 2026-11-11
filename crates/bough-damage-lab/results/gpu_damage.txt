@@ -1,0 +1,10 @@
+dump_heavy-stream.bin ring 1: frames 120, live inst 2770, GPU total median 417.9 us (damage-only 42.2 us, damage+bin 230.9 us), pairs median 2881, tile-row mismatches vs CPU sig32: 0/6000
+dump_heavy-stream.bin ring 2: frames 119, live inst 2770, GPU total median 311.0 us (damage-only 41.5 us, damage+bin 231.0 us), pairs median 2960, tile-row mismatches vs CPU sig32: 0/5950
+dump_heavy-both.bin ring 1: frames 120, live inst 2774, GPU total median 448.9 us (damage-only 33.9 us, damage+bin 188.6 us), pairs median 4405, tile-row mismatches vs CPU sig32: 0/6000
+dump_heavy-both.bin ring 2: frames 119, live inst 2774, GPU total median 331.1 us (damage-only 34.0 us, damage+bin 185.5 us), pairs median 4473, tile-row mismatches vs CPU sig32: 0/5950
+dump_lab-stream.bin ring 1: frames 120, live inst 1084, GPU total median 87.0 us (damage-only 16.6 us, damage+bin 76.2 us), pairs median 259, tile-row mismatches vs CPU sig32: 0/5400
+dump_lab-stream.bin ring 2: frames 119, live inst 1084, GPU total median 111.9 us (damage-only 25.2 us, damage+bin 154.0 us), pairs median 265, tile-row mismatches vs CPU sig32: 0/5355
+dump_animate.bin ring 1: frames 120, live inst 88, GPU total median 177.9 us (damage-only 27.5 us, damage+bin 78.0 us), pairs median 89, tile-row mismatches vs CPU sig32: 0/5400
+dump_animate.bin ring 2: frames 119, live inst 88, GPU total median 107.3 us (damage-only 49.0 us, damage+bin 142.5 us), pairs median 93, tile-row mismatches vs CPU sig32: 0/5355
+dump_vlist-scroll.bin ring 1: frames 120, live inst 1553, GPU total median 334.0 us (damage-only 29.5 us, damage+bin 193.7 us), pairs median 3377, tile-row mismatches vs CPU sig32: 0/6000
+dump_vlist-scroll.bin ring 2: frames 119, live inst 1553, GPU total median 602.7 us (damage-only 37.1 us, damage+bin 284.1 us), pairs median 3371, tile-row mismatches vs CPU sig32: 0/5950

@@ -1,0 +1,9 @@
+This is a diagnostic probe and not a reference workload: it streams an agent-shaped session into a followed thread and watches what the scene's tables keep.
+  tick      clips   clip_ids      paints   paint_ids   spaces   cost_us
+     0          3          3           2           2        3    1759.9
+tick 200: shaped=1 rebroken=1 relaid=5 rebuilt=0 diffed=20 reencoded=0 translated=75 emitted=3804 glyphs=0 restyled=0
+   500         15         15           3           3        3   18083.2
+  1000         28         28           3           3        3   15674.2
+  1500         40         40           3           3        3   11209.8
+  2000         53         53           3           3        3   10557.2
+  2500         65         65           3           3        3   16787.8

@@ -1,0 +1,10 @@
+
+### strategy `b-iosurface-handler` damage-mode `stencil` link-pause false
+
+| scenario | frames | process instr / frame | main-thread in-tick instr (med) | publish-thread instr / publish | GPU ms med / p99 | tick interval med / p99 | publish interval med / p99 | present->publish-commit ms med | CPU us / frame (all threads) | wakeups / frame |
+|---|---|---|---|---|---|---|---|---|---|---|
+| idle | 960 ticks in 8.00 s | **5250103 instr/s** | NaN (tick body) | - | - | - | - | - | 3.8 ms CPU/s | 120.8 wakeups/s |
+
+threads [idle] (us per run): main#259 29921.0us, ?#4355 125.0us, ?#36123 53.0us, com.apple.NSEventThread#36879 18.0us
+memory: RSS 30.4 MB, phys_footprint 61.3 MB, MTLDevice.currentAllocatedSize 35.7 MB, surfaces 33.2 MB
+IOSurfaceIsInUse before each present, histogram by bit pattern (bit0 = surface about to be drawn, bit1 = next, bit2 = the one presented last frame): [1, 0, 0, 0, 1, 1, 27, 0]; skips 0

@@ -1,0 +1,38 @@
+    Finished `bench` profile [optimized] target(s) in 0.11s
+     Running benches/paged_vec.rs (target/release/deps/paged_vec-90d326962896574d)
+Gnuplot not found, using plotters backend
+Benchmarking paged_vec/absent
+Benchmarking paged_vec/absent: Warming up for 3.0000 s
+Benchmarking paged_vec/absent: Collecting 100 samples in estimated 5.0000 s (6.3B iterations)
+Benchmarking paged_vec/absent: Analyzing
+paged_vec/absent        time:   [989.56 ps 1.0696 ns 1.1463 ns]
+                        change: [−11.744% −4.4789% +3.3768%] (p = 0.25 > 0.05)
+                        No change in performance detected.
+Found 3 outliers among 100 measurements (3.00%)
+  3 (3.00%) high mild
+
+Benchmarking paged_vec/present
+Benchmarking paged_vec/present: Warming up for 3.0000 s
+Benchmarking paged_vec/present: Collecting 100 samples in estimated 5.0000 s (5.1B iterations)
+Benchmarking paged_vec/present: Analyzing
+paged_vec/present       time:   [892.88 ps 940.41 ps 996.99 ps]
+                        change: [−16.065% −7.5605% +1.1750%] (p = 0.11 > 0.05)
+                        No change in performance detected.
+Found 8 outliers among 100 measurements (8.00%)
+  6 (6.00%) high mild
+  2 (2.00%) high severe
+
+Benchmarking paged_vec/beyond_the_index
+Benchmarking paged_vec/beyond_the_index: Warming up for 3.0000 s
+Benchmarking paged_vec/beyond_the_index: Collecting 100 samples in estimated 5.0000 s (4.4B iterations)
+Benchmarking paged_vec/beyond_the_index: Analyzing
+paged_vec/beyond_the_index
+                        time:   [789.07 ps 995.63 ps 1.3470 ns]
+                        change: [+8.9595% +21.341% +39.854%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) high mild
+  2 (2.00%) high severe
+
+rustup run 1.99.1 cargo bench -p zgui-arena --bench paged_vec  32.28s user 0.67s system 105% cpu 31.196 total
+EXIT 0

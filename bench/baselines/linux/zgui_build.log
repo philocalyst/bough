@@ -1,0 +1,432 @@
+ Downloading crates ...
+  Downloaded cephal v0.2.0
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling serde_core v1.0.229
+   Compiling cfg-if v1.0.4
+   Compiling serde v1.0.229
+   Compiling autocfg v1.5.1
+   Compiling log v0.4.33
+   Compiling smallvec v1.15.2
+   Compiling once_cell v1.21.4
+   Compiling libc v0.2.189
+   Compiling libm v0.2.16
+   Compiling pin-project-lite v0.2.17
+   Compiling thiserror v2.0.19
+   Compiling num-traits v0.2.19
+   Compiling crossbeam-utils v0.8.22
+   Compiling arrayvec v0.7.8
+   Compiling winnow v1.0.4
+   Compiling syn v2.0.119
+   Compiling syn v3.0.3
+   Compiling foldhash v0.2.0
+   Compiling siphasher v1.0.3
+   Compiling phf_shared v0.13.1
+   Compiling toml_parser v1.1.2+spec-1.1.0
+   Compiling fastrand v2.5.0
+   Compiling equivalent v1.0.2
+   Compiling phf_generator v0.13.1
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling tracing-core v0.1.36
+   Compiling pkg-config v0.3.33
+   Compiling stable_deref_trait v1.2.1
+   Compiling rustc-hash v2.1.3
+   Compiling parking_lot_core v0.9.12
+   Compiling libloading v0.8.9
+   Compiling scopeguard v1.2.0
+   Compiling bitflags v2.13.1
+   Compiling lock_api v0.4.14
+   Compiling slab v0.4.12
+   Compiling futures-core v0.3.33
+   Compiling hashbrown v0.17.1
+   Compiling parking_lot v0.12.5
+   Compiling rustix v1.1.4
+   Compiling dlib v0.5.3
+   Compiling linux-raw-sys v0.12.1
+   Compiling writeable v0.6.3
+   Compiling cfg_aliases v0.2.2
+   Compiling uuid v1.24.0
+   Compiling indexmap v2.14.0
+   Compiling static_assertions v1.1.0
+   Compiling futures-io v0.3.33
+   Compiling litemap v0.8.2
+   Compiling wayland-sys v0.31.11
+   Compiling polycool v0.4.0
+   Compiling utf8_iter v1.0.4
+   Compiling parking v2.2.1
+   Compiling linebender_resource_handle v0.1.1
+   Compiling kurbo v0.13.1
+   Compiling phf_codegen v0.13.1
+   Compiling synstructure v0.13.2
+   Compiling concurrent-queue v2.5.0
+   Compiling zerocopy v0.8.55
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.19
+   Compiling fnv v1.0.7
+   Compiling icu_properties_data v2.2.0
+   Compiling ident_case v1.0.1
+   Compiling accesskit v0.24.1
+   Compiling darling_core v0.20.11
+   Compiling icu_normalizer_data v2.2.0
+   Compiling new_debug_unreachable v1.0.6
+   Compiling color v0.3.3
+   Compiling precomputed-hash v0.1.1
+   Compiling bytemuck_derive v1.11.0
+   Compiling tracing-attributes v0.1.31
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling bytemuck v1.25.2
+   Compiling tracing v0.1.44
+   Compiling zerofrom v0.1.8
+   Compiling zerovec-derive v0.11.3
+   Compiling zgui-geom v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-geom)
+   Compiling displaydoc v0.2.6
+   Compiling phf_macros v0.13.1
+   Compiling yoke v0.8.3
+   Compiling darling_macro v0.20.11
+   Compiling euclid v0.22.14
+   Compiling phf v0.13.1
+   Compiling zerotrie v0.2.4
+   Compiling string_cache v0.9.0
+   Compiling zerocopy-derive v0.8.55
+   Compiling peniko v0.6.1
+   Compiling zerovec v0.11.6
+   Compiling string_cache_codegen v0.6.1
+   Compiling percent-encoding v2.3.2
+   Compiling dtoa v1.0.11
+   Compiling dtoa-short v0.3.5
+   Compiling darling v0.20.11
+   Compiling zgui-profile v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-profile)
+   Compiling cssparser-macros v0.7.0
+   Compiling zgui-interned v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-interned)
+   Compiling memchr v2.8.3
+   Compiling zgui-color v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-color)
+   Compiling either v1.17.0
+   Compiling tinystr v0.8.3
+   Compiling potential_utf v0.1.5
+   Compiling icu_locale_core v2.2.0
+   Compiling itoa v1.0.18
+   Compiling icu_collections v2.2.0
+   Compiling servo_arc v0.4.3
+   Compiling cssparser v0.37.0
+   Compiling derive_more-impl v2.1.1
+   Compiling event-listener v5.4.1
+   Compiling selectors v0.39.0
+   Compiling smallbitvec v2.6.1
+   Compiling icu_locale_data v2.2.0
+   Compiling rayon-core v1.13.0
+   Compiling crossbeam-epoch v0.9.20
+   Compiling thin-vec v0.2.18
+   Compiling event-listener-strategy v0.5.4
+   Compiling itertools v0.14.0
+   Compiling to_shmem_derive v0.1.0
+   Compiling zgui-bits v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-bits)
+   Compiling to_shmem v0.5.0
+   Compiling icu_provider v2.2.0
+   Compiling serde_spanned v1.1.1
+   Compiling icu_segmenter_data v2.2.0
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling same-file v1.0.6
+   Compiling icu_properties v2.2.0
+   Compiling icu_normalizer v2.2.0
+   Compiling crossbeam-deque v0.8.7
+   Compiling walkdir v2.5.0
+   Compiling derive_more v2.1.1
+   Compiling toml v1.1.3+spec-1.1.0
+   Compiling stylo_atoms v0.19.0
+   Compiling app_units v0.7.8
+   Compiling idna_adapter v1.2.2
+   Compiling void v1.0.2
+   Compiling zgui-arena v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-arena)
+   Compiling icu_locale v2.2.0
+   Compiling idna v1.1.0
+   Compiling stylo v0.19.0
+   Compiling etagere v0.3.0
+   Compiling form_urlencoded v1.2.2
+   Compiling web_atoms v0.2.5
+   Compiling stylo_malloc_size_of v0.19.0
+   Compiling core_maths v0.1.1
+   Compiling shlex v2.0.1
+   Compiling raw-window-handle v0.6.2
+   Compiling stylo_static_prefs v0.19.0
+   Compiling futures-sink v0.3.33
+   Compiling find-msvc-tools v0.1.9
+   Compiling futures-channel v0.3.33
+   Compiling icu_segmenter v2.2.0
+   Compiling cc v1.4.0
+   Compiling zgui-atlas v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-atlas)
+   Compiling url v2.5.8
+   Compiling zgui-vocab v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-vocab)
+   Compiling polling v3.11.0
+   Compiling futures-macro v0.3.33
+   Compiling enumflags2_derive v0.7.12
+   Compiling malloc_size_of_derive v0.1.3
+   Compiling toml_edit v0.25.13+spec-1.1.0
+   Compiling futures-task v0.3.33
+   Compiling heck v0.5.0
+   Compiling strum_macros v0.28.0
+   Compiling stylo_traits v0.19.0
+   Compiling wayland-backend v0.3.16
+   Compiling futures-util v0.3.33
+   Compiling rayon v1.12.0
+   Compiling proc-macro-crate v3.5.0
+   Compiling zgui-scene v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-scene)
+   Compiling stylo_dom v0.19.0
+   Compiling async-lock v3.4.2
+   Compiling stylo_derive v0.19.0
+   Compiling zvariant_utils v3.5.0
+   Compiling num-derive v0.4.2
+   Compiling num-integer v0.1.46
+   Compiling num_cpus v1.17.0
+   Compiling uluru v3.1.0
+   Compiling encoding_rs v0.8.35
+   Compiling strum v0.28.0
+   Compiling mime v0.3.17
+   Compiling allocator-api2 v0.2.21
+   Compiling byteorder v1.5.0
+   Compiling atomic_refcell v0.1.14
+   Compiling zvariant_derive v5.13.1
+   Compiling downcast-rs v1.2.1
+   Compiling scoped-tls v1.0.1
+   Compiling hashbrown v0.16.1
+   Compiling version_check v0.9.5
+   Compiling quick-xml v0.41.0
+   Compiling zgui-css v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-css)
+   Compiling wayland-client v0.31.15
+   Compiling simd-adler32 v0.3.10
+   Compiling crc32fast v1.5.0
+   Compiling wayland-scanner v0.31.11
+   Compiling float-cmp v0.9.0
+   Compiling adler2 v2.0.1
+   Compiling miniz_oxide v0.8.9
+   Compiling strict-num v0.1.1
+   Compiling futures-executor v0.3.33
+   Compiling enumflags2 v0.7.12
+   Compiling arrayref v0.3.9
+   Compiling endi v1.1.1
+   Compiling zvariant v5.13.1
+   Compiling tiny-skia-path v0.11.4
+   Compiling futures v0.3.33
+   Compiling flate2 v1.1.9
+   Compiling futures-lite v2.6.1
+   Compiling naga v29.0.4
+   Compiling unicode-width v0.2.2
+   Compiling bit-vec v0.9.1
+   Compiling codespan-reporting v0.13.1
+   Compiling bit-set v0.9.1
+   Compiling zbus_names v4.3.4
+   Compiling async-io v2.6.0
+   Compiling semver v1.0.28
+   Compiling hexf-parse v0.2.1
+   Compiling termcolor v1.4.1
+   Compiling ash v0.38.0+1.3.281
+   Compiling half v2.7.1
+   Compiling rustc-hash v1.1.0
+   Compiling rustc_version v0.4.1
+   Compiling wayland-protocols v0.32.13
+   Compiling slotmap v1.1.1
+   Compiling spirv v0.4.0+sdk-1.4.341.0
+   Compiling errno v0.3.14
+   Compiling memmap2 v0.9.11
+   Compiling foldhash v0.1.5
+   Compiling async-task v4.7.1
+   Compiling khronos-egl v6.0.0
+   Compiling paste v1.0.15
+   Compiling hashbrown v0.15.5
+   Compiling signal-hook-registry v1.4.8
+   Compiling reactive_graph v0.2.14
+   Compiling wgpu-types v29.0.4
+   Compiling async-channel v2.5.0
+   Compiling wgpu-hal v29.0.4
+   Compiling gpu-descriptor-types v0.2.0
+   Compiling proc-macro-error-attr2 v2.0.0
+   Compiling presser v0.3.1
+   Compiling atomic-waker v1.1.2
+   Compiling unicode-segmentation v1.13.3
+   Compiling convert_case v0.11.0
+   Compiling piper v0.2.5
+   Compiling proc-macro-error2 v2.0.1
+   Compiling gpu-descriptor v0.3.2
+   Compiling async-signal v0.2.14
+   Compiling zbus_xml v5.2.1
+   Compiling any_spawner v0.3.0
+   Compiling xkeysym v0.2.1
+   Compiling send_wrapper v0.6.0
+   Compiling ordered-float v5.3.0
+   Compiling glow v0.17.0
+   Compiling guardian v1.3.0
+   Compiling or_poisoned v0.1.0
+   Compiling renderdoc-sys v1.1.0
+   Compiling profiling v1.0.18
+   Compiling zbus-lockstep v0.5.2
+   Compiling async-process v2.5.0
+   Compiling reactive_stores_macro v0.4.3
+   Compiling blocking v1.6.2
+   Compiling wgpu-naga-bridge v29.0.4
+   Compiling async-executor v1.14.0
+   Compiling zbus_macros v5.18.0
+   Compiling gpu-allocator v0.28.0
+   Compiling zgui-render v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-render)
+   Compiling async-broadcast v0.7.2
+   Compiling roxmltree v0.21.1
+   Compiling async-recursion v1.1.1
+   Compiling svgtypes v0.16.1
+   Compiling async-trait v0.1.91
+   Compiling serde_repr v0.1.21
+   Compiling wgpu-core v29.0.4
+   Compiling ordered-stream v0.2.0
+   Compiling simplecss v0.2.2
+   Compiling thiserror v1.0.69
+   Compiling base64 v0.22.1
+   Compiling pico-args v0.5.0
+   Compiling cursor-icon v1.2.0
+   Compiling rustix v0.38.44
+   Compiling litrs v1.0.0
+   Compiling data-url v0.3.2
+   Compiling imagesize v0.14.0
+   Compiling xmlwriter v0.1.0
+   Compiling hex v0.4.3
+   Compiling cephal v0.2.0
+   Compiling xcursor v0.3.10
+   Compiling zbus v5.18.0
+   Compiling wgpu-core-deps-windows-linux-android v29.0.4
+   Compiling wayland-cursor v0.31.14
+   Compiling usvg v0.46.0
+   Compiling document-features v0.2.12
+   Compiling wayland-csd-frame v0.3.0
+   Compiling reactive_stores v0.4.3
+   Compiling zbus-lockstep-macros v0.5.2
+   Compiling zgui-wgsl v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-wgsl)
+   Compiling wayland-protocols-wlr v0.3.12
+   Compiling zgui-platform v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-platform)
+   Compiling bincode v1.3.3
+   Compiling thiserror-impl v1.0.69
+   Compiling wgpu v29.0.4
+   Compiling linux-raw-sys v0.4.15
+   Compiling zgui-reactive v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-reactive)
+   Compiling zgui-svg v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-svg)
+   Compiling zgui-dom v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-dom)
+   Compiling zgui-text-style v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-text-style)
+   Compiling zgui-text v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-text)
+   Compiling zgui-layout v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-layout)
+   Compiling atspi-common v0.13.0
+   Compiling fdeflate v0.3.7
+   Compiling font-types v0.12.2
+   Compiling zeno v0.3.3
+   Compiling read-fonts v0.41.0
+   Compiling png v0.18.1
+   Compiling calloop v0.13.0
+   Compiling zgui-canvas v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-canvas)
+   Compiling zgui-view v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-view)
+   Compiling zgui-render-wgpu v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-render-wgpu)
+   Compiling font-types v0.11.3
+   Compiling smithay-client-toolkit v0.19.2
+   Compiling ttf-parser v0.25.1
+   Compiling getrandom v0.3.4
+   Compiling read-fonts v0.39.2
+   Compiling calloop-wayland-source v0.3.0
+   Compiling atspi-proxies v0.13.0
+   Compiling accesskit_consumer v0.38.0
+   Compiling owned_ttf_parser v0.25.1
+   Compiling ahash v0.8.12
+   Compiling calloop v0.14.4
+   Compiling gethostname v1.1.0
+   Compiling smithay-client-toolkit v0.20.0
+   Compiling yeslogic-fontconfig-sys v6.0.1
+   Compiling x11-dl v2.21.0
+   Compiling ab_glyph_rasterizer v0.1.10
+   Compiling byteorder-lite v0.1.0
+   Compiling svg_fmt v0.4.5
+   Compiling as-raw-xcb-connection v1.0.1
+   Compiling x11rb-protocol v0.13.2
+   Compiling pxfm v0.1.30
+   Compiling color_quant v1.1.0
+   Compiling zune-core v0.5.1
+   Compiling quick-error v2.0.1
+   Compiling weezl v0.1.12
+   Compiling gif v0.14.2
+   Compiling moxcms v0.8.1
+   Compiling image-webp v0.2.4
+   Compiling zune-jpeg v0.5.15
+   Compiling skrifa v0.42.1
+   Compiling x11rb v0.13.2
+   Compiling guillotiere v0.7.0
+   Compiling ab_glyph v0.2.32
+   Compiling calloop-wayland-source v0.4.1
+   Compiling atspi v0.29.0
+   Compiling accesskit_atspi_common v0.19.1
+   Compiling zgui-paint v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-paint)
+   Compiling xkbcommon v0.8.0
+   Compiling vello_shaders v0.9.0
+   Compiling wayland-protocols-experimental v20250721.0.1
+   Compiling wayland-protocols-misc v0.3.12
+   Compiling tiny-skia v0.11.4
+   Compiling winit v0.30.13
+   Compiling sctk-adwaita v0.10.1
+   Compiling accesskit_unix v0.22.1
+   Compiling vello_encoding v0.9.0
+   Compiling image v0.25.10
+   Compiling skrifa v0.44.0
+   Compiling zgui-input v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-input)
+   Compiling zgui-style v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-style)
+   Compiling xkbcommon-dl v0.4.2
+   Compiling wayland-protocols-plasma v0.3.12
+   Compiling dpi v0.1.2
+   Compiling parlance v0.1.0
+   Compiling smol_str v0.2.2
+   Compiling fontique v0.11.1 (/root/work/gui-bench/zgui/vendor/fontique)
+   Compiling zgui-anim v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-anim)
+   Compiling zgui-a11y v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-a11y)
+   Compiling zgui-image v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-image)
+   Compiling zgui-view-dom v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-view-dom)
+   Compiling zgui-elements v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-elements)
+   Compiling harfrust v0.12.0
+   Compiling zgui-scroll v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-scroll)
+   Compiling zgui-edit v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-edit)
+   Compiling parley_data v0.11.1
+   Compiling futures-intrusive v0.5.0
+   Compiling yazi v0.2.1
+   Compiling zgui-runtime v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-runtime)
+   Compiling vello v0.9.0
+   Compiling swash v0.2.10
+   Compiling parley v0.11.1
+   Compiling accesskit_winit v0.33.2
+   Compiling smithay-clipboard v0.7.3
+   Compiling zgui-render-vector-coverage v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-render-vector-coverage)
+   Compiling arboard v3.6.1
+   Compiling zgui-shader-macro v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-shader-macro)
+   Compiling zgui-platform-winit v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-platform-winit)
+   Compiling zgui-shader v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-shader)
+   Compiling zgui-text-parley v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-text-parley)
+   Compiling zgui-render-vector-vello v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-render-vector-vello)
+   Compiling zgui-wgpu v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-wgpu)
+   Compiling zgui-custom v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-custom)
+   Compiling zgui-platform-wayland v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-platform-wayland)
+   Compiling zgui-view-macro v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-view-macro)
+   Compiling zgui-testkit-scene v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-testkit-scene)
+   Compiling zgui-platform-headless v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-platform-headless)
+   Compiling zgui v0.1.0 (/root/work/gui-bench/zgui/crates/zgui)
+   Compiling zgui-ui-primitives v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-ui-primitives)
+   Compiling zgui-ui-tokens v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-ui-tokens)
+   Compiling zgui-ui-icons v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-ui-icons)
+   Compiling zgui-ui v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-ui)
+   Compiling zgui-bench v0.1.0 (/root/work/gui-bench/zgui/crates/zgui-bench)
+    Finished `release` profile [optimized] target(s) in 3m 22s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling serde_core v1.0.229
+   Compiling winnow v1.0.4
+   Compiling thiserror v2.0.19
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling toml_parser v1.1.2+spec-1.1.0
+   Compiling syn v3.0.3
+   Compiling serde_spanned v1.1.1
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling toml v1.1.3+spec-1.1.0
+   Compiling thiserror-impl v2.0.19
+   Compiling xtask v0.1.0 (/root/work/gui-bench/zgui/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.50s

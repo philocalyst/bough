@@ -1,0 +1,1 @@
+template: 15.6 us per frame, 0.3 us a locale switch; 339.6 k instructions per frame, 2.7 k a locale switch

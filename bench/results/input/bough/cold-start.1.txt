@@ -1,0 +1,5 @@
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+SCENARIO cold-start gallery s13 (laid out by cephal from zgui's computed declarations, text measured and wrapped), 2450 records, first painted frame; 1600 tiles
+DECO	icons_rasterised=66	svg_instr=31366060	glyphs_rasterised=375	raster_ms=1.064
+MEASURE	cold-start	cold.first_frame	ms	22.5005	-
+INSTR	cold-start	cold.first_frame	p50=149155807	n=1

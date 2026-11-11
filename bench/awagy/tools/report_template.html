@@ -1,0 +1,409 @@
+<meta charset="utf-8">
+<title>bough on AWAGY</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..800&display=swap">
+<style>
+/* Layout: one reading column; a filter row scopes the scroll charts; charts are emphasis bars (bough in the
+   accent, the field in gray) with whiskers for the repetition range; tables carry every number. */
+:root {
+  --bg: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
+  --accent: #2a78d6; --extra: #c2692a; --field: #b9b7ae; --field-hover: #9e9c93; --warn-ink: #8a4b00; --warn-bg: #fff3dc;
+  --good-ink: #006300; --bad-ink: #a12a2a;
+  --display: "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+  --accent: #3987e5; --extra: #e08a4b; --field: #5a5954; --field-hover: #78766f; --warn-ink: #f2c46b; --warn-bg: #2b2210;
+  --good-ink: #0ca30c; --bad-ink: #e66767; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+  --accent: #3987e5; --extra: #e08a4b; --field: #5a5954; --field-hover: #78766f; --warn-ink: #f2c46b; --warn-bg: #2b2210;
+  --good-ink: #0ca30c; --bad-ink: #e66767; color-scheme: dark; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.55 var(--sans); }
+.wrap { max-width: 980px; margin: 0 auto; padding-block: 40px 72px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 40px; }
+h1, h2, h3 { font-family: var(--display); font-stretch: 88%; text-wrap: balance; margin: 0; line-height: 1.15; }
+h1 { font-size: clamp(30px, 5vw, 44px); font-weight: 760; letter-spacing: -0.01em; }
+h2 { font-size: 24px; font-weight: 700; }
+h3 { font-size: 16px; font-weight: 650; font-stretch: 100%; }
+p { margin: 0; max-width: 68ch; }
+.eyebrow { font: 600 12px/1 var(--sans); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.lede { color: var(--ink-2); font-size: 17px; }
+section { display: grid; gap: 16px; min-width: 0; }
+.card { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 20px; display: grid; gap: 14px; min-width: 0; }
+.verdict { display: grid; gap: 12px; }
+.verdict ul { margin: 0; padding-left: 20px; display: grid; gap: 8px; max-width: 72ch; }
+.tag { display: inline-block; font: 600 11px/1 var(--sans); letter-spacing: 0.06em; text-transform: uppercase; padding: 4px 7px; border-radius: 4px; margin-right: 6px; vertical-align: 1px; }
+.tag.win { color: var(--good-ink); background: color-mix(in oklab, var(--good-ink) 12%, transparent); }
+.tag.loss { color: var(--bad-ink); background: color-mix(in oklab, var(--bad-ink) 12%, transparent); }
+.tag.even { color: var(--ink-2); background: color-mix(in oklab, var(--ink-2) 12%, transparent); }
+.note { background: var(--warn-bg); color: var(--warn-ink); border-radius: 8px; padding: 12px 14px; font-size: 14px; }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.filters span { color: var(--ink-2); font-size: 14px; margin-right: 4px; }
+.seg { display: inline-flex; border: 1px solid var(--axis); border-radius: 8px; overflow: hidden; }
+.seg button { font: 500 14px var(--sans); background: transparent; color: var(--ink); border: 0; padding: 7px 12px; cursor: pointer; font-variant-numeric: tabular-nums; }
+.seg button + button { border-left: 1px solid var(--axis); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.seg button:focus-visible, .bar-hit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr)); gap: 16px; }
+#size-charts { grid-template-columns: minmax(0, 520px); }
+.chart h3 { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.chart h3 small { font: 400 13px var(--sans); color: var(--muted); }
+.chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chart svg text { fill: var(--ink-2); font: 12px var(--sans); font-variant-numeric: tabular-nums; }
+.chart svg text.val { fill: var(--ink); font-weight: 600; }
+.chart svg text.self { fill: var(--ink); font-weight: 700; }
+.chart svg text.na { fill: var(--muted); font-style: italic; }
+.bar { fill: var(--field); }
+.bar.self { fill: var(--accent); }
+.bar.extra { fill: var(--extra); }
+.bar.est { fill: var(--field); fill-opacity: 0.45; }
+.chart svg text.estv { fill: var(--ink-2); font-weight: 500; }
+.bar-hit { fill: transparent; cursor: default; }
+.bar-hit:hover + .bar:not(.self), g.row:focus-within .bar:not(.self) { fill: var(--field-hover); }
+.whisker { stroke: var(--ink-2); stroke-width: 1.5; }
+.gridline { stroke: var(--grid); stroke-width: 1; }
+.baseline { stroke: var(--axis); stroke-width: 1; }
+.ref { stroke: var(--muted); stroke-width: 1; stroke-dasharray: none; }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.tip { position: fixed; z-index: 20; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--ring); border-radius: 8px; padding: 8px 10px; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,0.12); max-width: 260px; }
+.tip strong { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
+.tip span { color: var(--ink-2); }
+.table-scroll { overflow-x: auto; border: 1px solid var(--ring); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+th, td { padding: 8px 12px; text-align: right; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+thead th { font-weight: 600; color: var(--ink-2); background: var(--surface); position: sticky; top: 0; }
+tbody tr.self td { font-weight: 650; }
+tbody tr.self td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+td.bad { color: var(--bad-ink); }
+.shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr)); gap: 12px; }
+figure { margin: 0; display: grid; gap: 6px; min-width: 0; }
+figure img { width: 100%; aspect-ratio: 10 / 7; object-fit: cover; object-position: top left; border-radius: 6px; border: 1px solid var(--ring); background: var(--surface); }
+figcaption { font-size: 12.5px; color: var(--ink-2); }
+.method { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 16px; }
+.method dl { margin: 0; display: grid; gap: 6px; }
+.method dt { font-weight: 600; font-size: 14px; }
+.method dd { margin: 0 0 8px; color: var(--ink-2); font-size: 14px; }
+code { font: 13px var(--mono); }
+a { color: var(--accent); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header style="display:grid;gap:12px">
+    <div class="eyebrow">Benchmark evaluation · areweactuallyguiyet.mespin.me workloads</div>
+    <h1>bough on AWAGY</h1>
+    <p class="lede">bough, run through the two workloads of <a href="https://areweactuallyguiyet.mespin.me/">Are we actually GUI yet?</a> on this Mac, next to the site’s own two Vizia apps, built and measured here the same way, and next to two frameworks the site does not register, zgx and BUI (Blender’s UI as a library), measured here with the same protocol. The site's own collection was on Linux at 144 Hz and cannot include bough, so its numbers appear only as context.</p>
+  </header>
+
+  <section class="verdict card" aria-labelledby="v-h">
+    <h2 id="v-h">Verdict</h2>
+    __VERDICT__
+  </section>
+
+__EXTRA__
+
+  <section aria-labelledby="s-h">
+    <div style="display:grid;gap:6px">
+      <h2 id="s-h">Scroll</h2>
+      <p class="lede">A non-virtualized list of N rows, each 960 × 48 with an alternating background and “Item N”. Wheel input at 144 events/s reversing every half second; 1 s warm-up, 3 s measured, 3 repetitions. Bars are the median; whiskers the range.</p>
+    </div>
+    <div class="filters" role="group" aria-label="Row count"><span>Rows</span><div class="seg" id="rows"></div></div>
+    <div class="legend"><span><i style="background:var(--accent)"></i>bough</span><span><i style="background:var(--field)"></i>Vizia, the site’s apps built here</span><span><i style="background:var(--extra)"></i>zgx and BUI, measured here, not in the site’s collection</span></div>
+    <div class="charts" id="scroll-charts"></div>
+    <div class="table-scroll"><table id="scroll-table"></table></div>
+  </section>
+
+  <section aria-labelledby="d-h">
+    <div style="display:grid;gap:6px">
+      <h2 id="d-h">Dashboard</h2>
+      <p class="lede">A toolbar (text input, Refresh with a counter, an enabled toggle) over 1,000 project records with images. Four 2-second phases at 240 events/s: type and delete, click Refresh, toggle, scroll down and up. The site’s headline is the longest time without a present anywhere in the 8 seconds.</p>
+    </div>
+    <div class="charts" id="dash-charts"></div>
+    <div class="table-scroll"><table id="dash-table"></table></div>
+  </section>
+
+  <section aria-labelledby="b-h">
+    <div style="display:grid;gap:6px">
+      <h2 id="b-h">Binary size</h2>
+      <p class="lede">The scroll app built with the site’s production profile (LTO, one codegen unit, stripped), here for macOS arm64.</p>
+    </div>
+    <div class="charts" id="size-charts"></div>
+  </section>
+
+
+  <section aria-labelledby="a-h">
+    <div style="display:grid;gap:6px">
+      <h2 id="a-h">Every registered framework</h2>
+      <p class="lede">All eighteen apps the site registers, with bough. Six are measured on this Mac. The other twelve are <strong>estimates</strong>: the site’s Linux numbers converted with factors calibrated on the frameworks measured on both machines. A whisker on an estimate is the spread of those factors, not a run-to-run range. zgx and BUI are not in the site’s registry: they are measured here, have no site anchor and are not part of the calibration.</p>
+    </div>
+    <div class="filters" role="group" aria-label="Row count for every framework"><span>Rows</span><div class="seg" id="rows-all"></div></div>
+    <div class="legend"><span><i style="background:var(--accent)"></i>bough</span><span><i style="background:var(--field)"></i>measured here</span><span><i style="background:var(--extra)"></i>zgx, BUI: measured here, no site anchor</span><span><i style="background:var(--field);opacity:.45"></i>estimated (≈)</span></div>
+    <div class="charts" id="all-charts"></div>
+    <div class="table-scroll"><table id="all-table"></table></div>
+    <div class="card" style="gap:10px">
+      <h3>How the estimates were made</h3>
+      <div id="cal-notes" style="display:grid;gap:8px;color:var(--ink-2);font-size:14px;max-width:72ch"></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="e-h">
+    <h2 id="e-h">What each app showed</h2>
+    <p class="lede">Captured during the measurement: the scroll app at 7,000 rows, and the dashboard in its scroll phase. Vizia’s dashboard draws each 64 px image as a 2 × 2 tiling; that is the site’s app as published. A run whose window was covered was rejected, not reported.</p>
+    <div class="shots" id="shots"></div>
+  </section>
+
+  <section aria-labelledby="c-h">
+    <h2 id="c-h">The site’s own numbers, for context</h2>
+    <p class="lede">From the site’s latest collection on __SITE_MACHINE__. Different OS, GPU, refresh rate and input path, so do not read them against the columns above.</p>
+    <div class="table-scroll"><table id="site-table"></table></div>
+  </section>
+
+  <section aria-labelledby="m-h">
+    <h2 id="m-h">How this was measured</h2>
+    <div class="method card">
+      <dl>
+        <dt>Machine</dt><dd>__MACHINE__. Other work was running; frame pacing is what the window server showed at the time.</dd>
+        <dt>Builds</dt><dd>The site’s Vizia apps at its main branch (<code>apps/vizia</code>, and <code>apps/vizia-optimized</code> with Vizia’s <code>rayon</code> feature), <code>--release --locked</code>, Rust 1.97.1, with the harness’s feature selection.</dd>
+        <dt>bough</dt><dd><code>comparisons/bough-awagy</code>, written only with bough’s application surface: flow layout by cephal, <code>div().scroll(..)</code>, <code>text</code>, <code>button</code>, <code>image</code>, <code>text_input</code>, routes as methods, <code>Application::run</code>.</dd>
+      </dl>
+      <dl>
+        <dt>Presents</dt><dd>MangoHud does not exist on macOS. An injected library records each frame handed to the window server: a Metal drawable taken (wgpu, GPUI, Skia), an OpenGL flush (egui’s glow), an IOSurface published (bough), a tile of a plain layer shown (zgx: <code>-[CALayer setHidden:NO]</code> on an IOSurface-backed layer), or a view drawn by <code>displayIfNeeded</code> (BUI’s CPU raster). The window and statistics are the site’s <code>frames.py</code> rules: anchored on a frame, gaps from the previous frame, the trailing silence counted, ceiling-index percentiles.</dd>
+        <dt>Input</dt><dd>The harness’s schedule as macOS events. The pointer is moved over the window and wheel and clicks are real pointer input, routed by the window server, as XTest’s are on Linux. Keys are posted to the app’s process only, so they can never land in another app. Each app was activated, and runs whose window became covered were rejected.</dd>
+        <dt>Memory and CPU</dt><dd><code>proc_pid_rusage</code>: resident memory (the site’s RSS), plus macOS’s physical footprint, which also counts the GPU driver’s memory; CPU time inside the measured window.</dd>
+      </dl>
+    </div>
+  </section>
+</div>
+<div class="tip" id="tip" hidden></div>
+
+<script>
+const DATA = /*__DATA__*/null;
+const SHOTS = /*__SHOTS__*/null;
+const NS = "http://www.w3.org/2000/svg";
+const fmt = (v, d) => v == null ? "—" : v.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
+const tip = document.getElementById("tip");
+function showTip(ev, lines) {
+  tip.replaceChildren();
+  const s = document.createElement("strong"); s.textContent = lines[0]; tip.append(s);
+  for (const l of lines.slice(1)) { const sp = document.createElement("span"); sp.textContent = l; tip.append(sp, document.createElement("br")); }
+  tip.hidden = false;
+  const r = ev.target.getBoundingClientRect ? ev.target.getBoundingClientRect() : { right: 0, top: 0 };
+  const x = ev.clientX ?? r.right, y = ev.clientY ?? r.top;
+  tip.style.left = Math.min(window.innerWidth - 270, x + 14) + "px";
+  tip.style.top = Math.max(8, y - 10) + "px";
+}
+function hideTip() { tip.hidden = true; }
+function el(tag, attrs, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); parent && parent.append(e); return e; }
+
+// One emphasis bar chart: rows = frameworks, sorted best first; whiskers = repetition range; `ref` = a reference line.
+function barChart(host, title, sub, unit, items, { better = "lower", digits = 1, ref = null, refLabel = "", clipAt = null } = {}) {
+  const card = document.createElement("div"); card.className = "card chart";
+  const h = document.createElement("h3"); h.textContent = title;
+  const sm = document.createElement("small"); sm.textContent = sub; h.append(sm); card.append(h);
+  const valid = items.filter(i => i.v != null), invalid = items.filter(i => i.v == null);
+  valid.sort((a, b) => better === "lower" ? a.v - b.v : b.v - a.v);
+  const rows = [...valid, ...invalid];
+  const W = 460, L = 132, Rm = 64, rowH = 30, top = 8, H = top + rows.length * rowH + 22;
+  const max = clipAt ?? (Math.max(ref ?? 0, ...valid.map(i => i.hi ?? i.v)) * 1.04 || 1);
+  const x = v => L + (W - L - Rm) * v / max;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${title}, ${sub}` });
+  const step = niceStep(max);
+  for (let t = 0; t <= max + 1e-9; t += step) {
+    el("line", { class: "gridline", x1: x(t), x2: x(t), y1: top - 2, y2: H - 20 }, svg);
+    const tx = el("text", { x: x(t), y: H - 6, "text-anchor": "middle" }, svg); tx.textContent = fmt(t, step < 1 ? 1 : 0);
+  }
+  if (ref != null) {
+    el("line", { class: "ref", x1: x(ref), x2: x(ref), y1: top - 2, y2: H - 20 }, svg);
+    const t = el("text", { x: x(ref) - 4, y: top + 6, "text-anchor": "end" }, svg); t.textContent = refLabel;
+  }
+  el("line", { class: "baseline", x1: L, x2: L, y1: top - 2, y2: H - 20 }, svg);
+  rows.forEach((it, i) => {
+    const y = top + i * rowH, cy = y + rowH / 2, self = it.app === "bough";
+    const g = el("g", { class: "row" }, svg);
+    const name = el("text", { x: L - 10, y: cy + 4, "text-anchor": "end", class: self ? "self" : "" }, g); name.textContent = DATA.names[it.app] || it.app;
+    if (it.v == null) { const t = el("text", { x: L + 8, y: cy + 4, class: "na" }, g); t.textContent = it.why || "no valid run"; return; }
+    const off = clipAt != null && it.v > clipAt;
+    const bw = Math.max(2, x(Math.min(it.v, max)) - L), bh = 16;
+    const hit = el("rect", { class: "bar-hit", x: 0, y, width: W, height: rowH, tabindex: 0 }, g);
+    const p = `M${L},${cy - bh / 2} h${Math.max(0, bw - 4)} a4,4 0 0 1 4,4 v${bh - 8} a4,4 0 0 1 -4,4 h${-Math.max(0, bw - 4)} z`;
+    el("path", { class: "bar" + (self ? " self" : "") + (it.est ? " est" : "") + (DATA.extra.includes(it.app) ? " extra" : ""), d: p }, g);
+    if (!off && it.lo != null && it.hi != null && it.hi > it.lo && it.hi <= max) {
+      el("line", { class: "whisker", x1: x(it.lo), x2: x(it.hi), y1: cy, y2: cy }, g);
+      el("line", { class: "whisker", x1: x(it.lo), x2: x(it.lo), y1: cy - 4, y2: cy + 4 }, g);
+      el("line", { class: "whisker", x1: x(it.hi), x2: x(it.hi), y1: cy - 4, y2: cy + 4 }, g);
+    }
+    const vx = off ? x(max) - 6 : Math.min(x(max), Math.max(x(it.v), x(Math.min(it.hi ?? it.v, max)))) + 6;
+    const vt = el("text", { x: vx, y: cy + 4, class: it.est ? "estv" : "val", "text-anchor": off ? "end" : "start" }, g);
+    vt.textContent = (it.est ? "≈" : "") + fmt(it.v, digits) + (off ? " · off scale" : "");
+    if (off) vt.setAttribute("style", "paint-order: stroke; stroke: var(--surface); stroke-width: 4px");
+    const lines = [`${it.est ? "≈" : ""}${fmt(it.v, digits)} ${unit}`, (DATA.names[it.app] || it.app) + (it.est ? " · estimated" : it.earlier ? " · measured in the earlier run" : DATA.extra.includes(it.app) ? " · measured here, no site anchor" : "")];
+    if (it.est) lines.push(`estimate range ${fmt(it.lo, digits)}–${fmt(it.hi, digits)}`);
+    else if (it.n > 1) lines.push(`range ${fmt(it.lo, digits)}–${fmt(it.hi, digits)} over ${it.n} runs`);
+    if (it.extra) lines.push(it.extra);
+    for (const ev of ["pointermove", "focus"]) hit.addEventListener(ev, e => showTip(e, lines));
+    for (const ev of ["pointerleave", "blur"]) hit.addEventListener(ev, hideTip);
+  });
+  card.append(svg); host.append(card);
+}
+function niceStep(max) { const raw = max / 5, p = 10 ** Math.floor(Math.log10(raw)); return [1, 2, 2.5, 5, 10].map(m => m * p).find(s => s >= raw); }
+
+const apps = DATA.apps;
+let rowsSel = "7000";
+function renderScroll() {
+  const host = document.getElementById("scroll-charts"); host.replaceChildren();
+  const S = DATA.scroll, n = rowsSel;
+  const item = (a, f) => { const v = S[a][n][f]; const errs = S[a][n].errors; return { app: a, v: v?.v ?? null, lo: v?.lo, hi: v?.hi, n: v?.n, why: !v && errs.length ? "runs rejected" : undefined }; };
+  barChart(host, "Presents per second", `${Number(n).toLocaleString()} rows · higher is better`, "frames/s", apps.map(a => item(a, "fps")), { better: "higher", digits: 1, ref: 120, refLabel: "120 Hz display" });
+  barChart(host, "p95 present gap", `${Number(n).toLocaleString()} rows · lower is better`, "ms", apps.map(a => item(a, "p95_ms")), { digits: 1 });
+  barChart(host, "Longest present gap", `${Number(n).toLocaleString()} rows · lower is better`, "ms", apps.map(a => item(a, "max_gap_ms")), { digits: 1 });
+  barChart(host, "CPU time in the 3 s window", `${Number(n).toLocaleString()} rows · lower is better`, "ms", apps.map(a => item(a, "cpu_ms")), { digits: 0 });
+  barChart(host, "Resident memory at the end", `${Number(n).toLocaleString()} rows · lower is better`, "MiB", apps.map(a => item(a, "rss_mib")), { digits: 1 });
+  barChart(host, "Physical footprint at the end", `${Number(n).toLocaleString()} rows · includes GPU driver memory`, "MiB", apps.map(a => item(a, "footprint_mib")), { digits: 1 });
+}
+function renderScrollTable() {
+  const t = document.getElementById("scroll-table");
+  const head = ["Framework", ...DATA.rows.flatMap(r => [`${r / 1000}K fps`, `${r / 1000}K p95`]), "7K max gap", "7K CPU ms", "7K RSS", "7K footprint"];
+  const thead = document.createElement("thead"), tr = document.createElement("tr");
+  head.forEach(h => { const th = document.createElement("th"); th.textContent = h; tr.append(th); }); thead.append(tr); t.append(thead);
+  const tb = document.createElement("tbody");
+  for (const a of apps) {
+    const r = document.createElement("tr"); if (a === "bough") r.className = "self";
+    const cells = [DATA.names[a] || a];
+    for (const n of DATA.rows) { const s = DATA.scroll[a][n]; cells.push(fmt(s.fps?.v, 1), fmt(s.p95_ms?.v, 1)); }
+    const s7 = DATA.scroll[a]["7000"]; cells.push(fmt(s7.max_gap_ms?.v, 1), fmt(s7.cpu_ms?.v, 0), fmt(s7.rss_mib?.v, 1), fmt(s7.footprint_mib?.v, 1));
+    cells.forEach(c => { const td = document.createElement("td"); td.textContent = c; r.append(td); });
+    tb.append(r);
+  }
+  t.append(tb);
+}
+const seg = document.getElementById("rows");
+for (const n of DATA.rows) {
+  const b = document.createElement("button"); b.type = "button"; b.textContent = n.toLocaleString(); b.setAttribute("aria-pressed", String(n == rowsSel));
+  b.addEventListener("click", () => { rowsSel = String(n); for (const x of seg.children) x.setAttribute("aria-pressed", String(x === b)); renderScroll(); });
+  seg.append(b);
+}
+renderScroll(); renderScrollTable();
+
+{
+  const host = document.getElementById("dash-charts"), D = DATA.dash;
+  const item = (a, f) => ({ app: a, v: D[a][f]?.v ?? null, lo: D[a][f]?.lo, hi: D[a][f]?.hi, n: D[a][f]?.n, why: D[a].errors.length ? "run rejected" : undefined,
+    extra: D[a].presents_per_phase ? `presents per phase: ${D[a].presents_per_phase.join(" / ")}` : undefined });
+  barChart(host, "Worst presentation gap", "8 s workload · lower is better", "ms", apps.map(a => item(a, "worst_gap_ms")), { digits: 1 });
+  barChart(host, "Mean resident memory", "during the workload · lower is better", "MiB", apps.map(a => ({ ...item(a, "rss_mean_mib"), extra: `physical footprint ${fmt(D[a].footprint_mean_mib?.v, 1)} MiB` })), { digits: 1 });
+  barChart(host, "p95 present gap", "8 s workload · lower is better", "ms", apps.map(a => item(a, "p95_ms")), { digits: 1 });
+  barChart(host, "CPU time over the workload", "8 s · lower is better", "ms", apps.map(a => item(a, "cpu_ms")), { digits: 0 });
+  const t = document.getElementById("dash-table");
+  t.innerHTML = "<thead><tr><th>Framework</th><th>Worst gap ms</th><th>p95 ms</th><th>Presents: type / refresh / toggle / scroll</th><th>CPU ms</th><th>RSS MiB</th><th>Footprint MiB</th></tr></thead>";
+  const tb = document.createElement("tbody");
+  for (const a of apps) {
+    const r = document.createElement("tr"); if (a === "bough") r.className = "self";
+    const d = D[a];
+    [DATA.names[a] || a, fmt(d.worst_gap_ms?.v, 1), fmt(d.p95_ms?.v, 1), d.presents_per_phase ? d.presents_per_phase.join(" / ") : (d.errors[0] || "—"), fmt(d.cpu_ms?.v, 0), fmt(d.rss_mean_mib?.v, 1), fmt(d.footprint_mean_mib?.v, 1)]
+      .forEach(c => { const td = document.createElement("td"); td.textContent = c; r.append(td); });
+    tb.append(r);
+  }
+  t.append(tb);
+}
+
+{
+  const host = document.getElementById("size-charts");
+  const items = apps.filter(a => DATA.sizes[a]).map(a => ({ app: a, v: DATA.sizes[a] / 1048576 }));
+  if (items.length) barChart(host, "Executable size", "production profile, macOS arm64 · smaller is better", "MiB", items, { digits: 2 });
+  else { const p = document.createElement("p"); p.className = "note"; p.textContent = "Sizes were not collected."; host.append(p); }
+}
+
+{
+  const host = document.getElementById("shots");
+  for (const a of apps) for (const w of ["scroll", "dashboard"]) {
+    const src = SHOTS[a]?.[w]; if (!src) continue;
+    const f = document.createElement("figure"), img = document.createElement("img"), c = document.createElement("figcaption");
+    img.src = src; img.alt = `${DATA.names[a] || a} ${w} app during the measurement`; img.loading = "lazy";
+    c.textContent = `${DATA.names[a] || a} · ${w === "scroll" ? "scroll, 7,000 rows" : "dashboard, scroll phase"}`;
+    f.append(img, c); host.append(f);
+  }
+}
+
+{
+  const t = document.getElementById("site-table");
+  t.innerHTML = "<thead><tr><th>Framework</th><th>Scroll 1K fps</th><th>Scroll 7K fps</th><th>7K p95 ms</th><th>7K max gap ms</th><th>Dashboard worst gap ms</th><th>Dashboard RSS MiB</th></tr></thead>";
+  const tb = document.createElement("tbody");
+  for (const a of apps) {
+    const s = DATA.site[a], r = document.createElement("tr");
+    const cells = a === "bough" || DATA.extra.includes(a) ? [DATA.names[a] || a, "not in the site’s collection", "", "", "", "", ""] : [DATA.names[a] || a, fmt(s.fps1000, 1), fmt(s.fps7000, 1), fmt(s.p95_7000, 1), fmt(s.max7000, 1), fmt(s.worst, 1), fmt(s.rss, 1)];
+    cells.forEach(c => { const td = document.createElement("td"); td.textContent = c; r.append(td); });
+    tb.append(r);
+  }
+  t.append(tb);
+}
+
+{
+  const A = DATA.all, N = A.names, order = A.order.filter((a, i, l) => l.indexOf(a) === i);
+  let rowsAll = "7000";
+  const val = (a, n, f) => {
+    const m = A.measured[a];
+    if (m) return { app: a, v: m.scroll[n][f], earlier: m.earlier };
+    const e = A.est[a]?.scroll?.[n]?.[f];
+    return e ? { app: a, v: e.v, lo: e.lo, hi: e.hi, est: true } : { app: a, v: null, why: "no site value" };
+  };
+  function render() {
+    const host = document.getElementById("all-charts"); host.replaceChildren();
+    const n = rowsAll, rl = Number(n).toLocaleString();
+    barChart(host, "Presents per second", `${rl} rows · higher is better`, "frames/s", order.map(a => val(a, n, "fps")), { better: "higher", digits: 1, ref: 120, refLabel: "120 Hz" });
+    barChart(host, "p95 present gap", `${rl} rows · lower is better`, "ms", order.map(a => val(a, n, "p95_ms")), { digits: 1, clipAt: 100 });
+    barChart(host, "Dashboard mean resident memory", "lower is better", "MiB", order.map(a => {
+      const m = A.measured[a]; if (m) return { app: a, v: m.dash.rss_mean_mib, earlier: m.earlier };
+      const e = A.est[a]?.dash?.rss_mean_mib; return e ? { app: a, v: e.v, lo: e.lo, hi: e.hi, est: true } : { app: a, v: null, why: "not in the site’s dashboard run" };
+    }), { digits: 1 });
+    barChart(host, "Executable size", "macOS arm64 · smaller is better", "MiB", order.map(a => {
+      const m = A.size.measured[a]; if (m) return { app: a, v: m / 1048576 };
+      const e = A.size.est[a]; return e ? { app: a, v: e.v / 1048576, lo: e.lo / 1048576, hi: e.hi / 1048576, est: true } : { app: a, v: null, why: "no site size" };
+    }), { digits: 2 });
+  }
+  const seg = document.getElementById("rows-all");
+  for (const r of DATA.rows) {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = r.toLocaleString(); b.setAttribute("aria-pressed", String(String(r) === rowsAll));
+    b.addEventListener("click", () => { rowsAll = String(r); for (const x of seg.children) x.setAttribute("aria-pressed", String(x === b)); render(); });
+    seg.append(b);
+  }
+  render();
+  // table: every framework, measured or estimated
+  const t = document.getElementById("all-table");
+  const head = ["Framework", "Source", "1K fps", "7K fps", "7K p95 ms", "Dashboard RSS MiB", "Size MiB", "Dashboard worst gap ms (Linux, site)"];
+  const thead = document.createElement("thead"), tr = document.createElement("tr");
+  head.forEach(h => { const th = document.createElement("th"); th.textContent = h; tr.append(th); }); thead.append(tr); t.append(thead);
+  const tb = document.createElement("tbody");
+  const cell = (o, d) => o == null || o.v == null ? "—" : (o.est ? "≈" : "") + fmt(o.v, d);
+  for (const a of order) {
+    const r = document.createElement("tr"); if (a === "bough") r.className = "self";
+    const m = A.measured[a], e = A.est[a];
+    const src = m ? (a === "bough" ? "measured" : m.extra ? "measured here, no site anchor" : m.earlier ? "measured (earlier run)" : "measured") : "estimated";
+    const f1 = val(a, "1000", "fps"), f7 = val(a, "7000", "fps"), p7 = val(a, "7000", "p95_ms");
+    const rss = m ? { v: m.dash.rss_mean_mib } : e?.dash?.rss_mean_mib ? { ...e.dash.rss_mean_mib, est: true } : null;
+    const sz = A.size.measured[a] ? { v: A.size.measured[a] / 1048576 } : A.size.est[a] ? { v: A.size.est[a].v / 1048576, est: true } : null;
+    const worst = a === "bough" || (m && m.extra) ? "not in the site’s collection" : fmt(m ? m.dash.worst_site : e?.dash?.worst_site, 1);
+    [N[a] || a, src, cell(f1, 1), cell(f7, 1), cell(p7, 1), cell(rss, 1), cell(sz, 2), worst].forEach(c => { const td = document.createElement("td"); td.textContent = c; r.append(td); });
+    tb.append(r);
+  }
+  t.append(tb);
+  // calibration notes, from the numbers themselves
+  const C = A.cal, nn = d => d == null ? "—" : d.toFixed(2);
+  const notes = [
+    `Anchors: ${C.fps_cap.anchors.map(a => N[a] || a).join(", ")}, measured on both machines. bough is not an anchor, since the site never ran it.`,
+    `Presents per second, apps held at the refresh limit on Linux (at least 137 of 144 Hz): ${nn(C.fps_cap.median)} of this Mac’s 120 Hz (anchor range ${nn(C.fps_cap.lo)}–${nn(C.fps_cap.hi)}, ${C.fps_cap.n} pairs). CPU-bound apps: Linux value × ${nn(C.fps_cpu.median)} (${nn(C.fps_cpu.lo)}–${nn(C.fps_cpu.hi)}, ${C.fps_cpu.n} pairs), capped at 120.`,
+    `p95 present gap, with the axis cut at 100 ms so Blinc’s and Whisker’s estimates run off scale: Linux value × ${nn(C.p95_ms_cap.median)} for apps at the refresh limit (${nn(C.p95_ms_cap.lo)}–${nn(C.p95_ms_cap.hi)}), × ${nn(C.p95_ms_cpu.median)} for CPU-bound apps (${nn(C.p95_ms_cpu.lo)}–${nn(C.p95_ms_cpu.hi)}).`,
+    `Dashboard resident memory: Linux value × ${nn(C.rss.median)} (${nn(C.rss.lo)}–${nn(C.rss.hi)}). Executable size: Linux x86_64 size × ${nn(A.size.ratio?.median)}, from ${(A.size.ratio?.anchors || []).map(a => N[a] || a).join(" and ")} alone (the site publishes no size for Vizia (optimized)), so these size estimates rest on one framework and carry no range.`,
+    `Not estimated: the longest gap (anchor ratios span ${nn(C.max_gap_ms_cap.lo)}× to ${nn(C.max_gap_ms_cap.hi)}×) and the dashboard’s worst gap (anchor ratios from about 0.06× to 5×). Both are single stalls, not rates; the site’s Linux worst gaps are listed unconverted. CPU time is not estimated because the site’s latest collection publishes none.`,
+    `Least reliable: GPUI and GPUI Fast use a different renderer on macOS (Metal) than on Linux, so their CPU-bound Linux numbers may not carry over. Blinc and Whisker show under 1 present per second on the site, which suggests they did not animate under its harness; their estimates inherit that.`,
+  ];
+  const host = document.getElementById("cal-notes");
+  for (const n of notes) { const p = document.createElement("p"); p.textContent = n; host.append(p); }
+}
+</script>

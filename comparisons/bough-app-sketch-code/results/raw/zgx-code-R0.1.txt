@@ -1,0 +1,22 @@
+code: keystroke: 5.98 ms, 4.66 M instructions
+code: scroll a page: 0.16 ms, 1.98 M instructions
+code: find-all keystroke: 5.58 ms, 5.93 M instructions
+code: find-all, a new letter: 5.57 ms, 8.43 M instructions
+        1.67 real         0.16 user         0.02 sys
+            66355200  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                4368  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                  61  voluntary context switches
+                 538  involuntary context switches
+          1777817575  instructions retired
+           571684249  cycles elapsed
+            24972480  peak memory footprint

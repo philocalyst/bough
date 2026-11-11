@@ -1,0 +1,2 @@
+{"framework":"zgx","scene":"vscroll-variable","figure":"write","render":true,"clock":"process_cpu","ops":2000,"batch":50,"median_ns":8580.0,"p10_ns":7900.0,"p90_ns":9840.0,"min_ns":7360.0,"max_ns":28060.0,"batches":40}
+{"framework":"zgx","scene":"vscroll-variable","figure":"frame","render":true,"clock":"process_cpu","ops":2000,"batch":10,"median_ns":222200.0,"p10_ns":128500.0,"p90_ns":340900.0,"min_ns":91600.0,"max_ns":431900.0,"batches":200}

@@ -1,0 +1,120 @@
+== text_bench (/Users/mileswirht/projects/bough/target/text3-zgxbin/text_bench)
+1000 paragraphs, first measure      58.72 ms
+same paragraphs, same width         47.43 ms
+same paragraphs, new width          54.68 ms
+stream 3000 chars, 6 per step      175.67 ms
+prepared: 0.0 MB shaped, 0.0 MB compact
+            57753600  maximum resident set size
+          4510972849  instructions retired
+           152472768  peak memory footprint
+== text_bench (/Users/mileswirht/projects/bough/target/text3-zgxbin/text_bench)
+1000 paragraphs, first measure      37.40 ms
+same paragraphs, same width         31.66 ms
+same paragraphs, new width          35.44 ms
+stream 3000 chars, 6 per step      116.58 ms
+prepared: 0.0 MB shaped, 0.0 MB compact
+            54509568  maximum resident set size
+          4463519546  instructions retired
+           149228736  peak memory footprint
+== text_bench (/Users/mileswirht/projects/bough/target/text3-zgxbin/text_bench)
+1000 paragraphs, first measure      66.95 ms
+same paragraphs, same width         53.35 ms
+same paragraphs, new width          44.26 ms
+stream 3000 chars, 6 per step      142.96 ms
+prepared: 0.0 MB shaped, 0.0 MB compact
+            56328192  maximum resident set size
+          4464515001  instructions retired
+           151063872  peak memory footprint
+== editor_streaming (/Users/mileswirht/projects/bough/target/text3-zgxbin/editor_streaming)
+{"baseline_bytes":262144,"updates":1000,"token_bytes":4,"history_entry_limit":100,"history_byte_limit":4194304,"requested_live_before_bytes":528092,"requested_live_after_bytes":805900,"requested_peak_bytes":1096496,"elapsed_ms":12.554500,"rss_before_kib":null,"rss_after_kib":null,"peak_rss_kib":null,"undo_steps":100,"redo_steps":100,"recovered_bytes":265744,"correct":true}
+             7847936  maximum resident set size
+           232208878  instructions retired
+             6997696  peak memory footprint
+== editor_streaming (/Users/mileswirht/projects/bough/target/text3-zgxbin/editor_streaming)
+{"baseline_bytes":262144,"updates":1000,"token_bytes":4,"history_entry_limit":100,"history_byte_limit":4194304,"requested_live_before_bytes":528092,"requested_live_after_bytes":805900,"requested_peak_bytes":1096496,"elapsed_ms":12.003291,"rss_before_kib":null,"rss_after_kib":null,"peak_rss_kib":null,"undo_steps":100,"redo_steps":100,"recovered_bytes":265744,"correct":true}
+             7471104  maximum resident set size
+           230567105  instructions retired
+             6571520  peak memory footprint
+== editor_streaming (/Users/mileswirht/projects/bough/target/text3-zgxbin/editor_streaming)
+{"baseline_bytes":262144,"updates":1000,"token_bytes":4,"history_entry_limit":100,"history_byte_limit":4194304,"requested_live_before_bytes":528092,"requested_live_after_bytes":805900,"requested_peak_bytes":1096496,"elapsed_ms":10.671042,"rss_before_kib":null,"rss_after_kib":null,"peak_rss_kib":null,"undo_steps":100,"redo_steps":100,"recovered_bytes":265744,"correct":true}
+             5472256  maximum resident set size
+           229787367  instructions retired
+             4473984  peak memory footprint
+== i18n_bench_i18n (/Users/mileswirht/projects/bough/target/text3-zgxbin/i18n_bench_zgx)
+i18n: 241.7 us per frame, 602.4 us a locale switch
+            11272192  maximum resident set size
+          1232815433  instructions retired
+             8700992  peak memory footprint
+== i18n_bench_template (/Users/mileswirht/projects/bough/target/text3-zgxbin/i18n_bench_zgx template)
+template: 211.0 us per frame, 0.4 us a locale switch
+            11206656  maximum resident set size
+          1201466223  instructions retired
+             8733888  peak memory footprint
+== i18n_bench_i18n (/Users/mileswirht/projects/bough/target/text3-zgxbin/i18n_bench_zgx)
+i18n: 176.4 us per frame, 806.5 us a locale switch
+            11501568  maximum resident set size
+          1226666648  instructions retired
+             8963200  peak memory footprint
+== i18n_bench_template (/Users/mileswirht/projects/bough/target/text3-zgxbin/i18n_bench_zgx template)
+template: 161.2 us per frame, 0.1 us a locale switch
+            11468800  maximum resident set size
+          1202846328  instructions retired
+             8979648  peak memory footprint
+== i18n_bench_i18n (/Users/mileswirht/projects/bough/target/text3-zgxbin/i18n_bench_zgx)
+i18n: 191.5 us per frame, 760.8 us a locale switch
+            12206080  maximum resident set size
+          1230816488  instructions retired
+             9700608  peak memory footprint
+== i18n_bench_template (/Users/mileswirht/projects/bough/target/text3-zgxbin/i18n_bench_zgx template)
+template: 211.2 us per frame, 0.2 us a locale switch
+            11632640  maximum resident set size
+          1201009746  instructions retired
+             9192768  peak memory footprint
+== i18n_script_message (env MODE=message /Users/mileswirht/projects/bough/target/text3-zgxbin/i18n_bench_script)
+message: 200 rows, 300 ticks
+            15482880  maximum resident set size
+           618006190  instructions retired
+             5375296  peak memory footprint
+== i18n_script_message (env MODE=message /Users/mileswirht/projects/bough/target/text3-zgxbin/i18n_bench_script)
+message: 200 rows, 300 ticks
+            15613952  maximum resident set size
+           605803913  instructions retired
+             5489920  peak memory footprint
+== i18n_script_template (env MODE=template /Users/mileswirht/projects/bough/target/text3-zgxbin/i18n_bench_script)
+template: 200 rows, 300 ticks
+            16318464  maximum resident set size
+           609469110  instructions retired
+             6505920  peak memory footprint
+== i18n_script_template (env MODE=template /Users/mileswirht/projects/bough/target/text3-zgxbin/i18n_bench_script)
+template: 200 rows, 300 ticks
+            15712256  maximum resident set size
+           610315922  instructions retired
+             5948992  peak memory footprint
+== i18n_script_switch (env MODE=switch /Users/mileswirht/projects/bough/target/text3-zgxbin/i18n_bench_script)
+switch: 200 rows, 300 ticks
+            16269312  maximum resident set size
+           568830573  instructions retired
+             6112576  peak memory footprint
+== i18n_script_switch (env MODE=switch /Users/mileswirht/projects/bough/target/text3-zgxbin/i18n_bench_script)
+switch: 200 rows, 300 ticks
+            16171008  maximum resident set size
+           566212066  instructions retired
+             6030656  peak memory footprint
+== code_editor_bench (/Users/mileswirht/projects/bough/target/text3-zgxbin/code_editor_bench)
+100000 lines: open to first frame 31.3 ms (192 M instructions, 29 frames), 96 bytes a line
+keystroke to frame: 3.87 ms, 5.3 M instructions
+scroll a page: 2.77 ms a frame, 5.7 M instructions
+scroll a line: 3.80 ms a frame, 2.4 M instructions
+scroll a page, wrapped: 18.31 ms a frame, 6.5 M instructions
+           115408896  maximum resident set size
+          2949945193  instructions retired
+           266292928  peak memory footprint
+== code_editor_bench (/Users/mileswirht/projects/bough/target/text3-zgxbin/code_editor_bench)
+100000 lines: open to first frame 25.2 ms (189 M instructions, 29 frames), 51 bytes a line
+keystroke to frame: 3.09 ms, 5.4 M instructions
+scroll a page: 2.41 ms a frame, 5.7 M instructions
+scroll a line: 2.10 ms a frame, 2.4 M instructions
+scroll a page, wrapped: 2.46 ms a frame, 6.3 M instructions
+           108675072  maximum resident set size
+          2903481596  instructions retired
+           266718720  peak memory footprint

@@ -1,0 +1,2 @@
+cargo test --workspace > bench/results/fusion/tests_debug.txt 2>&1  393.31s user 26.77s system 286% cpu 2:26.60 total
+exit=0

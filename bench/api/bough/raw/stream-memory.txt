@@ -1,0 +1,2 @@
+tick   60: rss 18 MB, footprint 125 MB, glyph atlas 1024x512
+tick 1199: rss 19 MB, footprint 126 MB, glyph atlas 1024x512

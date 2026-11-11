@@ -1,0 +1,76 @@
+[package]
+name = "cephal"
+version = "0.2.0"
+edition = "2024"
+authors = ["Leonard Seibold <git@zrtx.de>"]
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+description = "Retained, incremental CSS layout (block, flexbox, grid) with spineless invalidation"
+repository = "https://github.com/zortax/cephal"
+readme = "README.md"
+keywords = ["layout", "css", "flexbox", "grid", "incremental"]
+categories = ["gui", "graphics"]
+include = ["/src", "/README.md", "/LICENSE-APACHE", "/LICENSE-MIT"]
+
+[features]
+default = ["block", "flex", "grid"]
+block = []
+flex = []
+grid = []
+serde = ["dep:serde"]
+# Counters of queries, hits and measures, for profiling.
+stats = []
+# Recomputes every shortcut and cache hit whose key differs from the question and asserts the
+# answers are identical; poisons the unrequested axis of single-axis answers. Slow; for tests.
+verify-cache = []
+taffy-compat = ["dep:taffy"]
+
+[dependencies]
+serde = { version = "1", features = ["derive", "rc"], optional = true }
+taffy = { version = "0.15", optional = true, default-features = false, features = [
+  "std",
+  "taffy_tree",
+  "flexbox",
+  "flexbox_balance",
+  "grid",
+  "block_layout",
+  "float_layout",
+  "calc",
+  "content_size",
+] }
+
+[dev-dependencies]
+cephal = { path = ".", features = ["serde", "taffy-compat"] }
+roxmltree = "0.21"
+serde_json = "1"
+proptest = "1.11"
+criterion = "0.8"
+taffy = { version = "0.15", default-features = false, features = [
+  "std",
+  "taffy_tree",
+  "flexbox",
+  "flexbox_balance",
+  "grid",
+  "block_layout",
+  "float_layout",
+  "calc",
+  "content_size",
+] }
+
+[profile.bench]
+debug = 1
+
+[lib]
+bench = false
+
+[[bench]]
+name = "layout"
+harness = false
+
+# Line tables let `perf` attribute samples to source lines.
+[profile.release]
+debug = "line-tables-only"
+
+[[bench]]
+name = "suite"
+harness = false

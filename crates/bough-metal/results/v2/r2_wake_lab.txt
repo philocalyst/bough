@@ -1,0 +1,36 @@
+== BOUGH_NORESIDENCY=1
+| toggle | 168 | **224064** | 98039 | 85550 | 0.029 / 2.013 | 8.33 / 8.33 | 8.33 / 8.47 | 0.48 | 127.2 | 1.02 |
+| sparse (13 changes, 1 ticks) | 13 | **383149** | 57007 | 92188 | 2.013 / 2.013 | NaN / NaN | NaN / NaN | 0.44 | 262.0 | 1.54 |
+[cb:h:z:4] keep-warm blits 0, content evals 594 (whole-plane 90), gpu frames 47, tiles/frame 6472.7, skipped-gpu 164, skipped-all 0, deferred (no free surface) 
+== BOUGH_X=0
+| toggle | 168 | **171862** | 101023 | 85374 | 0.763 / 0.763 | 8.33 / 8.33 | 8.33 / 8.46 | 1.04 | 122.1 | 1.01 |
+| sparse (13 changes, 1 ticks) | 13 | **934517** | 57442 | 85927 | 0.763 / 0.763 | NaN / NaN | NaN / NaN | 0.51 | 344.2 | 1.54 |
+[cb:h:z:4] keep-warm blits 0, content evals 613 (whole-plane 114), gpu frames 47, tiles/frame 7149.8, skipped-gpu 164, skipped-all 0, deferred (no free surface)
+== BOUGH_KEEPWARM=800,10
+| toggle | 168 | **174545** | 94680 | 83978 | 0.400 / 0.579 | 8.33 / 8.33 | 8.33 / 9.18 | 0.72 | 122.7 | 1.02 |
+| sparse (13 changes, 1 ticks) | 13 | **402089** | 57271 | 86948 | 0.400 / 0.400 | NaN / NaN | NaN / NaN | 0.37 | 230.2 | 1.69 |
+[cb:h:z:4] keep-warm blits 0, content evals 561 (whole-plane 90), gpu frames 48, tiles/frame 6786.4, skipped-gpu 163, skipped-all 0, deferred (no free surface) 
+| idle | 1 ticks in 7.99 s | **1605513 instr/s** | NaN (tick body) | - | - | - | - | - | 0.6 ms CPU/s | 3.0 wakeups/s |
+[cb:h:z:4] keep-warm blits 8, content evals 44 (whole-plane 0), gpu frames 30, tiles/frame 9527.4, skipped-gpu 0, skipped-all 0, deferred (no free surface) 0, drawn-while-in-use 0, published-while-in-
+== keep-warm 250 ms, idle 8 s
+| idle | 1 ticks in 7.99 s | **1288071 instr/s** | NaN (tick body) | - | - | - | - | - | 0.8 ms CPU/s | 5.0 wakeups/s |
+[cb:h:z:4] keep-warm blits 30, content evals 44 (whole-plane 0), gpu frames 30, tiles/frame 9527.4, skipped-gpu 0, skipped-all 0, deferred (no free su
+== keep-warm 500 ms, idle 8 s
+| idle | 1 ticks in 7.99 s | **805524 instr/s** | NaN (tick body) | - | - | - | - | - | 0.5 ms CPU/s | 3.5 wakeups/s |
+[cb:h:z:4] keep-warm blits 15, content evals 44 (whole-plane 0), gpu frames 30, tiles/frame 9527.4, skipped-gpu 0, skipped-all 0, deferred (no free su
+== keep-warm 800 ms, idle 8 s
+| idle | 1 ticks in 8.00 s | **541725 instr/s** | NaN (tick body) | - | - | - | - | - | 0.3 ms CPU/s | 2.9 wakeups/s |
+[cb:h:z:4] keep-warm blits 9, content evals 44 (whole-plane 0), gpu frames 30, tiles/frame 9527.4, skipped-gpu 0, skipped-all 0, deferred (no free sur
+| idle | 1 ticks in 7.99 s | **136906 instr/s** | NaN (tick body) | - | - | - | - | - | 0.1 ms CPU/s | 1.5 wakeups/s |
+== BOUGH_KEEPWARM=800,10 run 1
+| sparse (13 changes, 1 ticks) | 13 | **416134** | 60486 | 85061 | 0.085 / 0.085 | NaN / NaN | NaN / NaN | 0.4
+[cb:h:z:4] keep-warm blits 1, content evals 448 (whole-plane 0), gpu frames 215, tiles/frame 9931.7, skipped-g
+== BOUGH_X=0 run 1
+| sparse (13 changes, 1 ticks) | 13 | **971068** | 57406 | 84187 | 0.061 / 0.061 | NaN / NaN | NaN / NaN | 0.3
+[cb:h:z:4] keep-warm blits 0, content evals 446 (whole-plane 0), gpu frames 214, tiles/frame 9927.7, skipped-g
+== BOUGH_KEEPWARM=800,10 run 2
+| sparse (13 changes, 1 ticks) | 13 | **460044** | 57112 | 84393 | 0.022 / 0.022 | NaN / NaN | NaN / NaN | 0.3
+[cb:h:z:4] keep-warm blits 1, content evals 449 (whole-plane 0), gpu frames 214, tiles/frame 9927.7, skipped-g
+== BOUGH_X=0 run 2
+| sparse (13 changes, 1 ticks) | 13 | **949338** | 57422 | 84578 | 0.036 / 0.036 | NaN / NaN | NaN / NaN | 0.3
+[cb:h:z:4] keep-warm blits 0, content evals 448 (whole-plane 0), gpu frames 214, tiles/frame 9927.7, skipped-g

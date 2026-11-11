@@ -1,0 +1,8 @@
+scene            instructions  spread     time
+mount                 296.8 M   0.05%    0.08s
+script-update        3843.8 M   0.01%    0.46s
+anime                3733.5 M   0.00%    0.40s
+script-layout        2974.1 M   0.01%    0.27s
+list-state            830.8 M   0.02%    0.11s
+style                1332.1 M   0.00%    0.16s
+widgets               146.8 M   0.00%    0.06s

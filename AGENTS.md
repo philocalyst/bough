@@ -1,4 +1,41 @@
-# Reactivity implementation workflow
+# Working in this repository
+
+Two implementations share it. **bough** (the workspace at the repository root: `crates/`, `comparisons/`, `bench/`,
+`vendor/`) is the active one. **`reactivity/`** is the preserved clean-room GPUI rework, with its own workspace and
+the workflow in the second half of this file. The design both answer to is `designs/reactivity/` (start with
+`final/00-model.md`). The work list is `research/AUDIT.md`.
+
+## bough workflow
+
+- **Toolchain.** `rust-toolchain.toml` pins nightly-2026-10-17. Put rustup's proxies first on `PATH` and clear
+  `RUSTC_WRAPPER`. A system cargo that ignores the pin fails on `#![feature]`.
+- **Targets.** Give each concurrent lane its own `CARGO_TARGET_DIR`; never share one between worktrees.
+- **Application code and new benchmarks use `bough::prelude` only.** `bough::raw` (coordinates, templates,
+  `Mounter`) is for the existing scene ports. Port them when the prelude can express them (AUDIT §11).
+- **No `FIXED`-style switches on `View`.** Views re-describe after their handlers (design 01 §2). Mount-once exists
+  only as the harness option `Config::once()` for benchmarks that measure the wire path alone.
+- **Measure alone.** Nothing else heavy runs during a measurement: no builds, no tests, no other benchmark. Use a
+  lock file when an agent runs measurements, and have every other process check it before starting heavy work.
+  - Report every cell, including losses.
+  - Preregister thresholds before measuring.
+  - Keep a negative control (a deliberately broken variant that must fail the gate).
+  - Reject a change that regresses any fixed cell past its limit, whatever it wins elsewhere (AUDIT §10).
+- **Record attempts.** Each area's `RESULTS.md` says what was tried, kept and rejected, and why. Rejected attempts
+  stay recorded. AUDIT §15 re-reads them for merit.
+- **Gates are pixel-exact.** Retained frames must equal a full redraw at every ring age, and a fresh mount must equal
+  the retained tree. A new optimisation lands with its oracle and a mutant that fails it.
+- **Unsafe.** Every `unsafe` keeps a `// SAFETY:` argument. New unsafe invariants get a test of their own.
+- **Vendored crates** (`vendor/`) are plain source copies. Every local edit is listed in `vendor/README.md`. Grafts
+  into parley are twin-gated against unmodified upstream (`crates/bough-text/tests/parley_twin.rs`).
+- **Formatting.** Format only intended files with `rustfmt --edition 2024 --config skip_children=true`.
+  `cargo fmt --all` reaches into vendored path dependencies.
+- **Paths.** No absolute paths in manifests or scripts. External comparison sources are pinned git revisions
+  (zeronsh/zgx, ppmpreetham/BUI), and scripts take `BOUGH_REF` for local reference checkouts.
+- **Commits.** Say what was verified and what was not. Push to this repository (`main`, `bough/*`).
+
+---
+
+## reactivity/ workflow (the clean-room GPUI checkpoint; unchanged)
 
 The clean-room library is the standalone `reactivity/` workspace. Original
 `crates/gpui*` code and feature branches are references; qualify changes against

@@ -50,3 +50,8 @@ xcuserdata/
 .build
 
 /build
+
+# bough (the workspace at the repository root)
+manifest.json
+*.trace
+research/src/

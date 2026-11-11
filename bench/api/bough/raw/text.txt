@@ -1,0 +1,9 @@
+from scratch (shaped at every measurement):
+1000 paragraphs, first measure               0.62 ms     12.20 M instructions
+same paragraphs, same width                  1.36 ms     12.23 M instructions
+same paragraphs, new width                   1.55 ms     12.11 M instructions
+stream 3000 chars, 6 per step                1.28 ms     11.84 M instructions
+retained (a leaf per paragraph):
+1000 paragraphs, first measure               1.58 ms     18.47 M instructions
+same paragraphs, same width                  0.00 ms      0.04 M instructions
+same paragraphs, new width                   0.04 ms      0.63 M instructions

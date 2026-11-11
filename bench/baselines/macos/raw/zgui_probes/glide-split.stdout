@@ -1,0 +1,5 @@
+This is a diagnostic probe and not a reference workload: it answers one question about one walk, and nothing in `cargo xtask` runs it. See the module documentation.
+CLOCK one read costs 24.7 ns; a fused descent is bracketed by two of them and a divided one by eight
+SIZE plain rows=1250 boxes=8762 visited=138448 frames=16 walks=75 wall_ns=96013333 fused_ns=27349502 traversal_ns=3059668 faulting_ns=7157999 geometry_ns=4862505 index_ns=5670828 settle_ns=6178627
+SIZE plain rows=2500 boxes=17517 visited=269848 frames=16 walks=150 wall_ns=79562000 fused_ns=33203411 traversal_ns=4221662 faulting_ns=12484378 geometry_ns=5024909 index_ns=6920908 settle_ns=11993208
+SIZE plain rows=5000 boxes=35027 visited=532648 frames=16 walks=300 wall_ns=206825625 fused_ns=120861623 traversal_ns=9449454 faulting_ns=34697940 geometry_ns=11688099 index_ns=18921070 settle_ns=40920790

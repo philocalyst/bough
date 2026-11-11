@@ -1,0 +1,933 @@
+//! The WGSL standard library, for Rust.
+//!
+//! When using the module-level `wgsl` proc-macro, this module must only be
+//! glob-imported.
+//!
+//! The glob-imported import statement `use wgsl_rs::std::*` pulls in all the
+//! WGSL types and functions into Rust that are part of the global scope
+//! in WGSL, but don't already exist in Rust's global scope.
+//!
+//! These types include (but are not limited to) vector types like `Vec2f`,
+//! `Vec3f`, etc. and constructors like `vec2`, `vec2f` and `vec3i`, etc.
+
+use std::{
+    any::TypeId,
+    collections::HashMap,
+    ops::{Deref, DerefMut},
+    sync::{Arc, LazyLock, RwLock, RwLockReadGuard, RwLockWriteGuard},
+};
+use wgsl_rs_ir as ir;
+
+// Re-export `PhantomData` so users can write `use wgsl_rs::std::*;` and refer
+// to `PhantomData<T>` as a struct field type. The proc-macro recognizes
+// `PhantomData<_>` fields specially: they are retained in the IR (so
+// extensions can see which type parameter each phantom slot binds) but
+// omitted from the rendered WGSL.
+pub use std::marker::PhantomData;
+
+pub use wgsl_rs_macros::{
+    Wgsl, builtin, compute, fragment, ptr, sampler, storage, texture, uniform, vertex, wgsl_allow,
+    wgsl_ignore, workgroup, workgroup_size,
+};
+
+pub use crate::{discard, get, get_mut, slab_copy};
+
+mod atomic;
+mod bitcast;
+mod derivative;
+mod matrix;
+mod numeric;
+mod packing;
+#[cfg(feature = "dispatch-runtime")]
+pub mod runtime;
+mod synchronization;
+mod texture;
+mod vector;
+
+pub use atomic::*;
+pub use bitcast::*;
+pub use derivative::*;
+pub use matrix::*;
+pub use numeric::*;
+pub use packing::*;
+#[cfg(feature = "dispatch-runtime")]
+pub use runtime::*;
+pub use synchronization::*;
+pub mod subgroup;
+pub use subgroup::*;
+pub use texture::*;
+pub use vector::*;
+
+pub enum Error {}
+
+/// Marker trait for an owned type that is Send + Sync.
+pub trait AnySendSync: std::any::Any + Send + Sync {}
+impl<T: std::any::Any + Send + Sync> AnySendSync for T {}
+
+/// Trait for Rust types that can be used in WGSL modules.
+pub trait Wgsl: AnySendSync {
+    fn to_ir() -> wgsl_rs_ir::Type;
+}
+
+/// Trait for Rust types that are WGSL scalar types.
+pub trait WgslScalar: Wgsl {
+    fn to_scalar_ir() -> wgsl_rs_ir::ScalarType;
+}
+
+/// Trait for WGSL scalar types that are valid as sampled texture types.
+///
+/// WGSL only allows `f32`, `i32`, and `u32` as the sampled type for
+/// `texture_2d<T>`, `texture_1d<T>`, etc. `bool` is a valid WGSL scalar
+/// but not a valid texture sampled type.
+pub trait WgslTextureScalar: WgslScalar {}
+
+macro_rules! impl_scalar_wgsl {
+    ($t:ty, $i:ident) => {
+        impl WgslScalar for $t {
+            fn to_scalar_ir() -> ir::ScalarType {
+                ir::ScalarType::$i
+            }
+        }
+        impl Wgsl for $t {
+            fn to_ir() -> ir::Type {
+                ir::Type::Scalar(<$t>::to_scalar_ir())
+            }
+        }
+    };
+}
+
+macro_rules! impl_texture_scalar_wgsl {
+    ($t:ty, $i:ident) => {
+        impl_scalar_wgsl!($t, $i);
+        impl WgslTextureScalar for $t {}
+    };
+}
+
+impl_texture_scalar_wgsl!(f32, F32);
+impl_texture_scalar_wgsl!(u32, U32);
+impl_texture_scalar_wgsl!(i32, I32);
+impl_scalar_wgsl!(bool, Bool);
+
+impl<T: Wgsl, const N: usize> Wgsl for [T; N] {
+    fn to_ir() -> ir::Type {
+        ir::Type::Array {
+            elem: Box::new(T::to_ir()),
+            len: ir::Expr::Lit(ir::Lit::Int {
+                digits: N.to_string(),
+                suffix: String::new(),
+            }),
+        }
+    }
+}
+
+/// Shared reference to a uniform, storage or workgroup variable.
+pub struct ModuleVarReadGuard<'a, T> {
+    inner: RwLockReadGuard<'a, TypeMap>,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: AnySendSync> Deref for ModuleVarReadGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        let box_any = self
+            .inner
+            .get(&TypeId::of::<T>())
+            .unwrap_or_else(|| panic!("Accessed an uninitialized module variable"));
+        box_any
+            .downcast_ref()
+            .unwrap_or_else(|| panic!("Value was not of type {}", std::any::type_name::<T>()))
+    }
+}
+
+/// Exclusive reference to a storage or workgroup variable.
+pub struct ModuleVarWriteGuard<'a, T> {
+    inner: RwLockWriteGuard<'a, TypeMap>,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: AnySendSync> Deref for ModuleVarWriteGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner
+            .get(&TypeId::of::<T>())
+            .unwrap_or_else(|| panic!("Accessed an uninitialized module variable"))
+            .downcast_ref()
+            .unwrap_or_else(|| panic!("Value was not of type {}", std::any::type_name::<T>()))
+    }
+}
+
+impl<T: AnySendSync> DerefMut for ModuleVarWriteGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inner
+            .get_mut(&TypeId::of::<T>())
+            .unwrap_or_else(|| panic!("Mutably accessed an uninitialized module variable"))
+            .downcast_mut()
+            .unwrap_or_else(|| panic!("Value was not of type {}", std::any::type_name::<T>()))
+    }
+}
+
+/// A `TypeMap` holds values of any WGSL type, but only one of that type.
+type TypeMap = HashMap<TypeId, Box<dyn std::any::Any + Send + Sync>>;
+
+/// Default placeholder type for module-level variables that are generic over
+/// a WGSL type parameter.
+///
+/// When a `uniform!`, `storage!` or `workgroup!` declaration uses an
+/// `impl Trait` type (e.g. `uniform!(group(0), binding(0), FRAME: impl
+/// Convert<f32>)`), the generated Rust `static` is declared as
+/// `Uniform<WgslTypeVariable>` (i.e. `Uniform`). This is because Rust statics
+/// require concrete types and the concrete type is not known at module level.
+///
+/// Such "generic" module variables are accessed via `get_typed::<T>()` /
+/// `set_typed::<T>()` (or the two-arg `get!(VAR, T)` / `get_mut!(VAR, T)`
+/// macros), which use the underlying type-keyed map to read/write a value
+/// of the requested concrete type.
+pub struct WgslTypeVariable;
+
+impl Wgsl for WgslTypeVariable {
+    fn to_ir() -> wgsl_rs_ir::Type {
+        ir::Type::TypeParam {
+            name: "T".to_string(),
+        }
+    }
+}
+
+/// Thread-safe module level variable that can be read from or written
+/// to from anywhere.
+struct ModuleVar<T = WgslTypeVariable> {
+    inner: LazyLock<Arc<RwLock<TypeMap>>>,
+    _phantom: PhantomData<T>,
+}
+
+impl ModuleVar {
+    /// Like `read`, but for dynamic module variables.
+    ///
+    /// ## Panics
+    /// - Panics if the underlying lock has been poisoned.
+    /// - Dereferencing the returned guard will panic if it has not previously
+    ///   been set.
+    pub fn get<T: AnySendSync>(&self) -> ModuleVarReadGuard<'_, T> {
+        let lock = self
+            .inner
+            .read()
+            .unwrap_or_else(|_| panic!("could not acquire a read lock on a module variable"));
+        ModuleVarReadGuard {
+            inner: lock,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Returns a mutable reference to the inner `T`.
+    ///
+    /// ## Panics
+    /// - Panics if the underlying lock has been poisoned.
+    /// - Dereferencing the returned guard will panic if it has not previously
+    ///   been set.
+    pub fn get_mut<T: Wgsl>(&self) -> ModuleVarWriteGuard<'_, T> {
+        let lock = self
+            .inner
+            .write()
+            .unwrap_or_else(|_| panic!("could not acquire a write lock on a module variable"));
+        ModuleVarWriteGuard {
+            inner: lock,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Set the inner data for type `T` on a generic module variable.
+    ///
+    /// ## Panics
+    /// Panics if the underlying lock on the inner data has been poisoned.
+    pub fn set_typed<T: Wgsl>(&self, data: T) {
+        let mut map = self
+            .inner
+            .write()
+            .unwrap_or_else(|_| panic!("could not acquire a write lock on a module variable"));
+        map.insert(TypeId::of::<T>(), Box::new(data));
+    }
+}
+
+impl<T: AnySendSync> ModuleVar<T> {
+    pub const fn new() -> Self {
+        Self {
+            inner: LazyLock::new(Default::default),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Ensures module variable types adhere to some rules.
+    ///
+    /// ## Panics
+    /// - Panics if the underlying lock has been poisoned.
+    /// - Dereferencing the returned guard will panic if it has not previously
+    ///   been set.
+    fn guard_on_generic_use(&self) {
+        if TypeId::of::<T>() == TypeId::of::<WgslTypeVariable>() {
+            panic!(
+                "Requested a generic module variable. All runtime use of generic variables must \
+                 be monomorphized."
+            );
+        }
+    }
+
+    /// Returns a reference to the inner `T`.
+    ///
+    /// ## Panics
+    /// - Panics if the variable has not been monomorphized.
+    /// - Panics if the underlying lock has been poisoned.
+    /// - Dereferencing the returned guard will panic if it has not previously
+    ///   been set.
+    pub fn read(&self) -> ModuleVarReadGuard<'_, T> {
+        self.guard_on_generic_use();
+
+        let lock = self
+            .inner
+            .read()
+            .unwrap_or_else(|_| panic!("could not acquire a read lock on a module variable"));
+        ModuleVarReadGuard {
+            inner: lock,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Returns a mutable reference to the inner `T`.
+    ///
+    /// ## Panics
+    /// - Panics if the variable has not been monomorphized.
+    /// - Panics if the underlying lock has been poisoned.
+    /// - Dereferencing the returned guard will panic if it has not previously
+    ///   been set.
+    pub fn write(&self) -> ModuleVarWriteGuard<'_, T> {
+        self.guard_on_generic_use();
+
+        let lock = self
+            .inner
+            .write()
+            .unwrap_or_else(|_| panic!("could not acquire a write lock on a module variable"));
+        ModuleVarWriteGuard {
+            inner: lock,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Set the inner `T`.
+    ///
+    /// ## Panics
+    /// Panics if the underlying lock on the inner data has been poisoned.
+    pub fn set(&self, data: T) {
+        self.guard_on_generic_use();
+
+        let mut map = self
+            .inner
+            .write()
+            .unwrap_or_else(|_| panic!("could not acquire a write lock on a module variable"));
+        map.insert(TypeId::of::<T>(), Box::new(data));
+    }
+}
+
+/// A workgroup variable.
+pub struct Workgroup<T = WgslTypeVariable> {
+    data: ModuleVar<T>,
+}
+
+impl<T: Wgsl> Workgroup<T> {
+    /// Creates a new workgroup variable.
+    #[allow(clippy::new_without_default)]
+    pub const fn new() -> Self {
+        Self {
+            data: ModuleVar::new(),
+        }
+    }
+
+    /// Get a reference to the inner `T`.
+    ///
+    /// Not available in WGSL.
+    ///
+    /// ## Panics
+    /// Dereferencing the returned guard will panic if it has not previously
+    /// been set.
+    pub fn get(&self) -> ModuleVarReadGuard<'_, T> {
+        self.data.read()
+    }
+
+    /// Get a mutable reference to the inner `T`.
+    ///
+    /// Not available in WGSL.
+    ///
+    /// ## Panics
+    /// Dereferencing the returned guard will panic if it has not previously
+    /// been set.
+    pub fn get_mut(&self) -> ModuleVarWriteGuard<'_, T> {
+        self.data.write()
+    }
+
+    /// Set the inner `T`.
+    ///
+    /// Not available in WGSL.
+    pub fn set(&self, data: T) {
+        self.data.set(data);
+    }
+}
+
+impl Workgroup<WgslTypeVariable> {
+    /// Get a reference to the inner data, as a concrete type `T`.
+    ///
+    /// This is the dynamic accessor for a "generic" workgroup variable
+    /// (one whose type was a type parameter of an entry point).
+    ///
+    /// ## Panics
+    /// - Panics if the underlying lock has been poisoned.
+    /// - Dereferencing the returned guard panics if no value has been set for
+    ///   `T`.
+    pub fn get_typed<T: Wgsl>(&self) -> ModuleVarReadGuard<'_, T> {
+        self.data.get::<T>()
+    }
+
+    /// Get a mutable reference to the inner data, as a concrete type `T`.
+    ///
+    /// ## Panics
+    /// - Panics if the underlying lock has been poisoned.
+    /// - Dereferencing the returned guard panics if no value has been set for
+    ///   `T`.
+    pub fn get_mut_typed<T: Wgsl>(&self) -> ModuleVarWriteGuard<'_, T> {
+        self.data.get_mut::<T>()
+    }
+
+    /// Set the inner data for type `T` on a generic workgroup variable.
+    pub fn set_typed<T: Wgsl>(&self, data: T) {
+        self.data.set_typed::<T>(data);
+    }
+}
+
+/// A shader uniform, backed by a `RwLock<T>` on the CPU.
+pub struct Uniform<T = WgslTypeVariable> {
+    pub group: u32,
+    pub binding: u32,
+    data: ModuleVar<T>,
+}
+
+impl<T: Wgsl> Uniform<T> {
+    /// Creates a new uniform.
+    pub const fn new(group: u32, binding: u32) -> Self {
+        Self {
+            group,
+            binding,
+            data: ModuleVar::new(),
+        }
+    }
+
+    /// Returns a reference to the inner `T`.
+    ///
+    /// ## Panics
+    /// Dereferencing the returned guard will panic if it has not previously
+    /// been set.
+    pub fn get(&self) -> ModuleVarReadGuard<'_, T> {
+        self.data.read()
+    }
+
+    /// Set the inner `T`.
+    ///
+    /// Not available in WGSL.
+    ///
+    /// ## Note
+    /// Though this method is public, using it in a `#[wgsl]` module triggers
+    /// a parse error.
+    ///
+    /// This is fine because uniform values are read-only from a shader.
+    ///
+    /// This method still exists to set the value for Rust CPU shader testing.
+    pub fn set(&self, data: T) {
+        self.data.set(data);
+    }
+}
+
+impl Uniform<WgslTypeVariable> {
+    /// Get a reference to the inner data, as a concrete type `T`.
+    ///
+    /// This is the dynamic accessor for a "generic" uniform (one whose type
+    /// was a type parameter of an entry point). Use the two-arg form of the
+    /// `get!` macro: `get!(FRAME, T)`.
+    ///
+    /// ## Panics
+    /// - Panics if the underlying lock has been poisoned.
+    /// - Dereferencing the returned guard panics if no value has been set for
+    ///   `T`.
+    pub fn get_typed<T: Wgsl>(&self) -> ModuleVarReadGuard<'_, T> {
+        self.data.get::<T>()
+    }
+
+    /// Set the inner data for type `T` on a generic uniform variable.
+    ///
+    /// Not available in WGSL.
+    pub fn set_typed<T: Wgsl>(&self, data: T) {
+        self.data.set_typed::<T>(data);
+    }
+}
+
+/// Marker type for read-only access-mode.
+pub struct Read;
+
+/// Marker type for write-only access-mode.
+pub struct Write;
+
+/// Marker type for readwrite access-mode.
+pub struct ReadWrite;
+
+/// A shader storage buffer, backed by a `T`.
+pub struct Storage<T = WgslTypeVariable, AM = Read> {
+    group: u32,
+    binding: u32,
+    access_mode: PhantomData<AM>,
+    data: ModuleVar<T>,
+}
+
+/// Marker trait for read or readwrite storage.
+pub trait AccessMode {}
+
+impl AccessMode for Read {}
+impl AccessMode for ReadWrite {}
+
+impl<T: Wgsl, AM: AccessMode> Storage<T, AM> {
+    pub const fn new(group: u32, binding: u32) -> Self {
+        Storage {
+            data: ModuleVar::new(),
+            group,
+            binding,
+            access_mode: PhantomData,
+        }
+    }
+
+    /// Returns a reference to the inner `T`.
+    ///
+    /// Not available in WGSL. Use [`get!`] instead.
+    ///
+    /// ## Panics
+    /// Dereferencing the returned guard will panic if it has not previously
+    /// been set.
+    pub fn get(&self) -> ModuleVarReadGuard<'_, T> {
+        self.data.read()
+    }
+
+    /// Returns a mutable reference to the inner `T`.
+    ///
+    /// Not available in WGSL. Use [`get_mut!`] instead.
+    ///
+    /// ## Panics
+    /// Dereferencing the returned guard will panic if it has not previously
+    /// been set.
+    pub fn get_mut(&self) -> ModuleVarWriteGuard<'_, T> {
+        self.data.write()
+    }
+
+    /// Set the inner `T`.
+    ///
+    /// Not available in WGSL. Used for CPU-side shader testing to
+    /// populate storage buffers before calling compute entry points.
+    pub fn set(&self, data: T) {
+        self.data.set(data);
+    }
+
+    /// Returns the group index of this storage variable.
+    pub fn group(&self) -> u32 {
+        self.group
+    }
+
+    /// Returns the binding index within its group of this storage variable.
+    pub fn binding(&self) -> u32 {
+        self.binding
+    }
+}
+
+impl<AM: AccessMode> Storage<WgslTypeVariable, AM> {
+    /// Get a reference to the inner data, as a concrete type `T`.
+    ///
+    /// This is the dynamic accessor for a "generic" storage variable (one
+    /// whose type was a type parameter of an entry point). Use the two-arg
+    /// form of the `get!` macro: `get!(BUFFER, T)`.
+    ///
+    /// ## Panics
+    /// - Panics if the underlying lock has been poisoned.
+    /// - Dereferencing the returned guard panics if no value has been set for
+    ///   `T`.
+    pub fn get_typed<T: Wgsl>(&self) -> ModuleVarReadGuard<'_, T> {
+        self.data.get::<T>()
+    }
+
+    /// Get a mutable reference to the inner data, as a concrete type `T`.
+    ///
+    /// This is the dynamic accessor for a "generic" storage variable. Use
+    /// the two-arg form of the `get_mut!` macro: `get_mut!(BUFFER, T)`.
+    ///
+    /// ## Panics
+    /// - Panics if the underlying lock has been poisoned.
+    /// - Dereferencing the returned guard panics if no value has been set for
+    ///   `T`.
+    pub fn get_mut_typed<T: Wgsl>(&self) -> ModuleVarWriteGuard<'_, T> {
+        self.data.get_mut::<T>()
+    }
+
+    /// Set the inner data for type `T` on a generic storage variable.
+    pub fn set_typed<T: Wgsl>(&self, data: T) {
+        self.data.set_typed::<T>(data);
+    }
+}
+
+/// Provides access to a storage, uniform, or workgroup variable.
+///
+/// Since module variables are `static` and implemented with locks,
+/// normal borrows aren't possible.
+///
+/// # Forms
+///
+/// - `get!(VAR)` — reads the inner value of a concrete module variable.
+/// - `get!(VAR, T)` — reads the inner value of a *generic* module variable,
+///   downcasting to the concrete type `T`. The variable must have been declared
+///   with an `impl Trait` type (e.g. `uniform!(group(0), binding(0), FRAME:
+///   impl Convert<f32>)`); using this form on a non-generic variable is a
+///   compile-time error.
+///
+/// # Example
+/// ```ignore
+/// storage!(group(0), binding(0), read_write, OUTPUT: [f32; 256]);
+///
+/// let value = get!(OUTPUT)[idx];
+/// let value = get!(OUTPUT).field;
+///
+/// // Generic uniform usage:
+/// uniform!(group(0), binding(0), FRAME: impl Convert<f32>);
+///
+/// fn use_frame<T: Wgsl + Convert<f32>>() -> f32 {
+///     f32(get!(FRAME, T))
+/// }
+/// ```
+#[macro_export]
+macro_rules! get {
+    ($var:ident) => {
+        $var.get()
+    };
+    ($var:ident, $ty:ty) => {
+        $var.get_typed::<$ty>()
+    };
+}
+
+/// Provides mutable access to a storage or workgroup variable.
+///
+/// Since module variables are `static` and implemented with locks,
+/// normal mutable borrows aren't possible.
+/// This macro uses interior mutability to enable writes.
+///
+/// # Forms
+///
+/// - `get_mut!(VAR)` — mutably accesses a concrete module variable.
+/// - `get_mut!(VAR, T)` — mutably accesses a *generic* module variable,
+///   downcasting to the concrete type `T`. Using this form on a non-generic
+///   variable is a compile-time error.
+///
+/// # Example
+/// ```ignore
+/// storage!(group(0), binding(0), read_write, OUTPUT: [f32; 256]);
+///
+/// get_mut!(OUTPUT)[idx] = value;
+/// get_mut!(OUTPUT).field = value;
+/// ```
+#[macro_export]
+macro_rules! get_mut {
+    ($var:ident) => {
+        $var.get_mut()
+    };
+    ($var:ident, $ty:ty) => {
+        $var.get_mut_typed::<$ty>()
+    };
+}
+
+/// Copy `$size` elements from `$src` starting at `$src_offset` into `$dest`
+/// starting at `$dest_offset`.
+///
+/// On the GPU side (inside `#[wgsl]` modules), this emits a WGSL `for` loop
+/// of the form `dest[dest_offset + i] = src[src_offset + i]`.
+///
+/// On the CPU side, this is a simple element-by-element copy.
+///
+/// The macro is bidirectional: pass the slab as `$src` to read from a storage
+/// buffer into a local array, or pass the slab as `$dest` to write from a
+/// local array into a storage buffer.
+///
+/// # Example
+/// ```ignore
+/// let mut raw = [0u32; 4];
+/// slab_copy!(get!(SLAB), offset, raw, 0, 4);
+/// ```
+#[macro_export]
+macro_rules! slab_copy {
+    ($src:expr, $src_offset:expr, $dest:expr, $dest_offset:expr, $size:expr) => {{
+        let src_offset = $src_offset as usize;
+        let dest_offset = $dest_offset as usize;
+        for i in 0..$size as usize {
+            $dest[dest_offset + i] = $src[src_offset + i];
+        }
+    }};
+}
+
+/// Marks the current fragment invocation as discarded.
+///
+/// In WGSL, this transpiles to `discard;`, which converts the invocation
+/// into a helper invocation and prevents the fragment from being processed
+/// downstream in the render pipeline.
+///
+/// On the CPU side (when running via `dispatch_fragments`), this sets a
+/// thread-local flag. The shader continues executing (matching WGSL
+/// semantics where helper invocations continue for derivative computation),
+/// but `dispatch_fragments` suppresses the output.
+///
+/// # Example
+/// ```ignore
+/// if depth < 0.001 {
+///     discard!();
+/// }
+/// ```
+#[macro_export]
+macro_rules! discard {
+    () => {
+        $crate::std::mark_discarded()
+    };
+}
+
+/// CPU-side implementation of `discard!()`.
+///
+/// When the `dispatch-runtime` feature is enabled, this delegates to
+/// the runtime's thread-local discard flag. Otherwise, it is a no-op.
+#[inline]
+pub fn mark_discarded() {
+    #[cfg(feature = "dispatch-runtime")]
+    {
+        runtime::mark_discarded();
+    }
+}
+
+/// Used to provide WGSL type conversion functions like `f32(...)`, etc.
+pub trait Convert<T> {
+    fn convert(self) -> T;
+}
+
+impl<A: Clone + Convert<B>, B> Convert<B> for &A {
+    fn convert(self) -> B {
+        let a = self.clone();
+        a.convert()
+    }
+}
+
+impl Convert<f32> for f32 {
+    fn convert(self) -> f32 {
+        self
+    }
+}
+
+impl Convert<u32> for u32 {
+    fn convert(self) -> u32 {
+        self
+    }
+}
+
+impl Convert<i32> for i32 {
+    fn convert(self) -> i32 {
+        self
+    }
+}
+
+impl<A: Clone + Convert<B> + Wgsl, B> Convert<B> for ModuleVarReadGuard<'_, A> {
+    fn convert(self) -> B {
+        (*self).clone().convert()
+    }
+}
+
+impl<A: Clone + Convert<B> + Wgsl, B> Convert<B> for ModuleVarWriteGuard<'_, A> {
+    fn convert(self) -> B {
+        (*self).clone().convert()
+    }
+}
+
+macro_rules! impl_convert_as {
+    ($from:ty, $to:ty) => {
+        impl Convert<$to> for $from {
+            fn convert(self) -> $to {
+                self as $to
+            }
+        }
+    };
+}
+impl_convert_as!(f32, u32);
+impl_convert_as!(f32, i32);
+impl_convert_as!(i32, f32);
+impl_convert_as!(i32, u32);
+impl_convert_as!(u32, f32);
+impl_convert_as!(u32, i32);
+
+/// Returns the input cast to f32.
+pub fn f32(t: impl Convert<f32>) -> f32 {
+    t.convert()
+}
+
+/// Returns the input cast to u32.
+pub fn u32(t: impl Convert<u32>) -> u32 {
+    t.convert()
+}
+
+/// Returns the input cast to i32.
+pub fn i32(t: impl Convert<i32>) -> i32 {
+    t.convert()
+}
+
+/// A runtime-sized array, backed by a [`Vec`] on CPU.
+///
+/// In WGSL, this transpiles to `array<T>` (no size parameter).
+/// Runtime-sized arrays can only be used in storage buffers,
+/// typically raw, or as the last field of a struct.
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeArray<T> {
+    pub data: std::vec::Vec<T>,
+}
+
+impl<T: Wgsl> Wgsl for RuntimeArray<T> {
+    fn to_ir() -> ir::Type {
+        ir::Type::RuntimeArray {
+            elem: Box::new(T::to_ir()),
+        }
+    }
+}
+
+impl<T> RuntimeArray<T> {
+    /// Create a new `RuntimeArray<T>` on the CPU.
+    ///
+    /// Only available on CPU, this is a parse error in `#[wgsl]` modules.
+    pub fn new() -> Self {
+        Self {
+            data: std::vec::Vec::new(),
+        }
+    }
+
+    /// Creates a new `RuntimeArray<T>` with a starting `capacity`.
+    ///
+    /// Only available on CPU, this is a parse error in `#[wgsl]` modules.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            data: std::vec::Vec::with_capacity(capacity),
+        }
+    }
+
+    /// Returns the length of this `RuntimeArray<T>`.
+    ///
+    /// Only available on CPU, this is a parse error in `#[wgsl]` modules.
+    /// Use the builtin function [`array_length`] in `#[wgsl]` modules.
+    pub fn len(&self) -> u32 {
+        self.data.len() as u32
+    }
+
+    /// Returns whether this `RuntimeArray<T>` is empty.
+    ///
+    /// Only available on CPU, this is a parse error in `#[wgsl]` modules.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    /// Append `value` onto the back of the collection.
+    ///
+    /// Only available on CPU, this is a parse error in `#[wgsl]` modules.
+    pub fn push(&mut self, value: T) {
+        self.data.push(value);
+    }
+
+    /// Clears the array, removing all values.
+    ///
+    /// Only available on CPU, this is a parse error in `#[wgsl]` modules.
+    pub fn clear(&mut self) {
+        self.data.clear();
+    }
+}
+
+// Index by usize (Rust standard)
+impl<T> std::ops::Index<usize> for RuntimeArray<T> {
+    type Output = T;
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.data[index]
+    }
+}
+
+impl<T> std::ops::IndexMut<usize> for RuntimeArray<T> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.data[index]
+    }
+}
+
+// Index by u32 (for WGSL compatibility)
+impl<T> std::ops::Index<u32> for RuntimeArray<T> {
+    type Output = T;
+    fn index(&self, index: u32) -> &Self::Output {
+        &self.data[index as usize]
+    }
+}
+
+impl<T> std::ops::IndexMut<u32> for RuntimeArray<T> {
+    fn index_mut(&mut self, index: u32) -> &mut Self::Output {
+        &mut self.data[index as usize]
+    }
+}
+
+/// Trait for types that support the WGSL `arrayLength` builtin function.
+///
+/// In WGSL, `arrayLength` returns the number of elements in a runtime-sized
+/// array. This trait provides the Rust-side equivalent for `RuntimeArray<T>`.
+///
+/// # WGSL Equivalent
+///
+/// ```wgsl
+/// @group(0) @binding(0) var<storage> data: array<f32>;
+///
+/// fn example() -> u32 {
+///     return arrayLength(&data);
+/// }
+/// ```
+///
+/// # Note
+///
+/// In WGSL, `arrayLength` takes a pointer to a runtime-sized array. On the Rust
+/// side, we use a reference instead. The `array_length` free function provides
+/// the same interface as the WGSL builtin.
+pub trait ArrayLength {
+    fn array_length(self) -> u32;
+}
+
+impl<T> ArrayLength for &RuntimeArray<T> {
+    fn array_length(self) -> u32 {
+        self.data.len() as u32
+    }
+}
+
+/// Returns the number of elements in a runtime-sized array.
+///
+/// This is the Rust-side equivalent of the WGSL `arrayLength` builtin function.
+///
+/// # Example
+///
+/// ```ignore
+/// use wgsl_rs::std::*;
+///
+/// let mut particles: RuntimeArray<f32> = RuntimeArray::new();
+/// particles.push(1.0);
+/// particles.push(2.0);
+/// particles.push(3.0);
+///
+/// assert_eq!(array_length(&particles), 3);
+/// ```
+///
+/// # WGSL Equivalent
+///
+/// In WGSL, you would write:
+///
+/// ```wgsl
+/// let len: u32 = arrayLength(&runtime_array);
+/// ```
+pub fn array_length(array: impl ArrayLength) -> u32 {
+    array.array_length()
+}

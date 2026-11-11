@@ -1,0 +1,30 @@
+document: shell (1600x1000 CSS px, scale 1)
+layout boxes (window.layout().keys().len()): 824
+fragments (inspect::document): 1103
+dom nodes emitted to TSV: 391 elements + 277 text nodes = 668 rows; 961 markers skipped; max depth 9
+document store len: 1630
+focusable elements in tab order (host.focusables(root)): 61
+primitives in the display list after the first frame (scene.ops().len()): 1443
+counters moved by opening the window + first frame (nonzero only): Counters { elements_restyled: 391, elements_recascaded: 1, elements_traversed: 392, selector_matches: 6160, nodes_visited: 6389, dirty_walk_steps: 8303, boxes_rebuilt: 655, box_tree_builds: 1, nodes_relaid_out: 665, nodes_changed: 631, gutters_examined: 2, layout_reached_root: 2, layout_batches_distributed: 2, sizes_held: 999, sizes_measured: 1687, text_shaped: 235, text_bytes_shaped: 2184, text_rebroken: 232, fragments_diffed: 1111, fragments_rebuilt: 1104, repaints: 1103, styles_lowered: 58, styles_lowered_from_cache: 2087, chunks_reencoded: 1103, primitives_emitted: 1443, primitives_culled: 958, sprites_resolved_at_push: 1417, bounds_tree_inserts: 3844, hit_entries_updated: 1103, hit_entries_reinserted: 96, hit_index_rebuilds: 2, hit_retests: 1, observation_passes: 2, glyphs_placed: 2728, glyphs_rasterised: 140, record_tiles_retained: 2042, frames_drawn: 1, clip_entries_live: 53, clip_slots_reach: 53, spatial_nodes_live: 2, fragments_live: 1103, paint_chunk_bytes_live: 307584, boxes_live: 824, boxes_reshaped: 106, .. }
+  primitives_emitted=1443 primitives_culled=958 bounds_tree_inserts=3844 chunks_reencoded=1103
+swatch centres (34x34 boxes, CSS px, sorted by x): (25.00,21.00) (25.00,21.00) (63.00,21.00) (63.00,21.00)
+tip-0 centre (CSS px): (25.00,21.00)
+tip-1 centre (CSS px): (63.00,21.00)
+tip-2 centre (CSS px): (101.00,21.00)
+tip-3 centre (CSS px): (139.00,21.00)
+tip-4 centre (CSS px): (177.00,21.00)
+tip-5 centre (CSS px): (215.00,21.00)
+tip-6 centre (CSS px): (253.00,21.00)
+tip-7 centre (CSS px): (291.00,21.00)
+tip-8 centre (CSS px): (329.00,21.00)
+tip-9 centre (CSS px): (367.00,21.00)
+tip-10 centre (CSS px): (405.00,21.00)
+tip-11 centre (CSS px): (443.00,21.00)
+dock-handle centre (CSS px): (800.00,692.50)
+root element scroll extent (device px): content 0x0, scrollport 0x0, offset (0,0)
+document extent (furthest element box right/bottom, device px): 1600 x 90693
+scroll containers (1):
+  preorder=591 tag=scroll testid= classes=[zs-55d927fc shell-log zui-virtual-list] content=1585x90000 port=1585x350 scrolls_x=false scrolls_y=true
+one resize step (+8 px width) from rest: primitives_emitted=695 culled=524 scene ops after=695 boxes_rebuilt=0 nodes_relaid_out=114
+focus_a_field_timed: 400 Tab presses (loop stops at 400 if no text field is reached); input::typing=false; median press 275.8 us
+ends on: preorder=Some(234) testid/classes/tag=Some(("", "zs-9123059c zui-button zui-button--ghost zui-button--sm", "control")) (tab_stop index in the order above: Some(27))

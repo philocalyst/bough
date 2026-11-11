@@ -1,0 +1,3 @@
+1000 elements, y + opacity every frame, mean per frame:
+  bough wires         :     0.0 µs  (animate    0.0, scene    0.0)  build+mount+layout  0.00 ms       0.0 k instr/frame
+  bough lanes         :     5.1 µs  (animate    5.0, scene    0.1)  build+mount+layout  7.96 ms      93.1 k instr/frame

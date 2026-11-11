@@ -1,0 +1,43 @@
+[package]
+name = "bough"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "bough: the public facade (Signal, View, typed builders, turns) over bough-core, bough-text and the Metal backend"
+
+[dependencies]
+bough-core = { path = "../bough-core" }
+bough-mem = { path = "../bough-mem" }
+bough-text = { path = "../bough-text" }
+bough-metal = { path = "../bough-metal" }
+rustybuzz = "0.20"
+ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
+libc = "0.2"
+# vector icons: SVG parsed by usvg and rasterised by resvg into the image atlas (zgui parses with usvg 0.46)
+resvg = { version = "0.46", default-features = false }
+# raster images (`ui::image`): PNG decoded once into the image atlas (already in the graph through resvg)
+png = "0.17"
+# cephal: the user's retained, incremental CSS layout engine (separate repo, used unmodified, by path)
+cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+bough-gpu = { path = "../bough-gpu", optional = true }
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["block2"] }
+objc2-metal = { version = "0.3", features = ["objc2-io-surface", "dispatch2", "block2", "objc2-core-foundation"] }
+objc2-quartz-core = { version = "0.3", features = ["objc2-metal", "objc2-core-foundation", "block2"] }
+objc2-app-kit = { version = "0.3", features = ["objc2-quartz-core", "objc2-core-foundation", "block2"] }
+objc2-io-surface = { version = "0.3", features = ["objc2-core-foundation"] }
+objc2-core-foundation = { version = "0.3" }
+block2 = "0.6"
+dispatch2 = "0.3"
+
+[features]
+# The presenter on the vendored wgpu-hal with wgsl-rs kernels (crates/bough-gpu) instead of direct Metal.
+wgpu = ["dep:bough-gpu"]
+# Gate sabotage (RESULTS §15): the scroll copy reads one pixel off; every scroll pixel gate must fail with it.
+sabotage_copy = []
+
+[dev-dependencies]
+cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }
+zgx-workload = { git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }

@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = ["crates/bough-mem", "crates/bough-core", "crates/bough-text", "crates/bough-metal", "crates/bough-damage-lab", "crates/bough", "comparisons/bough-heavy", "comparisons/bough-scenes", "comparisons/bough-vlist", "comparisons/bough-suite", "comparisons/bough-zgui", "comparisons/bough-text-bench", "comparisons/bough-app-mail-dash", "comparisons/bough-app-sketch-code", "comparisons/bough-widgets", "comparisons/bough-awagy", "crates/bough-gpu"]
+# Vendored forks (vendor/README.md): path dependencies, not members (their tests and dev-dependencies stay upstream's).
+exclude = ["vendor", "reactivity", "designs"]  # reactivity/ is the preserved clean-room GPUI workspace, resolved on its own
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[profile.release]
+debug = 1
+lto = "thin"
+
+# What ships, and what every comparison measures (matches zgx's `dist`).
+[profile.dist]
+inherits = "release"
+debug = 0
+lto = "fat"
+codegen-units = 1
+
+# Vendored GPU and windowing stack (vendor/README.md: versions, provenance, local changes). Every crate in the graph
+# that names one of these resolves to the vendored copy. (wgpu, wgpu-core, winit are vendored too; their patch lines
+# join when a crate first uses them, so cargo does not warn about unused patches.)
+[patch.crates-io]
+wgpu-hal = { path = "vendor/wgpu-hal" }
+wgpu-types = { path = "vendor/wgpu-types" }
+naga = { path = "vendor/naga" }
+
+# wgsl-rs, vendored with subgroup operations added (vendor/README.md).
+[patch."https://github.com/schell/wgsl-rs"]
+wgsl-rs = { path = "vendor/wgsl-rs/crates/wgsl-rs" }
+wgsl-rs-macros = { path = "vendor/wgsl-rs/crates/wgsl-rs-macros" }
+wgsl-rs-ir = { path = "vendor/wgsl-rs/crates/wgsl-rs-ir" }
+
+# areweactuallyguiyet.mespin.me's production profile (its binary-size table; apps/README.md "Binary sizes").
+[profile.production]
+inherits = "release"
+opt-level = 3
+debug = false
+lto = true
+codegen-units = 1
+strip = true
+incremental = false

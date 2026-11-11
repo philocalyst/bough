@@ -1,0 +1,357 @@
+//! §9.4 cross sizes and baselines.
+
+use super::axis::FlexDir;
+use super::axis::{FlexAxisRect, FlexAxisSize, FlexAxisSum, sum_axis_gaps};
+use super::{AlgoConstants, FlexItem, FlexLine, item_known_dimension_definiteness};
+use crate::compute::common::sizing_keyword::{SizingKeywordResolution, resolve_sizing_keyword};
+use crate::compute::Questions;
+use crate::compute::scratch::Scratch;
+use crate::geometry::{AvailableSpace, Line, MaybeMath, Size};
+use crate::style::BoxSizing;
+use crate::tree::{CacheAccess, ChildRequest, LayoutInput, LayoutOutput, LayoutTree, RequestedAxis, RunMode, SizingMode};
+
+/// Per-item state carried across the batch of cross-size questions.
+struct CrossPending {
+    item: usize,
+    min: Option<f32>,
+    max: Option<f32>,
+    padding_border_sum: f32,
+    /// The cross size the aspect ratio gives, which the content can only exceed.
+    floor: f32,
+    /// Index of the measurement among the batch's questions.
+    question: usize,
+}
+
+/// Whether the line stretches `child` to its own cross size, as `determine_used_cross_size` decides.
+#[inline]
+fn is_stretched(child: &FlexItem, dir: impl FlexDir) -> bool {
+    let cross_size = child.size_style.cross(dir);
+    !child.margin_is_auto.cross_start(dir)
+        && !child.margin_is_auto.cross_end(dir)
+        && (cross_size.is_stretch() || (child.align_self.keyword == crate::style::AlignItemsKeyword::Stretch && cross_size.is_auto()))
+}
+
+/// `fixed_line_cross` is the container's known cross size when it has a single line: the line is
+/// then that size, so a stretched item's measured cross size is never read and is not asked for.
+pub(super) fn determine_hypothetical_cross_size<D: FlexDir, T: LayoutTree + CacheAccess + ?Sized>(
+    tree: &mut T,
+    items: &mut [FlexItem],
+    c: &AlgoConstants<D>,
+    available_space: Size<AvailableSpace>,
+    fixed_line_cross: Option<f32>,
+) {
+    let dir = c.dir;
+    let read_cross = |out: &LayoutOutput| out.size.get(dir.cross_axis());
+    let mut questions: Questions<f32> = Questions::new(tree, items.len());
+    // Items whose cross size is measured; the rest are set as they are found.
+    let mut pending: Scratch<CrossPending> = Scratch::take();
+    for (index, child) in items.iter_mut().enumerate() {
+        let padding_border_sum = (child.padding + child.border).cross_axis_sum(dir);
+        let transferred_min_cross = super::transfer_limits(child.min_size, child).cross(dir);
+        let transferred_max_cross = super::transfer_limits(child.max_size, child).cross(dir);
+        // A cross size the aspect ratio gave from the item's own main size is worked out below.
+        let ratio_given = child.aspect_ratio.is_some() && child.size_style.cross(dir).is_auto();
+        let child_cross = child
+            .size
+            .cross(dir)
+            .filter(|_| !ratio_given)
+            .maybe_clamp(transferred_min_cross, transferred_max_cross)
+            .maybe_max(padding_border_sum);
+        let known = child_cross.or_else(|| {
+            // A stretched item in a column whose width was found first takes that width, as it
+            // does in the final layout, and needs no measurement.
+            let stretched_cross = c
+                .indefinite_stretch_cross
+                .filter(|_| {
+                    child.align_self.keyword == crate::style::AlignItemsKeyword::Stretch
+                        && !child.margin_is_auto.cross_start(dir)
+                        && !child.margin_is_auto.cross_end(dir)
+                        && child.size_style.cross(dir).is_auto()
+                })
+                .map(|cross| {
+                    (cross - child.margin.cross_axis_sum(dir))
+                        .maybe_clamp(transferred_min_cross, transferred_max_cross)
+                        .max(padding_border_sum)
+                });
+            let unread = fixed_line_cross.is_some() && is_stretched(child, dir) && !child.participates_in_baseline_alignment(dir);
+            stretched_cross.or(unread.then_some(f32::NAN))
+        });
+        // An automatic cross size follows the used main size through the aspect ratio; with an
+        // automatic minimum, the content can make it larger (css-sizing-4 §5.2.1), unless the
+        // item scrolls.
+        let cross_style = child.size_style.cross(dir);
+        let content_cross = cross_style.is_auto() || (cross_style.is_sizing_keyword() && !cross_style.is_stretch());
+        let ratio_cross = child.aspect_ratio.filter(|_| content_cross).map(|ratio| {
+            let main = child.target_size.main(dir);
+            (if c.is_row { main / ratio } else { main * ratio }).maybe_clamp(transferred_min_cross, transferred_max_cross).max(padding_border_sum)
+        });
+        let content_may_exceed = child.min_size.cross(dir).is_none()
+            && !child.overflow.x.is_scroll_container()
+            && !child.overflow.y.is_scroll_container();
+        let known = known.or(ratio_cross.filter(|_| !content_may_exceed));
+        if let Some(child_inner_cross) = known {
+            child.hypothetical_inner_size.set_cross(dir, child_inner_cross);
+            child.hypothetical_outer_size.set_cross(dir, child_inner_cross + child.margin.cross_axis_sum(dir));
+            continue;
+        }
+        // The space for the item's border box.
+        let child_known_main = AvailableSpace::Definite((c.container_size.main(dir) - child.margin.main_axis_sum(dir)).max(0.0));
+        let child_available_cross = available_space
+            .cross(dir)
+            .map_definite(|val| (c.divided_cross_space(val) - child.margin.cross_axis_sum(dir)).max(0.0))
+            .maybe_clamp(transferred_min_cross, transferred_max_cross)
+            .maybe_max(padding_border_sum);
+        let cross_stretch_size =
+            c.node_inner_size.cross(dir).map(|v| c.divided_cross_space(v)).maybe_sub(child.margin.cross_axis_sum(dir)).maybe_max(0.0);
+        let child_available_cross =
+            match resolve_sizing_keyword(child.size_style.cross(dir).raw(), cross_stretch_size, c.node_inner_size.cross(dir)) {
+                Some(SizingKeywordResolution::Measure(a)) => a,
+                _ => child_available_cross,
+            };
+        let request = ChildRequest {
+            node: child.node,
+            input: LayoutInput {
+                run_mode: RunMode::ComputeSize,
+                sizing_mode: SizingMode::ContentSize,
+                axis: dir.cross_axis().into(),
+                known_dimensions: Size {
+                    width: if c.is_row { Some(child.target_size.width) } else { None },
+                    height: if c.is_row { None } else { Some(child.target_size.height) },
+                },
+                known_dimensions_are_definite: item_known_dimension_definiteness(c, child),
+                parent_size: c.percent_basis(),
+                available_space: Size {
+                    width: if c.is_row { child_known_main } else { child_available_cross },
+                    height: if c.is_row { child_available_cross } else { child_known_main },
+                },
+                vertical_margins_are_collapsible: Line::FALSE,
+                context_key: 0,
+            },
+        };
+        let question = questions.ask(tree, request, read_cross);
+        let floor = ratio_cross.unwrap_or(padding_border_sum);
+        pending.push(CrossPending { item: index, min: transferred_min_cross, max: transferred_max_cross, padding_border_sum, floor, question });
+    }
+    // Each item's cross size depends only on its own target main size.
+    questions.finish(tree, read_cross);
+    for p in pending.iter() {
+        let child = &mut items[p.item];
+        let child_inner_cross = questions.get(p.question).maybe_clamp(p.min, p.max).max(p.padding_border_sum).max(p.floor);
+        child.hypothetical_inner_size.set_cross(dir, child_inner_cross);
+        child.hypothetical_outer_size.set_cross(dir, child_inner_cross + child.margin.cross_axis_sum(dir));
+    }
+}
+
+pub(super) fn calculate_children_base_lines<D: FlexDir, T: LayoutTree + CacheAccess + ?Sized>(
+    tree: &mut T,
+    run_mode: RunMode,
+    node_size: Size<Option<f32>>,
+    available_space: Size<AvailableSpace>,
+    lines: &[FlexLine],
+    items: &mut [FlexItem],
+    c: &AlgoConstants<D>,
+) {
+    if !c.is_row || !lines.iter().any(|l| l.items(items).iter().filter(|ch| ch.participates_in_baseline_alignment(c.dir)).count() > 1) {
+        return;
+    }
+    if run_mode == RunMode::ComputeSize {
+        crate::compute::speculate(tree, |tree| baselines_inner(tree, node_size, available_space, lines, items, c));
+    } else {
+        baselines_inner(tree, node_size, available_space, lines, items, c);
+    }
+}
+
+fn baselines_inner<D: FlexDir, T: LayoutTree + CacheAccess + ?Sized>(
+    tree: &mut T,
+    node_size: Size<Option<f32>>,
+    available_space: Size<AvailableSpace>,
+    lines: &[FlexLine],
+    items: &mut [FlexItem],
+    c: &AlgoConstants<D>,
+) {
+    let dir = c.dir;
+    let read_baseline = |out: &LayoutOutput| (out.size.height, out.baselines.first);
+    let mut questions: Questions<(f32, Option<f32>)> = Questions::new(tree, items.len());
+    let mut indexes: Scratch<usize> = Scratch::with_capacity(items.len());
+    for line in lines {
+        let line_items = line.items(items);
+        if line_items.iter().filter(|ch| ch.participates_in_baseline_alignment(dir)).count() <= 1 {
+            continue;
+        }
+        for (offset, child) in line_items.iter().enumerate() {
+            if !child.participates_in_baseline_alignment(dir) {
+                continue;
+            }
+            indexes.push(line.start + offset);
+            let request = ChildRequest {
+                node: child.node,
+                input: LayoutInput {
+                    run_mode: RunMode::PerformLayout,
+                    sizing_mode: SizingMode::ContentSize,
+                    axis: RequestedAxis::Both,
+                    known_dimensions: Size {
+                        width: Some(if c.is_row { child.target_size.width } else { child.hypothetical_inner_size.width }),
+                        height: Some(if c.is_row { child.hypothetical_inner_size.height } else { child.target_size.height }),
+                    },
+                    known_dimensions_are_definite: item_known_dimension_definiteness(c, child),
+                    parent_size: c.percent_basis(),
+                    available_space: Size {
+                        width: if c.is_row {
+                            AvailableSpace::Definite(c.container_size.width)
+                        } else {
+                            available_space.width.maybe_set(node_size.width)
+                        },
+                        height: if c.is_row {
+                            available_space.height.maybe_set(node_size.height)
+                        } else {
+                            AvailableSpace::Definite(c.container_size.height)
+                        },
+                    }
+                    .maybe_sub(child.margin.sum_axes())
+                    .maybe_max(Size::ZERO),
+                    vertical_margins_are_collapsible: Line::FALSE,
+                    context_key: 0,
+                },
+            };
+            questions.ask(tree, request, read_baseline);
+        }
+    }
+    questions.finish(tree, read_baseline);
+    for (k, &i) in indexes.iter().enumerate() {
+        let child = &mut items[i];
+        let (height, first) = questions.get(k);
+        let baseline = if child.overflow.y.is_scroll_container() {
+            first.unwrap_or(height).min(height).max(0.0)
+        } else {
+            first.unwrap_or(height)
+        };
+        child.baseline = baseline + child.margin.top;
+    }
+}
+
+trait AvailMaybeSet {
+    fn maybe_set(self, v: Option<f32>) -> Self;
+}
+impl AvailMaybeSet for AvailableSpace {
+    #[inline]
+    fn maybe_set(self, v: Option<f32>) -> Self {
+        v.map_or(self, AvailableSpace::Definite)
+    }
+}
+
+pub(super) fn calculate_cross_size<D: FlexDir>(lines: &mut [FlexLine], items: &[FlexItem], node_size: Size<Option<f32>>, c: &AlgoConstants<D>) {
+    let dir = c.dir;
+    let cross_axis_padding_border = c.content_box_inset.cross_axis_sum(dir);
+    let cross_min_size = c.min_size.cross(dir);
+    let cross_max_size = c.max_size.cross(dir);
+    if !c.is_wrap && node_size.cross(dir).is_some() {
+        lines[0].cross_size = node_size
+            .cross(dir)
+            .maybe_clamp(cross_min_size, cross_max_size)
+            .maybe_sub(cross_axis_padding_border)
+            .maybe_max(0.0)
+            .unwrap_or(0.0);
+    } else {
+        for line in lines.iter_mut() {
+            let line_items = line.items(items);
+            let max_baseline = line_items.iter().map(|ch| ch.baseline).fold(0.0f32, f32::max);
+            line.cross_size = line_items
+                .iter()
+                .map(|ch| {
+                    if ch.participates_in_baseline_alignment(dir) {
+                        max_baseline - ch.baseline + ch.hypothetical_outer_size.cross(dir)
+                    } else {
+                        ch.hypothetical_outer_size.cross(dir)
+                    }
+                })
+                .fold(0.0f32, f32::max);
+        }
+        if !c.is_wrap {
+            lines[0].cross_size = lines[0].cross_size.maybe_clamp(
+                cross_min_size.maybe_sub(cross_axis_padding_border),
+                cross_max_size.maybe_sub(cross_axis_padding_border),
+            );
+        }
+    }
+}
+
+pub(super) fn handle_align_content_stretch<D: FlexDir>(lines: &mut [FlexLine], node_size: Size<Option<f32>>, c: &AlgoConstants<D>) {
+    if c.align_content.keyword != crate::style::AlignContentKeyword::Stretch {
+        return;
+    }
+    let dir = c.dir;
+    let cross_axis_padding_border = c.content_box_inset.cross_axis_sum(dir);
+    let cross_min_size = c.min_size.cross(dir);
+    let cross_max_size = c.max_size.cross(dir);
+    let container_min_inner_cross = node_size
+        .cross(dir)
+        .or(cross_min_size)
+        .maybe_clamp(cross_min_size, cross_max_size)
+        .maybe_sub(cross_axis_padding_border)
+        .maybe_max(0.0)
+        .unwrap_or(0.0);
+    let total_cross_axis_gap = sum_axis_gaps(c.gap.cross(dir), lines.len());
+    let lines_total_cross: f32 = lines.iter().map(|l| l.cross_size).sum::<f32>() + total_cross_axis_gap;
+    if lines_total_cross < container_min_inner_cross {
+        let addition = (container_min_inner_cross - lines_total_cross) / lines.len() as f32;
+        for line in lines.iter_mut() {
+            line.cross_size += addition;
+        }
+    }
+}
+
+pub(super) fn determine_used_cross_size<D: FlexDir, T: LayoutTree + ?Sized>(
+    tree: &T,
+    lines: &[FlexLine],
+    items: &mut [FlexItem],
+    c: &AlgoConstants<D>,
+) {
+    let dir = c.dir;
+    let calc = |id, basis| tree.resolve_calc(id, basis);
+    for line in lines {
+        let line_cross_size = line.cross_size;
+        for child in line.items_mut(items) {
+            let target_cross = if is_stretched(child, dir) {
+                // Without percentages these are the item's own padding, border and maximum size.
+                let max_size_ignoring_aspect_ratio = if tree.style_plan(child.node).is_some() {
+                    child.max_size
+                } else {
+                    let style = tree.style(child.node);
+                    let padding = style.padding.map(|p| p.resolve_or_zero(c.node_inner_size.width, &calc));
+                    let border = style.border.map(|b| b.resolve_or_zero(c.node_inner_size.width, &calc));
+                    let pb_sum = (padding + border).sum_axes();
+                    let box_sizing_adjustment = if style.box_sizing == BoxSizing::ContentBox { pb_sum } else { Size::ZERO };
+                    crate::compute::block::resolve_size(style.max_size.map(|v| v.raw()), c.node_inner_size, &calc)
+                        .maybe_add(box_sizing_adjustment)
+                };
+                (line_cross_size - child.margin.cross_axis_sum(dir))
+                    .max(0.0)
+                    .maybe_clamp(child.min_size.cross(dir), max_size_ignoring_aspect_ratio.cross(dir))
+            } else {
+                child.hypothetical_inner_size.cross(dir)
+            };
+            child.target_size.set_cross(dir, target_cross);
+            child.outer_target_size.set_cross(dir, target_cross + child.margin.cross_axis_sum(dir));
+        }
+    }
+}
+
+/// Returns the total cross size of all lines.
+pub(super) fn determine_container_cross_size<D: FlexDir>(lines: &[FlexLine], node_size: Size<Option<f32>>, c: &mut AlgoConstants<D>) -> f32 {
+    let dir = c.dir;
+    let total_cross_axis_gap = sum_axis_gaps(c.gap.cross(dir), lines.len());
+    let total_line_cross_size: f32 = lines.iter().map(|l| l.cross_size).sum();
+    let padding_border_sum = c.content_box_inset.cross_axis_sum(dir);
+    let cross_scrollbar_gutter = c.scrollbar_gutter.cross(dir);
+    let outer = node_size
+        .cross(dir)
+        .unwrap_or(total_line_cross_size + total_cross_axis_gap + padding_border_sum)
+        .maybe_clamp(c.min_size.cross(dir), c.max_size.cross(dir))
+        .max(padding_border_sum - cross_scrollbar_gutter);
+    let inner = (outer - padding_border_sum).max(0.0);
+    c.container_size.set_cross(dir, outer);
+    c.inner_container_size.set_cross(dir, inner);
+    total_line_cross_size
+}
+
+crate::compute::scratch::pooled!(CrossPending, usize);

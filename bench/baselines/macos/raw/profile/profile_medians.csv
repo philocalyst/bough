@@ -1,0 +1,5 @@
+mode,lines,update_kinstr_med,update_us_med,layout_kinstr_med,layout_us_med,damage_kinstr_med,damage_us_med,paint_kinstr_med,paint_us_med,encode_kinstr_med,encode_us_med,submit_kinstr_med,submit_us_med
+idle,36,53.9,3.9,62.1,6.5,0.6,0.1,0.5,0.2,7.9,1.4,0.2,0.1
+stream,36,1457.6,229.8,750.3,69.1,1226.8,178.6,1149.6,682.0,633.7,82.1,15.8,11.1
+scroll,36,79.7,30.9,67.3,22.8,6.5,1.6,452.4,735.8,108.2,35.7,15.7,9.9
+both,36,1576.6,590.2,817.3,158.5,1283.4,340.5,1663.5,1849.2,616.2,136.1,16.5,35.6

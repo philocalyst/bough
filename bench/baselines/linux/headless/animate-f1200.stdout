@@ -1,0 +1,1 @@
+animate: update 23.8 + flush 3.0 + render 0.0 = 26.8 us/frame wall, 26.7 us/frame CPU (48 dots, 44 characters)

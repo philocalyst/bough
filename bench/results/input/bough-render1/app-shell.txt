@@ -1,0 +1,9 @@
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+SCENARIO app-shell 625 records, 12 tooltip triggers, 48 rows, a dock of 5000 lines; 251 frames over 36 crossings; hits 37 cell hits 0; drag mounted/unmounted 16 log rows
+MEASURE	app-shell	shell.tooltip_crossing	us	1313.0420	p50=1313.0420;p95=3053.0830;p99=3238.0830;max=3238.0830;n=37
+INSTR	app-shell	shell.tooltip_crossing	p50=1388073	p10=1350922	p95=1478876	max=3077929	n=37
+MEASURE	app-shell	shell.drag_step	us	256.3750	p50=256.3750;p95=568.0420;p99=1759.1250;max=1759.1250;n=60
+INSTR	app-shell	shell.drag_step	p50=201748	p10=189375	p95=241038	max=255573	n=60
+MEASURE	app-shell	shell.drag_hit_rebuilds	rebuilds	0.0000	-
+MEASURE	app-shell	shell.tooltip_tree_builds	builds	0.0000	-
+MEASURE	app-shell	shell.drag_tiles_per_step	tiles	215.9000	-

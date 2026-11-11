@@ -1,0 +1,17 @@
+    Finished `release` profile [optimized] target(s) in 0.25s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/zgui-bench scenarios`
+PERF REGRESSION hover.crossing is 274.09 us, outside its band of 266.00 — measured at 187 us, well under the half-millisecond budget
+PERF REGRESSION scroll.translation is 98.78 us, outside its band of 61.60 — measured at 43-45 us across runs. It was 257 before the renderer was allowed to move the pixels it had already composed: a translation frame now draws the band the movement uncovered instead of the port
+PERF REGRESSION kitchen.click is 68.87 us, outside its band of 15.12 — the measured p50 at 1 851 boxes: one class on one element
+PERF REGRESSION kitchen.keystroke is 765.03 us, outside its band of 407.40 — the measured p50: one edit, one paragraph reshaped, one box repainted
+PERF REGRESSION kitchen.untouched_turn is 130.98 us, outside its band of 30.80 — the measured p50 of one turn over an untouched but animating gallery
+PERF REGRESSION kitchen.glide_tick is 1451.89 us, outside its band of 854.00 — the measured p50 of one frame of the framework's own scroll animation
+PERF REGRESSION kitchen.tab_traversal is 774.06 us, outside its band of 533.40 — one Tab press moves focus by one stop, which is one element's style and one element's shaping
+PERF REGRESSION shell.tooltip_crossing is 2234.34 us, outside its band of 1750.00 — measured at 1.24 ms; one tooltip mounted on its band and the last one handed over, and the page built again for neither (10-11 ms while every mount rebuilt the document's boxes)
+PERF REGRESSION shell.drag_step is 517.15 us, outside its band of 420.00 — measured at 0.30 ms; one edge moved: two panels sized, the strips along the edge repainted, the log's newly exposed lines built
+PERF REGRESSION shell.drag_hit_rebuilds is 1.00 rebuilds, outside its band of 0.00 — moving boxes keeps their paint order, so the hit index moves its entries in place
+PERF failed: 10 measurements outside their bands
+
+xtask: `/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo run --release -p zgui-bench --bin zgui-bench -- scenarios` failed with exit status: 1

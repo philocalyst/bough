@@ -1,0 +1,1 @@
+i18n: 16.9 us per frame, 408.6 us a locale switch; 341.8 k instructions per frame, 7709.6 k a locale switch

@@ -1,0 +1,1 @@
+i18n: 179.7 us per frame, 677.2 us a locale switch

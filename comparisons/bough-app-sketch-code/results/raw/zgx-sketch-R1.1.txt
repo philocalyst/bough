@@ -1,0 +1,21 @@
+sketch: drag a shape: 1.02 ms, 2.80 M instructions
+sketch: pan: 11.00 ms, 3.14 M instructions
+sketch: zoom: 2.74 ms, 3.27 M instructions
+        0.73 real         0.08 user         0.08 sys
+            83132416  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                9366  page reclaims
+                1036  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                 217  voluntary context switches
+                1344  involuntary context switches
+           770789364  instructions retired
+           513306831  cycles elapsed
+           271388416  peak memory footprint

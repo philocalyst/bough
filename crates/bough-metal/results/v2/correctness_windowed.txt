@@ -1,0 +1,9 @@
+WINDOWED (visible window, display-link paced) presentation
+strategy damage-mode    presented  mismatch full-repair     secs
+    [cs:h:z:4] content evals 380 (whole-plane 0), gpu frames 95, tiles/frame 3580.4, skipped-gpu 0, skipped-all 0, deferred (no free surface) 0, drawn-while-in-use 0, published-while-in-use 0, free-candidates hist [0, 0, 68, 26, 1], armed batch errors 0
+cs:h:z:4 bbox                  95         0           0      1.0
+    [arm32:nt:z:4] content evals 387 (whole-plane 0), gpu frames 95, tiles/frame 3580.4, skipped-gpu 0, skipped-all 0, deferred (no free surface) 0, drawn-while-in-use 0, published-while-in-use 31, free-candidates hist [0, 0, 61, 33, 1], armed batch errors 0
+arm32:nt:z:4 bbox                  95         0           0      1.0
+    [vc:h:free:4] content evals 95 (whole-plane 0), gpu frames 95, tiles/frame 3580.4, skipped-gpu 0, skipped-all 0, deferred (no free surface) 0, drawn-while-in-use 0, published-while-in-use 0, free-candidates hist [0, 0, 69, 25, 1], armed batch errors 0
+vc:h:free:4 bbox                  95         0          95      1.0
+OK: all presented frames byte-identical to a full redraw

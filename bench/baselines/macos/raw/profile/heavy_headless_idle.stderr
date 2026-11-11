@@ -1,0 +1,39 @@
+profile mark 110.6M instr 37.2 ms: GPU adapter
+profile mark 152.3M instr 46.6 ms: GPU device and pipelines
+profile mark 157.2M instr 48.0 ms: system fonts
+profile 120 frames: | update 53.9k instr 3.9 us | layout 62.1k instr 6.5 us | damage 0.6k instr 0.1 us | paint 188.1k instr 24.4 us | encode 7.9k instr 1.4 us | submit 0.2k instr 0.1 us
+profile 120 frames: | paint 0.5k instr 0.3 us
+profile 120 frames: | paint 0.5k instr 0.2 us
+profile 120 frames: | paint 0.5k instr 0.3 us
+profile 120 frames: | paint 0.5k instr 0.3 us
+profile 120 frames: | paint 0.6k instr 0.3 us
+profile 120 frames: | paint 0.5k instr 0.3 us
+profile 120 frames: | paint 0.5k instr 0.3 us
+profile 120 frames: | paint 0.5k instr 0.3 us
+profile 120 frames: | paint 0.5k instr 0.3 us
+profile 120 frames: | paint 0.5k instr 0.4 us
+profile 120 frames: | paint 0.5k instr 0.3 us
+profile 120 frames: | paint 0.5k instr 0.2 us
+profile 120 frames: | paint 0.5k instr 0.2 us
+profile 120 frames: | paint 0.6k instr 0.4 us
+profile 120 frames: | paint 0.5k instr 0.2 us
+profile 120 frames: | paint 0.5k instr 0.3 us
+profile 120 frames: | paint 0.5k instr 0.2 us
+profile 120 frames: | paint 0.5k instr 0.4 us
+profile 120 frames: | paint 0.5k instr 0.2 us
+profile 120 frames: | paint 0.5k instr 0.2 us
+profile 120 frames: | paint 0.5k instr 0.3 us
+profile 120 frames: | paint 0.5k instr 0.3 us
+profile 120 frames: | paint 0.5k instr 0.2 us
+profile 120 frames: | paint 0.5k instr 0.2 us
+profile 120 frames: | paint 0.6k instr 0.2 us
+profile 120 frames: | paint 0.5k instr 0.2 us
+profile 120 frames: | paint 0.5k instr 0.2 us
+profile 120 frames: | paint 0.5k instr 0.2 us
+profile 120 frames: | paint 0.7k instr 0.2 us
+profile 120 frames: | paint 0.5k instr 0.2 us
+profile 120 frames: | paint 0.5k instr 0.2 us
+profile 120 frames: | paint 0.5k instr 0.2 us
+real 0.49
+user 0.22
+sys 0.15

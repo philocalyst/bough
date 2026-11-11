@@ -1,0 +1,27 @@
+[package]
+name = "bough-core"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bough-mem = { path = "../bough-mem" }
+
+[dev-dependencies]
+# Trace replay (examples/trace_bench.rs): the damage lab's zgx-derived workloads and its hw32 form.
+bough-damage-lab = { path = "../bough-damage-lab" }
+
+[features]
+default = []
+# Page-start prefix counts. Default: two-level (blocked) eager counts.
+# `flat-prefix`: single array, eager NEON suffix add. `lazy-prefix`: single array, lazy watermark rebuild.
+# No-op: 32 px damage tiles are now the only design (iteration 2). Kept so dependents enabling it still build.
+tile32 = []
+flat-prefix = []
+lazy-prefix = []
+# Count cull work (pages, groups, classifications, refined records); for analysis only.
+stats = []
+
+[[example]]
+name = "core_bench"
+path = "examples/bench.rs"

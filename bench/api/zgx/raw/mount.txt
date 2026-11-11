@@ -1,0 +1,3 @@
+2000 rows; instructions (M), allocations per node and time per phase:
+  luau  build     56.5 M   6.4    3.93 ms | mount+layout    122.3 M   4.7   14.93 ms | teardown     29.6 M   0.0    3.89 ms | 6004 nodes
+  rust  build      6.4 M   1.0    0.49 ms | mount+layout     95.3 M   3.7   10.03 ms | teardown     17.7 M   0.0    9.36 ms | 6002 nodes

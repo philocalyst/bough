@@ -1,0 +1,3 @@
+zgx_suite rc=1
+zgui_perf rc=1
+REST_DONE

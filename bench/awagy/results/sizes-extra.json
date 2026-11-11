@@ -1,0 +1,13 @@
+{
+ "note": "macOS arm64 executables built with --profile production (opt-level 3, fat LTO, 1 codegen unit, strip=true); the scroll app's executable is the size, as sizes.json for the site's apps.",
+ "zgx": {
+  "bytes": 15636384,
+  "dashboard_bytes": 15801520,
+  "label": "zgx-scroll, zgx 0.1.10 @ 0f0a08af, default features, patched winit/wgpu-hal/AccessKit, stripped production build"
+ },
+ "bui": {
+  "bytes": 5230064,
+  "dashboard_bytes": 5246624,
+  "label": "bui-scroll, blenderui 0.5.0 @ d6be0397 (static C kit + Rust, default features), stripped production build"
+ }
+}

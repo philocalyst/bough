@@ -1,0 +1,13 @@
+teardown: 2759.5 M  spread 0.97%  median 1.17 s
+teardown-N2000: 148.8 M  spread 4.74%  median 0.03 s
+teardown-N10000: 682.7 M  spread 0.3%  median 0.09 s
+teardown-N30000: 1998.9 M  spread 6.48%  median 0.55 s
+variable-list: 191.3 M  spread 1.18%  median 0.04 s
+callback-mount: 86.7 M  spread 5.35%  median 0.02 s
+callback-mount-reads: 88.4 M  spread 0.56%  median 0.01 s
+i18n: 1252.0 M  spread 0.45%  median 0.13 s
+i18n-template: 1226.7 M  spread 0.03%  median 0.14 s
+editor-streaming: 226.3 M  spread 0.65%  median 0.02 s
+startup: 188.6 M  spread 22.24%  median 0.05 s
+stream-memory: 1390.7 M  spread 1.59%  median 1.22 s
+PART2 DONE

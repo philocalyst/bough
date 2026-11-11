@@ -1,0 +1,3 @@
+sketch: drag a shape: 1.47 ms, 2.78 M instructions
+sketch: pan: 11.11 ms, 3.19 M instructions
+sketch: zoom: 7.27 ms, 3.26 M instructions

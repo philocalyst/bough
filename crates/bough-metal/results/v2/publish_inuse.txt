@@ -1,0 +1,11 @@
+window layer census: 27 layers (BOUGH_BORDERLESS=false)
+thread_selfcounts overhead 1455 instr (subtracted); display link 8.33 ms
+
+| variant | ticks | main-thread instr/tick med | publish-thread instr | process instr/tick | process minus tick-only | wakeups/s | in-use count hist (0..4 of 4 big surfaces) | CPU us/tick by thread |
+|---|---|---|---|---|---|---|---|---|
+| tick-only | 131 | 107 | - | 46605 | 0  | 120 | [0, 16, 0, 0, 0] | main#259 27.8us, com.apple.NSEventThread#39183 0.4us, ?#34587 0.4us, ?#9987 0.1us |
+| main-explicit | 132 | 84871 | - | 151412 | 104807  | 121 | [0, 0, 14, 2, 0] | main#259 106.1us, ?#34587 8.6us, com.apple.NSEventThread#39183 0.2us |
+| hidden-flip | 131 | 56197 | - | 122366 | 75761  | 120 | [0, 0, 0, 0, 16] | main#259 83.7us, ?#34587 8.4us |
+| grid-1 | 132 | 103562 | - | 206427 | 159822  | 121 | [0, 0, 0, 0, 16] | main#259 145.2us, ?#34587 7.4us, ?#9987 2.7us |
+
+phys_footprint 82.8 MB

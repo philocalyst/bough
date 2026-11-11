@@ -1,0 +1,10 @@
+idle (1002 retained nodes): 100000 iterations, 4.0 ns/iteration, 108 instructions/iteration
+fixed text update + flush: 100000 iterations, 109.8 ns/iteration, 2382 instructions/iteration
+leaf translation + flush: 100000 iterations, 179.3 ns/iteration, 2116 instructions/iteration
+1000 cards translating + flush (lanes): 1000 iterations, 1606.7 ns/iteration, 27738 instructions/iteration
+1000 cards translating + flush (wires): 1000 iterations, 93980.2 ns/iteration, 599342 instructions/iteration
+hit test among 1000 cards: 100000 iterations, 24.4 ns/iteration, 241 instructions/iteration
+1000 cards rotating + flush: not supported (no transforms)
+hit test among 1000 rotated cards: not supported (no transforms)
+million-row virtual range: 100000 iterations, 489.2 ns/iteration, 382 instructions/iteration
+  maximum_mounted_rows=27; expected <=27; range computation retains no row data

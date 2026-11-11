@@ -1,0 +1,6 @@
+font_family=DejaVu Sans font_file_fnv64=ce252980ec1255ff
+SCENARIO hover-storm 1000 rows built, 40 on screen, 240 crossings at 120 Hz; 7001 records; hits 240 cell hits 0 crossings 240
+MEASURE	hover-storm	hover.crossing	us	0.2920	p50=0.2920;p95=0.3750;p99=0.4590;max=4.0420;n=240
+INSTR	hover-storm	hover.crossing	p50=4275	p10=4186	p95=5400	max=5475	n=240
+MEASURE	hover-storm	hover.tiles_repaired_per_frame	tiles	241.8750	-
+MEASURE	hover-storm	hover.hit_rebuilds	rebuilds	0.0000	-

@@ -1,0 +1,415 @@
+//! Track alignment and item alignment within grid areas.
+
+use super::track::GridTrack;
+use crate::compute::LayoutTreeExt;
+use crate::compute::common::alignment::{apply_alignment_fallback, compute_alignment_offset, resolve_self_alignment_safety};
+use crate::compute::common::overflow::scrollable_overflow_contribution;
+use crate::compute::common::sizing_keyword::{SizingKeywordResolution, resolve_sizing_keyword};
+use crate::geometry::{AbsoluteAxis, AvailableSpace, Line, MaybeMath, Point, Rect, Size};
+use crate::style::{AlignContent, AlignItems, AlignItemsKeyword, AlignSelf, BoxSizing, Direction, Overflow, Position};
+use crate::compute::layout_request;
+use crate::tree::{CacheAccess, ChildRequest, Layout, LayoutOutput, LayoutTree, NodeId, SizingMode};
+
+/// Positions tracks (gutters included) per `align-content`/`justify-content`.
+pub(super) fn align_tracks(
+    content_box_size: f32,
+    padding: Line<f32>,
+    border: Line<f32>,
+    tracks: &mut [GridTrack],
+    alignment: AlignContent,
+    axis_is_reversed: bool,
+) {
+    let used: f32 = tracks.iter().map(|t| t.base_size).sum();
+    let free_space = content_box_size - used;
+    let origin = padding.start + border.start;
+    let num_tracks = tracks.iter().skip(1).step_by(2).filter(|t| !t.is_collapsed).count();
+    let keyword = apply_alignment_fallback(free_space, num_tracks, alignment);
+    let keyword = if axis_is_reversed { keyword.reversed() } else { keyword };
+    let empty_grid_offset = if num_tracks == 0 { compute_alignment_offset(free_space, num_tracks, 0.0, keyword, true, false) } else { 0.0 };
+    let mut total_offset = origin + empty_grid_offset;
+    let mut seen_track = false;
+    let mut position = |i: usize, track: &mut GridTrack| {
+        let is_gutter = i.is_multiple_of(2);
+        let is_track = !is_gutter && !track.is_collapsed;
+        let is_first = is_track && !seen_track;
+        let offset = if is_track { compute_alignment_offset(free_space, num_tracks, 0.0, keyword, is_first, false) } else { 0.0 };
+        track.offset = total_offset + offset;
+        total_offset += offset + track.base_size;
+        if is_track {
+            seen_track = true;
+        }
+    };
+    if axis_is_reversed {
+        tracks.iter_mut().rev().enumerate().for_each(|(i, t)| position(i, t));
+    } else {
+        tracks.iter_mut().enumerate().for_each(|(i, t)| position(i, t));
+    }
+}
+
+pub(super) struct ContainerAlignment {
+    pub horizontal: Option<AlignItems>,
+    pub vertical: Option<AlignItems>,
+}
+
+/// An item sized within its grid area, ready for its final layout.
+pub(super) struct ItemPrep {
+    node: NodeId,
+    grid_area: Rect<f32>,
+    grid_area_size: Size<f32>,
+    area_minus_margins: Size<f32>,
+    size: Size<Option<f32>>,
+    min_size: Size<Option<f32>>,
+    max_size: Size<Option<f32>>,
+    margin: Rect<Option<f32>>,
+    padding: Rect<f32>,
+    border: Rect<f32>,
+    inset_h: Line<Option<f32>>,
+    inset_v: Line<Option<f32>>,
+    alignment_h: AlignSelf,
+    alignment_v: AlignSelf,
+    justify_self: Option<AlignSelf>,
+    align_self: Option<AlignSelf>,
+    position: Position,
+    baseline_shim: f32,
+    overflow: Point<Overflow>,
+    contain: crate::style::Contain,
+    scrollbar_width: f32,
+    /// The height came from a content keyword (`fit-content` and the like): not definite for the
+    /// percentages inside (CSS 2.2 §10.5).
+    content_height: bool,
+}
+
+impl ItemPrep {
+    /// The final-layout question for this item.
+    pub fn request(&self) -> ChildRequest {
+        let mut request = layout_request(
+            self.node,
+            self.size,
+            self.grid_area_size.map(Some),
+            self.area_minus_margins.map(AvailableSpace::Definite),
+            SizingMode::InherentSize,
+        );
+        request.input.known_dimensions_are_definite.height = !self.content_height;
+        request
+    }
+}
+
+/// Resolves an in-flow item's size within `grid_area`; measures only for sizing keywords.
+pub(super) fn prepare_item<T: LayoutTree + CacheAccess + ?Sized>(
+    tree: &mut T,
+    node: NodeId,
+    grid_area: Rect<f32>,
+    container_alignment: &ContainerAlignment,
+    baseline_shim: f32,
+    direction: Direction,
+) -> ItemPrep {
+    let grid_area_size = Size { width: grid_area.right - grid_area.left, height: grid_area.bottom - grid_area.top };
+    let style = tree.style(node);
+    let calc = |id, basis| tree.resolve_calc(id, basis);
+    let overflow = style.overflow;
+    let contain = style.contain;
+    let scrollbar_width = style.scrollbar_width;
+    let aspect_ratio = style.aspect_ratio;
+    let item_direction = style.direction;
+    let justify_self = style.justify_self.map(|a| a.resolve_self_relative(item_direction, direction, true));
+    let align_self = style.align_self.map(|a| a.resolve_self_relative(item_direction, direction, false));
+    let container_h = container_alignment.horizontal.map(|a| a.resolve_self_relative(item_direction, direction, true));
+    let container_v = container_alignment.vertical.map(|a| a.resolve_self_relative(item_direction, direction, false));
+    let position = style.position;
+    // Lengths that resolve against nothing are the same against the grid area.
+    let plan = tree.style_plan(node);
+    let resolve = |s: Size<crate::style::Length>| crate::compute::block::resolve_size(s, grid_area_size.map(Some), &calc);
+    let (inset, padding, border, raw_size, raw_min_size, raw_max_size, margin) = match plan {
+        Some(p) => (
+            p.inset,
+            p.padding,
+            p.border,
+            p.size,
+            p.min_size,
+            p.max_size,
+            Rect {
+                left: (!style.margin.left.is_auto()).then_some(p.margin.left),
+                right: (!style.margin.right.is_auto()).then_some(p.margin.right),
+                top: (!style.margin.top.is_auto()).then_some(p.margin.top),
+                bottom: (!style.margin.bottom.is_auto()).then_some(p.margin.bottom),
+            },
+        ),
+        None => (
+            style.inset.zip_size(grid_area_size.map(Some), |i, basis| i.resolve(basis, &calc)),
+            style.padding.map(|p| p.resolve_or_zero(Some(grid_area_size.width), &calc)),
+            style.border.map(|b| b.resolve_or_zero(Some(grid_area_size.width), &calc)),
+            resolve(style.size.map(|v| v.raw())),
+            resolve(style.min_size.map(|v| v.raw())),
+            resolve(style.max_size.map(|v| v.raw())),
+            style.margin.map(|m| m.resolve(Some(grid_area_size.width), &calc)),
+        ),
+    };
+    let inset_h = Line { start: inset.left, end: inset.right };
+    let inset_v = Line { start: inset.top, end: inset.bottom };
+    let padding_border_size = (padding + border).sum_axes();
+    let box_sizing_adjustment = if style.box_sizing == BoxSizing::ContentBox { padding_border_size } else { Size::ZERO };
+    let size_style = style.size;
+    let inherent_size = raw_size.maybe_apply_aspect_ratio(aspect_ratio).maybe_add(box_sizing_adjustment);
+    let min_size = raw_min_size
+        .maybe_add(box_sizing_adjustment)
+        .or(padding_border_size.map(Some))
+        .maybe_max(padding_border_size.map(Some))
+        .maybe_apply_aspect_ratio(aspect_ratio);
+    let max_size = raw_max_size.maybe_apply_aspect_ratio(aspect_ratio).maybe_add(box_sizing_adjustment);
+    // `normal` sizes replaced items as for `start`.
+    let is_replaced = style.item_is_replaced;
+    let alignment_h = justify_self.or(container_h).unwrap_or(if inherent_size.width.is_some() || size_style.width.is_sizing_keyword() || is_replaced {
+        AlignSelf::START
+    } else {
+        AlignSelf::STRETCH
+    });
+    let alignment_v = align_self.or(container_v).unwrap_or(
+        if inherent_size.height.is_some() || size_style.height.is_sizing_keyword() || aspect_ratio.is_some() || is_replaced {
+            AlignSelf::START
+        } else {
+            AlignSelf::STRETCH
+        },
+    );
+    let area_minus_margins = Size {
+        width: grid_area_size.width.maybe_sub(margin.left).maybe_sub(margin.right).max(0.0),
+        height: (grid_area_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - baseline_shim).max(0.0),
+    };
+
+    let keyword_width = inherent_size
+        .width
+        .is_none()
+        .then(|| resolve_sizing_keyword(size_style.width.raw(), Some(area_minus_margins.width), Some(grid_area_size.width)));
+    let keyword_height = inherent_size
+        .height
+        .is_none()
+        .then(|| resolve_sizing_keyword(size_style.height.raw(), Some(area_minus_margins.height), Some(grid_area_size.height)));
+    let keyword_measured: Size<Option<f32>> = match (&keyword_width, &keyword_height) {
+        (Some(Some(SizingKeywordResolution::Measure(aw))), Some(Some(SizingKeywordResolution::Measure(ah)))) => {
+            tree.measure_child_size_both(
+                node,
+                Size::NONE,
+                grid_area_size.map(Some),
+                Size { width: *aw, height: *ah },
+                SizingMode::InherentSize,
+                Line::FALSE,
+            )
+            .map(Some)
+        }
+        _ => Size::NONE,
+    };
+
+    let width = match inherent_size.width {
+        Some(w) => Some(w),
+        None => 'w: {
+            if let Some(Some(res)) = keyword_width {
+                break 'w Some(match res {
+                    SizingKeywordResolution::Exact(w) => w,
+                    SizingKeywordResolution::Measure(aw) => match keyword_measured.width {
+                        Some(w) => w,
+                        None => tree.measure_child_size(
+                            node,
+                            Size::NONE,
+                            grid_area_size.map(Some),
+                            Size { width: aw, height: AvailableSpace::Definite(area_minus_margins.height) },
+                            SizingMode::InherentSize,
+                            AbsoluteAxis::Horizontal,
+                            Line::FALSE,
+                        ),
+                    },
+                });
+            }
+            if margin.left.is_some() && margin.right.is_some() && alignment_h.keyword == AlignItemsKeyword::Stretch {
+                break 'w Some(area_minus_margins.width);
+            }
+            None
+        }
+    };
+    let Size { width, height } = Size { width, height: inherent_size.height }.maybe_apply_aspect_ratio(aspect_ratio);
+    // A content-sized height is found at the used width, min and max sizes applied.
+    let used_width = width.maybe_clamp(min_size.width, max_size.width);
+    let content_height = height.is_none()
+        && matches!(keyword_height, Some(Some(SizingKeywordResolution::Measure(_))));
+    let height = match height {
+        Some(h) => Some(h),
+        None => 'h: {
+            if let Some(Some(res)) = keyword_height {
+                break 'h Some(match res {
+                    SizingKeywordResolution::Exact(h) => h,
+                    SizingKeywordResolution::Measure(ah) => match keyword_measured.height {
+                        Some(h) => h,
+                        None => tree.measure_child_size(
+                            node,
+                            Size { width: used_width, height: None },
+                            grid_area_size.map(Some),
+                            Size {
+                                width: used_width.map_or(AvailableSpace::Definite(area_minus_margins.width), AvailableSpace::Definite),
+                                height: ah,
+                            },
+                            SizingMode::InherentSize,
+                            AbsoluteAxis::Vertical,
+                            Line::FALSE,
+                        ),
+                    },
+                });
+            }
+            if margin.top.is_some() && margin.bottom.is_some() && alignment_v.keyword == AlignItemsKeyword::Stretch {
+                break 'h Some(area_minus_margins.height);
+            }
+            None
+        }
+    };
+    let size = Size { width, height }.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
+    ItemPrep {
+        node,
+        grid_area,
+        grid_area_size,
+        area_minus_margins,
+        size,
+        min_size,
+        max_size,
+        margin,
+        padding,
+        border,
+        inset_h,
+        inset_v,
+        alignment_h,
+        alignment_v,
+        justify_self,
+        align_self,
+        position,
+        baseline_shim,
+        overflow,
+        contain,
+        scrollbar_width,
+        content_height,
+    }
+}
+
+/// Aligns a laid-out item in its area and records its layout; returns its overflow contribution, location and height.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn place_item<T: LayoutTree + CacheAccess + ?Sized>(
+    tree: &mut T,
+    prep: &ItemPrep,
+    out: LayoutOutput,
+    order: u32,
+    direction: Direction,
+    container_border_box_width: f32,
+    container_border: Rect<f32>,
+    container_is_scroll_container: bool,
+) -> (Rect<f32>, Point<f32>, f32) {
+    let ItemPrep {
+        node,
+        grid_area,
+        size,
+        min_size,
+        max_size,
+        margin,
+        padding,
+        border,
+        inset_h,
+        inset_v,
+        alignment_h,
+        alignment_v,
+        justify_self,
+        align_self,
+        position,
+        baseline_shim,
+        overflow,
+        contain,
+        scrollbar_width,
+        ..
+    } = *prep;
+    let Size { width, height } = size.unwrap_or(out.size).maybe_clamp(min_size, max_size);
+
+    let (x, x_margin) = align_item_within_area(
+        Line { start: grid_area.left, end: grid_area.right },
+        justify_self.unwrap_or(alignment_h),
+        width,
+        position,
+        inset_h,
+        Line { start: margin.left, end: margin.right },
+        0.0,
+        direction,
+    );
+    let (y, y_margin) = align_item_within_area(
+        Line { start: grid_area.top, end: grid_area.bottom },
+        align_self.unwrap_or(alignment_v),
+        height,
+        position,
+        inset_v,
+        Line { start: margin.top, end: margin.bottom },
+        baseline_shim,
+        Direction::Ltr,
+    );
+    let scrollbar_size = Size {
+        width: if overflow.y == Overflow::Scroll { scrollbar_width } else { 0.0 },
+        height: if overflow.x == Overflow::Scroll { scrollbar_width } else { 0.0 },
+    };
+    tree.set_unrounded_layout(
+        node,
+        &Layout {
+            order,
+            location: Point { x, y },
+            size: Size { width, height },
+            scrollable_overflow_rect: out.scrollable_overflow_rect,
+            scrollbar_size,
+            padding,
+            border,
+            margin: Rect { left: x_margin.start, right: x_margin.end, top: y_margin.start, bottom: y_margin.end },
+        },
+    );
+    let contribution_location = if direction == Direction::Rtl {
+        Point { x: container_border_box_width - (x + width) - container_border.right, y: y - container_border.top }
+    } else {
+        Point { x: x - container_border.left, y: y - container_border.top }
+    };
+    let contribution = scrollable_overflow_contribution(
+        contribution_location,
+        Size { width, height },
+        out.scrollable_overflow_rect,
+        overflow,
+        contain,
+        container_is_scroll_container,
+    );
+    (contribution, Point { x, y }, height)
+}
+
+/// Offset of an item's start edge within a grid area, plus its resolved margins.
+#[allow(clippy::too_many_arguments)]
+fn align_item_within_area(
+    grid_area: Line<f32>,
+    alignment: AlignSelf,
+    resolved_size: f32,
+    position: Position,
+    inset: Line<Option<f32>>,
+    margin: Line<Option<f32>>,
+    baseline_shim: f32,
+    direction: Direction,
+) -> (f32, Line<f32>) {
+    let non_auto_margin = Line { start: margin.start.unwrap_or(0.0) + baseline_shim, end: margin.end.unwrap_or(0.0) };
+    let area_size = (grid_area.end - grid_area.start).max(0.0);
+    let free_space = (area_size - resolved_size - non_auto_margin.sum()).max(0.0);
+    let auto_count = margin.start.is_none() as u8 + margin.end.is_none() as u8;
+    let auto_size = if auto_count > 0 { free_space / auto_count as f32 } else { 0.0 };
+    let resolved_margin = Line { start: margin.start.unwrap_or(auto_size) + baseline_shim, end: margin.end.unwrap_or(auto_size) };
+    let overflows = resolved_size + non_auto_margin.sum() > area_size;
+    // Auto margins disable self-alignment (css-grid-1 §10.2), also when they absorb nothing.
+    let keyword = if auto_count > 0 { AlignItemsKeyword::Start } else { resolve_self_alignment_safety(alignment, overflows) };
+    let rtl = direction == Direction::Rtl;
+    let alignment_offset = match keyword {
+        AlignItemsKeyword::Start | AlignItemsKeyword::FlexStart | AlignItemsKeyword::Baseline | AlignItemsKeyword::Stretch => {
+            if rtl { area_size - resolved_size - resolved_margin.end } else { resolved_margin.start }
+        }
+        AlignItemsKeyword::End | AlignItemsKeyword::FlexEnd => {
+            if rtl { resolved_margin.start } else { area_size - resolved_size - resolved_margin.end }
+        }
+        AlignItemsKeyword::Center => (area_size - resolved_size + resolved_margin.start - resolved_margin.end) / 2.0,
+        AlignItemsKeyword::SelfStart | AlignItemsKeyword::SelfEnd => unreachable!("resolved earlier"),
+    };
+    let mut start = grid_area.start + alignment_offset;
+    if position == Position::Relative {
+        let relative = if rtl { inset.end.map(|p| -p).or(inset.start) } else { inset.start.or(inset.end.map(|p| -p)) };
+        start += relative.unwrap_or(0.0);
+    }
+    (start, resolved_margin)
+}

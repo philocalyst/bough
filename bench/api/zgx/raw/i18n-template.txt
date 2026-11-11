@@ -1,0 +1,1 @@
+template: 213.3 us per frame, 0.2 us a locale switch

@@ -1,0 +1,1 @@
+Scroll: update 0.035 + layout 0.027 + render 0.954 = 1.016 ms/tick, layout nodes 6/tick, damaged 0.99 Mpx/tick, scene nodes 1179, atlas 1.0 MB, images 0.0 MB, shaped 0.4 MB, prepared 0.5+0.1 MB, device 18.9 MB, texts shaped 2.4/tick, cache hits 6.5/tick, allocations 35+14+20/tick

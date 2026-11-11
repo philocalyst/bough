@@ -1,0 +1,63 @@
+<p><strong>Against the site’s two Vizia apps, measured side by side:</strong> bough wins every scroll measure and most dashboard measures by a wide margin. It loses one dashboard result: the site’s headline number, because one of its three runs stalled once.</p>
+<ul>
+  <li><span class="tag win">Win</span><strong>Scroll at 7,000 rows:</strong>
+    <ul>
+      <li>presents per second: 120.0, the display’s limit, against 112.0 for Vizia (optimized) and 22.3 for Vizia;</li>
+      <li>p95 gap: 12.4 ms against 16.8 and 60.1 ms;</li>
+      <li>longest gap: 14.1 ms against 33.0 and 76.3 ms.</li>
+    </ul>
+    At 1,000 rows all three sit near the display’s limit.</li>
+  <li><span class="tag win">Win</span><strong>Work and memory:</strong>
+    <ul>
+      <li>CPU in the 3 s window at 7,000 rows: 121 ms against 1,369 ms (11×) and 8,626 ms (71×);</li>
+      <li>resident memory: 68 MiB against 438 and 441 MiB;</li>
+      <li>physical footprint, which also counts the GPU driver’s memory: 175 MiB against 435 and 430 MiB.</li>
+    </ul></li>
+  <li><span class="tag win">Win</span><strong>Executable:</strong> 2.7 MiB against 18.7 and 18.8 MiB. bough loads its font from a file at run time; Vizia carries fonts in its binary.</li>
+  <li><span class="tag win">Win</span><strong>Dashboard, the rest:</strong>
+    <ul>
+      <li>p95 gap: 9.2 ms against 16.4 and 35.3 ms;</li>
+      <li>mean resident memory: 66 MiB against 160 and 164 MiB;</li>
+      <li>CPU: 2.1 s against 4.6 and 9.8 s over the 8 s workload.</li>
+    </ul></li>
+  <li><span class="tag loss">Loss</span><strong>Dashboard worst gap, the site’s headline:</strong> the site keeps the worst gap across runs, which gives 75.7 ms for bough against 31.0 ms for Vizia (optimized). bough’s other two runs were 15.3 and 15.1 ms, lower than every Vizia run. The stall fell in the Refresh phase, and its cause has not been found.</li>
+  <li><span class="tag even">Even</span><strong>Clicks counted (corrected):</strong> no click was dropped. In the run captured on screen (the one with the stall), bough’s counter shows 467, and the driver’s own record of that run (<code>events_sent</code> for the Refresh phase in results.json) is 467: the harness sent 467 Refresh clicks in that run, not 480, and bough counted every one. Its other two runs sent and counted 480. An earlier version of this page called this 13 dropped clicks; that was wrong.</li>
+</ul>
+
+<h3>Against zgx and BUI, measured side by side</h3>
+<p>zgx (Zeron, <code>0f0a08af</code>, built as its getting-started guide says, with its patch set) and BUI (Blender’s UI as a standalone library, <code>d6be0397</code>), run through the same workloads, input and present observer. Medians of three runs.</p>
+<ul>
+  <li><span class="tag win">Win</span><strong>Scroll at 7,000 rows:</strong> 120.0 presents/s, p95 12.4 ms, longest gap 14.1 ms for bough against 111.3 / 16.7 / 25.0 for zgx and 21.0 / 68.9 / 170.8 for BUI. CPU in the 3 s window: 121 ms against 752 (6.2×) and 2,900 ms (24×); resident memory 68 MiB against 137 and 222.</li>
+  <li><span class="tag win">Win</span><strong>Scroll at 1,000–5,000 rows:</strong> bough holds 119.7–120.0 presents/s with p95 12.2–13.3 ms; zgx 108.7–111.0 with p95 16.7 ms. BUI reports 138 presents/s at 1,000 rows, above the display’s 120 Hz, because it draws a CPU frame per wheel event without waiting for the display; its counts overstate what was shown.</li>
+  <li><span class="tag loss">Loss</span><strong>Dashboard worst gap, the site’s headline:</strong> zgx’s worst of three is 42.5 ms against bough’s 75.7 ms (bough’s other runs: 15.3 and 15.1 ms; zgx’s: 32.9 and 42.1 ms). BUI’s worst is 279.8 ms, in a run taken straight after covered-window rejections (its others: 27.2 and 37.4 ms).</li>
+  <li><span class="tag win">Win</span><strong>Dashboard, the rest:</strong> p95 gap 9.2 ms against 25.0 (zgx) and 18.8 (BUI); resident memory 66 MiB against 136 and 171; CPU 2.1 s against 3.6 and 7.1 s.</li>
+  <li><span class="tag win">Win</span><strong>Executable:</strong> 2.7 MiB against 5.0 MiB (BUI) and 14.9 MiB (zgx).</li>
+  <li><span class="tag even">Note</span><strong>Not like for like in every respect:</strong> zgx draws with its own default font (its <code>ZGX_FONT_FILE</code> is read only by its examples), the others with DejaVu Sans; BUI renders on the CPU on macOS (no GPU renderer there) and is observed through its view’s <code>displayIfNeeded</code>, zgx through its tile flips (verified one record per frame against zgx’s own present log, 319/319). zgx and BUI have far more finished features than bough (accessibility, IME, menus, text editing), which these two workloads do not exercise.</li>
+</ul>
+
+<h3>Against every registered framework</h3>
+<p>Six frameworks are measured on this Mac and twelve are estimated from the site’s Linux numbers (see “Every registered framework”).</p>
+<ul>
+  <li><span class="tag even">Tied</span><strong>Presents per second:</strong> bough is highest at both 1,000 and 7,000 rows, but every leader sits within about 3 frames of this display’s 120 Hz limit, so on this measure the field is effectively tied.</li>
+  <li><span class="tag loss">Loss</span><strong>Steadiness (p95 gap):</strong> iced, measured here, presents more evenly: 8.4–8.6 ms against bough’s 12.4–12.9 ms. Slint was also steadier at 1,000 rows (9.3 ms). bough ranks second of 17 at 7,000 rows and third of 18 at 1,000. bough is observed when it publishes a surface and the others when they take a drawable, so part of the gap may be where the clock is read; it is reported as measured.</li>
+  <li><span class="tag win">Win</span><strong>Memory:</strong> lowest dashboard resident memory of the 15 frameworks with a value: 66 MiB, against 120 MiB for iced, the next lowest, which was measured.</li>
+  <li><span class="tag win">Win</span><strong>Executable size:</strong> smallest of all 18, at 2.7 MiB. The next smallest is egui at about 4.0 MiB, an estimate.</li>
+  <li><span class="tag even">Not compared</span><strong>Dashboard worst gap and CPU:</strong> the site’s worst gaps are single Linux stalls that do not convert across machines, and its latest collection publishes no CPU time. Among the measured frameworks:
+    <ul>
+      <li>bough’s worst dashboard gap was 75.7 ms in the head-to-head run and 39.4 ms in the earlier run;</li>
+      <li>iced’s was 19.0 ms, and egui’s 31.9 ms.</li>
+    </ul></li>
+</ul>
+<div class="note">These are not the site’s numbers:
+  <ul>
+    <li>bough runs only on macOS (Metal), and the site’s harness is Linux with X11 and MangoHud, so the site cannot list it;</li>
+    <li>everything here was measured on one Mac with a 120 Hz display, against the site’s 144 Hz Linux machine;</li>
+    <li>MangoHud and xdotool were replaced by an injected present observer and macOS events, keeping the site’s schedule and statistics.</li>
+  </ul></div>
+<div>What running the workloads exposed in bough:
+  <ul>
+    <li><strong>New pieces were needed.</strong> Its application surface lacked a scroll container, images and a text input in flow, so <code>div().scroll(..)</code>, <code>image</code> and <code>text_input</code> were built for this.</li>
+    <li><strong>Fixed capacities.</strong> Its fixed-capacity glyph column overflowed on the dashboard until its capacity was raised.</li>
+    <li><strong>Frames beyond the display.</strong> It presents a frame for every input event, about 240 a second in the dashboard, twice what the display can show.</li>
+    <li><strong>No select-all.</strong> Its text field has no select-all, so the harness’s “clear the input” step deleted one character.</li>
+  </ul></div>

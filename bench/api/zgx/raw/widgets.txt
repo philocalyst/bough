@@ -1,0 +1,2 @@
+500 rows (1500 widgets): mount 10.83 ms, 17267.7 KiB retained, 61326 allocations, 4501 effects
+idle flush 3.5 ns; hover step 5.47 us (719 paint nodes)

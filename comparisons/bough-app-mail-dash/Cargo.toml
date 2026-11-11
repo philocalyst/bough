@@ -1,0 +1,17 @@
+[package]
+name = "bough-app-mail-dash"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "zgx's example apps mail and dashboard (zgx-script examples) on bough: apps_bench and pixel gates"
+
+[dependencies]
+bough = { path = "../../crates/bough" }
+bough-core = { path = "../../crates/bough-core" }
+bough-metal = { path = "../../crates/bough-metal" }
+bough-text = { path = "../../crates/bough-text" }
+zgx-workload = { git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }
+
+[[bin]]
+name = "apps_bench"
+path = "src/bin/apps_bench.rs"

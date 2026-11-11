@@ -1,0 +1,11 @@
+LongList fixture (10000 rows of 24 px), pointer at window middle (800, 500), wheel(middle, 6.0) every 40 ticks, 120 Hz ticks of 8333 us, first 3 notches.
+scale 1; scroll settings: lines_per_notch=3 direction=AsReported
+
+--- scroll physics (read from crates/zgui-scroll and crates/zgui-runtime/src/window/scroll) ---
+glide: zgui_scroll::motion::Tween. DURATION = 240 ms, constant (not distance-proportional).
+easing: ease(t) = 1 - (1 - t)^3 (cubic ease-out), t = elapsed/240ms, position = from + (to - from) * ease(t); when elapsed >= 240 ms the step returns exactly `to` and is done.
+a second detent during a glide: destination = previous destination + new delta, and the tween is retargeted: from = current position, elapsed reset to 0 (ease restarts), so detents compose.
+wheel -> distance: ScrollDelta::Lines is multiplied by ScrollSettings.lines_per_notch (3 in the headless platform, direction AsReported), then by the scrolled container's computed line height (strut line_height).
+  LongList container: 13px font -> 19.5 px line: wheel(6.0) = 6*3*19.5 = 351 px.  Gallery root: 16px font -> 24 px line: wheel(3.0) = 3*3*24 = 216 px.
+animation frames are due on a refresh-interval phase (zgui-runtime window/anim/cadence.rs): a harness tick that does not cross the next due moment runs 0 frames (frames_run=0 rows), and a tick whose tween sample rounds to the same position repaints nothing new.
+offsets are the Scroller's composed offsets in device px (scale 1 here, so CSS px = device px).

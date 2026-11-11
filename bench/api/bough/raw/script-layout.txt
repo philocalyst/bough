@@ -1,0 +1,2 @@
+1000 rows reversed, 20 times, mean:
+  without animate: change 0.167 ms (1.07 M instructions), its frame 0.001 ms (0.00 M instructions)

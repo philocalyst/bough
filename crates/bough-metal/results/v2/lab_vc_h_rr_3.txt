@@ -1,0 +1,22 @@
+
+### strategy `vc:h:rr:3` damage-mode `stencil` link-pause false
+
+| scenario | frames | process instr / frame | main-thread in-tick instr (med) | publish-thread instr / publish | GPU ms med / p99 | tick interval med / p99 | publish interval med / p99 | present->publish-commit ms med | CPU us / frame (all threads) | wakeups / frame |
+|---|---|---|---|---|---|---|---|---|---|---|
+| idle | 168 ticks in 1.40 s | **5404569 instr/s** | NaN (tick body) | - | - | - | - | - | 4.7 ms CPU/s | 121.3 wakeups/s |
+| one-colour | 168 | **491772** | 88778 | 84680 | 0.228 / 1.066 | 8.33 / 8.33 | 8.35 / 9.66 | 0.78 | 281.7 | 1.03 |
+| scatter-80 | 168 | **545966** | 224307 | 84505 | 0.608 / 1.133 | 8.33 / 8.33 | 8.34 / 9.15 | 1.10 | 274.7 | 1.01 |
+| scroll-400 | 169 | **467698** | 142547 | 84832 | 0.460 / 1.113 | 8.33 / 8.33 | 8.32 / 9.22 | 0.94 | 253.1 | 1.01 |
+| full | 168 | **382530** | 61294 | 84374 | 0.530 / 1.201 | 8.33 / 8.33 | 8.33 / 8.81 | 0.97 | 187.3 | 1.01 |
+| toggle | 168 | **379638** | 60156 | 84513 | 0.564 / 1.027 | 8.33 / 8.33 | 8.34 / 9.55 | 0.96 | 189.2 | 1.01 |
+| sparse (13 changes, 169 ticks) | 13 | **980676** | 94431 | 84798 | 0.186 / 0.967 | NaN / NaN | NaN / NaN | 0.64 | 574.1 | 14.08 |
+
+threads [idle] (us per run): main#259 6468.0us, ?#17923 31.0us, ?#8451 30.0us
+threads [one-colour] (us per frame): ?#8451 109.7us, main#259 91.2us, ?#17923 80.8us, com.apple.NSEventThread#35599 0.1us
+threads [scatter-80] (us per frame): main#259 106.8us, ?#8451 85.1us, ?#17923 82.8us
+threads [scroll-400] (us per frame): main#259 88.6us, ?#17923 82.0us, ?#5635 38.5us
+threads [full] (us per frame): main#259 65.2us, ?#17923 61.2us, ?#5635 61.0us
+threads [toggle] (us per frame): main#259 66.3us, ?#17923 62.2us, ?#5635 60.6us, ?#40547 0.1us
+threads [sparse] (us per frame): main#259 442.0us, ?#5635 83.7us, ?#17923 49.5us, ?#40607 1.0us
+memory: RSS 36.0 MB, phys_footprint 158.9 MB, MTLDevice.currentAllocatedSize 35.7 MB, surfaces 33.2 MB
+[vc:h:rr:3] gpu frames 884, tiles/frame 3156.3, skipped-gpu 0, skipped-all 0, deferred (no free surface) 0, drawn-while-in-use 0, published-while-in-use 13, free-candidates hist [0, 0, 0, 0, 0], armed batch errors 0

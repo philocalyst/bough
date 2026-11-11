@@ -1,0 +1,400 @@
+warning: output filename collision at /Users/mileswirht/projects/bough/target/fusion/release/examples/bench
+  |
+  = note: the example target `bench` in package `bough-text v0.0.0 (/Users/mileswirht/projects/bough/crates/bough-text)` has the same output filename as the example target `bench` in package `bough-metal v0.0.0 (/Users/mileswirht/projects/bough/crates/bough-metal)`
+  = note: this may become a hard error in the future; see <https://github.com/rust-lang/cargo/issues/6313>
+  = help: consider changing their names to be unique or compiling them separately
+warning: output filename collision at /Users/mileswirht/projects/bough/target/fusion/release/examples/bench.dSYM
+  |
+  = note: the example target `bench` in package `bough-text v0.0.0 (/Users/mileswirht/projects/bough/crates/bough-text)` has the same output filename as the example target `bench` in package `bough-metal v0.0.0 (/Users/mileswirht/projects/bough/crates/bough-metal)`
+  = note: this may become a hard error in the future; see <https://github.com/rust-lang/cargo/issues/6313>
+  = help: consider changing their names to be unique or compiling them separately
+   Compiling bough-damage-lab v0.0.0 (/Users/mileswirht/projects/bough/crates/bough-damage-lab)
+   Compiling bough-core v0.0.0 (/Users/mileswirht/projects/bough/crates/bough-core)
+   Compiling bough-text v0.0.0 (/Users/mileswirht/projects/bough/crates/bough-text)
+   Compiling bough-metal v0.0.0 (/Users/mileswirht/projects/bough/crates/bough-metal)
+   Compiling bough v0.0.0 (/Users/mileswirht/projects/bough/crates/bough)
+   Compiling bough-scenes v0.0.0 (/Users/mileswirht/projects/bough/comparisons/bough-scenes)
+   Compiling bough-vlist v0.0.0 (/Users/mileswirht/projects/bough/comparisons/bough-vlist)
+   Compiling bough-heavy v0.0.0 (/Users/mileswirht/projects/bough/comparisons/bough-heavy)
+    Finished `release` profile [optimized + debuginfo] target(s) in 4m 53s
+     Running unittests src/lib.rs (target/fusion/release/build/bough/756e415ffab1e2c2/out/bough-756e415ffab1e2c2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/layout.rs (target/fusion/release/build/bough/e7fdfe438090ebbd/out/layout-e7fdfe438090ebbd)
+
+running 5 tests
+test flex_geometry_matches_hand_computation ... ok
+test absolute_box_below_static_ancestors_uses_its_containing_block ... ok
+test paragraph_wraps_and_measures ... ok
+test word_table_pipeline_equals_glyph_run_pipeline ... ok
+test incremental_edits_equal_cold_layout_and_fresh_mount ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+
+     Running unittests src/lib.rs (target/fusion/release/build/bough-core/4dbb4e7d3bf5c3b9/out/bough_core-4dbb4e7d3bf5c3b9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/differential.rs (target/fusion/release/build/bough-core/534dbabe70c14b72/out/differential-534dbabe70c14b72)
+
+running 7 tests
+test big_bulk_insert_and_remove ... ok
+test page_pool_is_type_stable ... ok
+test differential_full_window ... ok
+test differential_far_translates ... ok
+test differential_wide_window ... ok
+test differential_small_window ... ok
+test differential_long_sequences ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.65s
+
+     Running tests/nrect.rs (target/fusion/release/build/bough-core/9fa22b3b05b8c0d6/out/nrect-9fa22b3b05b8c0d6)
+
+running 8 tests
+test compact8_exhaustive ... ok
+test exhaustive_raw_lanes_is_empty ... ok
+test exhaustive_points_small_domain ... ok
+test saturation_extremes ... ok
+test group_kernels_match_scalar ... ok
+test slice_kernels_vs_naive ... ok
+test exhaustive_pairs_small_domain ... ok
+test random_full_range ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/shapes.rs (target/fusion/release/build/bough-core/5dddf589d3f984da/out/shapes-5dddf589d3f984da)
+
+running 3 tests
+test list_scroll_step_keeps_both_consistent ... ok
+test arena_damage_collapse_and_ring ... ok
+test bough_and_arena_agree_on_shapes ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src/lib.rs (target/fusion/release/build/bough-damage-lab/315dd1386f5565b7/out/bough_damage_lab-315dd1386f5565b7)
+
+running 1 test
+test geom::tests::nrect_algebra_matches_r_exhaustively_small ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/lab.rs (target/fusion/release/build/bough-damage-lab/26f0cbfea7614653/out/lab-26f0cbfea7614653)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/fusion/release/build/bough-heavy/999f539580e7f2a2/out/bough_heavy-999f539580e7f2a2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/frame_diff.rs (target/fusion/release/build/bough-heavy/8b7f04f4d8c8a236/out/frame_diff-8b7f04f4d8c8a236)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/heavy_headless.rs (target/fusion/release/build/bough-heavy/16eb477fe1a6197f/out/heavy_headless-16eb477fe1a6197f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/heavy_shot.rs (target/fusion/release/build/bough-heavy/e4ca92e388a04c38/out/heavy_shot-e4ca92e388a04c38)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/heavy_workload.rs (target/fusion/release/build/bough-heavy/64278c9d770021e2/out/heavy_workload-64278c9d770021e2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/correctness.rs (target/fusion/release/build/bough-heavy/c668e04e707750c2/out/correctness-c668e04e707750c2)
+
+running 7 tests
+test numeric_operands_render_zgx_strings ... ok
+test idle_is_zero_work ... ok
+test bin_overflow_grows_the_bins_and_redraws_exactly ... ok
+test scroll_across_many_rows_and_a_jump_is_pixel_exact ... ok
+test scroll_is_pixel_exact_at_every_ring_age ... ok
+test stream_is_pixel_exact_at_every_ring_age ... ok
+test both_is_pixel_exact_at_every_ring_age ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.66s
+
+     Running unittests src/lib.rs (target/fusion/release/build/bough-mem/37ae9e05b4ce3c8a/out/bough_mem-37ae9e05b4ce3c8a)
+
+running 3 tests
+test tests::owned_grows_like_vec ... ok
+test tests::carved_columns_are_disjoint_and_fixed ... ok
+test tests::carved_column_overflow_panics - should panic ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/fusion/release/build/bough-metal/a21a469faeb6ed0f/out/bough_metal-a21a469faeb6ed0f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/fusion/release/build/bough-scenes/d1071daa4725979a/out/bough_scenes-d1071daa4725979a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/animate_headless.rs (target/fusion/release/build/bough-scenes/cdfa0466181d25dc/out/animate_headless-cdfa0466181d25dc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/animate_workload.rs (target/fusion/release/build/bough-scenes/78244c4cfb9050eb/out/animate_workload-78244c4cfb9050eb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/blink_workload.rs (target/fusion/release/build/bough-scenes/e86e3f0ce7c5f27d/out/blink_workload-e86e3f0ce7c5f27d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/lab_headless.rs (target/fusion/release/build/bough-scenes/627d59c258403a81/out/lab_headless-627d59c258403a81)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/lab_workload.rs (target/fusion/release/build/bough-scenes/d766323c3bd84f74/out/lab_workload-d766323c3bd84f74)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/micro_bench.rs (target/fusion/release/build/bough-scenes/dd464955f3382b02/out/micro_bench-dd464955f3382b02)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/scene_diff.rs (target/fusion/release/build/bough-scenes/c118a9b82144873f/out/scene_diff-c118a9b82144873f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/scene_shot.rs (target/fusion/release/build/bough-scenes/0774a17900d64c86/out/scene_shot-0774a17900d64c86)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/correctness.rs (target/fusion/release/build/bough-scenes/7af9d7f1eee4299f/out/correctness-7af9d7f1eee4299f)
+
+running 11 tests
+test blink_is_served_by_held_surfaces_after_two_frames ... ok
+test trim_to_purgeable_and_resume_is_pixel_exact ... ok
+test lab_scroll_jumps_are_pixel_exact ... ok
+test animate_in_throughput_mode_is_pixel_exact ... ok
+test blink_is_pixel_exact_and_idle_between_flips_is_free ... ok
+test lab_stream_is_pixel_exact ... ok
+test lab_scroll_is_pixel_exact ... ok
+test lab_both_is_pixel_exact ... ok
+test micro_vscroll_is_pixel_exact_through_the_wrap ... ok
+test micro_state_is_pixel_exact ... ok
+test animate_is_pixel_exact ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.84s
+
+     Running unittests src/lib.rs (target/fusion/release/build/bough-text/f62a0bc6433e409a/out/bough_text-f62a0bc6433e409a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/atlas.rs (target/fusion/release/build/bough-text/04994a39ca3e2cc6/out/atlas-04994a39ca3e2cc6)
+
+running 3 tests
+test shelf_packing_is_disjoint_and_pow2 ... ok
+test fused_shape_to_instances_equals_two_step ... ok
+test instances_for_a_run ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/exact.rs (target/fusion/release/build/bough-text/688f77cddb5b54aa/out/exact-688f77cddb5b54aa)
+
+running 9 tests
+test table_properties ... ok
+test unicode_outside_the_set_is_refused ... ok
+test refusals_are_only_ligature_pairs_or_uncovered_codepoints ... ok
+test ascii_exhaustive_three_all ... ok
+test english_words_and_sentences ... ok
+test ligature_alphabet_exhaustive ... ok
+test workload_strings ... ok
+test random_strings_up_to_200 ... ok
+test exhaustive_up_to_three ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.49s
+
+     Running tests/numeric.rs (target/fusion/release/build/bough-text/a4f1a2112444508f/out/numeric-a4f1a2112444508f)
+
+running 2 tests
+test heavy_values_and_integers ... ok
+test exhaustive_binades_against_format ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.31s
+
+     Running tests/pool.rs (target/fusion/release/build/bough-text/88caf1430042d56b/out/pool-88caf1430042d56b)
+
+running 3 tests
+test refused_text_leaves_label_untouched ... ok
+test heavy_numeric_labels_over_consecutive_ticks ... ok
+test random_edits_all_paths ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s
+
+     Running tests/window.rs (target/fusion/release/build/bough-text/c94f6c5116ffc49c/out/window-c94f6c5116ffc49c)
+
+running 2 tests
+test vlist_paragraph_lines_are_windows ... ok
+test lab_stream_lines_are_windows ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/lib.rs (target/fusion/release/build/bough-vlist/dfa734a2d83ca64c/out/bough_vlist-dfa734a2d83ca64c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/cephal_raw.rs (target/fusion/release/build/bough-vlist/8106035c126fa3ae/out/cephal_raw-8106035c126fa3ae)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/layout_bench.rs (target/fusion/release/build/bough-vlist/6a8ceeecf36a13d0/out/layout_bench-6a8ceeecf36a13d0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/micro_bench.rs (target/fusion/release/build/bough-vlist/e668bc13493caa03/out/micro_bench_vlist-e668bc13493caa03)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/text_bench.rs (target/fusion/release/build/bough-vlist/9f5a7d9643ead2c3/out/text_bench-9f5a7d9643ead2c3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/vlist_headless.rs (target/fusion/release/build/bough-vlist/45dfd58b65dfecde/out/vlist_headless-45dfd58b65dfecde)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/vlist_shot.rs (target/fusion/release/build/bough-vlist/817390b4facd80b9/out/vlist_shot-817390b4facd80b9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/vlist_workload.rs (target/fusion/release/build/bough-vlist/faf2ff8eaa72bab0/out/vlist_workload-faf2ff8eaa72bab0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/correctness.rs (target/fusion/release/build/bough-vlist/505484610c5221ab/out/correctness-505484610c5221ab)
+
+running 8 tests
+test prefix_index_matches_naive ... ok
+test heights_follow_the_zgx_formula ... ok
+test row_layouts_equal_cold_layout ... ok
+test scrolling_back_up_and_in_steps_is_pixel_exact ... ok
+test retained_equals_fresh_mount_with_same_heights ... ok
+test fling_is_pixel_exact ... ok
+test scroll_is_pixel_exact ... ok
+test jump_is_pixel_exact ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.78s
+
+   Doc-tests bough
+
+running 1 test
+test crates/bough/src/signal.rs - signal::sig (line 146) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 2 tests
+test crates/bough/src/signal.rs - signal::sig (line 158) - compile fail ... ok
+test crates/bough/src/signal.rs - signal::sig (line 169) - compile fail ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+all doctests ran in 2.57s; merged doctests compilation took 2.33s
+   Doc-tests bough_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bough_damage_lab
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bough_heavy
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bough_mem
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bough_metal
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bough_scenes
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bough_text
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bough_vlist
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,67 @@
+MEASURE	idle	idle.frames	frames	0.0000	0.0000	ok	a still document draws nothing; one frame here is the whole defect	0.0000	met	-
+MEASURE	idle	idle.turn	us	0.0420	2.0000	ok	a turn that draws nothing touches no node; measured at well under 1 us	-	-	p50=0.0420;p95=0.0840;p99=0.0840;max=1.2500;n=600
+MEASURE	idle	reshape.paragraphs_forgotten	paragraphs	0.0000	0.0000	ok	one element's brush moving costs that element's paragraphs, not the window's	-	-	-
+MEASURE	idle	reshape.boxes_marked_all_dirty	boxes	0.0000	0.0000	ok	nothing these scenarios drive changes the device scale, which is the one change every box pays for	-	-	-
+PACE	idle	16667.0000	0	600
+ESCALATION	idle	0	0	0	0	0
+MEASURE	hover-storm	hover.crossing	us	172.8750	266.0000	ok	measured at 187 us, well under the half-millisecond budget	500.0000	met	p50=172.8750;p95=5591.5000;p99=30979.0420;max=46748.7500;n=240
+MEASURE	hover-storm	hover.primitives_emitted	prims	41.5625	200.0000	ok	two rows changed, so a frame that emits the table is the defect	200.0000	met	-
+MEASURE	hover-storm	reshape.paragraphs_forgotten	paragraphs	0.0000	0.0000	ok	one element's brush moving costs that element's paragraphs, not the window's	-	-	-
+MEASURE	hover-storm	reshape.boxes_marked_all_dirty	boxes	0.0000	0.0000	ok	nothing these scenarios drive changes the device scale, which is the one change every box pays for	-	-	-
+PACE	hover-storm	8333.0000	7	240
+ESCALATION	hover-storm	9975	241916	3593	479	8865
+MEASURE	scroll	scroll.translation	us	52.4580	61.6000	ok	measured at 43-45 us across runs. It was 257 before the renderer was allowed to move the pixels it had already composed: a translation frame now draws the band the movement uncovered instead of the port	1000.0000	met	p50=52.4580;p95=288.6250;p99=917.7090;max=28806.5410;n=142
+MEASURE	scroll	scroll.recycle	us	266.0830	784.0000	ok	measured at 550-565 us across runs, down from 1030: the window's two spacers were custom properties, which inherit, so a window that moved changed the inherited environment of every row in it and recascaded the whole port to shift it by one. Written straight onto the pane, a recycle frame recascades the row that arrived	1500.0000	met	p50=266.0830;p95=1323.0420;p99=1854.0420;max=2009.0420;n=111
+MEASURE	scroll	scroll.translation.restyles	elems	0.0000	0.0000	ok	moving content changes no computed style	0.0000	met	-
+MEASURE	scroll	scroll.translation.relayouts	nodes	0.0000	0.0000	ok	moving content changes no size	0.0000	met	-
+MEASURE	scroll	scroll.translation.hit_rebuilds	rebuilds	0.0000	0.0000	ok	the hit index is translated with the content, never rebuilt from it	0.0000	met	-
+MEASURE	scroll	reshape.paragraphs_forgotten	paragraphs	0.0000	0.0000	ok	one element's brush moving costs that element's paragraphs, not the window's	-	-	-
+MEASURE	scroll	reshape.boxes_marked_all_dirty	boxes	0.0000	0.0000	ok	nothing these scenarios drive changes the device scale, which is the one change every box pays for	-	-	-
+PACE	scroll	8333.0000	1	253
+NOTE	scroll	one row shift rebuilds 8 boxes and relays out 11 nodes, which is the row that arrived and not the port it arrived in; it still emits 18 primitives, which is the port, and is what a recycle frame's remaining cost is
+ESCALATION	scroll	4154	13039	4931	1714	3988
+MEASURE	cold-start	cold.first_frame	ms	164.3440	140.0000	over	measured at 102-111 ms headless; on screen with a device it is 216-247 ms	250.0000	met	p50=164.3440;p95=164.3440;p99=164.3440;max=164.3440;n=1
+MEASURE	cold-start	reshape.paragraphs_forgotten	paragraphs	0.0000	0.0000	ok	one element's brush moving costs that element's paragraphs, not the window's	-	-	-
+MEASURE	cold-start	reshape.boxes_marked_all_dirty	boxes	0.0000	0.0000	ok	nothing these scenarios drive changes the device scale, which is the one change every box pays for	-	-	-
+PACE	cold-start	16.6670	1	1
+NOTE	cold-start	this distribution is taken over a population of one, and it has to be: the second start in a process is a warm start wearing this scenario's name, so there is no second sample to take. Read the four figures as the one launch they are
+ESCALATION	cold-start	1177	5184	7472	3367	0
+MEASURE	kitchen-sink	kitchen.resize	ms	5.0408	10.2500	ok	the measured on-screen p50, which every box in the window pays into	-	-	p50=5.0408;p95=30.1031;p99=188.9015;max=188.9015;n=32
+MEASURE	kitchen-sink	kitchen.click	us	33.1660	15.1200	over	the measured p50 at 1 851 boxes: one class on one element	-	-	p50=33.1660;p95=149.0830;p99=3633.5840;max=3633.5840;n=32
+MEASURE	kitchen-sink	kitchen.keystroke	us	324.2920	407.4000	ok	the measured p50: one edit, one paragraph reshaped, one box repainted	-	-	p50=324.2920;p95=2118.6660;p99=39247.7910;max=39247.7910;n=32
+MEASURE	kitchen-sink	kitchen.untouched_turn	us	96.4170	30.8000	over	the measured p50 of one turn over an untouched but animating gallery	-	-	p50=96.4170;p95=450.1660;p99=3747.0830;max=4343.5830;n=240
+MEASURE	kitchen-sink	kitchen.glide_tick	us	1547.5830	854.0000	over	the measured p50 of one frame of the framework's own scroll animation	-	-	p50=1547.5830;p95=21672.1670;p99=58318.5000;max=103175.0420;n=120
+MEASURE	kitchen-sink	kitchen.tab_traversal	us	357.1670	533.4000	ok	one Tab press moves focus by one stop, which is one element's style and one element's shaping	-	-	p50=357.1670;p95=1303.6250;p99=2798.8750;max=2798.8750;n=22
+MEASURE	kitchen-sink	reshape.paragraphs_forgotten	paragraphs	0.0000	0.0000	ok	one element's brush moving costs that element's paragraphs, not the window's	-	-	-
+MEASURE	kitchen-sink	reshape.boxes_marked_all_dirty	boxes	0.0000	0.0000	ok	nothing these scenarios drive changes the device scale, which is the one change every box pays for	-	-	-
+PACE	kitchen-sink	16667.0000	9	478
+NOTE	kitchen-sink	the tab traversal is inside the measured part now, and it is the widest distribution this scenario takes: p50 357.2 us, p99 2798.9 us, max 2798.9 us over 22 presses
+ESCALATION	kitchen-sink	110851	46335	31857	4540	52980
+MEASURE	thread-resize	thread.resize	ms	25.9715	16.5000	over	measured at 51ms before the resize retention work: the clip identity fix alone took it to 13, and the counts beside this say where the rest goes	8.0000	missed	p50=25.9715;p95=74.1679;p99=111.3102;max=111.3102;n=32
+MEASURE	thread-resize	thread.resize_p95	ms	74.1679	18.7500	over	the shoulder of the same distribution: a drag is judged by its worst steps, which is what a person calls stutter	-	-	p50=25.9715;p95=74.1679;p99=111.3102;max=111.3102;n=32
+MEASURE	thread-resize	thread.rebreaks_per_step	paragraphs	499.0000	499.0000	ok	a width step re-breaks the wrapped paragraphs and no more; the fixed-width header cells owe it nothing	-	-	-
+MEASURE	thread-resize	thread.reshapes_per_step	runs	0.0000	0.0000	ok	shaping is width-independent by design, so a resize that shapes is a cache key that grew a width in it	0.0000	met	-
+MEASURE	thread-resize	thread.relayouts_per_step	nodes	1530.0000	19034.0000	ok	every box may be re-asked at a new width, at most twice when a scrollbar decision flips; a third asking is a pass that ran again	-	-	-
+MEASURE	thread-resize	thread.hit_rebuilds_per_step	rebuilds	0.0000	2.0000	ok	a full relayout earns one wholesale rebuild, two when the gutter fixpoint runs the pass again	-	-	-
+MEASURE	thread-resize	thread.drag.layouts	layouts	10.0000	12.0000	ok	a drag's layouts are bounded by elapsed time over the output's refresh interval, never by how many configures arrived	-	-	-
+MEASURE	thread-resize	reshape.paragraphs_forgotten	paragraphs	0.0000	0.0000	ok	one element's brush moving costs that element's paragraphs, not the window's	-	-	-
+MEASURE	thread-resize	reshape.boxes_marked_all_dirty	boxes	0.0000	0.0000	ok	nothing these scenarios drive changes the device scale, which is the one change every box pays for	-	-	-
+PACE	thread-resize	16667.0000	17	32
+NOTE	thread-resize	one step relays out 1530 nodes (p50) against 9517 boxes and re-breaks 499 of 499 paragraphs; 1 layout passes reached the root and the pool distributed 2 batches
+NOTE	thread-resize	paint answered a step with 73 re-encodes against 59 replays (p50), uploading 0 chunk bytes
+NOTE	thread-resize	the drag laid out 10 times against a ceiling of 12, deferring 111 configures and declining 111 offered frames
+ESCALATION	thread-resize	152838	16506	1512	3066	2478
+MEASURE	app-shell	shell.tooltip_crossing	us	1298.4580	1750.0000	ok	measured at 1.24 ms; one tooltip mounted on its band and the last one handed over, and the page built again for neither (10-11 ms while every mount rebuilt the document's boxes)	4000.0000	met	p50=1298.4580;p95=2942.0840;p99=4587.9590;max=4587.9590;n=37
+MEASURE	app-shell	shell.tooltip_tree_builds	builds	0.0000	0.0000	ok	a tooltip is a small surface on its own band; a whole box-tree build renames every box in the window for it	0.0000	met	-
+MEASURE	app-shell	shell.tooltip_hit_rebuilds	rebuilds	5.0000	5.0000	ok	a surface born on a band its parent paints in stacking order rather than layout order renumbers the index; the sweep measured five	-	-	-
+MEASURE	app-shell	shell.drag_step	us	335.0420	420.0000	ok	measured at 0.30 ms; one edge moved: two panels sized, the strips along the edge repainted, the log's newly exposed lines built	8333.0000	met	p50=335.0420;p95=4612.4580;p99=9559.5420;max=27300.1660;n=60
+MEASURE	app-shell	shell.drag_restyled	elems	2.5500	8.0000	ok	a panel's size is a basis on the panel, which no descendant inherits	-	-	-
+MEASURE	app-shell	shell.drag_hit_rebuilds	rebuilds	1.0000	0.0000	over	moving boxes keeps their paint order, so the hit index moves its entries in place	-	-	-
+MEASURE	app-shell	shell.drag_observation_passes	passes	2.0000	2.0000	ok	the log's scrollport is delivered once, and one more pass finds nothing left to deliver; a third is an observer that did not settle	-	-	-
+MEASURE	app-shell	shell.drag_primitives_emitted	prims	864.0833	1000.0000	ok	measured at 864: the strips along the moved edge and the log's lines, never the page above it	-	-	-
+MEASURE	app-shell	shell.resize_step	us	3080.5830	2800.0000	over	measured at 1.2-2.1 ms; every box is asked again at a new size, once, in one frame, and only what moved and what is exposed is painted	-	-	p50=3080.5830;p95=5772.5000;p99=53199.3330;max=53199.3330;n=40
+MEASURE	app-shell	shell.resize_truncated	deliveries	0.0000	0.0000	ok	a delivery cut short paints a frame against geometry its observers have not answered, and asks for another	0.0000	met	-
+MEASURE	app-shell	reshape.paragraphs_forgotten	paragraphs	0.0000	0.0000	ok	one element's brush moving costs that element's paragraphs, not the window's	-	-	-
+MEASURE	app-shell	reshape.boxes_marked_all_dirty	boxes	0.0000	0.0000	ok	nothing these scenarios drive changes the device scale, which is the one change every box pays for	-	-	-
+PACE	app-shell	8333.0000	1	60
+ESCALATION	app-shell	86264	67814	16309	4850	35570

@@ -1,0 +1,2 @@
+This is a diagnostic probe and not a reference workload: it characterises a slope nobody is expected to hit, and nothing in `cargo xtask` runs it. See the module documentation.
+PROBE rows=2500 boxes=17507 frames=22 glide_ns_per_frame=12344583 damage=Some(0.9406073863636363)

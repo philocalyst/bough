@@ -1,0 +1,3 @@
+built /Users/mileswirht/projects/_ref/zgx in 656 s
+python3 scripts/perf/suite.py  2154.08s user 131.23s system 292% cpu 13:01.74 total
+EXIT 0

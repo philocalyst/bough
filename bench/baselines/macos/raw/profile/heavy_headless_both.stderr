@@ -1,0 +1,39 @@
+profile mark 106.7M instr 29.9 ms: GPU adapter
+profile mark 148.1M instr 43.5 ms: GPU device and pipelines
+profile mark 152.9M instr 44.5 ms: system fonts
+profile 120 frames: | update 1647.6k instr 442.6 us | layout 877.5k instr 140.6 us | damage 1293.5k instr 248.9 us | paint 1913.0k instr 965.5 us | encode 619.3k instr 113.3 us | submit 16.4k instr 18.3 us
+profile 120 frames: | update 1567.7k instr 262.4 us | layout 816.0k instr 77.9 us | damage 1277.3k instr 194.8 us | paint 1664.6k instr 921.9 us | encode 614.2k instr 124.8 us | submit 16.2k instr 11.9 us
+profile 120 frames: | update 1576.2k instr 250.9 us | layout 818.4k instr 110.0 us | damage 1288.0k instr 218.2 us | paint 1671.1k instr 897.2 us | encode 616.9k instr 70.3 us | submit 15.7k instr 9.2 us
+profile 120 frames: | update 1578.2k instr 370.7 us | layout 821.4k instr 121.9 us | damage 1292.4k instr 265.7 us | paint 1680.9k instr 1083.7 us | encode 618.0k instr 101.2 us | submit 16.5k instr 15.7 us
+profile 120 frames: | update 1564.5k instr 158.5 us | layout 818.4k instr 65.5 us | damage 1289.5k instr 149.8 us | paint 1666.8k instr 624.6 us | encode 616.7k instr 55.5 us | submit 15.7k instr 6.3 us
+profile 120 frames: | update 1586.6k instr 408.9 us | layout 821.6k instr 130.5 us | damage 1286.8k instr 273.6 us | paint 1664.4k instr 651.9 us | encode 618.8k instr 101.7 us | submit 16.4k instr 16.1 us
+profile 120 frames: | update 1598.0k instr 447.1 us | layout 821.7k instr 140.1 us | damage 1286.4k instr 269.9 us | paint 1677.5k instr 1289.9 us | encode 621.5k instr 120.0 us | submit 16.4k instr 21.6 us
+profile 120 frames: | update 1577.3k instr 404.9 us | layout 816.8k instr 125.3 us | damage 1283.4k instr 241.8 us | paint 1660.2k instr 1424.8 us | encode 615.9k instr 100.8 us | submit 16.1k instr 21.9 us
+profile 120 frames: | update 1579.4k instr 625.0 us | layout 817.3k instr 165.5 us | damage 1288.4k instr 313.4 us | paint 1674.6k instr 1712.0 us | encode 616.8k instr 136.1 us | submit 16.4k instr 27.9 us
+profile 120 frames: | update 1592.9k instr 419.4 us | layout 825.3k instr 148.5 us | damage 1295.3k instr 284.1 us | paint 1675.7k instr 996.5 us | encode 625.7k instr 107.0 us | submit 16.0k instr 15.2 us
+profile 120 frames: | update 1581.6k instr 734.0 us | layout 817.0k instr 169.0 us | damage 1289.1k instr 440.1 us | paint 1669.4k instr 4222.9 us | encode 619.5k instr 215.6 us | submit 17.0k instr 68.2 us
+profile 120 frames: | update 1573.6k instr 1736.1 us | layout 817.1k instr 235.5 us | damage 1287.4k instr 1514.4 us | paint 1663.5k instr 4807.4 us | encode 617.5k instr 176.3 us | submit 17.0k instr 44.2 us
+profile 120 frames: | update 1574.5k instr 1972.8 us | layout 818.6k instr 854.6 us | damage 1282.3k instr 1012.4 us | paint 1665.9k instr 3463.3 us | encode 617.4k instr 616.4 us | submit 18.2k instr 192.6 us
+profile 120 frames: | update 1571.1k instr 983.9 us | layout 814.9k instr 258.8 us | damage 1276.3k instr 611.3 us | paint 1648.1k instr 2120.8 us | encode 613.9k instr 225.7 us | submit 16.2k instr 27.2 us
+profile 120 frames: | update 1582.6k instr 1340.7 us | layout 816.6k instr 263.5 us | damage 1284.7k instr 789.2 us | paint 1658.5k instr 2144.4 us | encode 616.7k instr 199.0 us | submit 17.2k instr 77.2 us
+profile 120 frames: | update 1573.9k instr 671.0 us | layout 816.9k instr 257.1 us | damage 1286.7k instr 888.8 us | paint 1663.5k instr 2752.6 us | encode 615.3k instr 182.0 us | submit 16.8k instr 225.0 us
+profile 120 frames: | update 1576.6k instr 1293.5 us | layout 818.3k instr 559.6 us | damage 1277.0k instr 868.5 us | paint 1662.6k instr 1968.5 us | encode 615.9k instr 195.7 us | submit 16.7k instr 53.5 us
+profile 120 frames: | update 1585.8k instr 1031.6 us | layout 818.2k instr 776.1 us | damage 1278.1k instr 523.9 us | paint 1657.0k instr 2164.1 us | encode 613.5k instr 530.9 us | submit 16.5k instr 45.6 us
+profile 120 frames: | update 1572.9k instr 580.7 us | layout 815.9k instr 154.0 us | damage 1279.4k instr 976.3 us | paint 1656.8k instr 2930.9 us | encode 615.3k instr 135.7 us | submit 16.1k instr 42.1 us
+profile 120 frames: | update 1570.7k instr 571.6 us | layout 816.9k instr 158.5 us | damage 1281.9k instr 705.1 us | paint 1672.6k instr 3055.2 us | encode 618.0k instr 147.8 us | submit 17.5k instr 162.1 us
+profile 120 frames: | update 1576.0k instr 590.2 us | layout 819.1k instr 215.5 us | damage 1282.8k instr 553.8 us | paint 1651.2k instr 1849.2 us | encode 614.8k instr 144.0 us | submit 16.5k instr 75.9 us
+profile 120 frames: | update 1584.4k instr 1983.4 us | layout 817.1k instr 232.1 us | damage 1279.5k instr 862.6 us | paint 1662.3k instr 1508.4 us | encode 615.8k instr 153.7 us | submit 16.7k instr 35.6 us
+profile 120 frames: | update 1592.0k instr 2336.7 us | layout 818.2k instr 583.2 us | damage 1284.0k instr 1215.8 us | paint 1671.1k instr 2385.6 us | encode 620.0k instr 292.8 us | submit 17.6k instr 115.4 us
+profile 120 frames: | update 1573.7k instr 1540.1 us | layout 818.2k instr 173.8 us | damage 1283.1k instr 340.5 us | paint 1665.3k instr 2740.2 us | encode 616.2k instr 192.3 us | submit 16.5k instr 59.8 us
+profile 120 frames: | update 1579.9k instr 772.1 us | layout 819.8k instr 209.3 us | damage 1284.6k instr 337.0 us | paint 1661.9k instr 1968.5 us | encode 615.5k instr 131.2 us | submit 17.4k instr 778.7 us
+profile 120 frames: | update 1580.0k instr 1130.6 us | layout 816.3k instr 174.2 us | damage 1286.8k instr 835.8 us | paint 1656.1k instr 1984.8 us | encode 616.1k instr 320.8 us | submit 16.6k instr 47.0 us
+profile 120 frames: | update 1577.5k instr 733.7 us | layout 815.3k instr 187.0 us | damage 1278.3k instr 353.7 us | paint 1660.2k instr 2935.0 us | encode 615.6k instr 259.0 us | submit 16.6k instr 64.9 us
+profile 120 frames: | update 1591.9k instr 659.9 us | layout 818.0k instr 151.5 us | damage 1286.4k instr 406.1 us | paint 1674.3k instr 3920.0 us | encode 617.1k instr 246.7 us | submit 18.3k instr 195.1 us
+profile 120 frames: | update 1569.8k instr 223.2 us | layout 814.3k instr 78.1 us | damage 1280.0k instr 178.5 us | paint 1657.0k instr 1633.0 us | encode 612.3k instr 62.2 us | submit 15.2k instr 8.0 us
+profile 120 frames: | update 1571.7k instr 411.9 us | layout 816.2k instr 121.8 us | damage 1280.4k instr 235.9 us | paint 1659.7k instr 929.7 us | encode 614.7k instr 101.3 us | submit 16.1k instr 20.7 us
+profile 120 frames: | update 1576.3k instr 455.0 us | layout 817.9k instr 109.4 us | damage 1280.3k instr 274.3 us | paint 1674.9k instr 1186.7 us | encode 616.6k instr 135.4 us | submit 16.0k instr 15.2 us
+profile 120 frames: | update 1575.4k instr 415.4 us | layout 816.1k instr 108.3 us | damage 1282.0k instr 221.1 us | paint 1656.4k instr 997.9 us | encode 615.0k instr 95.2 us | submit 15.9k instr 15.7 us
+profile 120 frames: | update 1575.7k instr 442.3 us | layout 817.2k instr 128.9 us | damage 1282.8k instr 269.0 us | paint 1656.6k instr 891.7 us | encode 615.4k instr 115.4 us | submit 15.6k instr 17.8 us
+real 16.48
+user 6.09
+sys 0.89

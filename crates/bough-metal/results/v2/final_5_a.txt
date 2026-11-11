@@ -1,0 +1,21 @@
+
+### strategy `a-control` damage-mode `stencil` link-pause false
+
+| scenario | frames | process instr / frame | main-thread in-tick instr (med) | publish-thread instr / publish | GPU ms med / p99 | tick interval med / p99 | publish interval med / p99 | present->publish-commit ms med | CPU us / frame (all threads) | wakeups / frame |
+|---|---|---|---|---|---|---|---|---|---|---|
+| idle | 168 ticks in 1.40 s | **5853512 instr/s** | NaN (tick body) | - | - | - | - | - | 4.1 ms CPU/s | 121.1 wakeups/s |
+| one-colour | 168 | **926116** | 143229 | - | 0.388 / 1.295 | 8.33 / 8.33 | NaN / NaN | NaN | 393.9 | 1.05 |
+| scatter-80 | 168 | **887803** | 231010 | - | 0.466 / 0.906 | 8.33 / 8.33 | NaN / NaN | NaN | 392.6 | 0.23 |
+| scroll-400 | 166 | **887375** | 230274 | - | 0.549 / 0.900 | 8.33 / 14.48 | NaN / NaN | NaN | 367.8 | 0.35 |
+| full | 168 | **798033** | 144662 | - | 0.749 / 1.898 | 8.33 / 8.33 | NaN / NaN | NaN | 357.0 | 1.01 |
+| toggle | 169 | **803565** | 148224 | - | 0.387 / 0.836 | 8.33 / 8.33 | NaN / NaN | NaN | 403.7 | 1.00 |
+| sparse (13 changes, 169 ticks) | 13 | **1428979** | 133977 | - | 0.452 / 1.247 | NaN / NaN | NaN / NaN | NaN | 989.4 | 14.08 |
+
+threads [idle] (us per run): main#259 5357.0us, ?#5123 251.0us, ?#8707 154.0us
+threads [one-colour] (us per frame): ?#5123 122.2us, main#259 115.7us, ?#8707 79.9us, ?#35355 76.1us, com.apple.NSEventThread#36619 0.1us
+threads [scatter-80] (us per frame): main#259 130.8us, ?#35355 94.4us, ?#8707 85.4us, ?#5123 82.2us, ?#47123 0.1us
+threads [scroll-400] (us per frame): main#259 120.8us, ?#5123 86.3us, ?#8707 83.8us, ?#35355 77.2us, ?#47131 0.1us
+threads [full] (us per frame): main#259 113.2us, ?#35355 84.8us, ?#5123 79.6us, ?#8707 79.5us, ?#47135 0.1us
+threads [toggle] (us per frame): main#259 133.6us, ?#5123 101.1us, ?#35355 91.7us, ?#8707 77.5us, ?#47143 0.1us
+threads [sparse] (us per frame): main#259 630.2us, ?#35355 190.8us, ?#8707 113.1us, ?#5123 57.6us, ?#63027 1.6us
+memory: RSS 31.8 MB, phys_footprint 241.4 MB, MTLDevice.currentAllocatedSize 47.0 MB, surfaces 11.1 MB

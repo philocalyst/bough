@@ -1,0 +1,142 @@
+branch	commit	committed_at	worktree_at_capture	subject
+local/architecture-performance	9fc648959ee0e1959f3c41dc2ecdd4b6ec5b6e2c	2026-10-28T19:24:07+00:00	/home/user/gpui-architecture-local	Record exact partition admission and scoped native prerequisite
+local/damage-suffix	380db598cdbed2dd81c5a41745473c40a876f148	2026-10-28T13:25:31+00:00	/home/user/gpui-damage-suffix-lab	Seal exact suffix correctness and code-cost qualification
+local/damage-suffix-cost	f90ca6b10844b9c7c828e37e310021d0e270df6c	2026-10-28T14:49:16+00:00	/home/user/gpui-damage-suffix-cost-lab	Seal exact suffix regression win across all 28 fixed workloads
+local/damage-suffix-native	bea6c4cf9135f494925ccd80b05f584e20fe7ff4	2026-10-28T13:41:34+00:00	/home/user/gpui-damage-suffix-native-lab	Seal successful exact suffix native startup cadence screen
+local/damage-suffix-omit	4b10759040a705a6604517a279f65ec491719c72	2026-10-28T12:46:01+00:00	/home/user/gpui-damage-suffix-omit-lab	Negative control: omit consumed reverse mismatch support
+local/damage-suffix-qualification	342e9495b10d7ab41ec9200b2d6a28acbb2af956	2026-10-28T13:13:53+00:00	/home/user/gpui-damage-suffix-checkpoint-lab	Checkpoint full and minimal native plus default suffix qualification
+local/delivery-sweep	dbd7dbd40b63f97e948a96bf7a8238f074b44569	2026-10-27T05:31:25+00:00	/home/user/gpui-delivery-sweep-lab	Preserve failed delivery sweep with exact public operation gates and jump-table control
+local/delivery-sweep-control	258cbe7b0ecffe01beadc30fd64d02b2da8e9ec8	2026-10-27T05:22:37+00:00	/home/user/gpui-delivery-control-lab	Constrain fixture return capture to its owned lane type
+local/delivery-sweep-negative	11683deaa2b326ec225df37170b5f584941e5291	2026-10-27T05:23:51+00:00	/home/user/gpui-delivery-negative-lab	Negative control: forget rotating delivery cursor between turns
+local/glyph-damage	227a0567f912719d741a609c18b76f7f16d0e6c3	2026-10-27T22:44:13+00:00	/home/user/gpui-glyph-damage-lab	evidence: seal four-way glyph repair cost failure and exact image qualification
+local/glyph-damage-bounds	be8300c1e3eafacedfa20c062bf2e31ed1ada9ca	2026-10-27T21:12:15+00:00	/home/user/gpui-glyph-damage-bounds-lab	test: satisfy strict lint in identical small-text owner fixture
+local/glyph-damage-control	bb83c5d8f3da446d4cc1c259141f335797b1b60d	2026-10-27T21:12:14+00:00	/home/user/gpui-glyph-damage-control-lab	test: satisfy strict lint in identical small-text owner fixture
+local/glyph-damage-negative	71f37813b1866cc145a8d0c75ea84609f8db0cc4	2026-10-27T20:47:40+00:00	/home/user/gpui-glyph-damage-negative-lab	negative: retain namespace guard but ignore image predecessor sequence
+local/glyph-damage-predecessor	f9fd1d140555c1b3e230bfa9a2dd3b2247e19adc	2026-10-27T21:12:15+00:00	/home/user/gpui-glyph-damage-predecessor-lab	test: satisfy strict lint in identical small-text owner fixture
+local/glyph-submit	5cec749179f43f50abc18d7512b7e90ae402bb0a	2026-10-28T00:07:53+00:00	/home/user/gpui-glyph-submit-lab	Seal failed static regional submission cost experiment
+local/glyph-submit-negative	2e5e030e64b3a8dd25ea7fd089145fb5a6d1ec65	2026-10-27T22:57:26+00:00	/home/user/gpui-glyph-submit-negative-lab	Negative control: omit first region on static submission path
+local/glyph-submit-predecessor	aed951bc175d7bdf624b293a95d4c05a3401849e	2026-10-27T21:12:14+00:00	/home/user/gpui-glyph-submit-predecessor-lab	test: satisfy strict lint in identical small-text owner fixture
+local/gpu-draw-major	658d998072385c5184c9ff7e3acf218f66ac63de	2026-10-27T04:23:00+00:00	/home/user/gpui-draw-major-lab	Correct Vulkan-feature unit count in the rejected campaign verifier
+local/gpu-draw-major-control	032bc1b986848b1c9ac160262fdf72e6004ff354	2026-10-27T03:57:29+00:00	/home/user/gpui-draw-major-control	Freeze unbanked compositor fixture with exact SDR and HDR readbacks
+local/gpu-draw-major-negative	4a31431d3cdbb5ec64fcc022ab06ae32e09fab7f	2026-10-27T04:03:56+00:00	/home/user/gpui-draw-major-negative	Negative control reverses painter order in the ordered compositor
+local/gpu-pixel-uniform	173e7c1a34eaa196b99be3eca3dec59b3eaca99c	2026-10-27T04:43:09+00:00	/home/user/gpui-pixel-uniform-lab	Preserve pixel-uniform speedups and rejecting flat-frame regression with exact evidence
+local/gpu-pixel-uniform-control	a0684a2b3498821129453c8c929ecf6c5f6ba810	2026-10-27T04:15:57+00:00	/home/user/gpui-pixel-uniform-control	Freeze native-shaped row and fractional-edge compositor fixtures
+local/gpu-pixel-uniform-negative	d484302ef3895a475d3d9877a93587649360fd8a	2026-10-27T04:20:25+00:00	/home/user/gpui-pixel-uniform-negative	Negative control admits fractional solid endpoints as pixel-uniform
+local/gpu-scroll-copy	8041b7a7fe4f21f27498110e30034d300fee5a7f	2026-10-27T17:44:37+00:00	/home/user/gpui-gpu-scroll-copy-lab	docs: preserve scroll-copy gains and failed tiny-flat performance gate
+local/gpu-scroll-output	6bdfad2b75541bfb0cbac2882329c3e31e885bde	2026-10-27T19:58:52+00:00	/home/user/gpui-scroll-output-lab	experiment: preserve failed scroll-output three-way gate and artifacts
+local/gpu-scroll-output-negative	d5a18723d1b087c3ee5a1cf28e99fc57ee98c15b	2026-10-27T17:58:02+00:00	/home/user/gpui-scroll-output-negative-lab	test: negative control clears certified copied pixels before strip repair
+local/gpu-text-gated	d9aa807a2c7db0040a363fa0a8ddb1da8ecbcaee	2026-10-27T12:44:24+00:00	/home/user/gpui-gpu-text-gated-lab	Record size-gated tile trial and failed mechanism gates
+local/gpu-text-gated-negative	9032bc6e89f4fb8d4341670591371cc63a5fb952	2026-10-27T12:01:37+00:00	/home/user/gpui-gpu-text-gated-negative-lab	Negative control: skip old-only membership during large-damage refinement
+local/gpu-text-packet	de8e4f6feaffe6a47f8f75cfc79d4f75aeadc066	2026-10-27T11:01:24+00:00	/home/user/gpui-gpu-text-packet-lab	Record rejected GPU text packet trial with exact image and allocation evidence
+local/gpu-text-packet-control	83743fe1e9aa6d91860089b528fbe60c4bdd2844	2026-10-27T10:32:26+00:00	/home/user/gpui-gpu-text-packet-control-lab	Add matching full-preparation allocation control
+local/gpu-text-packet-negative	cca9f74c6db60fd4f71fdb63e10d804aa7620915	2026-10-27T10:02:29+00:00	/home/user/gpui-gpu-text-packet-negative-lab	Negative witness: omit changed glyph tile memberships
+local/gpu-text-tiles	3dd29a0ebdea85ed7b4076ab51069865293e8737	2026-10-27T11:53:32+00:00	/home/user/gpui-gpu-text-tiles-lab	Preserve rejected tile repair trial with stream gains and small-update regressions
+local/gpu-text-tiles-negative	4eb6ba28b5cae7e59195d4de0d1a926da73547ef	2026-10-27T11:12:28+00:00	/home/user/gpui-gpu-text-tiles-negative-lab	Negative control: omit old-only dirty tile memberships
+local/image-placement	131c05c3c9324b15a672e63252ea90193eaa043e	2026-10-27T19:00:52+00:00	/home/user/gpui-image-placement-lab	evidence: qualify independent image placement correction and retain baseline pixel failure
+local/list-local-publication	9725cfa2679d68e014f1587c506c83b1dde6d71c	2026-10-27T19:40:42+00:00	/home/user/gpui-local-publication-lab	evidence: retain failed whole-frame local publication gate and complete qualification
+local/list-local-publication-control	6895a10440abb8496e5e6eabbf16cf01877e68f0	2026-10-27T19:05:25+00:00	/home/user/gpui-local-publication-control-lab	fix: keep image content origin local to the admitted node transform
+local/list-local-publication-negative	2a24197706922175b269452784d90b3da2b58ae7	2026-10-27T19:11:18+00:00	/home/user/gpui-local-publication-negative-lab	negative control: omit name invalidation on corrected membership candidate
+local/list-overscan	41acc60740f4fef358ee4b8a8a1f0fa6caacc307	2026-10-27T14:26:19+00:00	/home/user/gpui-list-overscan-lab	Record qualified keyed overscan gates, negative witnesses, and costs
+local/list-overscan-negative	5263081eb55f6b711d1854831e2c2b36e94aa754	2026-10-27T14:08:33+00:00	/home/user/gpui-list-overscan-negative-lab	Negative witness: materialize realized keys from visible start
+local/list-source	954ccd59a44d8191f97373a9c75b560551134c8b	2026-10-27T15:52:59+00:00	/home/user/gpui-list-source-lab	docs: qualify controlled list source routing and preserve failures and costs
+local/list-source-negative	9793ddcfa82395c1695b5cac3e0306b866024a37	2026-10-27T14:58:31+00:00	/home/user/gpui-list-source-negative-lab	Negative witness: omit controlled offset owner dependency
+local/mask-coverage	6d63fbf47c2751825ea9623aa5ff7918b801becb	2026-10-28T17:19:59+00:00	/home/user/gpui-mask-coverage-lab	Seal native path coverage diagnosis and retained classifier correction
+local/mask-grid	dbc8777eb0f70a6c3fbcc543b95ad2a364a20aba	2026-10-28T18:44:22+00:00	/home/user/gpui-mask-grid-lab	Seal exact fine-grid admission including shader type failure and common-mode mutant
+local/mask-grid-audit	74144bfcca964141654cf6641dda2f1ffa14f53b	2026-10-28T18:49:46+00:00	/home/user/gpui-mask-grid-audit-lab	Seal native fine-grid audit with unchanged images and lower planned sample work
+local/mask-grid-coarse	d992ae45a940edbe9fa847449314e65747e6c6c7	2026-10-28T18:41:06+00:00	/home/user/gpui-mask-grid-coarse-lab	Negative control: ignore host fine grid bit in fragment addressing
+local/mask-grid-native	0d48eb1dacc4768a29fb3eaf531f4b75c6c7196b	2026-10-28T19:06:16+00:00	/home/user/gpui-mask-grid-native-lab	Seal fine-grid native rejection with all work and cadence checks passing
+local/mask-lattice	677b1fb7a51a7bab12dbad0bf4e8815fcd254b74	2026-10-28T16:09:53+00:00	/home/user/gpui-mask-lattice-lab	Seal exact mask lattice qualification and preserve rejected near-boundary version
+local/mask-lattice-native	b8e6667b3f93130e80776f46a3b7cb7ac1fafadd	2026-10-28T16:35:14+00:00	/home/user/gpui-mask-lattice-native-lab	Reject mask-lattice native screen with complete fixed-cohort evidence
+local/mask-lattice-oracle	6faae98aa7391ede8f07f9325e63f044f1de9adf	2026-10-28T15:10:48+00:00	/home/user/gpui-mask-lattice-oracle-lab	Add identical public mask lattice fixtures to unchanged GPU oracle
+local/mask-lattice-qualification	0b01889e5db5f4dc47ac60418db8c70c205f8978	2026-10-28T15:41:59+00:00	/home/user/gpui-mask-lattice-checkpoint-lab	Checkpoint exact revised mask readbacks, width witness and full native qualification
+local/mask-lattice-width	4c53d8d984ed74bc9cf243b76c3308cc8d208f3f	2026-10-28T15:29:31+00:00	/home/user/gpui-mask-lattice-width-lab	Fault injection: omit width equality from narrowed mask certificate
+local/mask-miss	e97729cbb03e71890f4f8efb97ce1920594284ca	2026-10-28T18:13:45+00:00	/home/user/gpui-mask-miss-lab	Seal exact mask miss shader admission and falsified overbroad certificate
+local/mask-miss-all	6afe48ddddf5ddb406d43671a3037335072f2978	2026-10-28T18:06:32+00:00	/home/user/gpui-mask-miss-all-lab	Remove only whole-pixel miss admission for first-sample reuse
+local/mask-miss-audit	2520aeece9359124d0d8f4d450b04f03f5685d55	2026-10-28T18:19:05+00:00	/home/user/gpui-mask-miss-audit-lab	Seal native mask miss selection audit including retained display failure
+local/mask-miss-native	c8a65525e8798fd522eb91ef19ff4bd0e4e2ba9a	2026-10-28T18:33:44+00:00	/home/user/gpui-mask-miss-native-lab	Seal failed mask miss native screen with all workload gates passing
+local/mask-partitions	a0086d6dd1ae8cd4e4869e88851885b03c73989b	2026-10-28T19:22:56+00:00	/home/user/gpui-mask-partitions-lab	Seal exact sample partition admission and horizontal refinement counterexample
+local/mask-partitions-native	0b60a96399b381c6fda0a4706b05e08f85dd9396	2026-10-28T19:22:57+00:00	/home/user/gpui-mask-partitions-native-lab	Freeze sample partition native comparison and inherited host-path scope
+local/mask-partitions-x	7bcd9c311a093776cc7b588a2e49e211be01a1f1	2026-10-28T19:19:22+00:00	/home/user/gpui-mask-partitions-x-lab	Negative control: discard required horizontal sample partition cuts
+local/mask-quad	e00f436fbfef57bdc0379df6e46c6888d7855097	2026-10-28T16:50:19+00:00	/home/user/gpui-mask-quad-lab	Seal exact GPU admission and falsified four-cell row mutant
+local/mask-quad-native	58da795dad73d181269ed59b5cca05c4bca80b51	2026-10-28T17:03:48+00:00	/home/user/gpui-mask-quad-native-lab	Reject four-cell native screen with all observations and independent verification
+local/mask-quad-y	849ea94409ab1a6b7cb1571ed16e3e622f8670f7	2026-10-28T16:44:33+00:00	/home/user/gpui-mask-quad-y-lab	Match corrected parent before dropping cached row selection
+local/mask-tiles	6d4d44a31de30c418167a97cf977e5634d453a8f	2026-10-28T17:32:35+00:00	/home/user/gpui-mask-tiles-lab	Seal tile traversal exact pixels and proof-toggle mutant
+local/mask-tiles-audit	68682a99b03e0f33bf0c7fc438a067a8cea78953	2026-10-28T17:36:55+00:00	/home/user/gpui-mask-tiles-audit-lab	Seal actual native selected-tile audit and exact images
+local/mask-tiles-native	f0da94c8f4847a22c2db96c5038d79d8fc23662a	2026-10-28T17:59:26+00:00	/home/user/gpui-mask-tiles-native-lab	Reject selected mask tile native screen with all cohort failures
+local/mask-tiles-y	fb4bb250bd4b9a03f998bfeddb7981d3ecc2d668	2026-10-28T17:27:21+00:00	/home/user/gpui-mask-tiles-y-lab	Fault only cached row selection in ordinary tagged tiles
+local/native-list-parity	19e47ef37f2beb63202e4b403dbe6b0a138e7ae7	2026-10-27T15:48:57+00:00	/home/user/gpui-native-list-parity-lab	docs: qualify native keyed list workload and preserve input-policy correction
+local/native-phase	a34b61c86fbbc6906d834e071bdb7c4fb70aac8d	2026-10-28T12:34:50+00:00	/home/user/gpui-native-phase-lab	Seal native startup and thread attribution diagnosis
+local/native-profile-control	a7fbf5e2fe5807d1eb87021918d210e9d65a693e	2026-10-28T01:23:46+00:00	/home/user/gpui-native-profile-control-lab	Seal matched-profile native diagnosis with all cadence failures
+local/native-profile-sparse	c965a893364b46f965c83d10e2cf94a46dac1304	2026-10-28T00:54:48+00:00	/home/user/gpui-native-profile-sparse-lab	Compose qualified deferred controls for native diagnostic
+local/native-task-parity	6a3ae55a05a25fd12b53304d795fc1e0136af73f	2026-10-28T00:39:26+00:00	/home/user/gpui-native-task-parity-lab	Seal deferred native control equivalence qualification
+local/native-task-skip-yield	eaf32988ca0f8ba9805332b36007f13516382086	2026-10-28T00:23:29+00:00	/home/user/gpui-native-task-skip-yield-lab	Negative control: skip-yield deferred workload operation
+local/native-task-sync	af539f91d8f5d4aafa611912e5aeb95c573d1d61	2026-10-28T00:23:24+00:00	/home/user/gpui-native-task-sync-lab	Negative control: sync deferred workload operation
+local/native-thread-attribution	ba1d3122a896679cea0a39ea25ccb75b7a756e52	2026-10-28T01:34:10+00:00	/home/user/gpui-native-threads-lab	Seal native attribution showing dominant software raster work
+local/native-workload-parity	3d60e5b4a8c9ba8867bc81a4d7112193adcde225	2026-10-27T12:59:04+00:00	/home/user/gpui-native-parity-lab	Record native source ingress qualification and incomplete parity gates
+local/native-workspace	344c7f8ddd55326dca2c88322f67530914c97733	2026-10-28T12:09:52+00:00	/home/user/gpui-native-workspace-lab	evidence: seal native workspace cadence and CPU failures without dropping observations
+local/native-workspace-control	20919cb160f6fcc5ab85eca607b97d4173739409	2026-10-28T00:54:33+00:00	/home/user/gpui-native-workspace-control-lab	Preregister matched-profile native diagnostic
+local/patch-workspace	f7b3f60c70faf6d548fffda530d4de83b2570e34	2026-10-28T11:25:03+00:00	/home/user/gpui-patch-workspace-lab	evidence: seal workspace reuse with all 112 fixed cost gates passing
+local/patch-workspace-qualification	e106b788863e7ed8a6cad97a4130322b5264ce46	2026-10-28T09:04:45+00:00	/home/user/gpui-patch-workspace-checkpoint-lab	evidence: preserve workspace qualification and allocation gates before timing
+local/patch-workspace-retire	5d24115d28d39f4095415290fd262cd2bb05e6b2	2026-10-28T08:42:28+00:00	/home/user/gpui-patch-workspace-retire-lab	test: deliberately retain superseded sparse publication payload
+local/question-borrowed-negative	5432db0d159f721bb87edfe2afbf6da43f5e70f4	2026-10-27T07:40:41+00:00	/home/user/gpui-question-borrowed-negative-lab	Negative control forgets the first borrowed source member
+local/question-source-borrowed	6553d9a6dfb42dedf9f32ad7f20768b4789fe081	2026-10-27T09:17:23+00:00	/home/user/gpui-question-source-borrowed-lab	Preserve borrowed Question cohort trial and independent failed-gate verdict
+local/question-source-control	92b1c28dfa8050ae863c08bc2b086cc5906ac32f	2026-10-27T06:36:10+00:00	/home/user/gpui-question-source-control-lab	Freeze identical settled Question allocation control
+local/question-source-negative	be331cfdf96a383e2f37ad7a56d5f49a6aa6d6dc	2026-10-27T06:22:12+00:00	/home/user/gpui-question-source-negative-lab	Negative control forgets the first changed Question input
+local/question-source-set	394e246b9b3f1c4acb497205e8581045310a3e5d	2026-10-27T07:22:52+00:00	/home/user/gpui-question-source-set-lab	Preserve complete Question cohort trial including two losing controls
+local/region-batch	b165ec9b62a8cf308c0b693f8a92fe819c30a5e4	2026-10-28T03:56:12+00:00	/home/user/gpui-region-batch-lab	Seal failed certified region batching experiment and complete cost evidence
+local/region-bounds	d67a538b9502fb778460d9c59e726d5bb502ce28	2026-10-28T02:34:03+00:00	/home/user/gpui-region-bounds-lab	Use qualified deferred controls in region batching comparison
+local/region-control	20919cb160f6fcc5ab85eca607b97d4173739409	2026-10-28T00:54:33+00:00	/home/user/gpui-region-control-lab	Preregister matched-profile native diagnostic
+local/region-omit-instance	e19fec3f026969df96504d706e556b6d20d90b7b	2026-10-28T02:14:53+00:00	/home/user/gpui-region-omit-lab	mutant: omit first certified regional instance
+local/region-static	c965a893364b46f965c83d10e2cf94a46dac1304	2026-10-28T00:54:48+00:00	/home/user/gpui-region-static-lab	Compose qualified deferred controls for native diagnostic
+local/retained-negative	92562a1f74f2a1f542e6c99b0c46cfcb305058c6	2026-10-26T17:49:44+00:00	/home/user/gpui-retained-negative	Negative control: omit certified repair while still copying retained output
+local/scene-support	7494c10970d3dc46e7611d4abe93ab8476682a6e	2026-10-28T08:10:16+00:00	/home/user/gpui-scene-support-lab	Seal rejected complete scene support experiment and all fixed gates
+local/scene-support-control	5a07d7c28ffe500a5d24e25fdf1f31ce4857811f	2026-10-28T04:38:34+00:00	/home/user/gpui-scene-support-control-lab	Preserve unchanged paint outside certified scroll overlap
+local/scene-support-omit	8cb6281f6cec7d93bee1792bd0bd85a8603ef935	2026-10-28T06:36:29+00:00	/home/user/gpui-scene-support-omit-lab	Freeze scene support omit fault witness
+local/scene-support-pending	ce224ce7e2b94a331ce98caebf32d90794921ef3	2026-10-28T06:36:30+00:00	/home/user/gpui-scene-support-pending-lab	Freeze scene support pending fault witness
+local/scroll-certificate-negative	674960d4140e70c17e8d7e342664869c84e560fe	2026-10-27T16:44:15+00:00	/home/user/gpui-scroll-certificate-negative-lab	test: isolate missing exact predecessor token guard
+local/scroll-copy-cost-control	6269bdfafc9f9d52527d6018433739826765745a	2026-10-27T17:14:27+00:00	/home/user/gpui-scroll-copy-cost-control-lab	test: apply identical shared model and GPU fault checks to cost control
+local/scroll-sparse-authority	0a0a496e4640e80797bfc89f3a82731ffd3d7043	2026-10-28T04:57:49+00:00	/home/user/gpui-scroll-sparse-authority-lab	Make predecessor-authority fault without accessing private token fields
+local/scroll-sparse-bounds	599e36c149ea252f96056f3d8e827da137f71197	2026-10-28T04:28:58+00:00	/home/user/gpui-scroll-sparse-bounds-lab	Respect ordinary SDR opaque-clear admission in shared GPU fixtures
+local/scroll-sparse-omit	d6c1efceff015d68c7deff1367c0bcb532c3f268	2026-10-28T04:43:06+00:00	/home/user/gpui-scroll-sparse-omit-lab	Fault witness: scroll omit must fail actual pixel equality
+local/scroll-sparse-repair	53165424be4665a9874b6f3f5f31aa0d301e57ed	2026-10-28T06:16:15+00:00	/home/user/gpui-scroll-sparse-lab	Preserve complete rejected precise scroll repair experiment
+local/source-batch-control	577a6ab938bac89b1be90db12a63bf1f487c58e5	2026-10-27T05:50:22+00:00	/home/user/gpui-source-batch-control-lab	Add separate allocation probe without instrumenting timed executable
+local/source-batch-negative	06b3cad1d36b8b181e759c8f85f0c9dc54bb4fd6	2026-10-27T05:44:53+00:00	/home/user/gpui-source-batch-negative-lab	Negative control: admit owner-dependent text sources into sparse batch
+local/source-batch-publication	1830d9d54fe73903ffd909e3e19aab8c25e9763d	2026-10-27T06:15:42+00:00	/home/user/gpui-source-batch-lab	Qualify typed text batches with complete CPU, allocation, semantic and native evidence
+local/sparse-batch-negative	27ce90539ea83900539d8f11a17b22aea95a8476	2026-10-27T07:40:42+00:00	/home/user/gpui-sparse-batch-negative-lab	Negative control publishes text members before cohort admission
+local/sparse-text-batch	2d55c3dff194443742736f8171422dc11b59ed48	2026-10-27T09:17:23+00:00	/home/user/gpui-sparse-batch-lab	Preserve atomic sparse text batch results and failed control gate
+local/sparse-text-negative	543405da31acf5d11374de0d4020a0f1b0105d70	2026-10-27T02:49:23+00:00	/home/user/gpui-sparse-negative	Negative control: publish sparse text despite changed computed layout
+local/sparse-text-outline	5b670209df18941f8604bea2ee2d2bfe3597da78	2026-10-27T09:40:13+00:00	/home/user/gpui-sparse-outline-lab	Record complete outline-only text batch qualification and failed control
+local/sparse-text-publication	a91fd03b9b1623efbde68dfd8c00cadf79e7508e	2026-10-27T03:31:30+00:00	/home/user/gpui-sparse-text-lab	Preserve sparse publication evidence and inconclusive admission verdict
+local/state-segments	bed967a3c20e605ad4636b749bb6ce9348731d57	2026-10-27T03:08:46+00:00	/home/user/gpui-state-lab	Add identical state-update allocation and reclamation fixture
+local/text-cache-bounded	e6bda77dfc6784533cbc2b769f05b55fdc701c61	2026-10-27T04:03:41+00:00	/home/user/gpui-bounded-cache-lab	Preserve bounded-cache memory win and failing CPU admission cells
+local/text-cache-bounded-negative	287bffb806e5d9eae6855b7549fc51f612b29682	2026-10-27T03:48:53+00:00	/home/user/gpui-bounded-negative	Negative control retains oversized paragraph storage
+local/text-cache-cold-trim	6b03ad48ad6e8c3b60c6a31a71761686f65a744d	2026-10-27T05:41:48+00:00	/home/user/gpui-cold-trim-lab	Preserve bounded cold-trim CPU campaign, uncertainty, and composed native gates
+local/text-cache-cold-trim-negative	5ebade73d76682468ed02f932a42f82083190110	2026-10-27T04:58:30+00:00	/home/user/gpui-cold-trim-negative-lab	Negative control: skip cold paragraph scratch replacements
+local/text-line-height	49f2221f8f2b9d448876b0cc650446b42188034e	2026-10-27T13:48:44+00:00	/home/user/gpui-line-height-lab	Record line-height behavior, native AT-SPI proof and remaining parity limits
+local/text-line-height-negative	4662b532529f7e44e191a978a0cdff155305494c	2026-10-27T13:09:20+00:00	/home/user/gpui-line-height-negative-lab	Negative control omits line height from exact style equality
+local/text-session-cache	bc964a0c0a3fbe08f8ad4e35a9dc5d10c27525f1	2026-10-27T04:00:19+00:00	/home/user/gpui-text-session-lab	Preserve compatible text-cache CPU and correctness qualification with memory costs
+local/text-session-negative	c8a974f28c3ede44f38d5b1c26b224e5404245af	2026-10-27T03:08:23+00:00	/home/user/gpui-session-negative	Negative control: reuse planning state across foreign font identities
+local/text-witness-negative	24b922d58abf0c8b7a62a64e4696b1634d5c3bdc	2026-10-27T02:26:03+00:00	/home/user/gpui-witness-negative	Negative control: replay text witnesses without checking forward transform
+local/text-witness-replay	d4fb6f88b6d1354019d2bd01c47aca39220e0412	2026-10-27T02:33:45+00:00	/home/user/gpui-text-witness-lab	Reject text-witness replay against preregistered complete-update gates
+local/tree-admitted-inline	ca174a4ab2b81b126e463e5364e8890b64d9a8ed	2026-10-27T04:57:05+00:00	/home/user/gpui-admitted-inline-lab	Freeze admitted-walk inline comparator
+local/tree-admitted-negative	434a45256a3787938c5cbdc5cee2717c8368dfeb	2026-10-27T04:57:06+00:00	/home/user/gpui-admitted-negative-lab	Freeze admitted-walk negative comparator
+local/tree-admitted-original	2ddbf73dc373a82e94e907306fa6c113495849da	2026-10-27T04:57:04+00:00	/home/user/gpui-admitted-original-lab	Freeze admitted-walk original comparator
+local/tree-admitted-previous	e9f6fddf71ce935b199eb5d2239cf2f726e4367e	2026-10-27T04:57:04+00:00	/home/user/gpui-admitted-previous-lab	Freeze admitted-walk previous comparator
+local/tree-admitted-walk	ef335bb66490ea010935ced572243bbff00c3476	2026-10-27T05:15:38+00:00	/home/user/gpui-tree-admitted-lab	Preserve admitted parent walk gains and failed longer no-regression gates
+local/tree-columns-aos-hint	3c7cf881a5e4f9e96c7566b5190062449ca0c093	2026-10-27T04:49:43+00:00	/home/user/gpui-columns-aos-hint-lab	Freeze aos-hint comparator with identical mixed-depth fixture
+local/tree-columns-levels	077239244ec239ddf27c9bec6224c9e477f21f48	2026-10-27T04:49:42+00:00	/home/user/gpui-columns-levels-lab	Freeze levels comparator with identical mixed-depth fixture
+local/tree-columns-negative	afe00808cee6ecbf8585a02dbaccc3b96141fa91	2026-10-27T04:50:50+00:00	/home/user/gpui-columns-negative-lab	Negative control: omit authoritative parent attachment
+local/tree-columns-original	a212c63095ba10587a5ab81c88dea562f59d47e4	2026-10-27T04:49:41+00:00	/home/user/gpui-columns-original-lab	Freeze original comparator with identical mixed-depth fixture
+local/tree-columns-scalar	8bec438c9fd15c0e00db932810ef7795dafef97b	2026-10-27T04:49:44+00:00	/home/user/gpui-columns-scalar-lab	Freeze scalar comparator with identical mixed-depth fixture
+local/tree-columns-selected	24a33726666d4150d3f1a92604fa5d4ab1b005b7	2026-10-27T04:49:57+00:00	/home/user/gpui-columns-selected-lab	Use safe compact parent routing with topology proof and depth-gated batches
+local/tree-guard-control	7fcd5e44e985135fcbfad7e97661bf33d3cc49cd	2026-10-27T05:02:39+00:00	/home/user/gpui-tree-guard-control	Freeze original scalar control for longer timing batches
+local/tree-guard-measurement	e6445e35e6251620f612143a72c76f670d30bea2	2026-10-27T05:02:38+00:00	/home/user/gpui-tree-guard-lab	Parameterize operations per timing batch without changing production traversal
+local/tree-memory-lanes	5a090e956e6c6ad7ad3e55b3058a24412addc615	2026-10-27T04:49:13+00:00	/home/user/gpui-tree-lanes-lab	Preserve six-way tree-lane results, exact oracles, Miri and failing contiguous gate
+local/tree-memory-levels	28f7437569ae0b8f482357f364c5c2625f0a5df7	2026-10-27T04:39:53+00:00	/home/user/gpui-tree-levels-lab	Freeze levels comparator for parent-chain scheduling
+local/tree-memory-negative	a5103c7eb32393c392a8793731d2d291568ba706	2026-10-27T04:43:35+00:00	/home/user/gpui-tree-negative-lab	Negative control: collapse every completed parent lane to the first root
+local/tree-memory-nohint	4fecf05aad5dbf97d6ac199d9b6c6446424167e9	2026-10-27T04:39:54+00:00	/home/user/gpui-tree-nohint-lab	Freeze nohint comparator for parent-chain scheduling
+local/tree-memory-original	5116680a531a49e31ed4b557c93999d8927864b5	2026-10-27T04:39:51+00:00	/home/user/gpui-tree-original-lab	Freeze original comparator for parent-chain scheduling
+local/tree-memory-proof	34c1ac289fbdd0b5ef2b3d6f25698b4e90ad1b41	2026-10-27T04:39:55+00:00	/home/user/gpui-tree-proof-lab	Freeze proof comparator for parent-chain scheduling
+local/tree-memory-scalar	5e2ec54519cf75282987490971ce832f3d075e66	2026-10-27T04:39:51+00:00	/home/user/gpui-tree-scalar-lab	Freeze scalar comparator for parent-chain scheduling
+local/tree-parent-columns	97731fc49c65d51e8253ea3bc572cdd9150334be	2026-10-27T04:58:05+00:00	/home/user/gpui-tree-columns-lab	Preserve compact-routing wins and rejecting scalar fallback with code-generation evidence
+local/zgx-native-comparison	6d5e409d6b3e8994b69c8dbf7a153e8358be5e99	2026-10-27T03:47:25+00:00	/home/user/gpui-native-comparison-lab	Pace native workload delivery on its UI turn and report presentation faults

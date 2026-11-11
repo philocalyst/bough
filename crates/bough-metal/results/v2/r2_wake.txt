@@ -1,0 +1,80 @@
+strategy cb:h:free:4, remedy none
+| idle D s | idle cost instr (remedy) | change 1 instr | change 1 present->commit ms | changes 2-10 instr (mean) | changes 2-10 present->commit ms (med) |
+|---|---|---|---|---|---|
+| 0.1 | 32407 | 216775 | 0.32 | 234217 | 0.84 |
+| 0.5 | 73382 | 229341 | 0.45 | 225555 | 0.52 |
+| 1.5 | 190798 | 9983924 | 4.09 | 602706 | 0.78 |
+| 3 | 149295 | 10038776 | 3.46 | 564591 | 0.78 |
+
+strategy cb:h:free:4, remedy residency
+| idle D s | idle cost instr (remedy) | change 1 instr | change 1 present->commit ms | changes 2-10 instr (mean) | changes 2-10 present->commit ms (med) |
+|---|---|---|---|---|---|
+| 0.1 | 24837 | 243445 | 0.56 | 233952 | 0.66 |
+| 0.5 | 73386 | 218516 | 0.42 | 234852 | 0.54 |
+| 1.5 | 187469 | 7619927 | 2.66 | 222566 | 0.53 |
+| 3 | 163020 | 8468041 | 3.53 | 223097 | 0.41 |
+
+strategy cb:h:free:4, remedy warm500
+| idle D s | idle cost instr (remedy) | change 1 instr | change 1 present->commit ms | changes 2-10 instr (mean) | changes 2-10 present->commit ms (med) |
+|---|---|---|---|---|---|
+| 0.1 | 137574 | 399718 | 0.83 | 234019 | 0.70 |
+| 0.5 | 35282 | 284988 | 0.44 | 229502 | 0.49 |
+| 1.5 | 417429 | 10018199 | 3.45 | 540895 | 0.70 |
+| 3 | 843270 | 10118873 | 16.07 | 620514 | 0.82 |
+
+strategy cb:h:free:4, remedy warm100
+| idle D s | idle cost instr (remedy) | change 1 instr | change 1 present->commit ms | changes 2-10 instr (mean) | changes 2-10 present->commit ms (med) |
+|---|---|---|---|---|---|
+| 0.1 | 54627 | 507817 | 1.58 | 230413 | 0.59 |
+| 0.5 | 542468 | 369038 | 1.01 | 256532 | 0.80 |
+| 1.5 | 2013442 | 16509784 | 10.99 | 617017 | 0.78 |
+| 3 | 3351998 | 10184977 | 17.27 | 603358 | 3.35 |
+
+strategy ab8:h:free:4, remedy none
+| idle D s | idle cost instr (remedy) | change 1 instr | change 1 present->commit ms | changes 2-10 instr (mean) | changes 2-10 present->commit ms (med) |
+|---|---|---|---|---|---|
+| 0.1 | 25870 | 438591 | 0.70 | 228603 | 0.59 |
+| 0.5 | 25220 | 165044 | 2.99 | 246603 | 1.71 |
+| 1.5 | 103475 | 11887136 | 3.78 | 250588 | 1.07 |
+| 3 | 180713 | 12818266 | 14.53 | 252916 | 0.45 |
+
+strategy ab8:nt:free:4, remedy none
+| idle D s | idle cost instr (remedy) | change 1 instr | change 1 present->commit ms | changes 2-10 instr (mean) | changes 2-10 present->commit ms (med) |
+|---|---|---|---|---|---|
+| 0.1 | 24923 | 401506 | 172.50 | 182758 | 115.67 |
+| 0.5 | 23580 | 246673 | 614.20 | 202832 | 110.75 |
+| 1.5 | 106077 | 11727404 | 1617.62 | 200463 | 111.22 |
+| 3 | 151308 | 27603002 | 3118.15 | 256504 | 109.51 |
+
+strategy cb:h:free:4, remedy blit250
+| idle D s | idle cost instr (remedy) | change 1 instr | change 1 present->commit ms | changes 2-10 instr (mean) | changes 2-10 present->commit ms (med) |
+|---|---|---|---|---|---|
+| 0.1 | 1268030 | 855137 | 1.37 | 231054 | 1.24 |
+| 0.5 | 283897 | 309169 | 7.25 | 256471 | 0.88 |
+| 1.5 | 1232922 | 2627008 | 4.93 | 625205 | 1.15 |
+| 3 | 2274496 | 2337544 | 5.40 | 592852 | 1.02 |
+
+strategy cb:h:free:4, remedy rblit800
+| idle D s | idle cost instr (remedy) | change 1 instr | change 1 present->commit ms | changes 2-10 instr (mean) | changes 2-10 present->commit ms (med) |
+|---|---|---|---|---|---|
+| 0.1 | 692529 | 984259 | 3.49 | 237292 | 2.15 |
+| 0.5 | 165851 | 424021 | 3.66 | 233272 | 1.66 |
+| 1.5 | 422745 | 485578 | 7.57 | 229631 | 0.81 |
+| 3 | 892378 | 466314 | 0.53 | 226110 | 0.69 |
+
+strategy cb:h:free:4, remedy rblit400
+| idle D s | idle cost instr (remedy) | change 1 instr | change 1 present->commit ms | changes 2-10 instr (mean) | changes 2-10 present->commit ms (med) |
+|---|---|---|---|---|---|
+| 0.1 | 675024 | 839433 | 1.05 | 222702 | 0.68 |
+| 0.5 | 407548 | 392709 | 0.37 | 223146 | 0.49 |
+| 1.5 | 685887 | 394572 | 1.19 | 229667 | 0.62 |
+| 3 | 1796821 | 441299 | 0.42 | 225814 | 0.46 |
+
+strategy cb:h:free:4, remedy none
+| idle D s | idle cost instr (remedy) | change 1 instr | change 1 present->commit ms | changes 2-10 instr (mean) | changes 2-10 present->commit ms (med) |
+|---|---|---|---|---|---|
+| 0.1 | 25010 | 219405 | 2.00 | 220866 | 0.40 |
+| 0.5 | 75248 | 222719 | 0.46 | 231849 | 0.51 |
+| 1.5 | 230922 | 9912867 | 3.60 | 572877 | 0.68 |
+| 3 | 144405 | 10047046 | 3.07 | 650811 | 0.84 |
+
