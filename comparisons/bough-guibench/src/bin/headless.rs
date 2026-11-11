@@ -12,6 +12,7 @@ fn main() {
     let mut gate = false;
     let mut ring = 4;
     let mut mutant = false;
+    let mut plain = false;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--op" => op = args.next().expect("--op value"),
@@ -20,6 +21,7 @@ fn main() {
             "--gate" => gate = true,
             "--ring" => ring = args.next().expect("--ring value").parse().unwrap(),
             "--mutant" => mutant = true,
+            "--plain" => plain = true,
             _ => shared.push(a),
         }
     }
@@ -39,9 +41,15 @@ fn main() {
             ticker: None,
         } => match variant {
             Variant::Coarse => {
-                driver::headless(Coarse::new(count, mutant), &op, repeats, render, gate, ring)
+                let mut v = Coarse::new(count, mutant);
+                v.plain = plain;
+                driver::headless(v, &op, repeats, render, gate, ring)
             }
-            _ => driver::headless(Fine::new(count, mutant), &op, repeats, render, gate, ring),
+            _ => {
+                let mut v = Fine::new(count, mutant);
+                v.plain = plain;
+                driver::headless(v, &op, repeats, render, gate, ring)
+            }
         },
         _ => {
             eprintln!("scenario not implemented in rows/table stage: {s:?}");

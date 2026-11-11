@@ -5,7 +5,7 @@ use crate::{
 };
 use bough::prelude::*;
 use bough::raw::{App, Button, Caps, Config};
-use bough_metal::perf::snap;
+use bough_metal::perf::{snap, tinstr};
 use std::time::Instant;
 
 pub fn config(scale: f32) -> Config {
@@ -29,6 +29,9 @@ pub fn config(scale: f32) -> Config {
         clips: 1 << 12,
         strikes: 16,
     };
+    if std::env::var("GUIBENCH_CAPS").as_deref() == Ok("raised-spaces") {
+        c.caps.spaces = 1 << 14;
+    }
     c
 }
 
@@ -138,6 +141,13 @@ pub fn input<V: Bench>(a: &mut App<V>, op: &str, undo: bool) {
         "append" => a.key_down(f_key(if undo { 7 } else { 6 }), Mods::default()),
         "truncate" => a.key_down(f_key(if undo { 6 } else { 7 }), Mods::default()),
         "clear" => a.key_down(f_key(8), Mods::default()),
+        "replace-select" => {
+            if !undo {
+                a.key_down(f_key(5), Mods::default());
+            }
+            a.pointer_down(640.0, 56.0, Button::Primary);
+            a.pointer_up(640.0, 56.0, Button::Primary);
+        }
         "mount" => (),
         _ => panic!("unsupported operation {op}"),
     }
@@ -162,6 +172,7 @@ fn spec_op(op: &str, undo: bool) -> Option<spec::Op> {
             }
         }
         "replace" => Replace,
+        "replace-select" if !undo => Replace,
         "append" => {
             if undo {
                 Truncate
@@ -243,7 +254,7 @@ pub fn headless<V: Bench>(
     gate: bool,
     ring: usize,
 ) {
-    let before = snap();
+    let before = tinstr();
     let t = Instant::now();
     let mut c = config(1.0);
     c.ring = ring;
@@ -253,7 +264,7 @@ pub fn headless<V: Bench>(
     let mounted = snap();
     eprintln!(
         "mount instructions={} ns={} rss={} footprint={} records={} rows={}",
-        mounted.instrs - before.instrs,
+        tinstr() - before,
         t.elapsed().as_nanos(),
         mounted.rss,
         mounted.footprint,
@@ -278,7 +289,7 @@ pub fn headless<V: Bench>(
     if op == "truncate" {
         ids.rows(spec::APPEND);
     }
-    let start = snap();
+    let start = tinstr();
     for _ in 0..repeats {
         for undo in [false, true] {
             input(&mut a, op, undo);
@@ -292,7 +303,7 @@ pub fn headless<V: Bench>(
                     expected,
                     "semantic state after {op}, undo={undo}"
                 );
-                if op == "select" {
+                if op == "select" || op == "replace-select" {
                     assert_eq!(
                         a.owner.selection(),
                         if undo {
@@ -302,6 +313,13 @@ pub fn headless<V: Bench>(
                         }
                     );
                 }
+                if op == "hover" {
+                    let p = a.presented_pixels();
+                    let yy = if undo { 16 } else { 176 };
+                    let i = (yy * 1280 + 640) * 4;
+                    let (r, g, b) = spec::rgb(spec::ROW_HOVER);
+                    assert_eq!(&p[i..i + 4], &[b, g, r, 255], "expected hover colour");
+                }
                 pixels(&mut a, ring);
             }
         }
@@ -309,13 +327,10 @@ pub fn headless<V: Bench>(
     if render || gate {
         a.wait_presented();
     }
+    let instruction_delta = tinstr() - start;
     let end = snap();
     println!(
         "result op={op} repeats={repeats} render={render} gate={gate} ring={ring} instructions={} rss={} footprint={} frames={} surfaces={:?}",
-        end.instrs - start.instrs,
-        end.rss,
-        end.footprint,
-        a.frames,
-        a.surf_stats.uses
+        instruction_delta, end.rss, end.footprint, a.frames, a.surf_stats.uses
     );
 }

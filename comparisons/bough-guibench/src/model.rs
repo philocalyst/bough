@@ -84,6 +84,7 @@ pub struct Coarse {
     pub selected: Option<u64>,
     pub y: Signal<f32>,
     pub mutant: bool,
+    pub plain: bool,
 }
 impl Coarse {
     pub fn new(count: usize, mutant: bool) -> Self {
@@ -95,6 +96,7 @@ impl Coarse {
             selected: None,
             y: Signal::new(0.0),
             mutant,
+            plain: false,
         }
     }
     fn select(&mut self, id: u64) {
@@ -117,31 +119,39 @@ impl Coarse {
             selected: self.selected,
             y: Signal::new(*self.y),
             mutant: self.mutant,
+            plain: self.plain,
         }
     }
 }
 impl View for Coarse {
     fn view(&self) -> impl Element<Self> + '_ {
+        let children = || {
+            each(self.rows.iter().map(|r| {
+                let id = r.id;
+                column((contents!(r.label.clone(), r.value.to_string()), border()))
+                    .w_pct(1.0)
+                    .h(spec::ROW_HEIGHT)
+                    .shrink(0.0)
+                    .bg(rgb(if self.selected == Some(id) {
+                        spec::SELECTED
+                    } else {
+                        spec::ROW_EVEN
+                    }))
+                    .on_click(move |v: &mut Self| v.select(id))
+            }))
+        };
         column((
             header(self.rows.len()),
-            div()
-                .w_pct(1.0)
-                .grow(1.0)
-                .min_h(0.0)
-                .scroll(sig!(self.y))
-                .child(each(self.rows.iter().map(|r| {
-                    let id = r.id;
-                    column((contents!(r.label.clone(), r.value.to_string()), border()))
-                        .w_pct(1.0)
-                        .h(spec::ROW_HEIGHT)
-                        .shrink(0.0)
-                        .bg(rgb(if self.selected == Some(id) {
-                            spec::SELECTED
-                        } else {
-                            spec::ROW_EVEN
-                        }))
-                        .on_click(move |v: &mut Self| v.select(id))
-                }))),
+            (!self.plain).then(|| {
+                div()
+                    .w_pct(1.0)
+                    .grow(1.0)
+                    .min_h(0.0)
+                    .scroll(sig!(self.y))
+                    .child(children())
+            }),
+            self.plain
+                .then(|| div().w_pct(1.0).grow(1.0).min_h(0.0).child(children())),
         ))
         .w_pct(1.0)
         .h_pct(1.0)
@@ -197,6 +207,7 @@ pub struct Fine {
     pressed: Option<Slot<FineRow>>,
     pub y: Signal<f32>,
     pub mutant: bool,
+    pub plain: bool,
 }
 impl Fine {
     pub fn new(count: usize, mutant: bool) -> Self {
@@ -209,6 +220,7 @@ impl Fine {
             pressed: None,
             y: Signal::new(0.0),
             mutant,
+            plain: false,
         }
     }
     pub fn data(&self) -> Vec<Row> {
@@ -223,6 +235,7 @@ impl Fine {
         let mut out = Self::new(0, self.mutant);
         out.ids = self.ids.clone();
         out.count = self.count;
+        out.plain = self.plain;
         out.y = Signal::new(*self.y);
         for r in self.rows.iter() {
             let item = FineRow::new(r.row());
@@ -305,13 +318,21 @@ impl View for Fine {
     fn view(&self) -> impl Element<Self> + '_ {
         column((
             header(self.rows.len()),
-            // Deliberately nonvirtual: .scroll belongs to the parent box, not List.
-            div()
-                .w_pct(1.0)
-                .grow(1.0)
-                .min_h(0.0)
-                .scroll(sig!(self.y))
-                .child(list(sig!(self.rows)).w_pct(1.0)),
+            (!self.plain).then(|| {
+                div()
+                    .w_pct(1.0)
+                    .grow(1.0)
+                    .min_h(0.0)
+                    .scroll(sig!(self.y))
+                    .child(list(sig!(self.rows)).w_pct(1.0))
+            }),
+            self.plain.then(|| {
+                div()
+                    .w_pct(1.0)
+                    .grow(1.0)
+                    .min_h(0.0)
+                    .child(list(sig!(self.rows)).w_pct(1.0))
+            }),
         ))
         .w_pct(1.0)
         .h_pct(1.0)
