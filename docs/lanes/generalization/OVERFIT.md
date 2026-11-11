@@ -1,3 +1,18 @@
+# Completion run in progress (lead review resumed)
+
+The lead authorized continuous completion and calling-thread instruction counts under load. The root lock repair
+is applied in e6d4108a6f; the comparison remains a standalone workspace. [TABLE-CELLS.md](TABLE-CELLS.md) contains
+obtained counts and spreads, including failing coarse cells and the new nonopaque comparison. The historical
+first-stage report below remains intact; its NM and stop statements describe that earlier stage only.
+
+At N=1,000, coarse plain select R0 is 6,567,603 instructions/op versus fine scroll 12,330. Plain coarse update10 is
+4,662,665 and swap 3,311,480. These are three-run repeat slopes with oracle work excluded, not estimates.
+Post-replace selection in a plain coarse table fails its semantic gate: On::update does not reinstall the closure,
+so its original captured row ID survives re-description. Owner: surface-api. General remedy: update retained route
+payloads with description operands, preserving receiver identity. Full size sweep and default-cap follow-ups are running.
+
+---
+
 # Round 6, first rows/table report
 
 State: **CANDIDATE**; coarse scroll content reaches a reproduced **METHOD_BOUNDARY**. Stop for lead review

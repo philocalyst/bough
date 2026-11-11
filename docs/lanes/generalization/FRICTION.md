@@ -18,3 +18,17 @@ the port will add an explicit alias in its own argument adapter, leaving the sha
 
 No framework files changed at this stage. A plain Vec insert necessarily moves its tail: report its application
 cost against the stronger structural ideal instead of attributing that entire cost to the renderer.
+
+## Completion-stage escapes (registered before use)
+
+| ID | desired code | obstruction | smallest escape |
+|---|---|---|---|
+| G7 | `timer.every(16ms, Self::tick)` owned by the view | no prelude timer registration | host adapter uses the same NSTimer/main-loop mechanism as backend::host; calls App::turn and frame_paced. Headless invokes the identical clock delivery function. |
+| G8 | `block(24,24).rounded(3).rotate(angle).repeat(1s)` | flow boxes have translate/opacity, no rotation or repeating animation | raw anchor + svg_image.angle(signal); square SVG matches spec. Timer advances angle; this is explicitly a 16ms timer fallback, not native display-linked analytic animation. |
+| G9 | `virtual_rows(count, row)` in the prelude without allocating a million values | list() requires List<T: View>; index_list and its Mounter builder are raw | raw index_list with prelude-built rows; same existing exposure engine, estimated 32px height, no custom virtualization. Pointer scrolling is supplied by prelude .scrolls with exact content extent. |
+| G10 | `text_input(...).focus_on_mount()` | no prelude focus request | focus the mounted field through App host setup; headless uses the same method. No global synthetic input. |
+| G11 | `app.scale_changed(2.0)` | App::resize changes dimensions only; no live-scale entry point | report scale switch unsupported. Do not replace with a new mount. |
+
+Timer FFI safety follows existing host.rs: AppKit main-thread registration, a block owning an Rc of the live app,
+run-loop-owned timer, no cross-thread mutation. Bounded real-window timer smoke asserts at least one callback;
+that is the independent lifetime/main-thread integration check for this adapter.
