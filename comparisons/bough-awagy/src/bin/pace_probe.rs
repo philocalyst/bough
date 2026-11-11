@@ -8,6 +8,8 @@
 //!
 //!   pace_probe dashboard [rate=240] [phase_s=2] [warm_s=1] [tail_s=0]
 //!   pace_probe scroll [rows=1000] [rate=144] [secs=5.5] [tail_s=0]
+//!   pace_probe hover [rate=240] [secs=4]     (the dashboard; the pointer alternates between the Refresh button
+//!                                             and the gap beside it: every move is a hover crossing)
 //!   pace_probe idle [secs=5]
 #[path = "../dashboard.rs"]
 #[allow(dead_code)]
@@ -164,6 +166,34 @@ fn scroll_script(t: Target, rate: f64, secs: f64, tail: f64) {
     }
 }
 
+/// A hover storm (performance.md workload #3 at 240 Hz): every move enters or leaves the Refresh button, a
+/// paint write of its hover background.
+fn hover_script(t: Target, rate: f64, secs: f64) {
+    drive::sleep_until(fl::now_ns() + ms(500.0));
+    let vsyncs = drive::VsyncRecorder::start();
+    let start = fl::now_ns();
+    fl::note(fl::N_PHASE, 0, start);
+    let end = start + (secs * 1e9) as u64;
+    let step = (1e9 / rate) as u64;
+    let (mut next, mut n) = (start, 0u64);
+    loop {
+        let now = fl::now_ns();
+        if now >= end {
+            break;
+        }
+        if now >= next {
+            let x = if n % 2 == 0 { 496.0 } else { 600.0 };
+            drive::mouse(&t, EvKind::MOVE, x, 90.0, n as isize + 1);
+            n += 1;
+            next = (next + step).max(fl::now_ns());
+        }
+        drive::sleep_until(next.min(end));
+    }
+    fl::note(fl::N_PHASE, 1, fl::now_ns());
+    drop(vsyncs);
+    eprintln!("hover: {n} moves");
+}
+
 fn main() {
     let what = std::env::args()
         .nth(1)
@@ -199,6 +229,20 @@ fn main() {
             Application::run(
                 Window::document(scroll::app())
                     .title("bough Scroll")
+                    .size(1000.0, 700.0),
+            );
+        }
+        "hover" => {
+            let (rate, secs) = (arg(2, 240.0), arg(3, 4.0));
+            harness(move |host| {
+                drive::float(host);
+                let t = Target::of(host);
+                drive::spawn_driver(move || hover_script(t, rate, secs));
+                drive::exit_after(host, 0.5 + secs + 0.6);
+            });
+            Application::run(
+                Window::document(dashboard::app())
+                    .title("bough Dashboard")
                     .size(1000.0, 700.0),
             );
         }

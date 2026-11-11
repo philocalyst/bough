@@ -59,7 +59,7 @@ def analyse(rows, scene=None, ngaps=5):
     posted = [r for r in notes if r[1] == 7]
     phases = sorted((r[3], r[4]) for r in notes if r[1] == 10)
     if scene is None:
-        scene = "dashboard" if len(phases) >= 5 else "scroll"
+        scene = "dashboard" if len(phases) >= 5 else "scroll" if phases else "idle"
     # committed publications by sequence; commit times (c0: just before setContents, AWAGY's observer point)
     committed = sorted((r[1], r[5], r[6]) for r in pubs if r[7] == 1)
     seqs = [c[0] for c in committed]
@@ -68,11 +68,16 @@ def analyse(rows, scene=None, ngaps=5):
     if scene == "dashboard":
         bounds = [(DASH_PHASES[i], phases[i][1], phases[i + 1][1]) for i in range(min(4, len(phases) - 1))]
         windows = bounds + [("all", phases[0][1], phases[min(4, len(phases) - 1)][1])] if bounds else []
+    elif len(phases) < 2:
+        windows = []
     else:
         start, end = phases[0][1], phases[1][1]
         # AWAGY scroll: the 1 s warm-up is excluded; the window is 3 s from the first commit after it
-        anchor_from = start + int(1e9)
-        windows = [("scroll", anchor_from, min(end, anchor_from + int(3e9)))]
+        if scene == "hover":
+            windows = [("hover", start, end)]
+        else:
+            anchor_from = start + int(1e9)
+            windows = [("scroll", anchor_from, min(end, anchor_from + int(3e9)))]
     out = {"scene": scene, "windows": {}}
     # inputs that left something to show -> the first frame at or after their turn
     frames = [t for t in turns if t[M_FID] > 0]
@@ -110,6 +115,7 @@ def analyse(rows, scene=None, ngaps=5):
         ins = [t for t in turns if a <= t[M_DISPATCH] < b and t[1] <= 5]
         w["inputs"] = len(ins)
         w["posted"] = sum(1 for p in posted if a <= p[2] < b)
+        w["received"] = sum(1 for e in events if a <= e[3] < b)
         by_kind = defaultdict(list)
         lat_all, lat_vs = [], []
         for t in ins:
@@ -140,6 +146,18 @@ def analyse(rows, scene=None, ngaps=5):
         w["faults_per_turn"] = dist([t[M_FLT] for t in ins])
         w["notes"] = {NOTES.get(k, k): sum(1 for n in notes if n[1] == k and a <= n[2] < b) for k in sorted({n[1] for n in notes})}
         out["windows"][name] = w
+    # every posted event received, per kind (synthetic runs), over the whole run
+    from collections import Counter
+    out["posted_by_kind"] = dict(Counter(KIND.get(p[3], p[3]) for p in posted))
+    out["received_by_kind"] = dict(Counter(KIND.get(e[1], e[1]) for e in events))
+    # idle windows (pairs of wakeup notes): what bough itself did in them
+    wk = sorted((n[2], n[3], n[4]) for n in notes if n[1] == 11)
+    out["idle"] = []
+    for i in range(0, len(wk) - 1, 2):
+        (t0, w0, i0), (t1, w1, i1) = wk[i], wk[i + 1]
+        out["idle"].append({"secs": (t1 - t0) / 1e9, "process_wakeups": w1 - w0, "instructions": i1 - i0,
+                            "link_callbacks": sum(1 for v in link_ticks if t0 < v <= t1), "turns": sum(1 for t in turns if t0 < t[M_DISPATCH] <= t1),
+                            "commits": sum(1 for r in pubs if t0 < r[6] <= t1), "notes": dict(Counter(NOTES.get(n[1], n[1]) for n in notes if t0 < n[2] <= t1 and n[1] != 11))})
     # the largest gaps between consecutive commits over the whole workload
     if windows:
         a, b = windows[-1][1], windows[-1][2]
@@ -186,7 +204,7 @@ def main():
     a = ap.parse_args()
     out = analyse(load(a.log), a.scene, a.gaps)
     for name, w in out["windows"].items():
-        print(f"[{name}] presents {w['presents']} ({w['presents_per_s']:.1f}/s), refreshes {w['refreshes']}, link callbacks {w['link_callbacks']}, worst gap {w['worst_gap_ms']:.2f} ms, inputs {w['inputs']} of {w['posted']} posted")
+        print(f"[{name}] presents {w['presents']} ({w['presents_per_s']:.1f}/s), refreshes {w['refreshes']}, link callbacks {w['link_callbacks']}, worst gap {w['worst_gap_ms']:.2f} ms, {w['received']} of {w['posted']} posted events received, {w['inputs']} input turns")
         print(f"   commit interval ms  {fmt(w['commit_interval_ms'])}")
         print(f"   input->commit ms    {fmt(w['input_to_commit_ms'])}")
         print(f"   input->vsync ms     {fmt(w['input_to_vsync_after_commit_ms'])}   (the first vsync at or after the commit; refreshes with 2+ commits: {w['refreshes_with_2plus_commits']})")
@@ -195,6 +213,9 @@ def main():
         print(f"   input turn ms       {fmt(w['input_turn_ms'])}")
         print(f"   queue ms            {fmt(w['queue_ms'])}")
         print(f"   notes {w['notes']}")
+    print("posted", out["posted_by_kind"], "received", out["received_by_kind"])
+    for i in out["idle"]:
+        print("idle", json.dumps(i))
     for g in out.get("gaps", []):
         print("gap", json.dumps(g))
     if a.json:
