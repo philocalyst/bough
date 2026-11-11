@@ -1,0 +1,80 @@
+# bough CI (macOS, Metal). UNEXECUTED: written on a branch that has not been pushed, so no run of this file exists.
+# It mirrors what bench/gate.sh and the lanes' local checks run (BRIEF.md 9.2, ROUND6.md rule 8). Not touched:
+# reactivity/ (the preserved clean-room workspace, its own toolchain and lockfile) and vendored crates (vendor/).
+name: bough
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["reactivity/**", "designs/**", "archive/**", "docs/**", "research/**", "**/*.md"]
+  pull_request:
+    paths-ignore: ["reactivity/**", "designs/**", "archive/**", "docs/**", "research/**", "**/*.md"]
+
+concurrency:
+  group: bough-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTC_WRAPPER: ""          # a stray sccache or wrapper must not sit between cargo and the pinned toolchain
+  CARGO_BUILD_JOBS: "4"
+  # what bench/gate.sh diffs against: the PR's base branch, or the previous commit on a push
+  BOUGH_BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'HEAD~1' }}
+
+jobs:
+  verify:
+    # Apple silicon runner with Metal. The pixel gates draw headless on the GPU; a hosted runner's virtual GPU is
+    # not the M3 Pro the baselines come from, so this proves correctness (pixel-exact gates), never performance.
+    runs-on: macos-14
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # bench/gate.sh diffs against the merge base with the base branch
+
+      # rust-toolchain.toml pins nightly-2026-10-17 with rustfmt, clippy and rust-src. rustup 1.28+ does not install
+      # it implicitly, so install exactly what the file names, then print what cargo will use.
+      - name: Toolchain from rust-toolchain.toml
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          cargo --version
+          cargo --version | grep -q nightly
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: bough-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: bough-${{ runner.os }}-
+
+      # Absolute machine paths added by this change (manifests, scripts, sources).
+      - name: Hygiene
+        run: bench/gate.sh --steps hygiene
+
+      # BRIEF.md 4.3 #8: zero warnings. gate.sh runs `cargo check --workspace --all-targets` and fails on any
+      # rustc warning (build-script notices such as "no Metal compiler" are printed, not counted).
+      - name: Check, all targets, zero warnings
+        run: bench/gate.sh --steps check
+
+      # Workspace members only (--no-deps keeps vendor/ out). Reports, does not gate: the tree is not clippy-clean
+      # (two deny-by-default `mut_from_ref` errors in bough-core and bough-metal, and dozens of warnings, were
+      # open on the round-6 base). Make it blocking by dropping continue-on-error once it is clean.
+      - name: Clippy (bough crates only)
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets --no-deps
+
+      # The counter example driven headless: real pointer events through hit testing, pixels equal to a full redraw.
+      # Uses the system Arial unless ZGX_FONT_FILE is set (macOS ships it).
+      - name: Counter example, headless
+        run: cargo test --release -p bough --test counter
+
+      - name: Tests (whole workspace, release)
+        run: bench/gate.sh --all --steps test
+
+      # BRIEF.md 9.2 item 4: the vlist pixel gates pass, and fail when the scroll copy is one pixel off.
+      - name: Sabotage check
+        run: bench/gate.sh --steps sabotage
