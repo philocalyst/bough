@@ -49,15 +49,20 @@ if stats:
         // SAFETY: new_bins/resize allocate (ty+1+ty*128*8) shared words in this overlay;
         // bench_frames waited for completion and no stream frame has been released.
         let counters = unsafe { std::slice::from_raw_parts(self.counts.contents().as_ptr() as *const u32, ty + 1 + ty * 128 * 8) };
+        let got = read_io(&self.surfs[target].io, self.w, self.h);
         for y in 0..ty {
             for x in 0..self.lay.tiles_x() as usize {
                 if !full && rows.get(y).copied().unwrap_or(0) & (1u128 << x) == 0 { continue; }
                 let q = &counters[ty + 1 + (y * 128 + x) * 8..][..8];
-                eprintln!("R6_TILE frame={} x={} y={} scan={} hit={} raw_layers={} executed_layers={} uniform={} pixels={}", self.r6_draw, x, y, q[0], q[1], q[2], q[3], q[4], q[5]);
+                let first = &got[(y * 32 * self.w + x * 32) * 4..][..4];
+                let uniform = (y * 32..((y + 1) * 32).min(self.h)).all(|py| {
+                    (x * 32..((x + 1) * 32).min(self.w)).all(|px| &got[(py * self.w + px) * 4..][..4] == first)
+                });
+                assert!(q[4] == 0 || uniform, "opaque certificate disagrees with pixels");
+                eprintln!("R6_TILE frame={} x={} y={} scan={} hit={} raw_layers={} executed_layers={} uniform={} pixels={} pixel_uniform={}", self.r6_draw, x, y, q[0], q[1], q[2], q[3], q[4], q[5], u32::from(uniform));
             }
         }
         // The diagnostic keeps the original accumulator/output code: compare retained to full redraw.
-        let got = read_io(&self.surfs[target].io, self.w, self.h);
         let reference = self.reference_pixels(n_dir);
         let bad = got.iter().zip(&reference).filter(|(a,b)| a != b).count();
         eprintln!("R6_PIXEL frame={} different_bytes={}", self.r6_draw, bad);

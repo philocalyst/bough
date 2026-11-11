@@ -1,0 +1,28 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index adc4ee0ad0..537e711caa 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2139,6 +2139,7 @@ dependencies = [
+ [[package]]
+ name = "zgx-cosmic-text"
+ version = "0.19.7"
++source = "git+https://github.com/zeronsh/zgx?rev=06debe9df86dbcb0a82d6074d01f98ace98a65b3#06debe9df86dbcb0a82d6074d01f98ace98a65b3"
+ dependencies = [
+  "bitflags 2.13.2",
+  "fontdb",
+@@ -2161,6 +2162,7 @@ dependencies = [
+ [[package]]
+ name = "zgx-harfrust"
+ version = "0.5.3"
++source = "git+https://github.com/zeronsh/zgx?rev=06debe9df86dbcb0a82d6074d01f98ace98a65b3#06debe9df86dbcb0a82d6074d01f98ace98a65b3"
+ dependencies = [
+  "bitflags 2.13.2",
+  "bytemuck",
+@@ -2172,6 +2174,7 @@ dependencies = [
+ [[package]]
+ name = "zgx-workload"
+ version = "0.1.0"
++source = "git+https://github.com/zeronsh/zgx?rev=06debe9df86dbcb0a82d6074d01f98ace98a65b3#06debe9df86dbcb0a82d6074d01f98ace98a65b3"
+ 
+ [[package]]
+ name = "zlib-rs"

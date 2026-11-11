@@ -15,3 +15,5 @@ stop conditions: Stop after decomposition and DESIGN-R6. If lock or system load 
 do not revisit: No v7 sequential per-tile scan as optimization; no presentation API replacement, per-column CPU damage strips, GPU shaping, or archive uniform fast path without a new representation.
 
 Pre-measurement build note: the checked-in lockfile lacks three zgx git-source lines, so `--locked` fails. Local resolution adds those source identities only (no version upgrades); retain the three-line patch with the lane evidence and restore the root lockfile before handoff. The pinned competitor commit was recovered in a lane-owned scratch clone.
+
+Pre-measurement diagnostic refinement: also count tiles whose final BGRA bytes are all identical, separately from the conservative last-opaque-cover certificate. Assert every certificate implies actual uniform pixels. Tile counters include raw alpha-positive sample layers and those evaluated after the existing per-128-entry-batch opaque floor; these are not geometric bounding-box overlap counts. Command-buffer stage timings retain actual copy exclusions and use zero tile/bin dispatch sizes for isolated cases.
