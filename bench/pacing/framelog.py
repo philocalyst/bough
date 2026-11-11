@@ -47,14 +47,19 @@ def load(path):
     return rows
 
 
+DEADLINE_NS = 0  # a commit is shown at the first grid time T with commit end <= T - DEADLINE (set by --deadline-ms)
+
+
 def analyse(rows, scene=None, ngaps=5):
     turns = sorted((r for r in rows if r[0] == TURN), key=lambda r: r[M_DISPATCH])
     pubs = [r for r in rows if r[0] == PUB]
     notes = [r for r in rows if r[0] == NOTE]
     events = [r for r in rows if r[0] == EVENT]
-    # the refresh timeline: the measurement recorder's vsyncs (source 1) when present, else the host link's
+    # the refresh grid: the times frames reach the display. The measurement CVDisplayLink's output time (word 2,
+    # source 1) when present (its `inNow` is its own wake-up, 11.56 ms before the output time on this Mac, not a
+    # vsync); else the host link's target timestamps. Both agree within 4 us on this Mac.
     vrows = [r for r in rows if r[0] == VSYNC]
-    vs = sorted(r[1] for r in vrows if r[4] == 1) or sorted(r[1] for r in vrows if r[4] == 0)
+    vs = sorted(r[2] for r in vrows if r[4] == 1) or sorted(r[2] for r in vrows if r[4] == 0)
     link_ticks = sorted(r[3] for r in vrows if r[4] == 0)
     posted = [r for r in notes if r[1] == 7]
     phases = sorted((r[3], r[4]) for r in notes if r[1] == 10)
@@ -84,7 +89,7 @@ def analyse(rows, scene=None, ngaps=5):
     fdisp = [t[M_DISPATCH] for t in frames]
 
     def next_vsync(c):
-        i = bisect.bisect_left(vs, c)
+        i = bisect.bisect_left(vs, c + DEADLINE_NS)
         return vs[i] if i < len(vs) else None
 
     def shown_at(t):
@@ -201,13 +206,16 @@ def main():
     ap.add_argument("--json")
     ap.add_argument("--gaps", type=int, default=5)
     ap.add_argument("--scene")
+    ap.add_argument("--deadline-ms", type=float, default=0.0)
     a = ap.parse_args()
+    global DEADLINE_NS
+    DEADLINE_NS = int(a.deadline_ms * 1e6)
     out = analyse(load(a.log), a.scene, a.gaps)
     for name, w in out["windows"].items():
         print(f"[{name}] presents {w['presents']} ({w['presents_per_s']:.1f}/s), refreshes {w['refreshes']}, link callbacks {w['link_callbacks']}, worst gap {w['worst_gap_ms']:.2f} ms, {w['received']} of {w['posted']} posted events received, {w['inputs']} input turns")
         print(f"   commit interval ms  {fmt(w['commit_interval_ms'])}")
         print(f"   input->commit ms    {fmt(w['input_to_commit_ms'])}")
-        print(f"   input->vsync ms     {fmt(w['input_to_vsync_after_commit_ms'])}   (the first vsync at or after the commit; refreshes with 2+ commits: {w['refreshes_with_2plus_commits']})")
+        print(f"   input->display ms   {fmt(w['input_to_vsync_after_commit_ms'])}   (the first refresh whose deadline the commit made; refreshes with 2+ commits: {w['refreshes_with_2plus_commits']})")
         for k, d in w["input_to_commit_by_kind_ms"].items():
             print(f"     {k:6s}            {fmt(d)}")
         print(f"   input turn ms       {fmt(w['input_turn_ms'])}")
