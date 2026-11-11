@@ -14,6 +14,9 @@ fn main() {
     let mut ring = 4;
     let mut mutant = false;
     let mut plain = false;
+    let mut mounted = false;
+    let mut blocks = 0;
+    let mut scale = 1.0;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--op" => op = args.next().expect("--op value"),
@@ -23,6 +26,9 @@ fn main() {
             "--ring" => ring = args.next().expect("--ring value").parse().unwrap(),
             "--mutant" => mutant = true,
             "--plain" => plain = true,
+            "--mounted" => mounted = true,
+            "--blocks" => blocks = args.next().expect("--blocks value").parse().unwrap(),
+            "--scale" => scale = args.next().expect("--scale value").parse().unwrap(),
             _ => shared.push(a),
         }
     }
@@ -37,9 +43,17 @@ fn main() {
     )
     .unwrap();
     assert!((1..=4).contains(&ring));
+    let o = driver::Opts {
+        repeats,
+        render,
+        gate,
+        ring,
+        blocks,
+        scale,
+    };
     match s {
         Scenario::Rows { count } => {
-            driver::headless(Rows::new(count), &op, repeats, render, gate, ring)
+            driver::headless(Rows::new(count), &op, o)
         }
         Scenario::Table {
             count,
@@ -50,23 +64,26 @@ fn main() {
                 let mut v = Coarse::new(count, mutant);
                 v.plain = plain;
                 v.timer = ticker;
-                driver::headless(v, &op, repeats, render, gate, ring)
+                driver::headless(v, &op, o)
             }
             _ => {
                 let mut v = Fine::new(count, mutant);
                 v.plain = plain;
+                v.mounted = mounted;
                 v.timer = ticker;
-                driver::headless(v, &op, repeats, render, gate, ring)
+                driver::headless(v, &op, o)
             }
         },
         Scenario::Search { count, filter } => {
-            driver::headless(Search::new(count, filter), &op, repeats, render, gate, ring)
+            let mut v = Search::new(count, filter);
+            v.plain = plain;
+            driver::headless(v, &op, o)
         }
         Scenario::Spinner { count } => {
-            driver::headless(Spinner::new(count), &op, repeats, render, gate, ring)
+            driver::headless(Spinner::new(count), &op, o)
         }
         Scenario::Virtual { count } => {
-            driver::headless(Virtual::new(count), &op, repeats, render, gate, ring)
+            driver::headless(Virtual::new(count), &op, o)
         }
     }
 }

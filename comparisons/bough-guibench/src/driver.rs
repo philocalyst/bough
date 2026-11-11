@@ -29,10 +29,46 @@ pub fn config(scale: f32) -> Config {
         clips: 1 << 12,
         strikes: 16,
     };
-    if std::env::var("GUIBENCH_CAPS").as_deref() == Ok("raised-spaces") {
-        c.caps.spaces = 1 << 14;
-    }
+    apply_caps(&mut c.caps);
     c
+}
+
+/// `GUIBENCH_CAPS`: `default`, `raised-spaces` (spaces = 16,384) or `name=value,...`. Never implicit.
+pub fn apply_caps(caps: &mut Caps) {
+    let Ok(v) = std::env::var("GUIBENCH_CAPS") else {
+        return;
+    };
+    match v.as_str() {
+        "" | "default" => {}
+        "raised-spaces" => caps.spaces = 1 << 14,
+        list => {
+            for kv in list.split(',') {
+                let (k, n) = kv.split_once('=').expect("caps name=value");
+                let n: usize = n.parse().expect("caps value");
+                match k {
+                    "instances" => caps.instances = n,
+                    "pages" => caps.pages = n,
+                    "glyphs" => caps.glyphs = n,
+                    "runs" => caps.runs = n,
+                    "spaces" => caps.spaces = n,
+                    "clips" => caps.clips = n,
+                    "strikes" => caps.strikes = n,
+                    _ => panic!("unknown cap {k}"),
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Opts {
+    pub repeats: usize,
+    pub render: bool,
+    pub gate: bool,
+    pub ring: usize,
+    /// > 0: two warm-up pairs, then this many timed blocks of `repeats` operation/undo pairs.
+    pub blocks: usize,
+    pub scale: f32,
 }
 
 pub trait Bench: View {
@@ -260,6 +296,21 @@ pub fn window<V: Bench>(view: V, title: &str) -> ! {
 }
 
 pub fn input<V: Bench>(a: &mut App<V>, op: &str, undo: bool) {
+    input_op(a, op, undo);
+    // Diagnostic only (never in measured cells): re-deliver the pointer after a scroll, at the same
+    // point (`same`) or one point away and back (`jitter`), to separate stale hover from stale content.
+    if matches!(op, "scroll" | "jump") {
+        match std::env::var("GUIBENCH_REHOVER").as_deref() {
+            Ok("same") => a.pointer_move(640.0, 400.0),
+            Ok("jitter") => {
+                a.pointer_move(700.0, 100.0);
+                a.pointer_move(640.0, 400.0);
+            }
+            _ => {}
+        }
+    }
+}
+fn input_op<V: Bench>(a: &mut App<V>, op: &str, undo: bool) {
     match op {
         "select" => {
             let y = spec::HEADER_HEIGHT + spec::ROW_HEIGHT / 2.0;
@@ -268,6 +319,10 @@ pub fn input<V: Bench>(a: &mut App<V>, op: &str, undo: bool) {
         }
         "hover" => a.pointer_move(640.0, if undo { 16.0 } else { 5.0 * 32.0 + 16.0 }),
         "scroll" => a.wheel_points(640.0, 400.0, if undo { -16.0 } else { 16.0 }),
+        "jump" => {
+            let d = a.owner.rows() as f32 * spec::ROW_HEIGHT / 2.0;
+            a.wheel_points(640.0, 400.0, if undo { -d } else { d })
+        }
         "update10" => a.key_down(f_key(1), Mods::default()),
         "swap" => a.key_down(f_key(2), Mods::default()),
         "remove" => a.key_down(f_key(if undo { 4 } else { 3 }), Mods::default()),
@@ -403,17 +458,18 @@ fn layout<V: Bench>(a: &mut App<V>) {
     }
 }
 
-pub fn headless<V: Bench>(
-    view: V,
-    op: &str,
-    repeats: usize,
-    render: bool,
-    gate: bool,
-    ring: usize,
-) {
+pub fn headless<V: Bench>(view: V, op: &str, o: Opts) {
+    let Opts {
+        repeats,
+        render,
+        gate,
+        ring,
+        blocks,
+        scale,
+    } = o;
     let before = tinstr();
     let t = Instant::now();
-    let mut c = config(1.0);
+    let mut c = config(scale);
     c.ring = ring;
     let mut a = App::new(view, c, render || gate);
     focus(&mut a);
@@ -438,6 +494,53 @@ pub fn headless<V: Bench>(
     if op == "filter-nochange" {
         a.key_down(Key::Char('z'), Mods::default());
         a.frame();
+    }
+    if blocks > 0 {
+        // Diagnostic only: GUIBENCH_IDLE=k delivers k further frames (idle unless something animates)
+        // after each operation's frame, which is where `Rt::reclaim` runs for input-driven turns.
+        let idle: usize = std::env::var("GUIBENCH_IDLE")
+            .ok()
+            .map_or(0, |v| v.parse().unwrap());
+        let step = |a: &mut App<V>| {
+            for undo in [false, true] {
+                input(a, op, undo);
+                if op == "ticker" || op == "spinner" {
+                    a.frame_paced();
+                } else {
+                    a.frame();
+                }
+                for _ in 0..idle {
+                    a.frame();
+                }
+            }
+        };
+        for _ in 0..2 {
+            step(&mut a);
+        }
+        if render {
+            a.wait_presented();
+        }
+        let mut per = Vec::new();
+        for _ in 0..blocks {
+            let s = tinstr();
+            for _ in 0..repeats {
+                step(&mut a);
+            }
+            if render {
+                a.wait_presented();
+            }
+            per.push((tinstr() - s) / (2 * repeats as u64));
+        }
+        per.sort();
+        println!(
+            "perop op={op} render={render} med={} lo={} hi={} records={} frames={}",
+            per[per.len() / 2],
+            per[0],
+            per[per.len() - 1],
+            a.record_count(),
+            a.frames
+        );
+        return;
     }
     let mut expected = a.owner.data();
     let count = if op == "truncate" {

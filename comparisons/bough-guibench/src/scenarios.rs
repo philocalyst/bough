@@ -9,6 +9,8 @@ pub struct Search {
     pub query: Signal<String>,
     pub y: Signal<f32>,
     pub filter: bool,
+    /// Diagnostic: the rows in a plain box instead of the scroll box.
+    pub plain: bool,
 }
 impl Search {
     pub fn new(count: usize, filter: bool) -> Self {
@@ -17,6 +19,7 @@ impl Search {
             query: Signal::new(String::new()),
             y: Signal::new(0.0),
             filter,
+            plain: false,
         }
     }
     pub fn snapshot(&self) -> Self {
@@ -25,6 +28,7 @@ impl Search {
             query: Signal::new((*self.query).clone()),
             y: Signal::new(*self.y),
             filter: self.filter,
+            plain: self.plain,
         }
     }
 }
@@ -51,17 +55,27 @@ impl View for Search {
             .h(spec::HEADER_HEIGHT)
             .shrink(0.0)
             .bg(rgb(spec::HEADER_BG)),
-            div()
-                .w_pct(1.0)
-                .grow(1.0)
-                .min_h(0.0)
-                .scroll(sig!(self.y))
-                .child(each(
+            (!self.plain).then(|| {
+                div()
+                    .w_pct(1.0)
+                    .grow(1.0)
+                    .min_h(0.0)
+                    .scroll(sig!(self.y))
+                    .child(each(
+                        self.rows
+                            .iter()
+                            .filter(|r| !self.filter || spec::matches(&r.label, &self.query))
+                            .map(plain_row),
+                    ))
+            }),
+            self.plain.then(|| {
+                div().w_pct(1.0).grow(1.0).min_h(0.0).child(each(
                     self.rows
                         .iter()
                         .filter(|r| !self.filter || spec::matches(&r.label, &self.query))
                         .map(plain_row),
-                )),
+                ))
+            }),
         ))
         .w_pct(1.0)
         .h_pct(1.0)

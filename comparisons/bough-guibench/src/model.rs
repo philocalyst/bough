@@ -225,6 +225,8 @@ pub struct Fine {
     pub y: Signal<f32>,
     pub mutant: bool,
     pub plain: bool,
+    /// Overscan = every row: the list mounts all rows instead of the exposed window.
+    pub mounted: bool,
     pub timer: Option<crate::cli::Ticker>,
     pub ticks: Signal<u64>,
 }
@@ -240,6 +242,7 @@ impl Fine {
             y: Signal::new(0.0),
             mutant,
             plain: false,
+            mounted: false,
             timer: None,
             ticks: Signal::new(0),
         }
@@ -265,6 +268,7 @@ impl Fine {
         out.ids = self.ids.clone();
         out.count = self.count;
         out.plain = self.plain;
+        out.mounted = self.mounted;
         out.timer = self.timer;
         out.ticks = Signal::new(*self.ticks);
         out.y = Signal::new(*self.y);
@@ -347,6 +351,12 @@ impl Fine {
 }
 impl View for Fine {
     fn view(&self) -> impl Element<Self> + '_ {
+        // overscan is read at mount; `mounted` asks for every row (and the 1,000 appended ones)
+        let over = if self.mounted {
+            self.count + spec::APPEND
+        } else {
+            2
+        };
         column((
             header(if self.timer.is_some() {
                 spec::ticker_status(self.rows.len(), *self.ticks)
@@ -359,14 +369,14 @@ impl View for Fine {
                     .grow(1.0)
                     .min_h(0.0)
                     .scroll(sig!(self.y))
-                    .child(list(sig!(self.rows)).w_pct(1.0))
+                    .child(list(sig!(self.rows)).w_pct(1.0).overscan(over))
             }),
             self.plain.then(|| {
                 div()
                     .w_pct(1.0)
                     .grow(1.0)
                     .min_h(0.0)
-                    .child(list(sig!(self.rows)).w_pct(1.0))
+                    .child(list(sig!(self.rows)).w_pct(1.0).overscan(over))
             }),
         ))
         .w_pct(1.0)
