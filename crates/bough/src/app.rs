@@ -24,6 +24,7 @@ use crate::elem::{Element, Mounter};
 use crate::rt::*;
 use bough_core::damage::RING;
 use bough_core::{Plane, RecordInit};
+use bough_metal::framelog as fl;
 
 /// A view: a plain struct whose fields are the state (`designs/reactivity/final/00-model.md` §3). `view`
 /// describes it; `Signal` fields bound into operands are direct ports, so publishing one patches its
@@ -395,6 +396,7 @@ impl<V: View> App<V> {
         if let Some(g) = self.gpu.as_mut() {
             g.sync();
         }
+        fl::mark(fl::M_SYNC);
     }
     #[cfg(not(target_os = "macos"))]
     fn sync(&mut self) {}
@@ -433,10 +435,13 @@ impl<V: View> App<V> {
         let owner = &mut *self.owner as *mut V as *const u8;
         // SAFETY: the owner is the mounted view; every wire was installed from a `sig!` proof for it.
         unsafe { self.rt.settle(owner) };
+        fl::mark_last(fl::M_SETTLE);
         self.effects();
         self.redescribe();
+        fl::mark_last(fl::M_DESCRIBE);
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
+        fl::mark_last(fl::M_LAYOUT);
         self.prof.mark(PH_TEXT);
     }
 
@@ -704,6 +709,9 @@ impl<V: View> App<V> {
             std::thread::sleep(std::time::Duration::from_micros(150));
             let w = t0.elapsed().as_micros() as u64;
             self.surf_stats.max_wait_us = self.surf_stats.max_wait_us.max(w);
+            if fl::ON {
+                fl::note(fl::N_RING_WAIT, w, 0);
+            }
         }
     }
 
@@ -721,6 +729,11 @@ impl<V: View> App<V> {
         self.frame_as::<true>()
     }
 
+    /// Does the current epoch have damage (would `frame` draw or publish)?
+    pub fn has_damage(&self) -> bool {
+        !self.rt.bough.plane(0).is_clear() || !self.rt.paint.plane(0).is_clear()
+    }
+
     /// The publication policy is chosen by the turn's source at compile time (`PACED`), never per frame.
     pub fn frame_as<const PACED: bool>(&mut self) -> bool {
         let core = !self.rt.bough.plane(0).is_clear();
@@ -733,9 +746,19 @@ impl<V: View> App<V> {
             return false;
         }
         self.prof.reset();
+        fl::mark_last(fl::M_FRAME);
         let epoch = self.rt.bough.epoch();
         self.core_epochs[epoch as usize % RING] = core;
         let pick = self.pick(epoch, !core);
+        fl::mark_last(fl::M_PICK);
+        if fl::ON {
+            let p = match pick {
+                Pick::OnScreen => 1,
+                Pick::Held(_) => 2,
+                Pick::Draw(_) => 3,
+            };
+            fl::or(fl::M_FLAGS, 1 | (core as u64) << 1 | (paint as u64) << 2 | p << 8);
+        }
         self.surf_stats.frames += 1;
         match pick {
             Pick::OnScreen => {
@@ -754,6 +777,10 @@ impl<V: View> App<V> {
                 self.last_surface = i;
             }
             Pick::Draw(i) => self.draw::<PACED>(i, epoch),
+        }
+        if fl::ON {
+            fl::mark(fl::M_SLOT);
+            fl::or(fl::M_FLAGS, (self.repaired_tiles as u64) << 16);
         }
         self.prof.mark(PH_PRESENT);
         self.rt.bough.next_epoch();

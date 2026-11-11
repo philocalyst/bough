@@ -11,6 +11,7 @@
 //! makes the spares purgeable about a second after the last frame.
 use crate::app::{App, Config, View};
 use block2::RcBlock;
+use bough_metal::framelog as fl;
 use objc2_foundation::{NSRunLoop, NSTimer};
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
@@ -45,6 +46,7 @@ fn after_frame<V: View>(app: &Rc<RefCell<App<V>>>, st: &Rc<Trim>, a: &mut App<V>
     let app = app.clone();
     let blk = RcBlock::new(move |_t: NonNull<NSTimer>| {
         if let Ok(mut a) = app.try_borrow_mut() {
+            fl::note(fl::N_TRIM, 0, 0);
             a.trim(false);
         }
     });
@@ -82,6 +84,41 @@ fn report_exit<V: View>(a: &mut App<V>) {
         let px = a.presented_pixels();
         std::fs::write(p, px).ok();
     }
+    dump_framelog();
+}
+
+/// `BOUGH_FRAMELOG=<file>`: write the frame log there (feature `framelog`; nothing without it).
+pub fn dump_framelog() {
+    if fl::ON {
+        if let Some(p) = std::env::var_os("BOUGH_FRAMELOG") {
+            fl::dump(std::path::Path::new(&p));
+        }
+    }
+}
+
+/// The frame log's kind for an AppKit event.
+fn turn_kind(e: &NSEvent) -> u64 {
+    match e.r#type() {
+        NSEventType::MouseMoved | NSEventType::LeftMouseDragged | NSEventType::RightMouseDragged | NSEventType::OtherMouseDragged => fl::K_MOVE,
+        NSEventType::LeftMouseDown | NSEventType::RightMouseDown => fl::K_DOWN,
+        NSEventType::LeftMouseUp | NSEventType::RightMouseUp => fl::K_UP,
+        NSEventType::ScrollWheel => fl::K_WHEEL,
+        NSEventType::KeyDown => fl::K_KEY,
+        NSEventType::MouseExited => fl::K_LEAVE,
+        _ => fl::K_OTHER,
+    }
+}
+
+#[cfg(feature = "framelog")]
+thread_local! {
+    static HARNESS: RefCell<Option<Box<dyn FnOnce(&bough_metal::app::Host)>>> = const { RefCell::new(None) };
+}
+
+/// A measurement harness (feature `framelog`): `f` runs once on the main thread when an interactive window
+/// (`run_interactive`, so `Application::run`) has shown its first frame. Set it before `Application::run`.
+#[cfg(feature = "framelog")]
+pub fn harness(f: impl FnOnce(&bough_metal::app::Host) + 'static) {
+    HARNESS.with(|h| *h.borrow_mut() = Some(Box::new(f)));
 }
 
 /// Open a window of `cfg` points, mount `view`, and run. `tick` is called every `period` (never if
@@ -272,9 +309,11 @@ fn observe_resize<V: View>(host: &bough_metal::app::Host, app: &Rc<RefCell<App<V
         let size = window.contentView().map_or(window.frame().size, |v| v.frame().size);
         content_h.set(size.height);
         if let Ok(mut a) = app.try_borrow_mut() {
+            fl::turn_begin(fl::K_RESIZE, 0);
             a.resize(size.width as f32, size.height as f32);
             let drew = a.frame();
             after_frame(&app, &trim, &mut a, drew);
+            fl::turn_end();
         }
     });
     // SAFETY: AppKit posts window notifications on the main thread, where the app lives, and the block runs
@@ -325,15 +364,29 @@ pub fn run_interactive<V: View>(
                     // SAFETY: AppKit hands the monitor a live event for the duration of the call.
                     let ev = unsafe { e.as_ref() };
                     if let Ok(mut a) = app.try_borrow_mut() {
+                        if fl::ON {
+                            let (k, t) = (turn_kind(ev), fl::secs_to_ns(ev.timestamp()));
+                            let seq = if k == fl::K_KEY || k == fl::K_WHEEL { 0 } else { ev.eventNumber() as u64 };
+                            fl::event(k, t, seq, 0);
+                            fl::turn_begin(k, t);
+                        }
                         if dispatch_event(&mut a, ev, content_h.get()) {
+                            if fl::ON {
+                                // the input left something to show (damage, or an input animation started)
+                                fl::or(fl::M_FLAGS, ((a.has_damage() || a.animating()) as u64) << 3);
+                            }
                             if std::env::var_os("BOUGH_NOFRAME").is_none() {
                                 let drew = a.frame();
                                 after_frame(&app, &trim, &mut a, drew);
                             }
                             if a.animating() {
+                                if fl::ON && host2.link.isPaused() {
+                                    fl::note(fl::N_LINK, 1, 0);
+                                }
                                 host2.link.setPaused(false);
                             }
                         }
+                        fl::turn_end();
                     }
                     e.as_ptr()
                 });
@@ -376,10 +429,12 @@ pub fn run_interactive<V: View>(
                 if half > 0.0 {
                     let blk = RcBlock::new(move |_t: NonNull<NSTimer>| {
                         if let Ok(mut a) = app.try_borrow_mut() {
+                            fl::turn_begin(fl::K_TIMER, 0);
                             if a.next_blink().is_some() && a.tick(half as f32) {
                                 let drew = a.frame_paced();
                                 after_frame(&app, &trim, &mut a, drew);
                             }
+                            fl::turn_end();
                         }
                     });
                     let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(half, true, &blk) };
@@ -389,22 +444,33 @@ pub fn run_interactive<V: View>(
                 }
             }
             start(host, app.clone());
+            #[cfg(feature = "framelog")]
+            if let Some(h) = HARNESS.with(|h| h.borrow_mut().take()) {
+                h(host);
+            }
             link.setPaused(true);
             state = Some((app, None));
             return;
         }
         if let Some((app, last)) = &mut state {
             let Ok(mut a) = app.try_borrow_mut() else { return };
+            if fl::ON {
+                fl::vsync(link.timestamp(), link.targetTimestamp());
+            }
+            fl::turn_begin(fl::K_TICK, 0);
             let now = std::time::Instant::now();
             let dt = last.map_or(1.0 / 120.0, |l| now.duration_since(l).as_secs_f32().min(0.05));
             *last = Some(now);
             if !a.tick(dt) {
                 link.setPaused(true);
+                fl::note(fl::N_LINK, 0, 0);
                 *last = None;
+                fl::turn_end();
                 return;
             }
             let drew = a.frame_paced();
             after_frame(app, &trim, &mut a, drew);
+            fl::turn_end();
         }
     })
 }

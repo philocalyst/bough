@@ -37,6 +37,9 @@ dispatch2 = "0.3"
 wgpu = ["dep:bough-gpu"]
 # Gate sabotage (RESULTS §15): the scroll copy reads one pixel off; every scroll pixel gate must fail with it.
 sabotage_copy = []
+# The frame log (bough-metal src/framelog.rs) and the in-process input driver (backend/drive.rs): diagnostics, compiled
+# out without it.
+framelog = ["bough-metal/framelog"]
 
 [dev-dependencies]
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }

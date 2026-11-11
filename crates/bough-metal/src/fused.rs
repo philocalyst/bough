@@ -36,6 +36,7 @@
 //!   it (`sync` is a 72-instruction read of the event when the GPU is done).
 //! * **Resize:** fresh surfaces, bins and counts at the new size; the layer's new frame is committed with the
 //!   first frame drawn at that size.
+use crate::framelog as fl;
 use crate::gpu::{Dev, Tex};
 use crate::instance::Instance;
 use objc2::rc::Retained;
@@ -237,6 +238,7 @@ impl Warm {
                 c.commit();
             }
             self.blits.fetch_add(1, Relaxed);
+            fl::note(fl::N_WARM, 0, 0);
             self.last_blit.store(t.to_bits(), Relaxed);
         }
         let lb = f64::from_bits(self.last_blit.load(Relaxed)).max(last);
@@ -359,6 +361,11 @@ struct PubJob {
     overflow: usize,
     /// After the commit, keep the stream armed up to this frame (encode and commit off the input thread).
     ahead: u64,
+    /// Frame log: the publication's sequence number and when it was posted.
+    #[cfg(feature = "framelog")]
+    seq: u64,
+    #[cfg(feature = "framelog")]
+    t_post: u64,
 }
 
 struct PubShared {
@@ -437,8 +444,10 @@ impl Publisher {
                     g = sh.cv.wait(g).unwrap();
                 }
             };
+            let t_take = fl::now_ns();
             let ev = &o.kern.ev;
             let drawn = job.wait == 0 || ev.signaledValue() >= job.wait || ev.waitUntilSignaledValue_timeoutMS(job.wait, 5000);
+            let t_drawn = fl::now_ns();
             // SAFETY: the overflow word lies in the live counts buffer (the main thread replaces it only after
             // `publisher_idle`); shared storage, written by the GPU before it signalled the event.
             let overflowed = unsafe { std::ptr::read_volatile(job.overflow as *const u32) } != 0;
@@ -448,14 +457,21 @@ impl Publisher {
                 if let Some(f) = job.frame {
                     o.layer.setFrame(f);
                 }
+                let t_c0 = fl::now_ns();
                 // SAFETY: an IOSurfaceRef is a valid CALayer `contents` object.
                 unsafe { o.layer.setContents(Some(&*(&*job.io.0 as *const IOSurfaceRef as *const AnyObject))) };
                 CATransaction::commit();
+                #[cfg(feature = "framelog")]
+                fl::publish(job.seq, job.t_post, t_take, t_drawn, t_c0, fl::now_ns(), true, job.surf, false);
+                let _ = t_c0;
                 sh.last.store(job.surf, Relaxed);
                 sh.commits.fetch_add(1, Relaxed);
             } else {
+                #[cfg(feature = "framelog")]
+                fl::publish(job.seq, job.t_post, t_take, t_drawn, 0, 0, false, job.surf, false);
                 sh.held_back.fetch_add(1, Relaxed);
             }
+            let _ = (t_take, t_drawn);
             sh.in_flight.store(NONE_SURF, Relaxed);
             // the next batch is encoded and committed here, between frames: never on the input thread
             o.kern.ensure(job.ahead);
@@ -464,6 +480,10 @@ impl Publisher {
 
     fn post(&self, job: PubJob) {
         let mut g = self.sh.m.lock().unwrap();
+        #[cfg(feature = "framelog")]
+        if let Some(old) = &g.job {
+            fl::note(fl::N_SUPERSEDED, old.seq, job.seq);
+        }
         self.sh.queued.store(job.surf, Relaxed);
         g.job = Some(job);
         self.sh.cv.notify_one();
@@ -544,6 +564,12 @@ pub struct Fused {
     pending: Option<usize>,
     /// The surface the last calling-thread commit put on screen.
     last_main: usize,
+    /// Frame log: publications so far (the sequence number of the last).
+    #[cfg(feature = "framelog")]
+    fl_seq: u64,
+    /// Frame log: the sequence number and draw time of the publication `commit_now` makes next.
+    #[cfg(feature = "framelog")]
+    fl_pend: (u64, u64),
 }
 
 /// Byte offset of the bind table in the region header (`FBind` in shader.metal).
@@ -748,6 +774,10 @@ impl Fused {
             img: None,
             pending: None,
             last_main: NONE_SURF,
+            #[cfg(feature = "framelog")]
+            fl_seq: 0,
+            #[cfg(feature = "framelog")]
+            fl_pend: (0, 0),
         };
         // the residency set is what makes the bind table's resources reachable (encoders bind nothing else)
         {
@@ -871,9 +901,15 @@ impl Fused {
     #[inline]
     pub fn sync(&mut self) {
         let want = 2 * self.released;
-        if self.ev.signaledValue() < want && !self.ev.waitUntilSignaledValue_timeoutMS(want, 5000) {
-            let err = self.kern.arm.lock().unwrap().batches.iter().map(|c| format!("{:?} {:?}", c.status(), c.error())).collect::<Vec<_>>();
-            panic!("GPU frame {} did not finish within 5 s (stream batches: {err:?})", self.released);
+        if self.ev.signaledValue() < want {
+            let t0 = fl::now_ns();
+            if !self.ev.waitUntilSignaledValue_timeoutMS(want, 5000) {
+                let err = self.kern.arm.lock().unwrap().batches.iter().map(|c| format!("{:?} {:?}", c.status(), c.error())).collect::<Vec<_>>();
+                panic!("GPU frame {} did not finish within 5 s (stream batches: {err:?})", self.released);
+            }
+            if fl::ON {
+                fl::note(fl::N_GPU_WAIT, (fl::now_ns() - t0) / 1000, self.released);
+            }
         }
         self.check_bins();
         if let Some(i) = self.pending.take() {
@@ -910,6 +946,7 @@ impl Fused {
         // SAFETY: as above.
         unsafe { std::ptr::copy_nonoverlapping(keep.as_ptr(), self.pool_ptr.add(self.lay.slot[k] as usize), sb) };
         self.bin_growths += 1;
+        fl::note(fl::N_BINS, cap as u64, 0);
         let cmd = self.aux.commandBuffer().expect("command buffer");
         self.encode(&cmd, k, nr, nt, false);
         cmd.commit();
@@ -998,6 +1035,7 @@ impl Fused {
     /// whole atlas). The GPU must be idle (sync()). The first call creates the texture, adds it to the
     /// residency set (draining the pre-armed frames, as any new allocation) and names it in the bind table.
     pub fn sync_images(&mut self, pixels: &[u8], rows: std::ops::Range<u32>) {
+        let t0 = fl::now_ns();
         assert_eq!(pixels.len(), (IMG_W * IMG_H * 4) as usize);
         if self.img.is_none() {
             let d = unsafe { MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(MTLPixelFormat::RGBA8Unorm, IMG_W as usize, IMG_H as usize, false) };
@@ -1025,6 +1063,9 @@ impl Fused {
                 (IMG_W * 4) as usize,
             );
         }
+        if fl::ON {
+            fl::note(fl::N_UPLOAD, (fl::now_ns() - t0) / 1000, 3);
+        }
     }
 
     /// Upload the glyph atlas (R8, `width` x `height`) if it changed since the last upload (`dirty`).
@@ -1033,6 +1074,8 @@ impl Fused {
             return false;
         }
         assert_eq!(pixels.len(), (width * height) as usize);
+        let t0 = fl::now_ns();
+        let resized = (width, height) != self.atlas_dims;
         if (width, height) != self.atlas_dims {
             let old = std::mem::replace(&mut self.atlas, Self::new_atlas(&self.device, width, height));
             self.atlas_dims = (width, height);
@@ -1053,14 +1096,20 @@ impl Fused {
                 width as usize,
             );
         }
+        if fl::ON {
+            fl::note(fl::N_UPLOAD, (fl::now_ns() - t0) / 1000, 1 + resized as u64);
+        }
+        let _ = (t0, resized);
         true
     }
 
     /// Make surface `i` ready to be drawn: non-volatile again (returns true if the system purged it, so its
     /// contents are gone) and, on first use, part of the residency set.
     pub fn prepare_target(&mut self, i: usize) -> bool {
+        let t0 = fl::now_ns();
         let s = &self.surfs[i];
         let mut purged = false;
+        let what = (!s.touched.get() as u64) | (s.volatile.get() as u64) << 2;
         if s.volatile.get() {
             let mut old = 0u32;
             unsafe { s.io.set_purgeable(0, &mut old) };
@@ -1076,6 +1125,10 @@ impl Fused {
             }
             self.residency_changed();
         }
+        if fl::ON && what != 0 {
+            fl::note(fl::N_PREPARE, (fl::now_ns() - t0) / 1000, what | (purged as u64) << 1);
+        }
+        let _ = (t0, what);
         purged
     }
 
@@ -1084,6 +1137,8 @@ impl Fused {
     /// its frames run), so the pending frames are drained (released with empty slots) and a new batch is
     /// armed. Rare: a surface's first use, a resize, a bin or atlas growth.
     fn residency_changed(&mut self) {
+        let t0 = fl::now_ns();
+        let r0 = self.released;
         let want = 2 * self.released;
         if self.ev.signaledValue() < want {
             self.ev.waitUntilSignaledValue_timeoutMS(want, 5000);
@@ -1100,6 +1155,10 @@ impl Fused {
         self.released = st.armed_upto;
         self.stats.drains += 1;
         kern.arm_locked(&mut st);
+        if fl::ON {
+            fl::note(fl::N_DRAIN, (fl::now_ns() - t0) / 1000, self.released - r0);
+        }
+        let _ = (t0, r0);
     }
 
     /// Make every surface `want(i)` selects purgeable-volatile (unless the compositor holds it); count.
@@ -1152,7 +1211,9 @@ impl Fused {
         debug_assert!(copy.is_none() || (copy.src as usize != target && self.surfs[copy.src as usize].touched.get()));
         let (nt, _) = self.write_slot(k, target as u32, rows, full, copy);
         self.release(k, nt);
+        fl::mark(fl::M_SLOT);
         if self.publish {
+            self.fl_next();
             if PACED {
                 self.pending = Some(target);
             } else {
@@ -1165,10 +1226,22 @@ impl Fused {
         nt
     }
 
+    /// Frame log: the next publication's sequence number (`M_FID` of the turn).
+    #[inline(always)]
+    fn fl_next(&mut self) {
+        #[cfg(feature = "framelog")]
+        {
+            self.fl_seq += 1;
+            self.fl_pend = (self.fl_seq, fl::now_ns());
+            fl::set(fl::M_FID, self.fl_seq);
+        }
+    }
+
     /// Commit surface `i` now, on the calling thread, in its own transaction (after anything the publisher
     /// still holds, so commits stay in frame order).
     fn commit_now(&mut self, i: usize) {
         self.publisher_idle();
+        let t_c0 = fl::now_ns();
         CATransaction::begin();
         CATransaction::setDisableActions(true);
         if let Some(f) = self.pending_frame.take() {
@@ -1177,6 +1250,9 @@ impl Fused {
         // SAFETY: an IOSurfaceRef is a valid CALayer `contents` object.
         unsafe { self.layer.setContents(Some(&*(&*self.surfs[i].io as *const IOSurfaceRef as *const AnyObject))) };
         CATransaction::commit();
+        #[cfg(feature = "framelog")]
+        fl::publish(self.fl_pend.0, self.fl_pend.1, t_c0, t_c0, t_c0, fl::now_ns(), true, i, true);
+        let _ = t_c0;
         self.last_main = i;
         if let Some(p) = &self.publisher {
             p.sh.last.store(i, Relaxed);
@@ -1188,7 +1264,18 @@ impl Fused {
         let frame = self.pending_frame.take();
         let overflow = self.counts.contents().as_ptr() as usize + 4 * self.lay.tiles_y() as usize;
         let ahead = self.released + self.kern.batch.load(Relaxed) as u64 / 2;
-        let job = PubJob { surf: i, io: SendIo(self.surfs[i].io.clone()), wait, frame, overflow, ahead };
+        let job = PubJob {
+            surf: i,
+            io: SendIo(self.surfs[i].io.clone()),
+            wait,
+            frame,
+            overflow,
+            ahead,
+            #[cfg(feature = "framelog")]
+            seq: self.fl_seq,
+            #[cfg(feature = "framelog")]
+            t_post: fl::now_ns(),
+        };
         self.publisher.get_or_insert_with(|| Publisher::spawn(self.kern.clone(), self.layer.clone())).post(job);
     }
 
@@ -1216,6 +1303,7 @@ impl Fused {
         }
         if self.publish {
             self.pending = None;
+            self.fl_next();
             if PACED {
                 self.commit_now(i);
             } else {

@@ -9,11 +9,19 @@ description = "areweactuallyguiyet.mespin.me's scroll and dashboard workloads, w
 name = "bough-awagy"
 path = "src/main.rs"
 
+# The pacing lane's in-process probe (docs/lanes/pacing): both workloads through `Application::run`, driven by
+# events posted to this process's own queue, with the frame log on.
+[[bin]]
+name = "pace_probe"
+path = "src/bin/pace_probe.rs"
+required-features = ["framelog"]
+
 [features]
 # As the site's apps: exactly one of the two workloads.
 default = ["scroll"]
 scroll = []
 dashboard = []
+framelog = ["bough/framelog"]
 
 [dependencies]
 bough = { path = "../../crates/bough" }

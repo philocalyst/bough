@@ -970,15 +970,19 @@ impl<V: View> App<V> {
 
     /// Settle what routes queued and lay out what changed (the end of an input turn).
     fn settle_input(&mut self) {
+        use bough_metal::framelog as fl;
         let owner = &mut *self.owner as *mut V as *const u8;
         // SAFETY: the owner is the mounted view (uniquely borrowed: list patches write their cell); every
         // wire was installed from a `sig!` proof for it.
         unsafe { self.rt.settle(owner) };
+        fl::mark_last(fl::M_SETTLE);
         // an arbitrary handler: `changed` waves, then a re-describing owner describes again (API.md)
         self.effects();
         self.redescribe();
+        fl::mark_last(fl::M_DESCRIBE);
         self.rt.lay_flush();
         self.sync_ring();
+        fl::mark_last(fl::M_LAYOUT);
     }
 
     #[inline]

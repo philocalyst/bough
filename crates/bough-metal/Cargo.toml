@@ -17,6 +17,10 @@ block2 = "0.6"
 libc = "0.2"
 dispatch2 = "0.3"
 
+[features]
+# The frame log (src/framelog.rs): per-turn timestamps, publication and vsync times. Off: compiled out.
+framelog = []
+
 [[example]]
 # not "bench": bough-text has an example of that name (cargo output collision in one target dir)
 name = "metal_bench"

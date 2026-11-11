@@ -20,6 +20,10 @@ impl View for ScrollApp {
     }
 }
 
+pub fn app() -> ScrollApp {
+    ScrollApp { rows: row_count(), y: Signal::new(0.0) }
+}
+
 pub fn main() {
-    Application::run(Window::document(ScrollApp { rows: row_count(), y: Signal::new(0.0) }).title("bough Scroll").size(1000.0, 700.0));
+    Application::run(Window::document(app()).title("bough Scroll").size(1000.0, 700.0));
 }
