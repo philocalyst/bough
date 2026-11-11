@@ -40,8 +40,27 @@ fn records(n: usize, interleaved: bool, chains: bool) -> Vec<RecordInit> {
 fn build(rs: &[RecordInit]) -> Bough {
     let mut b = Bough::new(SIDE, SIDE);
     b.insert_run(0, rs);
+    if warm() {
+        // A bulk build leaves the directory's columns at exact capacity, so the first split of a fresh
+        // tree reallocates all five (O(pages) of copy and of kernel page faults, once per doubling).
+        // That is an amortised allocation cost, not a per-edit cost: `R6_WARM=1` takes it here with a
+        // split and its inverse at the tail (the page structure and the records come back unchanged).
+        let (n, starts) = (b.len(), b.page_starts());
+        let pad = [RecordInit::new(1, NRect::EMPTY, 1, 0); 64];
+        b.insert_run(n, &pad);
+        b.remove_run(n, 64);
+        assert_eq!(
+            b.page_starts(),
+            starts,
+            "warm-up changed the page structure"
+        );
+    }
     b.next_epoch();
     b
+}
+
+fn warm() -> bool {
+    std::env::var("R6_WARM").is_ok_and(|s| s == "1")
 }
 
 fn oracle(rs: &[RecordInit]) -> Oracle {
@@ -368,6 +387,137 @@ fn spatial(rs: &[RecordInit], interleaved: bool, ov: u64) {
     }
 }
 
+/// Handle- and position-addressed writes and lookups: the paths a directory change can tax (they
+/// read a page's directory index and update its page and chunk summaries), and what a structural
+/// edit leaves for them to pay (`insert8-front+pos*`: the edit, then `pos_of` through a handle on 64
+/// pages / on every page).
+fn handles(rs: &[RecordInit], ov: u64) {
+    let n = rs.len();
+    let fresh = |every_page: bool| {
+        let mut b = build(rs);
+        let at: Vec<usize> = if every_page {
+            b.page_starts().into_iter().map(|s| s.max(1)).collect()
+        } else {
+            (0..64).map(|i| 1 + i * (n - 2) / 63).collect()
+        };
+        let hs: Vec<_> = at.iter().map(|&p| b.attach_handle(p)).collect();
+        (b, at, hs)
+    };
+    let (mut b, at, hs) = fresh(false);
+    let pages = b.num_pages();
+    let mid = 32;
+    let (h, pos) = (hs[mid], at[mid]);
+    let ink0 = b.ink_at(pos);
+    let [x0, y0, x1, y1] = ink0.to_xyxy();
+    let inks = [NRect::new(x0 + 1, y0 + 1, x1 - 1, y1 - 1), ink0];
+    let count = 1024;
+    let mut i = 0usize;
+    let batch: Vec<_> = hs
+        .iter()
+        .map(|&h| (h, NRect::new(40, 40, 52, 52)))
+        .collect();
+    let batch0: Vec<_> = hs
+        .iter()
+        .zip(&at)
+        .map(|(&h, &p)| (h, b.ink_at(p)))
+        .collect();
+    for name in [
+        "set-ink-pos",
+        "set-ink-handle",
+        "pos-of-handle",
+        "touch-handle",
+        "set-inks-handles64",
+    ] {
+        if !want(name) {
+            continue;
+        }
+        let mut values = Vec::new();
+        for _ in 0..SAMPLES {
+            b.next_epoch();
+            values.push(match name {
+                "set-ink-pos" => timed(
+                    || {
+                        b.set_ink(black_box(pos), inks[i & 1]);
+                        i += 1;
+                    },
+                    count,
+                    ov,
+                ),
+                "set-ink-handle" => timed(
+                    || {
+                        black_box(b.set_ink_handle(black_box(h), inks[i & 1]));
+                        i += 1;
+                    },
+                    count,
+                    ov,
+                ),
+                "pos-of-handle" => timed(
+                    || {
+                        black_box(b.pos_of(black_box(h)));
+                    },
+                    count,
+                    ov,
+                ),
+                "touch-handle" => timed(
+                    || {
+                        black_box(b.touch_handle(black_box(h)));
+                    },
+                    count,
+                    ov,
+                ),
+                _ => timed(
+                    || {
+                        b.set_inks_handles(
+                            black_box(if i & 1 == 0 { &batch } else { &batch0 }),
+                            true,
+                        );
+                        i += 1;
+                    },
+                    count,
+                    ov,
+                ),
+            });
+        }
+        assert_eq!(b.pos_of(h), Some(pos));
+        assert_eq!(b.ink_at(pos), ink0, "{name} left the ink changed");
+        b.check_invariants();
+        emit(n, "ordered-wide", name, 0, pages, count, &values, 0);
+    }
+    let new: Vec<_> = (0..8)
+        .map(|i| RecordInit::new(1, NRect::new(2, 2, 14, 14), 1, (n + i) as u32))
+        .collect();
+    for (name, every) in [
+        ("insert8-front+pos64", false),
+        ("insert8-front+posall", true),
+    ] {
+        if !want(name) {
+            continue;
+        }
+        let mut values = Vec::new();
+        let mut nh = 0;
+        for _ in 0..SAMPLES {
+            let (mut b, at, hs) = fresh(every);
+            nh = hs.len();
+            let mut got = vec![None; nh];
+            values.push(timed(
+                || {
+                    b.insert_run(black_box(1), black_box(&new));
+                    for (g, &h) in got.iter_mut().zip(&hs) {
+                        *g = b.pos_of(h);
+                    }
+                },
+                1,
+                ov,
+            ));
+            for (g, &p) in got.iter().zip(&at) {
+                assert_eq!(*g, Some(p + if p >= 1 { 8 } else { 0 }), "{name}");
+            }
+            b.check_invariants();
+        }
+        emit(n, "ordered-wide", name, 8, pages, 1, &values, nh);
+    }
+}
+
 fn negative_control() {
     let rs = records(1000, false, false);
     let b = build(&rs);
@@ -387,8 +537,9 @@ pub fn run(spatial_only: bool) {
         "instruction counters unavailable"
     );
     eprintln!(
-        "R6 counter overhead={ov}; samples={SAMPLES}; prefix={}",
-        bough_core::prefix::NAME
+        "R6 counter overhead={ov}; samples={SAMPLES}; prefix={}; warm={}",
+        bough_core::prefix::NAME,
+        warm()
     );
     negative_control();
     println!("n,shape,operation,k,pages,batch,sample,instructions,instructions_per_op,output");
@@ -444,6 +595,7 @@ pub fn run(spatial_only: bool) {
         freezes(&rs, ov);
         queries(&rs, false, ov);
         queries(&records(n, false, true), true, ov);
+        handles(&rs, ov);
         eprintln!("finished core N={n}");
     }
 }

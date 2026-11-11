@@ -594,22 +594,24 @@ impl Bough {
     /// Insert `count` blank, empty pages at directory index `at`.
     fn dir_insert_blank(&mut self, at: usize, count: usize) {
         let mut ptrs = Vec::with_capacity(count);
-        for _ in 0..count {
+        attr!(0, for _ in 0..count {
             ptrs.push(self.pool.alloc());
-        }
-        self.d_id.insert_n(at, count, 0);
-        for (k, &p) in ptrs.iter().enumerate() {
-            // SAFETY: a live pool page.
-            self.d_id[at + k] = unsafe { (*p).id };
-        }
-        self.d_ptr.splice(at..at, ptrs);
-        self.d_ink.insert_n(at, count, NRect::EMPTY);
-        self.d_min_depth.splice(at..at, core::iter::repeat_n(PAD_DEPTH, count));
-        self.d_len.splice(at..at, core::iter::repeat_n(0, count));
-        for _ in 0..count {
+        });
+        attr!(1, {
+            self.d_id.insert_n(at, count, 0);
+            for (k, &p) in ptrs.iter().enumerate() {
+                // SAFETY: a live pool page.
+                self.d_id[at + k] = unsafe { (*p).id };
+            }
+        });
+        attr!(2, drop(self.d_ptr.splice(at..at, ptrs)));
+        attr!(3, self.d_ink.insert_n(at, count, NRect::EMPTY));
+        attr!(4, drop(self.d_min_depth.splice(at..at, core::iter::repeat_n(PAD_DEPTH, count))));
+        attr!(5, drop(self.d_len.splice(at..at, core::iter::repeat_n(0, count))));
+        attr!(6, for _ in 0..count {
             self.prefix.grow();
-        }
-        self.reindex_pages(at);
+        });
+        attr!(7, self.reindex_pages(at));
     }
 
     /// Remove directory entries `[d, d+k)` (whole pages emptied by one `remove_run`) in one pass: each
@@ -628,30 +630,34 @@ impl Bough {
             self.pool.free(id);
         }
         let n = self.d_ptr.len();
-        self.d_ptr.drain(d..d + k);
-        self.d_id.copy_within(d + k..n, d);
-        self.d_id.truncate(n - k);
-        self.d_ink.copy_within(d + k..n, d);
-        self.d_ink.truncate(n - k);
-        self.d_min_depth.drain(d..d + k);
-        self.d_len.drain(d..d + k);
-        for _ in 0..k {
+        attr!(2, drop(self.d_ptr.drain(d..d + k)));
+        attr!(1, {
+            self.d_id.copy_within(d + k..n, d);
+            self.d_id.truncate(n - k);
+        });
+        attr!(3, {
+            self.d_ink.copy_within(d + k..n, d);
+            self.d_ink.truncate(n - k);
+        });
+        attr!(4, drop(self.d_min_depth.drain(d..d + k)));
+        attr!(5, drop(self.d_len.drain(d..d + k)));
+        attr!(6, for _ in 0..k {
             self.prefix.shrink();
-        }
-        self.reindex_pages(d);
+        });
+        attr!(7, self.reindex_pages(d));
     }
 
     fn dir_remove(&mut self, d: usize) {
         // SAFETY: live page.
         let id = unsafe { (*self.d_ptr[d]).id };
-        self.d_ptr.remove(d);
-        self.d_id.remove(d);
-        self.d_ink.remove(d);
-        self.d_min_depth.remove(d);
-        self.d_len.remove(d);
-        self.prefix.shrink();
-        self.pool.free(id);
-        self.reindex_pages(d);
+        attr!(2, self.d_ptr.remove(d));
+        attr!(1, self.d_id.remove(d));
+        attr!(3, self.d_ink.remove(d));
+        attr!(4, self.d_min_depth.remove(d));
+        attr!(5, self.d_len.remove(d));
+        attr!(6, self.prefix.shrink());
+        attr!(0, self.pool.free(id));
+        attr!(7, self.reindex_pages(d));
     }
 
     /// Re-point handle-table entries for every live handle in slots `[lo, hi)` of page `d`.
@@ -851,8 +857,8 @@ impl Bough {
         for i in 0..m {
             self.refresh(d + i);
         }
-        self.prefix.invalidate_from(d, &self.d_len);
-        self.fix_chunks(d, self.d_ptr.len());
+        attr!(8, self.prefix.invalidate_from(d, &self.d_len));
+        attr!(9, self.fix_chunks(d, self.d_ptr.len()));
     }
 
     // ------------------------------------------------------------------ remove
@@ -943,8 +949,8 @@ impl Bough {
                 self.prefix.delta(td, -(n as i32), &self.d_len);
             }
         } else {
-            self.prefix.invalidate_from(d0.min(self.d_len.len()), &self.d_len);
-            self.fix_chunks(d0, self.d_ptr.len());
+            attr!(8, self.prefix.invalidate_from(d0.min(self.d_len.len()), &self.d_len));
+            attr!(9, self.fix_chunks(d0, self.d_ptr.len()));
         }
         // Underflow: merge small neighbours around the cut.
         let mut j = (d0 + 1).min(self.d_ptr.len().saturating_sub(1)) as isize;
@@ -984,8 +990,8 @@ impl Bough {
         self.d_ink[d] = self.d_ink[d].union(self.d_ink[d + 1]);
         self.d_min_depth[d] = self.d_min_depth[d].min(self.d_min_depth[d + 1]);
         self.dir_remove(d + 1);
-        self.prefix.invalidate_from(d, &self.d_len);
-        self.fix_chunks(d, self.d_ptr.len());
+        attr!(8, self.prefix.invalidate_from(d, &self.d_len));
+        attr!(9, self.fix_chunks(d, self.d_ptr.len()));
     }
 
     // ------------------------------------------------------------------ move
