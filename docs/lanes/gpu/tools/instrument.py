@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Measurement-only overlay for the R6 predecessor. Run from repo root after saving originals.
+Usage: instrument.py timing|stats. Never use the stats build for GPU-time claims.
+Restoration is explicit from the saved predecessor files, not this script.
+"""
+from pathlib import Path
+import sys
+stats = sys.argv[1] == 'stats'
+p = Path('crates/bough-metal/src/fused.rs')
+s = p.read_text()
+def replace(a,b):
+    global s
+    assert s.count(a) == 1, (a[:80], s.count(a))
+    s = s.replace(a,b)
+replace('    pub bin_cap: u32,', '    pub bin_cap: u32,\n    r6_draw: usize,\n    r6_enabled: bool,')
+replace('            bin_cap,\n            surfs,', '            bin_cap,\n            r6_draw: 0,\n            r6_enabled: std::env::var_os("R6_PROBE").is_some(),\n            surfs,')
+replace('        self.release(k, nt);', '''        self.r6_draw += 1;
+        if self.r6_enabled && [60, 120, 180].contains(&self.r6_draw) {
+            self.r6_probe(target, rows, full, n_dir, copy);
+        }
+        self.release(k, nt);''')
+probe = '''    // Measurement-only overlay: called after sync, before releasing this frame.
+    fn r6_probe(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32, copy: &SlotCopy) {
+        eprintln!("R6 frame={} size={}x{} full={} copy={:?}", self.r6_draw, self.w, self.h, full, copy);
+        let reps = 100;
+        for cycle in 0..5 {
+            let mut cases = vec![("whole", 0, false, true), ("repair", 0, false, false), ("stage", 1, false, false), ("bin", 2, false, false), ("copy", 3, false, true), ("empty", 3, true, false)];
+            if cycle % 2 != 0 { cases.reverse(); }
+            for (name, debug, empty, use_copy) in cases {
+                let rr: &[u128] = if empty { &[] } else { rows };
+                let cp = if use_copy { copy } else { &SlotCopy::NONE };
+                let ms = self.bench_frames(target, rr, !empty && full, n_dir, reps, debug, cp);
+                eprintln!("R6_TIME frame={} cycle={} case={} ms={:.6}", self.r6_draw, cycle, name, ms);
+            }
+        }
+        // Restore the intended frame's pixels before normal submission proceeds.
+        self.bench_frames(target, rows, full, n_dir, 1, 0, copy);
+    }
+
+'''
+if stats:
+    # Fixed diagnostic stride: all valid tile x coordinates fit the existing 128-bit damage row.
+    s = s.replace('(ty + 1) * 4, MTLResourceOptions::StorageModeShared', '(ty + 1 + ty * 128 * 8) * 4, MTLResourceOptions::StorageModeShared')
+    probe = '''    // Measurement-only counters; never use this build for timing.
+    fn r6_probe(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32, copy: &SlotCopy) {
+        self.bench_frames(target, rows, full, n_dir, 1, 0, copy);
+        eprintln!("R6 frame={} size={}x{} full={} copy={:?}", self.r6_draw, self.w, self.h, full, copy);
+        let ty = self.lay.tiles_y() as usize;
+        // SAFETY: new_bins/resize allocate (ty+1+ty*128*8) shared words in this overlay;
+        // bench_frames waited for completion and no stream frame has been released.
+        let counters = unsafe { std::slice::from_raw_parts(self.counts.contents().as_ptr() as *const u32, ty + 1 + ty * 128 * 8) };
+        for y in 0..ty {
+            for x in 0..self.lay.tiles_x() as usize {
+                if !full && rows.get(y).copied().unwrap_or(0) & (1u128 << x) == 0 { continue; }
+                let q = &counters[ty + 1 + (y * 128 + x) * 8..][..8];
+                eprintln!("R6_TILE frame={} x={} y={} scan={} hit={} raw_layers={} executed_layers={} uniform={} pixels={}", self.r6_draw, x, y, q[0], q[1], q[2], q[3], q[4], q[5]);
+            }
+        }
+        // The diagnostic keeps the original accumulator/output code: compare retained to full redraw.
+        let got = read_io(&self.surfs[target].io, self.w, self.h);
+        let reference = self.reference_pixels(n_dir);
+        let bad = got.iter().zip(&reference).filter(|(a,b)| a != b).count();
+        eprintln!("R6_PIXEL frame={} different_bytes={}", self.r6_draw, bad);
+        assert_eq!(bad, 0, "diagnostic retained/full mismatch");
+    }
+
+'''
+replace('    /// Did a row bin overflow in the last frame', probe + '    /// Did a row bin overflow in the last frame')
+replace('            self.encode(&cmd, 2, nr, nt, false);', '            self.encode(&cmd, 2, if debug == 3 { 0 } else { nr }, if debug >= 2 { 0 } else { nt }, false);')
+p.write_text(s)
+if not stats: sys.exit(0)
+p = Path('crates/bough-metal/src/shader.metal')
+s = p.read_text()
+start = s.index('kernel void fs_tile(')
+end = s.index('// Scroll by copy (RESULTS', start)
+head, t, tail = s[:start], s[start:end], s[end:]
+def tr(a,b):
+    global t
+    assert t.count(a) == 1, (a[:80], t.count(a))
+    t = t.replace(a,b)
+tr('    for (uint b0 = 0; b0 < nb; b0 += 128) {', '''    device atomic_uint* stats = fb.counts + h.tiles_y + 1u + (tile.y * 128u + tile.x) * 8u;
+    if (li < 8u) atomic_store_explicit(stats + li, 0u, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_device);
+    uint raw_layers = 0u, exec_layers = 0u, pixels = 0u;
+    for (uint j = 0; j < 4u; j++) {
+        uint2 px = o + 2u * lt + uint2(j & 1u, j >> 1);
+        pixels += uint(px.x < uint(h.viewport.x) && px.y < uint(h.viewport.y));
+    }
+    for (uint b0 = 0; b0 < nb; b0 += 128) {''')
+tr('        k0 = k0 > 0 ? k0 - 1u : 0u;', '''        if (li == 0u) {
+            atomic_fetch_add_explicit(stats + 1, nr, memory_order_relaxed);
+            if (nr != 0u) atomic_store_explicit(stats + 4, uint(k0 == nr), memory_order_relaxed);
+        }
+        k0 = k0 > 0 ? k0 - 1u : 0u;
+        for (uint k = 0; k < nr; k++) {
+            for (uint j = 0; j < 4u; j++) {
+                uint2 px = o + 2u * lt + uint2(j & 1u, j >> 1);
+                if (px.x >= uint(h.viewport.x) || px.y >= uint(h.viewport.y)) continue;
+                half4 sh = f_shade_x(rec[k], c00 + float2(float(j & 1u), float(j >> 1)), atlas, img);
+                raw_layers += uint(sh.a > 0.0h);
+                exec_layers += uint(k >= k0 && sh.a > 0.0h);
+            }
+        }''')
+tr('    for (uint j = 0; j < 4; j++) {\n        uint2 px = o + 2u * lt', '''    uint raw_sum = simd_sum(raw_layers), exec_sum = simd_sum(exec_layers), pixel_sum = simd_sum(pixels);
+    if (lane == 0u) {
+        atomic_fetch_add_explicit(stats + 2, raw_sum, memory_order_relaxed);
+        atomic_fetch_add_explicit(stats + 3, exec_sum, memory_order_relaxed);
+        atomic_fetch_add_explicit(stats + 5, pixel_sum, memory_order_relaxed);
+    }
+    if (li == 0u) atomic_store_explicit(stats, nb, memory_order_relaxed);
+    for (uint j = 0; j < 4; j++) {
+        uint2 px = o + 2u * lt''')
+p.write_text(head + t + tail)

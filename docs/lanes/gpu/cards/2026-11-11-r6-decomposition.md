@@ -13,3 +13,5 @@ measurement: gpu_slope.py (3 repetitions), gpu_pairs.py (5 alternating-order pai
 budget: Local packages only, four build jobs, lane-owned target. Bound competitor build investigation to one pinned checkout/build attempt plus a necessary correction. No optimization implementation in this card.
 stop conditions: Stop after decomposition and DESIGN-R6. If lock or system load prevents valid timing, record UNKNOWN with the exact missing cells; do not infer them from old reports. If instrumentation cannot faithfully describe a kernel, label its limitation. Build failures and measurement failures remain recorded.
 do not revisit: No v7 sequential per-tile scan as optimization; no presentation API replacement, per-column CPU damage strips, GPU shaping, or archive uniform fast path without a new representation.
+
+Pre-measurement build note: the checked-in lockfile lacks three zgx git-source lines, so `--locked` fails. Local resolution adds those source identities only (no version upgrades); retain the three-line patch with the lane evidence and restore the root lockfile before handoff. The pinned competitor commit was recovered in a lane-owned scratch clone.
