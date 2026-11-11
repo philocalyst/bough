@@ -8,7 +8,8 @@ fn cached_table_equals_the_built_one() {
     let dir = std::env::temp_dir().join(format!("bough-cache-test-{}", std::process::id()));
     unsafe { std::env::set_var("BOUGH_CACHE_DIR", &dir) };
     let mut fonts = vec![zgx_workload::FONT_BYTES.to_vec()];
-    let d = "/Library/Fonts/Nix Fonts/vl9mbzk97wmh1s1yj3766b4zai8msjq6-dejavu-fonts-2.37/share/fonts/truetype";
+    let d = std::env::var("BOUGH_DEJAVU_DIR")
+        .unwrap_or_else(|_| "/Library/Fonts/Nix Fonts/vl9mbzk97wmh1s1yj3766b4zai8msjq6-dejavu-fonts-2.37/share/fonts/truetype".into());
     for f in ["DejaVuSans-Bold.ttf", "DejaVuSansMono.ttf"] {
         if let Ok(b) = std::fs::read(format!("{d}/{f}")) {
             fonts.push(b);

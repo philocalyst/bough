@@ -36,15 +36,17 @@ fn main() {
 
     if cmd == "asm-keep" {
         use bough_damage_lab::asm::*;
-        let f = [
+        #[allow(unused_mut)]
+        let mut f = vec![
             lab_plane_mark as *const () as usize,
             lab_plane_or as *const () as usize,
             lab_exact_slot_mark as *const () as usize,
             lab_cull_plane as *const () as usize,
             lab_cull_plane_runs as *const () as usize,
-            { #[cfg(target_arch = "aarch64")] let f = lab_cull_hw_neon as *const () as usize; #[cfg(not(target_arch = "aarch64"))] let f = 0usize; f },
             lab_hw_mark as *const () as usize,
         ];
+        #[cfg(target_arch = "aarch64")]
+        f.push(lab_cull_hw_neon as *const () as usize);
         println!("{:x?}", std::hint::black_box(f));
         return;
     }

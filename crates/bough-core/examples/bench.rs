@@ -1,6 +1,7 @@
 //! Bough vs ArenaTree (zgx scene model): retired instructions and ns per operation.
 //!
-//! macOS only for instruction counts: `proc_pid_rusage(getpid(), RUSAGE_INFO_V4)` -> ri_instructions.
+//! Instruction counts: bough-damage-lab's `measure` (macOS `proc_pid_rusage` ri_instructions, all threads, user + kernel;
+//! Linux `perf_event_open` instructions:u on this thread).
 //! Single-threaded. Run: `cargo run --release --example bench` (or `--profile dist`).
 //! Env: BENCH_FILTER=substring to select ops, BENCH_QUICK=1 for short runs.
 
@@ -18,22 +19,7 @@ mod cost_r6;
 
 // ------------------------------------------------------------------------------------ counters
 
-#[repr(C)]
-struct RusageInfoV4 {
-    uuid: [u8; 16],
-    f: [u64; 35],
-}
-unsafe extern "C" {
-    fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut RusageInfoV4) -> i32;
-    fn getpid() -> i32;
-}
-fn counters() -> (u64, u64) {
-    let mut r = RusageInfoV4 { uuid: [0; 16], f: [0; 35] };
-    let rc = unsafe { proc_pid_rusage(getpid(), 4, &mut r) };
-    assert_eq!(rc, 0, "proc_pid_rusage failed");
-    // ri_instructions / ri_cycles: after 10 (v0) + 6 (v1) + 2 (v2) + 9 (v3) + ri_logical_writes + ri_lifetime_max_phys_footprint
-    (r.f[29], r.f[30])
-}
+use bough_damage_lab::measure::counters;
 
 #[derive(Clone, Copy, Default)]
 struct M {

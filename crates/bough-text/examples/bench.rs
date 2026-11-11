@@ -13,10 +13,12 @@ use bough_text::{GlyphRun, Shaper, SimpleScript};
 use std::hint::black_box;
 use std::time::Instant;
 
+#[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut core::ffi::c_void) -> i32;
 }
 
+#[cfg(target_os = "macos")]
 fn instructions() -> u64 {
     // SAFETY: plain syscall wrapper writing a rusage_info_v4 (RUSAGE_INFO_V4 = 4).
     unsafe {
@@ -24,6 +26,23 @@ fn instructions() -> u64 {
         let r = proc_pid_rusage(libc::getpid(), 4, (&mut info as *mut libc::rusage_info_v4).cast());
         assert_eq!(r, 0, "proc_pid_rusage failed");
         info.ri_instructions
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn instructions() -> u64 {
+    bough_damage_lab::measure::counters().0
+}
+
+/// Vendored parley has a NEON shaping kernel only; elsewhere the "neon" column measures the scalar kernel.
+#[cfg(not(target_arch = "aarch64"))]
+trait ShapeSimd {
+    fn shape_simd(&self, text: &str, font_size: f32, out: &mut GlyphRun) -> bool;
+}
+#[cfg(not(target_arch = "aarch64"))]
+impl ShapeSimd for Shaper {
+    fn shape_simd(&self, text: &str, font_size: f32, out: &mut GlyphRun) -> bool {
+        self.shape_scalar(text, font_size, out)
     }
 }
 

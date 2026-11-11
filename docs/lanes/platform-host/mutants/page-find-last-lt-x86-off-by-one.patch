@@ -1,0 +1,11 @@
+diff --git a/crates/bough-core/src/page.rs b/crates/bough-core/src/page.rs
+index 5fee85c25c..62cba7c689 100644
+--- a/crates/bough-core/src/page.rs
++++ b/crates/bough-core/src/page.rs
+@@ -578,5 +578,5 @@ pub fn page_find_last_lt(a: &[u16; CAP], upto: usize, d: u16) -> Option<usize> {
+         }
+     }
+     #[cfg(not(target_arch = "aarch64"))]
+-    find_last_lt(a, upto, d)
++    find_last_lt(a, upto.saturating_sub(1), d)
+ }
