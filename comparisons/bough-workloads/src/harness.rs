@@ -23,7 +23,7 @@
 //! Environment: `REPS` (steps per phase, default 48), `SCENE_SCALE` (default 1), `MODE` (`once`, the default:
 //! wires only; `redescribe`: the owner re-describes every turn), `RENDER` (default 1 on macOS: the GPU draws;
 //! 0: frames end at the tile list), `SCALE` (device pixels per point, default 2), `PHASES`, `BOUGH_PMU` (extra
-//! counter events, Linux).
+//! counter events, Linux), `STEPS=1` (also print every step: `#step scene phase k instructions cycles wall_us`).
 use crate::{Scene, sys};
 use bough::raw::{App, Config};
 use bough_mem::pmu;
@@ -158,6 +158,11 @@ pub fn header() -> String {
 }
 
 fn row(scene: &str, phase: &str, m: &Meter, steps: &[Step]) {
+    if std::env::var("STEPS").is_ok_and(|v| v == "1") {
+        for (k, st) in steps.iter().enumerate() {
+            println!("#step\t{scene}\t{phase}\t{k}\t{}\t{}\t{:.1}", st.ev[0], st.ev[1], st.ns as f64 / 1e3);
+        }
+    }
     let col = |e: usize| steps.iter().map(|s| s.ev[e]).collect::<Vec<u64>>();
     let mut ins = col(0);
     let mut cyc = col(1);
