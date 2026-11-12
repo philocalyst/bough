@@ -516,6 +516,9 @@ pub fn headless<V: Bench>(view: V, op: &str, o: Opts) {
             a.record_count(),
             a.frames
         );
+        if std::env::var_os("BOUGH_STATS").is_some() {
+            eprintln!("stats repaired_tiles(last)={} surfaces={:?} cpu={:?}", a.repaired_tiles, a.surf_stats, a.cpu.stats);
+        }
         return;
     }
     let mut expected = a.owner.data();

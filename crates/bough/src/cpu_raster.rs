@@ -446,7 +446,7 @@ impl CpuRaster {
                                     let outer = (0.5 - d).clamp(0.0, 1.0);
                                     let inner = (0.5 - (d + e.bw)).clamp(0.0, 1.0);
                                     let (h1, h2) = ((outer - inner).max(0.0) as f16, inner as f16);
-                                    [0, 1, 2, 3].map(|i| e.pm[i].mul_add(h1, e.pm2[i] * h2))
+                                    [0, 1, 2, 3].map(|i| fma16(e.pm[i], h1, e.pm2[i] * h2))
                                 }
                             };
                             blend_px(&mut row[(x * 4) as usize..(x * 4 + 4) as usize], sh, self.two_roundings);
@@ -466,6 +466,24 @@ impl CpuRaster {
             let out = unsafe { dst.add(gy as usize * bpr + o[0] as usize * 4) };
             store_row(&self.acc[(y * 32 * 4) as usize..(y * 32 * 4 + xn * 4) as usize], out);
         }
+    }
+}
+
+/// `a * b + c` in half precision. On aarch64 the hardware's half FMA (one rounding: the model is exact against
+/// the Metal kernel there). Elsewhere `f16::mul_add` is a software routine (an f64 FMA and a software f64 -> f16
+/// rounding, `__truncdfhf2`: 73 % of a scroll frame's time on x86-64, ilo-prod), so it is an f32 FMA rounded to
+/// half: the product of two halves is exact in f32, the sum is rounded twice (f32, then half), which can differ
+/// from one rounding in the last bit of rare inputs. No GPU shares these surfaces off aarch64 (the CPU executor is
+/// exact against itself, which is what retained == full redraw needs).
+#[inline(always)]
+fn fma16(a: f16, b: f16, c: f16) -> f16 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        a.mul_add(b, c)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        (a as f32).mul_add(b as f32, c as f32) as f16
     }
 }
 
@@ -499,7 +517,7 @@ fn blend_span(row: &mut [f16], x0: i32, x1: i32, sh: [f16; 4], two: bool) {
 fn blend_px(px: &mut [f16], sh: [f16; 4], two: bool) {
     let k: f16 = 1.0 - sh[3];
     for i in 0..4 {
-        px[i] = if two { sh[i] + px[i] * k } else { px[i].mul_add(k, sh[i]) };
+        px[i] = if two { sh[i] + px[i] * k } else { fma16(px[i], k, sh[i]) };
     }
 }
 
