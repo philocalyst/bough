@@ -422,3 +422,60 @@ not fit a signed 16-bit lane): `store_row`, `blend_const`, `blend_cov`, `blend_r
 
 Kill: a formulation whose vector result differs from the scalar specification is dropped, not patched;
 the whole item is dropped if the canvas gains less than 1.3x.
+
+### 1b. The kernel backend is the default (commit `22b90254f0`)
+
+Before the flip, the whole workspace under `BOUGH_KERNEL_STRICT=1 BOUGH_REPAIR=kernel BOUGH_SETTLE_AUDIT=1
+cargo test --release --workspace --no-fail-fast` (auto executor, load 17-35): **245 passed, 3 failed**, the
+three being the two assertions on the presenter's GPU bin growth and the corrupted-region test's refusal.
+That run covers the suites with images, gradients, shadows and transforms (bough-suite, bough-zgui,
+bough-widgets, the app ports) with no fallback possible.
+
+Then: `Repair` is `{Kernel (default), Gpu}`; staging never refuses (a record indexing outside its columns is
+skipped and counted; texel indices are clamped in the kernel), so there is no fallback path at all;
+`cpu_raster.rs`, `repair.rs` (the per-machine self-check and its cache file in `$TMPDIR`),
+`tests/cpu_repair.rs`, `sabotage_blend`, `BOUGH_CPU_VERIFY` and the tile-count thresholds are deleted
+(-1,030 lines); the bin-growth assertions are pinned to `Repair::Gpu`, whose mechanism they test. After the
+flip, default environment, settle audit on: bough + bough-heavy + bough-scenes + bough-vlist **65 passed,
+0 failed**; `cargo check --workspace --all-targets` clean.
+
+Not deleted: the presenter's Metal kernels (`shader.metal` fs_bin / fs_tile / fs_copy, `oracle.metal`, the
+certificates, the bins, the pre-armed stream). Nothing reaches them by default any more, but the kernel
+backend's GPU executor is synchronous (the frame thread waits for the kernel, 0.3-6 ms on large frames) and
+the presenter's is not; they go when the kernel's executor publishes through the publisher thread. The
+whole workspace was not re-run after the flip, and no windowed session was run.
+(A commit between `eb06240d21` and this one did not build the `bough` crate: the Atlas change landed in the
+kernel crate one commit before its caller. The platform lane hit it. Every commit from here is checked with
+`cargo check --workspace --all-targets`.)
+
+### 2. Explicit vectors: results (`src/simd.rs`; `kbench micro`, dist, M3 Pro, load 9-13, one run)
+
+`tests/simd.rs` holds each loop equal to the scalar kernel on 20,000 random rows with 0 and ONE in every
+position; `tests/exact.rs` (125 scenes) is unchanged at 0 differing words and the same hash, on the first
+compile. Instructions per tile-command (1,024 pixels), non-flat / flat:
+
+| kind | scalar | vector | predicted (per px) | verdict |
+|---|---:|---:|---|---|
+| solid, translucent | 7,821 / 474 | 5,589 / 609 | <= 4.5 | 5.5: missed |
+| rounded box r 8 | 13,184 / 1,540 | 13,093 / 1,767 | | unchanged (edge distance is scalar) |
+| shadow, square corners | 42,032 / 20,791 | 12,412 / 3,899 | <= 7 | 12: missed, 3.4x better |
+| shadow, rounded | 62,804 / 37,299 | 27,619 / 19,480 | <= 30 | met |
+| gradient at 57 degrees | 24,522 | 31,896 | <= 12 | **killed**: a colour row plus a coverage row was 50 K; the scalar form is back |
+| user node | 54,127 | 52,395 | <= 30 | not improved |
+| text, 8 glyph boxes | 22,404 | 18,144 | <= 7 per px | 10.5: missed |
+| canvas, full frame, one core | 238 ms, 2.86 G | 108-115 ms, 1.99-2.03 G | 110-140 ms | met (2.1x) |
+| canvas, 10 workers | 40 ms | 18-27 ms | ~20 ms | met |
+| gridtext, full frame, one core | 4.03 ms, 78.0 M | 3.65 ms, 67.7 M | | -13 % |
+| signal-write frame (ring 4) | 54-55 K | 51.0-52.9 K | <= 40 K | missed |
+
+How far the canvas gap closed: one core 43x the GPU's 5.5 ms -> 20x; ten workers 7x -> 3.3-5x. The cut did
+most of what could be done (47 G -> 2.9 G); vectors halved the rest. What remains on a core is per-pixel
+distance evaluation (rounded corners, shadow corner terms, gradients, user nodes), which is what the GPU is
+for: the estimator sends that frame to the GPU from 16 tiles up.
+Flat tiles got slightly dearer per command (277 -> 515 instructions for an opaque solid: per-command setup
+of the row machinery); 0.01 us, not chased.
+
+Signal-write frame by ring size (`BOUGH_RING`, default backend, slope OPS 2000 -> 8000, two repetitions):
+ring 1 (buffer age 1, what a window sees) **43.5-44.3 K**; ring 2 47.1 K; ring 4 52.6-52.9 K; the presenter's
+kernels 107.4-108.8 K. CPU time 2.9 us median. A text tile costs about 11 K here (zeroing, shading and
+storing all 32 rows of a tile with glyphs); frames at ring 4 repair 2-6 tiles.

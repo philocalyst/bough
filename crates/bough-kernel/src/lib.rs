@@ -1,3 +1,4 @@
+#![feature(portable_simd)]
 //! bough's one raster kernel and its executors.
 //!
 //! `kernel.rs` defines, once and in integers, what a pixel is:
@@ -20,6 +21,7 @@
 //!    and scrolled pixels equal re-rastered ones.
 mod kernel;
 pub mod cpu;
+pub mod simd;
 #[cfg(target_os = "macos")]
 pub mod metal;
 pub mod scenes;

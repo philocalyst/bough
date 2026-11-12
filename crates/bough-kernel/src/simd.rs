@@ -7,7 +7,8 @@
 //! lanes including the extremes (0, ONE).
 //!
 //! Shape of a row: a kind produces a *coverage row* (Q15 per pixel) or a colour row, and one of the blends
-//! below applies it. Four pixels (16 lanes) per step.
+//! below applies it. Four pixels (16 lanes) per step. (A colour row under a coverage row, for gradients and user
+//! nodes, was tried and dropped: slower than the kernel's scalar form.)
 use crate::k;
 use std::simd::prelude::*;
 
@@ -92,21 +93,6 @@ pub fn blend_cov2(row: &mut [[u16; 4]], pm: [u16; 4], h1: &[u16], pm2: [u16; 4],
     }
 }
 
-/// `acc = blend(acc, scale(col[x], cov[x]))`: a colour row under a coverage row (gradients, user nodes).
-#[inline(always)]
-pub fn blend_rgba(row: &mut [[u16; 4]], col: &[[u16; 4]], cov: &[u16]) {
-    let (quads, rest) = row.as_chunks_mut::<4>();
-    let ((cq, cr), (vq, vr)) = (col.as_chunks::<4>(), cov.as_chunks::<4>());
-    for ((q, c), v) in quads.iter_mut().zip(cq).zip(vq) {
-        let a = V::from_array(*q.as_flattened().first_chunk().unwrap());
-        let sh = mul15(V::from_array(*c.as_flattened().first_chunk().unwrap()), per_px(*v));
-        q.as_flattened_mut().copy_from_slice(&over4(a, sh).to_array());
-    }
-    for ((px, c), &v) in rest.iter_mut().zip(cr).zip(vr) {
-        *px = st1(k::blend(ld1(px), k::scale(ld1(c), v as u32)));
-    }
-}
-
 /// `out[x] = mul15(a[x], b)`: a separable shadow's column profile times its row's value.
 #[inline(always)]
 pub fn scale_row(a: &[u16], b: u16, out: &mut [u16]) {
@@ -134,4 +120,18 @@ pub fn store_row(acc: &[[u16; 4]], out: &mut [u32]) {
     for (o, p) in or.iter_mut().zip(ar) {
         *o = k::store8(ld1(p));
     }
+}
+
+/// `out[x] = q15(t[x])`: a row of coverage texels to Q15. Returns false if every texel is 0 (nothing to
+/// blend).
+#[inline(always)]
+pub fn q15_row(t: &[u8], out: &mut [u16]) -> bool {
+    let mut any = 0u8;
+    for (o, &t) in out.iter_mut().zip(t) {
+        any |= t;
+        let t = t as u16;
+        // k::q15 in 16-bit lanes (255 -> 32768 fits)
+        *o = (t << 7) + (t >> 1) + (t >> 7);
+    }
+    any != 0
 }

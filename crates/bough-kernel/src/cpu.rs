@@ -348,37 +348,13 @@ fn st(v: Vec4u) -> [u16; 4] {
 fn over(row: &mut [[u16; 4]], sh: Vec4u) {
     if sh.w == k::ONE {
         row.fill(st(sh));
-    } else {
-        // `k::blend` with a constant source, as one flat pass over the 16-bit lanes (two pixels per step
-        // carry the source's four channels twice): vectorises across pixels
-        let (kk, s) = (k::ONE - sh.w, st(sh));
-        let s8 = [s[0], s[1], s[2], s[3], s[0], s[1], s[2], s[3]];
-        let lanes = row.as_flattened_mut();
-        let (pairs, rest) = lanes.as_chunks_mut::<8>();
-        for p in pairs {
-            for j in 0..8 {
-                p[j] = (s8[j] as u32 + k::mul15(p[j] as u32, kk)) as u16;
-            }
-        }
-        for (j, p) in rest.iter_mut().enumerate() {
-            *p = (s8[j] as u32 + k::mul15(*p as u32, kk)) as u16;
-        }
+    } else if sh.w != 0 || sh.x != 0 || sh.y != 0 || sh.z != 0 {
+        simd::blend_const(row, st(sh));
     }
 }
-/// A row of accumulators to stored pixels: `k::store8` per pixel, shaped as two flat lane-wise passes (the
-/// channel conversion over 16-bit lanes, then the RGBA -> BGRA word permutation) so both vectorise across
-/// pixels. The gate holds it equal to `store8`.
-#[inline(always)]
-fn store_row(acc: &[[u16; 4]], out: &mut [u32]) {
-    let mut b = [0u8; 128];
-    for (o, v) in b.iter_mut().zip(acc.as_flattened()) {
-        *o = k::ch8(*v as u32) as u8;
-    }
-    for (o, c) in out.iter_mut().zip(b.as_chunks::<4>().0) {
-        let v = u32::from_le_bytes(*c);
-        *o = (v & 0xff00_ff00) | (v & 0xff) << 16 | (v >> 16) & 0xff;
-    }
-}
+use crate::simd::{self, store_row};
+/// The vector loops (re-exported for their own test).
+pub use crate::simd as vec;
 /// Bits [a, b) of a 32-row mask.
 #[inline(always)]
 fn rows(a: i32, b: i32) -> u32 {
@@ -429,6 +405,8 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
         m &= m - 1;
         sc.acc[y * 32..y * 32 + 32].fill([0; 4]);
     }
+    // row buffers, shared by every command of the tile (each use writes what it reads)
+    let (mut sx, mut cov, mut cov2) = ([0u16; 32], [0u16; 32], [0u16; 32]);
     for c in sc.cmds.iter() {
         let (x0, x1) = ((c.win.x - ox).max(0), (c.win.z - ox).min(32));
         if x0 >= x1 {
@@ -437,6 +415,10 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
         let kind = c.par.x;
         // the core's colour where it is one colour (solid, rounded, border, shadow)
         let cv = if kind == k::K_BORDER { c.pm2 } else { c.pm };
+        let (pm, pm2) = (st(c.pm), st(c.pm2));
+        // a shadow's column profile over this tile's columns, made at the first row that needs it
+        let (mut zone_x, mut sx_ready) = (0u32, false);
+        let (hx, hy, lim) = ((c.b.z - c.b.x) >> 1, (c.b.w - c.b.y) >> 1, c.rad.y + (c.rad.y >> 1));
         let cz = if cfg!(feature = "mutant_core") { c.core.z + 1 } else { c.core.z };
         let (cx0, cx1) = ((c.core.x - ox).clamp(x0, x1), (cz - ox).clamp(x0, x1));
         let mut m = rows(c.win.y - oy, c.win.w - oy) & need;
@@ -463,50 +445,100 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
                 if ty < 0 || ty >= gh {
                     continue;
                 }
+                // the glyph's texels on this row are a coverage row; columns outside its box cover nothing
                 let base = c.par.z as usize + ty as usize * atlas.w as usize;
-                for x in x0..x1 {
-                    let tx = ((ox + x) * 256 + 128 - c.b.x) >> 8;
-                    if tx < 0 || tx >= gw {
-                        continue;
+                let tx0 = ((ox + x0) * 256 + 128 - c.b.x) >> 8;
+                let (xa, xb) = (x0 + (-tx0).max(0), x1.min(x0 + gw - tx0));
+                if xa >= xb {
+                    continue;
+                }
+                let n = (xb - xa) as usize;
+                let first = base + (tx0 + (xa - x0)) as usize;
+                match atlas.px.get(first..first + n) {
+                    // the row of texels lies inside the atlas (always, for a valid region)
+                    Some(t) => {
+                        if !simd::q15_row(t, &mut cov[..n]) {
+                            continue;
+                        }
                     }
-                    let t = atlas.px[(base + tx as usize).min(atlas.px.len() - 1)] as u32;
-                    if t != 0 {
-                        let p = &mut row[x as usize];
-                        *p = st(k::blend(ld(p), k::scale(c.pm, k::q15(t))));
+                    // bounds by construction: clamp each index, as the kernel's fetch does
+                    None => {
+                        for (i, o) in cov[..n].iter_mut().enumerate() {
+                            *o = k::q15(atlas.px[(first + i).min(atlas.px.len() - 1)] as u32) as u16;
+                        }
                     }
                 }
+                simd::blend_cov(&mut row[xa as usize..xb as usize], pm, &cov[..n]);
                 continue;
             }
-            // a box kind: edge pixels through the kernel, the core as one span
+            // a box kind: edge pixels through the kernel (a coverage row, then one vector blend), the core
+            // as one span
             let (a, b) = if gy >= c.core.y && gy < c.core.w && cx0 < cx1 { (cx0, cx1) } else { (x1, x1) };
             let cy = gy * 256 + 128;
             let px0 = |xa: i32| (ox + xa) * 256 + 128;
-            let edge = |r: &mut [[u16; 4]], xa: i32| {
-                let cx0 = px0(xa);
+            // a shadow away from its corners is the product of a column profile and a row value
+            let shadow_row = if kind == k::K_SHADOW {
+                if !sx_ready {
+                    for (i, o) in sx[..(x1 - x0) as usize].iter_mut().enumerate() {
+                        let px = px0(x0 + i as i32) - (c.b.x + hx);
+                        *o = k::span3(px, hx, c.rad.y, c.rad.z) as u16;
+                        if c.rad.x != 0 && px.abs() > hx - c.rad.x - lim {
+                            zone_x |= 1 << i;
+                        }
+                    }
+                    sx_ready = true;
+                }
+                let py = cy - (c.b.y + hy);
+                Some((k::span3(py, hy, c.rad.y, c.rad.z) as u16, c.rad.x != 0 && py.abs() > hy - c.rad.x - lim))
+            } else {
+                None
+            };
+            let mut edge = |r: &mut [[u16; 4]], xa: i32| {
+                let (n, cxa) = (r.len(), px0(xa));
+                if n == 0 {
+                    return;
+                }
                 match kind {
                     k::K_RRECT => {
-                        for (i, p) in r.iter_mut().enumerate() {
-                            *p = st(k::blend(ld(p), k::sh_rrect(*c, cx0 + i as i32 * 256, cy)));
+                        for (i, o) in cov[..n].iter_mut().enumerate() {
+                            *o = k::cov(k::sd(cxa + i as i32 * 256, cy, c.b, c.rad.x, c.par.y)) as u16;
                         }
+                        simd::blend_cov(r, pm, &cov[..n]);
                     }
                     k::K_BORDER => {
-                        for (i, p) in r.iter_mut().enumerate() {
-                            *p = st(k::blend(ld(p), k::sh_border(*c, cx0 + i as i32 * 256, cy)));
+                        for i in 0..n {
+                            let d = k::sd(cxa + i as i32 * 256, cy, c.b, c.rad.x, c.par.y);
+                            let outer = k::cov(d);
+                            let inner = k::cov(d + c.rad.y).min(outer);
+                            (cov[i], cov2[i]) = ((outer - inner) as u16, inner as u16);
                         }
+                        simd::blend_cov2(r, pm, &cov[..n], pm2, &cov2[..n]);
                     }
                     k::K_SHADOW => {
-                        for (i, p) in r.iter_mut().enumerate() {
-                            *p = st(k::blend(ld(p), k::sh_shadow(*c, cx0 + i as i32 * 256, cy)));
+                        let (sy, zone_y) = shadow_row.unwrap();
+                        let i0 = (xa - x0) as usize;
+                        simd::scale_row(&sx[i0..i0 + n], sy, &mut cov[..n]);
+                        if zone_y {
+                            // the corner corrections: the kernel, pixel by pixel, where a corner is in reach
+                            let mut m = (zone_x >> i0) & (u32::MAX >> (32 - n));
+                            while m != 0 {
+                                let i = m.trailing_zeros() as usize;
+                                m &= m - 1;
+                                cov[i] = k::shadow(*c, cxa + i as i32 * 256, cy) as u16;
+                            }
                         }
+                        simd::blend_cov(r, pm, &cov[..n]);
                     }
+                    // a colour and a distance per pixel: the kernel's own form is the fastest here (the split
+                    // into a colour row and a coverage row measured 2x slower: 50 against 24.5 instr/px)
                     k::K_GRAD => {
                         for (i, p) in r.iter_mut().enumerate() {
-                            *p = st(k::blend(ld(p), k::sh_grad(*c, cx0 + i as i32 * 256, cy)));
+                            *p = st(k::blend(ld(p), k::sh_grad(*c, cxa + i as i32 * 256, cy)));
                         }
                     }
                     _ => {
                         for (i, p) in r.iter_mut().enumerate() {
-                            *p = st(k::blend(ld(p), k::sh_user(*c, cx0 + i as i32 * 256, cy, now)));
+                            *p = st(k::blend(ld(p), k::sh_user(*c, cxa + i as i32 * 256, cy, now)));
                         }
                     }
                 }
@@ -517,6 +549,7 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
                 match kind {
                     // a vertical gradient is one colour per row
                     k::K_GRAD if c.rad.z == 0 => over(mid, k::grad_color(*c, px0(a), cy)),
+                    // the core's colour varies but its coverage is ONE
                     k::K_GRAD => {
                         for (i, p) in mid.iter_mut().enumerate() {
                             *p = st(k::blend(ld(p), k::grad_color(*c, px0(a) + i as i32 * 256, cy)));
