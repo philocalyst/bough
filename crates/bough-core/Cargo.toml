@@ -21,7 +21,13 @@ flat-prefix = []
 lazy-prefix = []
 # Count cull work (pages, groups, classifications, refined records); for analysis only.
 stats = []
+# Charge the pieces of a structural edit (column shifts, reindex, prefix, chunks) to counters; analysis only.
+attr = []
 
 [[example]]
 name = "core_bench"
 path = "examples/bench.rs"
+
+[[example]]
+name = "r6_attr"
+required-features = ["attr"]

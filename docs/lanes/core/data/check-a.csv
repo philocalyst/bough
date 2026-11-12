@@ -1,0 +1,15 @@
+cell,n,instructions_per_op
+insert8-front,1000,3751.1
+insert8-middle,1000,3297.1
+remove8-middle,1000,1145.0
+prefix-rebuild-from-front,1000,242.9
+prefix-rebuild-from-end,1000,137.9
+parent-last,1000,225.0
+hit-present,1000,318.0
+insert8-front,1000000,375182.0
+insert8-middle,1000000,188947.0
+remove8-middle,1000000,1857.0
+prefix-rebuild-from-front,1000000,116825.9
+prefix-rebuild-from-end,1000000,137.9
+parent-last,1000000,15896.5
+hit-present,1000000,981.0

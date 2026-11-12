@@ -1,0 +1,11 @@
+cell,n,instructions_per_op
+insert8-front,1000,3946.3
+insert8-middle,1000,3541.3
+remove8-middle,1000,1144.8
+parent-last,1000,225.0
+hit-present,1000,318.0
+insert8-front,1000000,556832.0
+insert8-middle,1000000,428941.0
+remove8-middle,1000000,1857.0
+parent-last,1000000,15896.3
+hit-present,1000000,981.1

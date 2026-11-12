@@ -16,6 +16,9 @@ use bough_damage_lab::trace::Trace;
 use bough_damage_lab::{bench, measure, scene::Scene, workloads};
 use std::hint::black_box;
 
+#[path = "support/cost_r6.rs"]
+mod cost_r6;
+
 /// The lab's `N::from_r` (its rects are already inside the viewport, so no clamping).
 #[inline(always)]
 fn nr(r: R) -> NRect {
@@ -184,6 +187,10 @@ fn mark_cost(tr: &Trace, ov: u64) -> (f64, f64) {
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "--cost-r6") {
+        cost_r6::run(true);
+        return;
+    }
     let frames: u64 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(600);
     let filter = std::env::var("TRACE").ok();
     measure::prefer_p_cores();
