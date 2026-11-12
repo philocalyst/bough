@@ -46,7 +46,9 @@ struct Objs {
 
 pub struct Gpu {
     pub info: wgt::AdapterInfo,
-    device: <Api as hal::Api>::Device,
+    /// Shared with every `Target` made here: a target keeps its device alive (whatever order the owner drops
+    /// them in).
+    device: std::sync::Arc<<Api as hal::Api>::Device>,
     queue: <Api as hal::Api>::Queue,
     /// `VK_EXT_external_memory_host` is enabled: `wrap` imports caller memory.
     host_import: Option<(ash::ext::external_memory_host::Device, u64)>,
@@ -62,7 +64,7 @@ pub struct Target {
     buf: Option<HBuf>,
     mem: vk::DeviceMemory,
     raw: vk::Buffer,
-    device: ash::Device,
+    device: std::sync::Arc<<Api as hal::Api>::Device>,
 }
 
 impl Drop for Target {
@@ -71,8 +73,9 @@ impl Drop for Target {
         // the hal wrapper owns no memory (`Buffer::from_raw`) and is dropped without destroying the raw buffer.
         unsafe {
             drop(self.buf.take());
-            self.device.destroy_buffer(self.raw, None);
-            self.device.free_memory(self.mem, None);
+            let d = self.device.raw_device();
+            d.destroy_buffer(self.raw, None);
+            d.free_memory(self.mem, None);
         }
     }
 }
@@ -153,7 +156,7 @@ impl Gpu {
             let encoder = Some(device.create_command_encoder(&hal::CommandEncoderDescriptor { label: None, queue: &queue }).ok()?);
             Some(Gpu {
                 info: exposed.info,
-                device,
+                device: std::sync::Arc::new(device),
                 queue,
                 host_import,
                 o: std::mem::ManuallyDrop::new(Objs { bgl, layout, module, pso, fence }),
@@ -264,7 +267,7 @@ impl Gpu {
                 return None;
             }
             let buf = hal::vulkan::Buffer::from_raw(buffer);
-            Some(Target { buf: Some(buf), mem, raw: buffer, device: raw })
+            Some(Target { buf: Some(buf), mem, raw: buffer, device: self.device.clone() })
         }
     }
 
@@ -348,7 +351,7 @@ impl Drop for Gpu {
         unsafe {
             let o = std::mem::ManuallyDrop::take(&mut self.o);
             let d = &self.device;
-            self.encoder = None;
+            self.encoder = None; // (its Drop destroys the command pool)
             for b in self.bufs.iter_mut().filter_map(|b| b.take()) {
                 d.destroy_buffer(b.b);
             }
