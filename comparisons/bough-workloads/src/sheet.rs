@@ -12,8 +12,8 @@
 //! * the cells are a `[Signal<f32>; 100_000]` inside the owner, because a wired signal must sit at an
 //!   `offset_of!` path (a `Vec` or `Box` of signals cannot be wired); `List<Row>` rows are their own owners and
 //!   cannot read the root's `look`;
-//! * at full size the cells need ~100,000 fill instances plus ~600,000 glyph instances, past the record
-//!   format's 2^18 instance limit (`Caps::RESERVE`): the full scene does not mount on `round6`.
+//! * hovering a column is meant to touch that column's cells only; with the hover packed into `look`, every
+//!   cell's two wires run on a hover (the fan-out is all 200,000 wires, of which 20,000 change a pixel).
 use crate::{scaled, Rng, Scene};
 use bough::prelude::*;
 use bough::raw::{App, Caps, Ev, NumFmt};
@@ -149,13 +149,14 @@ impl Scene for Sheet {
 
     fn caps(&self) -> Caps {
         let cells = self.rows * COLS;
-        // a cell: a fill and up to 9 glyphs ("99999.99"); a row: its gutter box and label
+        // a cell: a fill and up to 9 glyph instances ("99999.99"); a row: its gutter box and label
         let instances = (cells * 10 + self.rows * 6 + 4096).next_power_of_two();
         let records = cells * 2 + self.rows * 4 + 4096;
         Caps {
             instances: instances.min(Caps::RESERVE.instances),
             pages: (records / 32 + 1024).next_power_of_two().min(Caps::RESERVE.pages),
-            glyphs: (cells * 10 + 65536).next_power_of_two().min(Caps::RESERVE.glyphs),
+            // a numeric label keeps 16 glyph slots (NumFmt's 16 bytes) and a little more: ~21 per cell measured
+            glyphs: (cells * 24 + self.rows * 8 + 65536).next_power_of_two().min(Caps::RESERVE.glyphs),
             runs: (cells + self.rows * 2 + 8192).next_power_of_two().min(Caps::RESERVE.runs),
             ..Caps::DEFAULT
         }

@@ -125,4 +125,7 @@ fn main() {
             println!("{n},{name},{},{},{},{}", c[0], c[1], c[2], c[3]);
         }
     }
+    // hotpath-alloc nests bough_mem's counting allocator inside its own: both see every allocation
+    #[cfg(feature = "hotpath-alloc")]
+    eprintln!("bough_mem::count under hotpath: {} allocations, {} frees, peak {} bytes", bough_mem::count::allocs(), bough_mem::count::frees(), bough_mem::count::peak());
 }
