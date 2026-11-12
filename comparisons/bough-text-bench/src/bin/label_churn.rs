@@ -33,7 +33,7 @@ fn main() {
     }
     #[cfg(target_os = "macos")]
     if render {
-        app.gpu.as_mut().unwrap().sync();
+        app.wait_presented();
     }
     let per = (instrs() - i0) as f64 / frames as f64;
     let mut sorted = rounds.clone();

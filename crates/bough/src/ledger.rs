@@ -12,7 +12,9 @@ use crate::app::{App, View};
 /// bough::ledger::Counting;`) and its counters.
 pub use bough_mem::count::{self, Counting};
 pub use bough_mem::{Ledger as MemLedger, Line, Scales as MemScales, Space as MemSpace};
-use bough_mem::{Ledger, Scales, Space};
+use bough_mem::Ledger;
+#[cfg(target_os = "macos")]
+use bough_mem::{Scales, Space};
 
 /// What the process holds as the system counts it.
 #[derive(Clone, Copy, Debug, Default)]
@@ -40,15 +42,31 @@ struct MallocStats {
     size_allocated: usize,
 }
 
-unsafe extern "C" {
-    fn malloc_zone_statistics(zone: *const u8, stats: *mut MallocStats);
+#[cfg(target_os = "macos")]
+fn malloc_stats() -> MallocStats {
+    unsafe extern "C" {
+        fn malloc_zone_statistics(zone: *const u8, stats: *mut MallocStats);
+    }
+    let mut m = MallocStats::default();
+    // SAFETY: a null zone sums every zone; `m` is a malloc_statistics_t.
+    unsafe { malloc_zone_statistics(std::ptr::null(), &mut m) };
+    m
+}
+/// glibc's arenas (`mallinfo2`): bytes in use, bytes held from the system (arenas + mmapped blocks).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn malloc_stats() -> MallocStats {
+    // SAFETY: mallinfo2 has no preconditions.
+    let m = unsafe { libc::mallinfo2() };
+    MallocStats { blocks_in_use: (m.ordblks + m.hblks) as u32, size_in_use: m.uordblks + m.hblkhd, max_size_in_use: 0, size_allocated: m.arena + m.hblkhd }
+}
+#[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+fn malloc_stats() -> MallocStats {
+    MallocStats::default()
 }
 
 impl Proc {
     pub fn now() -> Proc {
-        let mut m = MallocStats::default();
-        // SAFETY: a null zone sums every zone; `m` is a malloc_statistics_t.
-        unsafe { malloc_zone_statistics(std::ptr::null(), &mut m) };
+        let m = malloc_stats();
         let (fp, peak, rss) = rusage();
         Proc {
             phys_footprint: fp,
@@ -66,7 +84,7 @@ impl Proc {
 
 #[cfg(target_os = "macos")]
 fn rusage() -> (u64, u64, u64) {
-    let mut r = bough_metal::perf::RusageInfoV4::default();
+    let mut r = bough_sys::perf::RusageInfoV4::default();
     // SAFETY: flavor 4 (RUSAGE_INFO_V4) fills a rusage_info_v4.
     unsafe {
         unsafe extern "C" {
@@ -76,9 +94,17 @@ fn rusage() -> (u64, u64, u64) {
     }
     (r.ri_phys_footprint, r.ri_lifetime_max_phys_footprint, r.ri_resident_size)
 }
+/// (footprint, its peak, resident): bough-sys's footprint (RssAnon + RssShmem), VmHWM as the peak (of resident:
+/// Linux keeps no footprint peak), VmRSS.
 #[cfg(not(target_os = "macos"))]
 fn rusage() -> (u64, u64, u64) {
-    (0, 0, 0)
+    let s = bough_sys::perf::snap();
+    let hwm = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|t| t.lines().find(|l| l.starts_with("VmHWM:")).and_then(|l| l[6..].split_whitespace().next().and_then(|v| v.parse::<u64>().ok())))
+        .unwrap_or(0)
+        * 1024;
+    (s.footprint, hwm, s.rss)
 }
 
 impl<V: View> App<V> {
@@ -88,6 +114,7 @@ impl<V: View> App<V> {
         self.rt.ledger(&mut l);
         crate::text::fonts_ledger(&mut l);
         self.ledger_app(&mut l);
+        #[allow(unused_mut)]
         let mut p = Proc::now();
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
         if let Some(g) = self.gpu.as_ref() {

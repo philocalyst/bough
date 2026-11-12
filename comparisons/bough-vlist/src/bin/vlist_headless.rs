@@ -28,28 +28,28 @@ fn main() {
         eprintln!("{}", probe(&mut app));
         return;
     }
-    let t0 = bough_metal::perf::snap();
+    let t0 = bough::sys::perf::snap();
     let start = std::time::Instant::now();
     let mut warm = (t0.instrs, 0usize, [0u64; 5], 0u64, [0u64; 8]);
     let mut frames = 0u64;
     let mut tiles = 0u64;
     for tick in 1..=ticks {
         if tick == 60 {
-            warm = (bough_metal::perf::snap().instrs, tick, app.prof.acc, frames, app.rt.lay.prof.acc);
+            warm = (bough::sys::perf::snap().instrs, tick, app.prof.acc, frames, app.rt.lay.prof.acc);
         }
         step(&mut app, mode, tick as u64);
         frames += app.frame() as u64;
         tiles += app.repaired_tiles as u64;
         #[cfg(target_os = "macos")]
         if render && tick % 60 == 0 {
-            app.gpu.as_mut().unwrap().sync();
+            app.wait_presented();
         }
     }
     #[cfg(target_os = "macos")]
     if render {
-        app.gpu.as_mut().unwrap().sync();
+        app.wait_presented();
     }
-    let t1 = bough_metal::perf::snap();
+    let t1 = bough::sys::perf::snap();
     let measured = ticks.saturating_sub(60).max(1) as f64;
     let m = app.rt.lists.regs()[0].stats;
     println!("repaired tiles/frame {:.1}", tiles as f64 / frames.max(1) as f64);

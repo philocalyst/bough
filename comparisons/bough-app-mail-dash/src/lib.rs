@@ -23,7 +23,7 @@ pub fn font() -> Vec<u8> {
 
 /// This process's instructions retired (`proc_pid_rusage`, `ri_instructions`: zgx's `instructions()`).
 pub fn instructions() -> u64 {
-    bough_metal::perf::snap().instrs
+    bough::sys::perf::snap().instrs
 }
 
 pub fn env_usize(name: &str, d: usize) -> usize {

@@ -167,7 +167,7 @@ fn plain_step(a: &mut App<Plain>, r: &mut Rng, next: &mut u64) {
         }
         4 => {
             let size = ([160.0, 200.0, 240.0][r.below(3)], [120.0, 160.0, 200.0][r.below(3)]);
-            if a.gpu.is_none() { a.resize(size.0, size.1); }
+            if !a.has_surfaces() { a.resize(size.0, size.1); }
         }
         _ => {
             let n = a.owner.items.len();
@@ -232,7 +232,7 @@ fn grid_step(a: &mut App<Grid>, r: &mut Rng, rows: usize) {
         }
         2 => {
             let size = ([200.0, 240.0, 280.0][r.below(3)], [120.0, 160.0, 200.0][r.below(3)]);
-            if a.gpu.is_none() { a.resize(size.0, size.1); }
+            if !a.has_surfaces() { a.resize(size.0, size.1); }
         }
         _ => {
             let d = r.below(5) as f32 * 0.5;
@@ -359,7 +359,7 @@ fn nested_step(a: &mut App<Nested>, r: &mut Rng, next: &mut u64) {
         }
         _ => {
             let size = ([200.0, 260.0][r.below(2)], [150.0, 190.0, 220.0][r.below(3)]);
-            if a.gpu.is_none() { a.resize(size.0, size.1); }
+            if !a.has_surfaces() { a.resize(size.0, size.1); }
         }
     }
 }

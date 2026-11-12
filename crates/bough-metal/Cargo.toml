@@ -5,7 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "Direct-Metal presenter prototype: uber-shader, buffer-age repair, IOSurface ring"
 
-[dependencies]
+# The presenter is Metal and AppKit: on any other target this crate is empty (lib.rs), so the workspace builds there.
+[target.'cfg(target_os = "macos")'.dependencies]
+bough-frame = { path = "../bough-frame" }
+bough-sys = { path = "../bough-sys" }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3" }
 objc2-metal = { version = "0.3", features = ["objc2-io-surface", "dispatch2", "block2", "objc2-core-foundation"] }
@@ -21,6 +24,13 @@ dispatch2 = "0.3"
 # Gate sabotage (lane memory, round 6): column views never grow past their first size; the capacity test
 # (crates/bough/tests/capacity.rs) must fail with it.
 sabotage_views = []
+# Gate mutants of the row certificates (shader.metal `FCert`): each must make a scroll pixel gate fail.
+# The scroll copy skips a certified row without consulting the destination's own certificate.
+mutant_cert_skip = []
+# A row the copy moved keeps the certificate of what the destination held before.
+mutant_cert_stale = []
+# The tile pass certifies a band from one of its pixels.
+mutant_cert_tile = []
 
 [[example]]
 # not "bench": bough-text has an example of that name (cargo output collision in one target dir)
@@ -50,3 +60,5 @@ name = "runs_check"
 name = "wake"
 [[example]]
 name = "fprobe"
+[[example]]
+name = "iosurf_alias"

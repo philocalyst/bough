@@ -168,7 +168,7 @@ fn turned_and_translated_subtrees_scroll_and_relayout_exactly() {
             }
             a.frame();
             let (p, r) = (a.presented_pixels(), a.reference_pixels());
-            let w = a.gpu.as_ref().unwrap().w;
+            let w = a.surface_width();
             let (cw, ch) = (a.rt.win_w as usize, a.rt.win_h as usize);
             for y in 0..ch {
                 let (s0, s1) = (&p[y * w * 4..y * w * 4 + cw * 4], &r[y * w * 4..y * w * 4 + cw * 4]);

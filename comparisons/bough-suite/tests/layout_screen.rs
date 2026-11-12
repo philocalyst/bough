@@ -22,7 +22,7 @@ fn crop(px: &[u8], full_w: usize, w: usize, h: usize) -> Vec<u8> {
 
 fn assert_exact<V: View>(a: &mut App<V>, what: &str) {
     assert!(!a.bins_overflowed(), "{what}: row bin overflow");
-    let full_w = a.gpu.as_ref().unwrap().w;
+    let full_w = a.surface_width();
     let (w, h) = (a.rt.win_w as usize, a.rt.win_h as usize);
     let px = crop(&a.presented_pixels(), full_w, w, h);
     let r = crop(&a.reference_pixels(), full_w, w, h);
@@ -51,10 +51,10 @@ fn layout_screen_remounts_and_resizes_are_pixel_exact() {
         }
         let (w, h) = (a.rt.win_w as usize, a.rt.win_h as usize);
         assert_eq!(w as f32, lb_width(RESIZES) * 2.0);
-        let px = crop(&a.presented_pixels(), a.gpu.as_ref().unwrap().w, w, h);
+        let px = crop(&a.presented_pixels(), a.surface_width(), w, h);
         let mut f = app_ring(LayoutScreen { salt: 3 }, lb_config(lb_width(RESIZES)), ring);
         f.frame();
-        let fp = crop(&f.presented_pixels(), f.gpu.as_ref().unwrap().w, w, h);
+        let fp = crop(&f.presented_pixels(), f.surface_width(), w, h);
         assert!(px == fp, "{name}: retained after {RESIZES} resizes != fresh mount at {:?}", first_diff(&px, &fp, w));
     }
 }

@@ -279,7 +279,7 @@ fn random_strings_up_to_200() {
 fn english_words_and_sentences() {
     let sh = shaper();
     let mut h = Harness::new(&sh);
-    let words: Vec<String> = std::fs::read_to_string("/usr/share/dict/words")
+    let words: Vec<String> = std::fs::read_to_string(std::env::var("BOUGH_WORDS").unwrap_or_else(|_| "/usr/share/dict/words".into()))
         .map(|t| t.lines().map(str::to_string).collect())
         .unwrap_or_else(|_| {
             "the quick brown fox jumps over a lazy dog office affirm fluff".split(' ').map(str::to_string).collect()

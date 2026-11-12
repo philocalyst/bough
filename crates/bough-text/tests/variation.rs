@@ -71,3 +71,14 @@ fn sf_ns_instances_equal_rustybuzz() {
         assert!(ok > 0 || !std::path::Path::new("/System/Library/Fonts/SFNS.ttf").exists());
     }
 }
+
+/// The same gate on another variable font with `wght` and `opsz` axes (`BOUGH_VARIABLE_FONT`, e.g. Inter 4
+/// InterVariable.ttf), for platforms without SF NS. Skipped when the variable is unset; required when it is set.
+#[test]
+fn other_variable_font_instances_equal_rustybuzz() {
+    let Ok(path) = std::env::var("BOUGH_VARIABLE_FONT") else { return };
+    for c in [&[(*b"wght", 400.0), (*b"opsz", 17.0)][..], &[(*b"wght", 700.0), (*b"opsz", 17.0)][..], &[][..]] {
+        let (ok, _) = check(&path, c);
+        assert!(ok > 0, "{path}: no string shaped by the table");
+    }
+}

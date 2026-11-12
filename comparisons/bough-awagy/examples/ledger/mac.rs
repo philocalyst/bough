@@ -82,17 +82,8 @@ unsafe impl GlobalAlloc for Tracing {
     }
 }
 
-#[path = "../../../crates/bough/examples/counter.rs"]
-#[allow(dead_code)]
-mod counter;
-#[path = "../src/dashboard.rs"]
-#[allow(dead_code)]
-mod dashboard;
-#[path = "../src/scroll.rs"]
-#[allow(dead_code)]
-mod scroll;
-#[path = "../src/scroll_config.rs"]
-mod scroll_config;
+// the workloads (declared at the crate root, main.rs: their own `crate::` paths resolve there)
+use crate::{counter, dashboard, scroll};
 
 use bough::app::{App, View};
 use bough::prelude::*;
@@ -277,7 +268,7 @@ fn wake(app: Rc<RefCell<App<counter::Counter>>>, idles: Vec<f64>) {
     });
 }
 
-fn main() {
+pub fn main() {
     let args: Vec<String> = std::env::args().collect();
     let what = args.get(1).map(String::as_str).unwrap_or("scroll").to_string();
     let active: f64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(6.0);

@@ -66,6 +66,9 @@ pub struct Atlas {
     pub generation: u32,
     /// Bytes written since the last `take_dirty` (for upload accounting).
     pub dirty_bytes: usize,
+    /// Bumped by every write to the pixels (never reset): an executor that keeps its own copy compares it
+    /// with the stamp it last uploaded.
+    pub stamp: u64,
 }
 
 impl Atlas {
@@ -79,6 +82,7 @@ impl Atlas {
             next_y: 0,
             generation: 0,
             dirty_bytes: 0,
+            stamp: 0,
         }
     }
 
@@ -118,6 +122,7 @@ impl Atlas {
             self.pixels[d..d + w as usize].copy_from_slice(&src[r * w as usize..(r + 1) * w as usize]);
         }
         self.dirty_bytes += (w * h) as usize;
+        self.stamp += 1;
     }
 
     /// Fraction of texels reserved.

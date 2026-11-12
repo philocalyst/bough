@@ -5,19 +5,12 @@ use crate::{
 };
 use bough::prelude::*;
 use bough::raw::{App, Button, Caps, Config};
-use bough_metal::perf::{snap, tinstr};
+use bough::sys::perf::{snap, tinstr};
 use std::time::Instant;
 
 pub fn config(scale: f32) -> Config {
-    let font = [
-        std::env::var("BOUGH_FONT").ok(),
-        std::env::var("ZGX_FONT_FILE").ok(),
-        Some("/System/Library/Fonts/Supplemental/Arial.ttf".into()),
-    ]
-    .into_iter()
-    .flatten()
-    .find_map(|p| std::fs::read(p).ok())
-    .expect("font; set BOUGH_FONT");
+    // BOUGH_FONT, ZGX_FONT_FILE, then the platform's sans-serif (macOS Arial; Linux fontconfig's `sans-serif`)
+    let font = bough::ui::default_font();
     let mut c = Config::new(spec::WINDOW.0, spec::WINDOW.1, scale, font);
     // Exactly ui.rs::APP_CAPS, not Config::new's smaller Caps::DEFAULT (G5).
     c.caps = Caps {
@@ -251,34 +244,12 @@ pub fn window<V: Bench>(view: V, title: &str) -> ! {
         .ok()
         .map(|s| s.parse().unwrap())
         .unwrap_or(0.0);
-    bough::backend::host::run_interactive(
-        title,
-        config,
-        view,
-        seconds,
-        |_, a| {
-            focus(&mut a.borrow_mut());
-            if let Some(period) = a.borrow().owner.period() {
-                use block2::RcBlock;
-                use objc2_foundation::{NSRunLoop, NSTimer};
-                let app = a.clone();
-                let block = RcBlock::new(move |_: std::ptr::NonNull<NSTimer>| {
-                    let mut app = app.borrow_mut();
-                    deliver_clock(&mut app);
-                    app.frame_paced();
-                });
-                // SAFETY: host startup runs on AppKit's main thread; the block owns the Rc<App>,
-                // and the timer is retained by that thread's run loop for its callback lifetime.
-                let timer =
-                    unsafe { NSTimer::timerWithTimeInterval_repeats_block(period, true, &block) };
-                // SAFETY: this is the same main thread; the timer and callback remain run-loop owned.
-                unsafe {
-                    NSRunLoop::mainRunLoop()
-                        .addTimer_forMode(&timer, objc2_foundation::NSRunLoopCommonModes)
-                };
-            }
-        },
-        |a| {
+    let period = view.period();
+    let mut run = bough::backend::Run::default()
+        .seconds(seconds)
+        .app_id("gui-bench.bough")
+        .start(|a: &mut App<V>| focus(a))
+        .report(|a: &mut App<V>| {
             eprintln!(
                 "window frames={} records={} ticks={}",
                 a.frames,
@@ -291,8 +262,11 @@ pub fn window<V: Bench>(view: V, title: &str) -> ! {
                     "timer integration: callback owns live app"
                 );
             }
-        },
-    );
+        });
+    if let Some(p) = period {
+        run = run.every(p, |a: &mut App<V>| deliver_clock(a));
+    }
+    bough::backend::run(title, config, view, run)
 }
 
 pub fn input<V: Bench>(a: &mut App<V>, op: &str, undo: bool) {
@@ -542,6 +516,9 @@ pub fn headless<V: Bench>(view: V, op: &str, o: Opts) {
             a.record_count(),
             a.frames
         );
+        if std::env::var_os("BOUGH_STATS").is_some() {
+            eprintln!("stats repaired_tiles(last)={} surfaces={:?} cpu={:?}", a.repaired_tiles, a.surf_stats, a.kernel.as_ref().map(|k| k.stats));
+        }
         return;
     }
     let mut expected = a.owner.data();

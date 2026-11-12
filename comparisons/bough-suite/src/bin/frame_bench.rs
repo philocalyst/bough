@@ -45,7 +45,7 @@ fn run(mode: MotionMode, frames: usize, rows: usize, geom: MotionGeom, gpu: bool
         a.flush();
         a.frame();
     }
-    let ovh = bough_metal::perf::snap_overhead();
+    let ovh = bough::sys::perf::snap_overhead();
     let mut r = Res { records: a.rt.bough.len(), tiles: 0.0, tiles_all: (a.rt.tiles_x * a.rt.tiles_y) as f64, gpu_frames: 0, update: Duration::ZERO, flush: Duration::ZERO, render: Duration::ZERO, wait: Duration::ZERO, instrs: 0 };
     let g0 = a.surf_stats.gpu;
     let diag = std::env::var_os("DIAG").is_some();

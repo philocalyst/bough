@@ -3,7 +3,7 @@
 //! Run: hover_probe [rows] [doc]   (`HX`: the pointer's x, default 20)
 use bough::layout::prelude::*;
 use bough::raw::*;
-use bough_metal::perf::{snap, snap_overhead};
+use bough::sys::perf::{snap, snap_overhead};
 use bough_widgets::*;
 
 struct Col {

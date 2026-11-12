@@ -1,0 +1,18 @@
+host=ilo-prod kernel=6.18.54 start=2026-11-12T12:15:22Z
+gui-bench=0fd45107d64b3617f87dd4714f4ac1f63886cbc7 (+ bough registered in runner/src/frameworks.rs, main.rs) fakeland=71695e7c5315c916649f46c1e32376cce75befa3
+bough=f2335ebcb8ba3dedeadcfee02b5d5a1c9e7311ff (apps/bough over comparisons/bough-guibench; CPU executor into wl_shm)
+cpu=AMD Ryzen 7 3700X 8-Core Processor governor=powersave load_start=8.72 9.13 8.62
+renderer=pixman (fakeland) other-frameworks=lavapipe software Vulkan (zortax builds, same gui-bench commit, linked read-only) nice=10 mode=--quick
+zgui 1f2a2e515528bcbf
+gpui-kit feb49efb0b7c148f
+gpui-kit-fast be8a5aef14ff27b8
+freya 009b4037a82d7bfd
+freya-056a5b4 0123e0ece6a3f1a4
+vizia c2eeb5581c96e695
+floem 3eb46c794e6ecd97
+iced d8be31514d63a566
+egui 27b5b82573fb072d
+dioxus c2dbcbd2ba36ba63
+bough 2b8a6b5a05b43536
+dioxus-skia cc5ffe1abfe728ab
+runner rc=0 end=2026-11-12T13:12:56Z load_end=7.97 8.31 8.50
