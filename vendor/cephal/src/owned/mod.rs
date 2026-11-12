@@ -14,6 +14,7 @@ pub use styles::StyleTable;
 use crate::geometry::{AvailableSpace, Point, Size};
 use crate::style::{CalcId, CalcOp, CalcTable, Ident, Style};
 use crate::schedule::{META_MASK, ROUND_PENDING, Scheduler};
+use crate::compute::memo::{Memo, ShapeTable, MAX_SHAPE_CHILDREN, NO_SHAPE, SHAPE_UNSET};
 use crate::tree::{Layout, MeasureInput, MeasureOutput, NodeCache, NodeId};
 use std::sync::Arc;
 use crate::hash::FxHashMap;
@@ -72,6 +73,13 @@ pub struct Tree<Ctx = ()> {
     scheduler: Scheduler,
     /// The last root and available space laid out.
     last_root: Option<(NodeId, Size<AvailableSpace>)>,
+    /// Each node's subtree shape (`SHAPE_UNSET` until asked), the interned shapes and the answers
+    /// shared between equal shapes (`compute::memo`).
+    shapes: Vec<u32>,
+    shape_table: ShapeTable,
+    memo: Memo,
+    /// `styles.reused` when the shapes were last known valid.
+    styles_reused: u64,
 }
 
 impl<Ctx> Default for Tree<Ctx> {
@@ -119,6 +127,88 @@ impl<Ctx> Tree<Ctx> {
             absolute_contexts: FxHashMap::default(),
             scheduler: Scheduler::new(),
             last_root: None,
+            shapes: Vec::with_capacity(n),
+            shape_table: ShapeTable::default(),
+            memo: Memo::new(),
+            styles_reused: 0,
+        }
+    }
+
+    /// Turns the shape memo (`compute::memo`) on or off; it starts on unless `CEPHAL_NO_MEMO` is set.
+    pub fn set_memo(&mut self, on: bool) {
+        self.memo.enabled = on;
+        self.memo.clear();
+    }
+
+    /// Answers served from the shape memo and stored into it so far.
+    pub fn memo_counts(&self) -> (u64, u64, usize) {
+        (self.memo.hits, self.memo.stores, self.shape_table.len())
+    }
+
+    /// The shape of node `i`'s subtree, interned on first use (see `compute::memo`).
+    pub(crate) fn shape_at(&mut self, i: usize) -> u32 {
+        let s = self.shapes[i];
+        if s != SHAPE_UNSET {
+            return s;
+        }
+        let style_id = self.style_ids[i];
+        let style = self.styles.get(style_id);
+        let n = self.links[i].child_count as usize;
+        let container_ok = n == 0 || matches!(style.display, crate::style::Display::Flex | crate::style::Display::Block | crate::style::Display::FlowRoot);
+        let mut shareable = self.context_slot[i] == NONE
+            && !style.position.is_out_of_flow()
+            && !style.generates_no_box()
+            && style.display != crate::style::Display::Grid
+            && container_ok
+            && n <= MAX_SHAPE_CHILDREN;
+        if shareable {
+            let mut c = self.links[i].first_child;
+            while c != NONE {
+                shareable &= self.shape_at(c as usize) != NO_SHAPE;
+                c = self.links[c as usize].next;
+            }
+        }
+        let shape = if shareable {
+            let key = &mut self.shape_table.key;
+            key.clear();
+            key.push(style_id);
+            key.push(n as u32);
+            let mut c = self.links[i].first_child;
+            while c != NONE {
+                key.push(self.shapes[c as usize]);
+                c = self.links[c as usize].next;
+            }
+            self.shape_table.intern_key()
+        } else {
+            NO_SHAPE
+        };
+        self.shapes[i] = shape;
+        shape
+    }
+
+    /// Node `i`'s style, children or content changed: its shape and every ancestor's are unknown.
+    fn reset_shapes_up(&mut self, mut i: usize) {
+        loop {
+            self.shapes[i] = SHAPE_UNSET;
+            let p = self.links[i].parent;
+            if p == NONE {
+                return;
+            }
+            i = p as usize;
+        }
+    }
+
+    /// Before a layout call: an interned style id given to another style invalidates every shape
+    /// (shapes are keyed by style ids) and with them every memo entry.
+    fn check_shapes(&mut self) {
+        self.memo.trim();
+        if self.styles.reused != self.styles_reused {
+            self.styles_reused = self.styles.reused;
+            self.shape_table.clear();
+            self.memo.clear();
+            for s in self.shapes.iter_mut() {
+                *s = SHAPE_UNSET;
+            }
         }
     }
 
@@ -222,6 +312,7 @@ impl<Ctx> Tree<Ctx> {
                 }
                 self.caches[i].clear();
                 self.context_slot[i] = context_slot;
+                self.shapes[i] = SHAPE_UNSET;
                 i
             }
             None => {
@@ -236,6 +327,7 @@ impl<Ctx> Tree<Ctx> {
                 }
                 self.caches.push(NodeCache::new());
                 self.context_slot.push(context_slot);
+                self.shapes.push(SHAPE_UNSET);
                 self.generations.push(1);
                 self.links.len() - 1
             }
@@ -282,6 +374,7 @@ impl<Ctx> Tree<Ctx> {
             self.links[next as usize].prev = c as u32;
         }
         self.links[p].child_count += 1;
+        self.reset_shapes_up(p);
         let depth = self.links[p].depth + 1;
         self.set_depth(c, depth);
         if self.rounded_valid {
@@ -331,6 +424,7 @@ impl<Ctx> Tree<Ctx> {
             self.links[next as usize].prev = prev;
         }
         self.links[p as usize].child_count -= 1;
+        self.reset_shapes_up(p as usize);
         self.links[c].parent = NONE;
         self.links[c].prev = NONE;
         self.links[c].next = NONE;
@@ -392,6 +486,9 @@ impl<Ctx> Tree<Ctx> {
         self.absolute_contexts.clear();
         self.scheduler = Scheduler::new();
         self.last_root = None;
+        self.shapes.clear();
+        self.shape_table.clear();
+        self.memo.clear();
     }
 
     /// Forgets every cached answer and layout so the next call lays out from scratch.
@@ -416,6 +513,7 @@ impl<Ctx> Tree<Ctx> {
         self.absolute_contexts.clear();
         self.scheduler = Scheduler::new();
         self.last_root = None;
+        self.memo.clear();
     }
 
     /// A copy with the same structure, styles and contexts but no layout state, for checking
@@ -457,6 +555,11 @@ impl<Ctx> Tree<Ctx> {
             absolute_contexts: FxHashMap::default(),
             scheduler: Scheduler::new(),
             last_root: None,
+            shapes: self.shapes.clone(),
+            shape_table: self.shape_table.clone(),
+            // the reference a cold layout gives: computed without the memo
+            memo: { let mut m = Memo::new(); m.enabled = false; m },
+            styles_reused: self.styles_reused,
         }
     }
 
@@ -540,6 +643,8 @@ impl<Ctx> Tree<Ctx> {
         self.styles.release(old);
         self.style_ids[i] = new;
         self.refresh_meta(i);
+        #[cfg(not(feature = "mutant-memo-shape"))]
+        self.reset_shapes_up(i);
         // A changed meta (an inset turning into a percentage) canonicalises the node's questions
         // differently: its cached answers are filed under other keys than a cold layout's.
         let edit = if !placement_only || self.flags[i] & META_MASK != old_meta {
@@ -611,6 +716,7 @@ impl<Ctx> Tree<Ctx> {
             (false, None) => {}
         }
         self.refresh_meta(i);
+        self.reset_shapes_up(i);
         self.mark_dirty_index(i);
     }
 
@@ -734,6 +840,7 @@ impl<Ctx> Tree<Ctx> {
         executor: &E,
     ) {
         let this = slot.get_mut();
+        this.check_shapes();
         this.generation = this.generation.wrapping_add(1).max(1);
         this.changed.clear();
         let root_query_changed = this.last_root != Some((root, available_space));

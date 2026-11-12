@@ -15,7 +15,7 @@ const AXIS_MASK: u16 = 0b11 << AXIS_SHIFT;
 
 /// Each word is built in a register and stored whole, so comparing a key just built reads back
 /// whole stores.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CacheKey {
     /// Known dimension bits, width low and height high; zero when unknown (see the flags).
     known: u64,

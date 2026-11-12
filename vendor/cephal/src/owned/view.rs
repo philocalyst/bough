@@ -189,6 +189,25 @@ impl<Ctx, F: MeasureFn<Ctx>, E: Executor<Ctx>, A: TreeSlot<Ctx>> LayoutTree for 
         self.executor.distributes()
     }
 
+    /// The shape memo is the calling thread's: off while batches are distributed.
+    #[inline]
+    fn shape(&mut self, node: NodeId) -> u32 {
+        if self.executor.distributes() {
+            return crate::compute::memo::NO_SHAPE;
+        }
+        let tree = self.tree.get_mut();
+        let i = tree.index(node);
+        tree.shape_at(i)
+    }
+
+    #[inline]
+    fn memo(&mut self) -> Option<&mut crate::compute::memo::Memo> {
+        if self.executor.distributes() {
+            return None;
+        }
+        Some(&mut self.tree.get_mut().memo)
+    }
+
     fn compute_child_layouts(&mut self, requests: &[ChildRequest], out: &mut Vec<LayoutOutput>) {
         let logs = if self.speculation == 0 { self.executor.run(&self.tree, requests) } else { None };
         super::parallel::finish_batch(self, requests, logs, |view, log| view.tree.get_mut().commit(log), out);

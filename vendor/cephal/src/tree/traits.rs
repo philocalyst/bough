@@ -287,6 +287,19 @@ pub trait LayoutTree {
     #[inline]
     fn observe_answer(&mut self, _node: NodeId, _inputs: &LayoutInput, _output: &LayoutOutput, _source: AnswerSource) {}
 
+    /// The node's subtree shape for the shape memo ([`crate::compute::memo`]), or
+    /// [`crate::compute::memo::NO_SHAPE`]: its answers are not shared. The default shares nothing.
+    #[inline]
+    fn shape(&mut self, _node: NodeId) -> u32 {
+        crate::compute::memo::NO_SHAPE
+    }
+
+    /// The tree's shape memo, when it keeps one.
+    #[inline]
+    fn memo(&mut self) -> Option<&mut crate::compute::memo::Memo> {
+        None
+    }
+
     /// Whether [`Self::compute_child_layouts`] may beat asking one by one; algorithms then spend
     /// extra work collecting questions that a serial tree would rather answer lazily.
     #[inline]

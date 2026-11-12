@@ -30,6 +30,10 @@ taffy-compat = ["dep:taffy"]
 # whatever its answers say (its content minimum and baselines still reach a parent that reads them).
 mutant-overflow-cut = []
 mutant-boundary = []
+# Shape memo (lane `layout`, round 7) negative controls: `mutant-memo-served` drops the scheduler rule that a
+# change below a memo-served node reaches it; `mutant-memo-shape` keeps a node's shape across a style change.
+mutant-memo-served = []
+mutant-memo-shape = []
 
 [dependencies]
 serde = { version = "1", features = ["derive", "rc"], optional = true }

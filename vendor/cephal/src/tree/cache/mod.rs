@@ -34,6 +34,9 @@ struct Inner {
     /// Set by a hidden layout of the node's subtree (see [`NodeCache::mark_hidden`]); dropped by
     /// any store, clear or drain.
     hidden: bool,
+    /// An answer was stored from the shape memo (`compute::memo`): the node's children do not record
+    /// the questions its algorithm would have asked them. Kept until the entries are cleared.
+    memo_served: bool,
     inline: Slots<INLINE_SIZE_ENTRIES>,
     /// Kept when the entries are cleared, for the next stores.
     spill: Option<Box<Slots<SPILL_SIZE_ENTRIES>>>,
@@ -41,7 +44,7 @@ struct Inner {
 
 impl Inner {
     const fn empty() -> Self {
-        Self { final_entry: None, len: 0, evicted: false, unstored: false, hidden: false, inline: Slots::empty(), spill: None }
+        Self { final_entry: None, len: 0, evicted: false, unstored: false, hidden: false, memo_served: false, inline: Slots::empty(), spill: None }
     }
 
     /// The first live size entry that answers `key`.
@@ -261,7 +264,25 @@ impl NodeCache {
             c.evicted = false;
             c.unstored = false;
             c.hidden = false;
+            c.memo_served = false;
         }
+    }
+
+    /// [`Self::store_observed`] for an answer taken from the shape memo; marks the node
+    /// [`memo_served`](Self::memo_served).
+    pub fn store_memo(&mut self, key: CacheKey, run_mode: RunMode, output: LayoutOutput, generation: u32, observed: u8) {
+        self.store_observed(key, run_mode, output, generation, observed);
+        if let Some(c) = self.0.as_deref_mut() {
+            c.memo_served = true;
+        }
+    }
+
+    /// Whether an answer was stored from the shape memo since the entries were last cleared or
+    /// drained: the children's caches do not record what this node's algorithm asks them, so a
+    /// change below must re-run it (see `compute::memo`).
+    #[inline]
+    pub fn memo_served(&self) -> bool {
+        self.0.as_deref().is_some_and(|c| c.memo_served)
     }
 
     /// The cached final-layout answer, if any.
@@ -360,6 +381,7 @@ impl NodeCache {
         }
         c.evicted = false;
         c.hidden = false;
+        c.memo_served = false;
     }
 }
 

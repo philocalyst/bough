@@ -209,6 +209,11 @@ impl Scheduler {
             } else {
                 (self.recompute(tree, node, in_flow), true)
             };
+            // An ancestor answered from the shape memo never ran its algorithm here, so no cache below
+            // it records what that algorithm would have asked: a change anywhere below must reach it
+            // (see `compute::memo`).
+            #[cfg(not(feature = "mutant-memo-served"))]
+            let change = if change != Change::Full && memo_served_above(tree, parent) { Change::Full } else { change };
             if change != Change::None {
                 if placed_by_containing_block {
                     // Only its containing block asks it anything.
@@ -294,6 +299,11 @@ impl Scheduler {
             return Change::Full;
         }
         let mut change = if evicted { Change::Full } else { Change::None };
+        // The node's own answers are recomputed by its algorithm, not taken from the shape memo, so
+        // its children record what it asks them and a later change below can stop here.
+        if let Some(m) = tree.memo() {
+            m.skip = Some(node);
+        }
         for i in 0..self.scratch.len() {
             let (input, old, old_observed) = self.scratch[i];
             let new = crate::compute::compute_child_layout(tree, node, input, None);
@@ -305,12 +315,30 @@ impl Scheduler {
                 change = Change::Full;
             }
         }
+        if let Some(m) = tree.memo() {
+            m.skip = None;
+        }
         self.scratch.clear();
         // A parent that asked this node questions speculatively depends on answers no entry
         // records, which may have changed with the recorded ones unchanged, or with only their
         // overflow changed.
         if tree.cache(node).has_unstored() { Change::Full } else { change }
     }
+}
+
+/// Whether `from` or an ancestor of it holds an answer served from the shape memo.
+fn memo_served_above<T: Incremental + ?Sized>(tree: &mut T, from: Option<NodeId>) -> bool {
+    if tree.memo().is_none() {
+        return false;
+    }
+    let mut at = from;
+    while let Some(n) = at {
+        if tree.cache(n).memo_served() {
+            return true;
+        }
+        at = tree.parent(n);
+    }
+    false
 }
 
 /// Whether an ancestor of `node` generates no box, so `node` is laid out hidden by its parent.

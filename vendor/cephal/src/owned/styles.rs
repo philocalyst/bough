@@ -24,6 +24,9 @@ pub struct StyleTable {
     plans: Vec<Option<StylePlan>>,
     /// The algorithm a container with this style runs.
     kinds: Vec<NodeKind>,
+    /// How many times a released id was given to another style (shapes keyed by style ids must
+    /// be forgotten when this moves: `compute::memo`).
+    pub reused: u64,
 }
 
 impl StyleTable {
@@ -54,6 +57,7 @@ impl StyleTable {
         let kind = NodeKind::of_container(&style);
         let id = match self.free.pop() {
             Some(id) => {
+                self.reused += 1;
                 self.styles[id as usize] = style;
                 self.refs[id as usize] = 1;
                 self.hashes[id as usize] = hash;

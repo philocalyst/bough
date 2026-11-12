@@ -7,6 +7,7 @@ pub mod flex;
 #[cfg(feature = "grid")]
 pub mod grid;
 pub mod leaf;
+pub mod memo;
 pub mod oof;
 pub mod plan;
 pub mod scratch;
@@ -69,12 +70,15 @@ pub mod stats {
     pub static OOF_KEPT: AtomicUsize = AtomicUsize::new(0);
     pub static OOF_PLACED: AtomicUsize = AtomicUsize::new(0);
     /// Hidden layouts that found their subtree already zeroed.
+    /// Answers served from the shape memo (`compute::memo`): size answers, and final layouts stamped.
+    pub static MEMO_SIZE: AtomicUsize = AtomicUsize::new(0);
+    pub static MEMO_FINAL: AtomicUsize = AtomicUsize::new(0);
     pub static HIDDEN_KEPT: AtomicUsize = AtomicUsize::new(0);
     pub fn bump(c: &AtomicUsize) {
         c.fetch_add(1, Relaxed);
     }
     pub fn report() -> String {
-        let all = [("hidden", &HIDDEN), ("cheap_leaf", &CHEAP_LEAF), ("hit_size", &HIT_SIZE), ("hit_final", &HIT_FINAL), ("miss_size", &MISS_SIZE), ("miss_final", &MISS_FINAL), ("measure", &MEASURE), ("speculative", &SPECULATIVE), ("relaxed_hit", &RELAXED_HIT), ("batches", &BATCHES), ("plan_few_requests", &PLAN_FEW_REQUESTS), ("plan_few_groups", &PLAN_FEW_GROUPS), ("plan_little_work", &PLAN_LITTLE_WORK), ("batch_us", &BATCH_NANOS), ("batch_requests", &BATCH_REQUESTS), ("collision", &COLLISION), ("run_size_axis", &RUN_SIZE_AXIS), ("run_size_both", &RUN_SIZE_BOTH), ("flex_fused", &FLEX_FUSED), ("flex_not_fused", &FLEX_NOT_FUSED), ("flex_miss_wrap", &FLEX_MISS_WRAP), ("flex_miss_no_plan", &FLEX_MISS_NO_PLAN), ("flex_miss_aspect_ratio", &FLEX_MISS_ASPECT_RATIO), ("flex_miss_auto_margin", &FLEX_MISS_AUTO_MARGIN), ("flex_miss_basis", &FLEX_MISS_BASIS), ("flex_miss_size_keyword", &FLEX_MISS_SIZE_KEYWORD), ("flex_miss_baseline", &FLEX_MISS_BASELINE), ("flex_miss_empty", &FLEX_MISS_EMPTY), ("flex_wrap", &FLEX_WRAP), ("grid_measure_elided", &GRID_MEASURE_ELIDED), ("grid_measured", &GRID_MEASURED), ("inflow_gathered", &INFLOW_GATHERED), ("inflow_fallback", &INFLOW_FALLBACK), ("oof_kept", &OOF_KEPT), ("oof_placed", &OOF_PLACED), ("hidden_kept", &HIDDEN_KEPT)];
+        let all = [("hidden", &HIDDEN), ("cheap_leaf", &CHEAP_LEAF), ("hit_size", &HIT_SIZE), ("hit_final", &HIT_FINAL), ("miss_size", &MISS_SIZE), ("miss_final", &MISS_FINAL), ("measure", &MEASURE), ("speculative", &SPECULATIVE), ("relaxed_hit", &RELAXED_HIT), ("batches", &BATCHES), ("plan_few_requests", &PLAN_FEW_REQUESTS), ("plan_few_groups", &PLAN_FEW_GROUPS), ("plan_little_work", &PLAN_LITTLE_WORK), ("batch_us", &BATCH_NANOS), ("batch_requests", &BATCH_REQUESTS), ("collision", &COLLISION), ("run_size_axis", &RUN_SIZE_AXIS), ("run_size_both", &RUN_SIZE_BOTH), ("flex_fused", &FLEX_FUSED), ("flex_not_fused", &FLEX_NOT_FUSED), ("flex_miss_wrap", &FLEX_MISS_WRAP), ("flex_miss_no_plan", &FLEX_MISS_NO_PLAN), ("flex_miss_aspect_ratio", &FLEX_MISS_ASPECT_RATIO), ("flex_miss_auto_margin", &FLEX_MISS_AUTO_MARGIN), ("flex_miss_basis", &FLEX_MISS_BASIS), ("flex_miss_size_keyword", &FLEX_MISS_SIZE_KEYWORD), ("flex_miss_baseline", &FLEX_MISS_BASELINE), ("flex_miss_empty", &FLEX_MISS_EMPTY), ("flex_wrap", &FLEX_WRAP), ("grid_measure_elided", &GRID_MEASURE_ELIDED), ("grid_measured", &GRID_MEASURED), ("inflow_gathered", &INFLOW_GATHERED), ("inflow_fallback", &INFLOW_FALLBACK), ("oof_kept", &OOF_KEPT), ("oof_placed", &OOF_PLACED), ("hidden_kept", &HIDDEN_KEPT), ("memo_size", &MEMO_SIZE), ("memo_final", &MEMO_FINAL)];
         let s = all.iter().map(|(n, c)| format!("{n}={}", c.swap(0, Relaxed))).collect::<Vec<_>>().join(" ");
         s
     }
@@ -129,6 +133,17 @@ pub fn compute_child_layout<T: LayoutTree + CacheAccess + ?Sized>(
         tree.observe_answer(node, &inputs, &hit, AnswerSource::Cached);
         return verify::poison(&inputs, hit);
     }
+    // Identical subtrees share answers (`memo`): only outside a shared block formatting context.
+    let shape = if inputs.context_key == 0 && inputs.vertical_margins_are_collapsible == Line::FALSE && tree.memo().is_some_and(|m| m.enabled && m.skip != Some(node)) {
+        tree.shape(node)
+    } else {
+        memo::NO_SHAPE
+    };
+    if shape != memo::NO_SHAPE
+        && let Some(e) = tree.memo().and_then(|m| m.find(shape, inputs.run_mode, &key))
+    {
+        return memo_hit(tree, node, inputs, key, e);
+    }
     #[cfg(feature = "stats")]
     {
         stats::bump(if inputs.run_mode == RunMode::PerformLayout { &stats::MISS_FINAL } else { &stats::MISS_SIZE });
@@ -152,11 +167,76 @@ pub fn compute_child_layout<T: LayoutTree + CacheAccess + ?Sized>(
     }
     if tree.speculation() == 0 {
         tree.cache_mut(node).store_observed(key, inputs.run_mode, output, generation, observed);
+        if shape != memo::NO_SHAPE {
+            memo_store(tree, node, shape, key, inputs.run_mode, &output, observed);
+        }
     } else {
         tree.cache_mut(node).note_unstored();
     }
     tree.observe_answer(node, &inputs, &output, AnswerSource::Computed);
     verify::poison(&inputs, output)
+}
+
+/// [`compute_child_layout`]'s answer from shape-memo entry `e`: stored in the node's cache with the
+/// memo mark; a final layout is stamped onto the children (see [`memo`]).
+#[inline(never)]
+fn memo_hit<T: LayoutTree + CacheAccess + ?Sized>(tree: &mut T, node: NodeId, inputs: LayoutInput, key: crate::tree::cache::CacheKey, e: u32) -> LayoutOutput {
+    let memo = tree.memo().expect("a memo");
+    memo.hits += 1;
+    let (output, observed, nkids) = memo.answer(e);
+    #[cfg(feature = "stats")]
+    stats::bump(if inputs.run_mode == RunMode::PerformLayout { &stats::MEMO_FINAL } else { &stats::MEMO_SIZE });
+    if tree.speculation() == 0 {
+        if inputs.run_mode == RunMode::PerformLayout {
+            // As the algorithm's final pass would: each child is asked its final question, then placed.
+            let kids: scratch::Scratch<NodeId> = scratch::Scratch::collect(tree.children(node));
+            debug_assert_eq!(kids.len(), nkids, "a shape fixes the child count");
+            for (i, &child) in kids.iter().enumerate().take(nkids) {
+                let kid = tree.memo().expect("a memo").kid(e, i);
+                if let Some(k) = kid.key {
+                    tree.compute_child_layout(child, k.into_input(RunMode::PerformLayout), None);
+                }
+                tree.set_unrounded_layout(child, &kid.layout);
+            }
+        }
+        let generation = tree.generation();
+        tree.cache_mut(node).store_memo(key, inputs.run_mode, output, generation, observed);
+    } else {
+        tree.cache_mut(node).note_unstored();
+    }
+    tree.note_observed(observed);
+    tree.observe_answer(node, &inputs, &output, AnswerSource::Cached);
+    verify::poison(&inputs, output)
+}
+
+/// Stores `node`'s computed answer in the shape memo: a size answer as it is; a final layout with
+/// each child's layout and final question, unless a child's record is not the one this layout left
+/// (two final questions in a frame, or a child without a stored final answer).
+#[inline(never)]
+fn memo_store<T: LayoutTree + CacheAccess + ?Sized>(tree: &mut T, node: NodeId, shape: u32, key: crate::tree::cache::CacheKey, run_mode: RunMode, output: &LayoutOutput, observed: u8) {
+    match run_mode {
+        RunMode::ComputeSize => tree.memo().expect("a memo").store_size(shape, key, *output, observed),
+        RunMode::PerformLayout => {
+            let kids: scratch::Scratch<NodeId> = scratch::Scratch::collect(tree.children(node));
+            let start = tree.memo().expect("a memo").begin_final();
+            for &child in kids.iter() {
+                let cheap = tree.query_meta(child).cheap_leaf;
+                let cache = tree.cache(child);
+                let key = if cheap { None } else { cache.final_key() };
+                let ok = cheap || (key.is_some() && !cache.had_eviction());
+                let layout = tree.unrounded_layout(child);
+                match (ok, layout) {
+                    (true, Some(layout)) => tree.memo().expect("a memo").push_kid(memo::MemoKid { layout, key }),
+                    _ => {
+                        tree.memo().expect("a memo").abandon_final(start);
+                        return;
+                    }
+                }
+            }
+            tree.memo().expect("a memo").finish_final(start, shape, key, *output, observed);
+        }
+        RunMode::PerformHiddenLayout => {}
+    }
 }
 
 /// [`compute_child_layout`]'s answer for a cheap leaf that is not hidden, asked for its layout or
