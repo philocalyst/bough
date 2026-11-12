@@ -1,4 +1,5 @@
-#![feature(type_info, ptr_metadata, rustc_attrs, const_trait_impl, const_cmp, arbitrary_self_types_pointers, f16, stdarch_neon_f16)]
+#![feature(type_info, ptr_metadata, rustc_attrs, const_trait_impl, const_cmp, arbitrary_self_types_pointers, f16)]
+#![cfg_attr(target_arch = "aarch64", feature(stdarch_neon_f16))]
 #![allow(internal_features)]
 //! bough: the public façade over bough-core (records, damage), bough-text (shaping into the glyph pool),
 //! cephal (layout) and bough-metal's fused presenter. One region holds everything the GPU reads
@@ -8,7 +9,7 @@ pub mod backend;
 pub mod boxops;
 pub mod changed;
 pub mod color;
-pub mod cpu_raster;
+pub mod kernel_backend;
 pub mod deco;
 pub mod describe;
 pub mod elem;
@@ -25,7 +26,6 @@ pub mod ltemplate;
 pub mod mlist;
 pub mod reader;
 pub mod reflect;
-pub mod repair;
 pub mod rt;
 pub mod seal;
 pub mod select;
@@ -37,6 +37,9 @@ pub mod transition;
 pub mod ui;
 
 pub use bough_text::numeric::NumFmt;
+/// The OS counters (instructions, memory) and the frame contract, for harnesses and benchmarks on every platform.
+pub use bough_frame as frame;
+pub use bough_sys as sys;
 
 /// hotpath (feature `hotpath`), for binaries outside this crate that start its guard (`bough-workloads`).
 #[cfg(feature = "hotpath")]

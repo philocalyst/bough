@@ -33,6 +33,23 @@ fn instructions() -> u64 {
     bough_mem::pmu::instructions_cycles().0
 }
 
+#[cfg(not(target_os = "macos"))]
+fn instructions() -> u64 {
+    bough_damage_lab::measure::counters().0
+}
+
+/// Vendored parley has a NEON shaping kernel only; elsewhere the "neon" column measures the scalar kernel.
+#[cfg(not(target_arch = "aarch64"))]
+trait ShapeSimd {
+    fn shape_simd(&self, text: &str, font_size: f32, out: &mut GlyphRun) -> bool;
+}
+#[cfg(not(target_arch = "aarch64"))]
+impl ShapeSimd for Shaper {
+    fn shape_simd(&self, text: &str, font_size: f32, out: &mut GlyphRun) -> bool {
+        self.shape_scalar(text, font_size, out)
+    }
+}
+
 /// Instructions consumed by the counter read itself (subtracted from every measurement).
 fn counter_overhead() -> u64 {
     let mut best = u64::MAX;

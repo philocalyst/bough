@@ -16,7 +16,7 @@ use bough_guibench::{
     scenarios::Virtual,
     spec,
 };
-use bough_metal::perf::{snap, tinstr};
+use bough::sys::perf::{snap, tinstr};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 #[derive(Clone)]

@@ -10,7 +10,7 @@
 //! superset of its instances' (the GPU culls by it) without damaging it.
 use bough::rt::{Rt, NK_BARS};
 use bough_core::{Handle, NRect};
-use bough_metal::instance::Instance;
+use bough::frame::Instance;
 
 pub struct Canvas {
     pub first: u32,

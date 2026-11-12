@@ -12,8 +12,8 @@ use crate::elem::{Element, Mounter};
 use crate::rt::*;
 use crate::signal::{Signal, Wired};
 use bough_core::RecordInit;
-use bough_metal::fused::pay_irun;
-use bough_metal::instance::Instance;
+use bough_frame::pay_irun;
+use bough_frame::Instance;
 
 /// One lane's quad (points, relative to the element's origin).
 #[derive(Clone, Copy, Debug, PartialEq)]

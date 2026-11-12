@@ -23,11 +23,11 @@ fn main() {
     work.mode = mode;
     let mut app = App::new(Lab::new(&work), lab_config(scale), render);
     let stages = std::env::var_os("MEMSTAGES").is_some();
-    let mb = || bough_metal::perf::snap().footprint as f64 / 1048576.0;
+    let mb = || bough::sys::perf::snap().footprint as f64 / 1048576.0;
     if stages {
         println!("after App::new: {:.1} MB", mb());
     }
-    let t0 = bough_metal::perf::snap();
+    let t0 = bough::sys::perf::snap();
     let start = std::time::Instant::now();
     let mut frames = 0u64;
     let mut tiles = 0u64;
@@ -40,19 +40,19 @@ fn main() {
         tiles += app.repaired_tiles as u64;
         #[cfg(target_os = "macos")]
         if stages && render && tick < 6 {
-            app.gpu.as_mut().unwrap().sync();
+            app.wait_presented();
             println!("after frame {tick} (synced): {:.1} MB", mb());
         }
         #[cfg(target_os = "macos")]
         if render && tick % 60 == 0 {
-            app.gpu.as_mut().unwrap().sync();
+            app.wait_presented();
         }
     }
     #[cfg(target_os = "macos")]
     if render {
-        app.gpu.as_mut().unwrap().sync();
+        app.wait_presented();
     }
-    let t1 = bough_metal::perf::snap();
+    let t1 = bough::sys::perf::snap();
     println!("repaired tiles/frame {:.1}", tiles as f64 / frames.max(1) as f64);
     println!(
         "{mode:?} render={render}: {:.4} ms/tick, frames {frames}/{ticks}, ri_instructions total {}, instr/tick {:.0}, footprint {:.1} MB, fallbacks {}, text shaped {}, rows mounted {}",

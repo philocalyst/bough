@@ -21,11 +21,11 @@ fn main() {
         }
     }
     let warmup = 120;
-    let (mut w0, mut c0) = (bough_metal::perf::snap(), 0u64);
+    let (mut w0, mut c0) = (bough::sys::perf::snap(), 0u64);
     let mut drawn = 0u64;
     for frame in 0..frames {
         if frame == warmup {
-            w0 = bough_metal::perf::snap();
+            w0 = bough::sys::perf::snap();
             c0 = drawn;
         }
         app.turn(|a| {
@@ -34,14 +34,14 @@ fn main() {
         drawn += app.frame() as u64;
         #[cfg(target_os = "macos")]
         if render && frame % 120 == 0 {
-            app.gpu.as_mut().unwrap().sync();
+            app.wait_presented();
         }
     }
     #[cfg(target_os = "macos")]
     if render {
-        app.gpu.as_mut().unwrap().sync();
+        app.wait_presented();
     }
-    let w1 = bough_metal::perf::snap();
+    let w1 = bough::sys::perf::snap();
     let n = frames.saturating_sub(warmup).max(1) as f64;
     println!(
         "animate: {:.0} instr/frame after {warmup} warm-up, frames drawn {}/{} render={render}, ri_instructions total {}, footprint {:.1} MB",

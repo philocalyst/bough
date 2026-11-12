@@ -29,7 +29,7 @@ fn mb(b: u64) -> f64 {
 fn main() {
     let rows = env_usize("ROWS", 1_000_000);
     let ticks = env_usize("TICKS", 600);
-    let f0 = bough_metal::perf::snap().footprint;
+    let f0 = bough::sys::perf::snap().footprint;
     let mut a = App::new(Grid { rows, scroll: Signal::new(0.0) }, Config::new(320.0, 640.0, 2.0, font()).once(), false);
     a.frame();
     let i0 = instructions();
@@ -43,7 +43,7 @@ fn main() {
         a.turn(|v| *v.scroll = y);
         a.frame();
     }
-    let s = bough_metal::perf::snap();
+    let s = bough::sys::perf::snap();
     println!(
         "{rows} rows: {} mounted, {} records, footprint {:.1} MB (+{:.1} MB over the empty process), {:.0} instructions per scroll tick",
         a.rt.list_window(0).len(),

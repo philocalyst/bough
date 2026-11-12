@@ -497,6 +497,19 @@ static uint compact(bool hit, uint lane, uint sg, threadgroup uint* sgc, thread 
     return off + pre;
 }
 
+// Ordered exclusive prefix sum of `v` across the threadgroup: this thread's sum of the threads before it, and
+// the total (`compact` is this with v = 0 or 1).
+static uint prefix(uint v, uint lane, uint sg, threadgroup uint* sgc, thread uint& total) {
+    uint pre = simd_prefix_exclusive_sum(v);
+    uint cnt = simd_sum(v);
+    if (lane == 0) sgc[sg] = cnt;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint off = 0;
+    total = 0;
+    for (uint s = 0; s < 8; s++) { uint x = sgc[s]; off += (s < sg) ? x : 0; total += x; }
+    return off + pre;
+}
+
 kernel void cs_repair32(uint2 tgid2 [[threadgroup_position_in_grid]],
                         uint li [[thread_index_in_threadgroup]],
                         uint2 lt [[thread_position_in_threadgroup]],
@@ -942,6 +955,10 @@ struct FHdr {
 // slot offset, so a pre-encoded frame never names a surface (no per-segment surface tracking in the driver, no
 // IOSurface use counts held by pending frames) and growing the bins is a header write. Everything here is in
 // the queue's residency set.
+struct FCert {
+    uint2 c[8];
+    uchar m[8];
+};
 struct FBind {
     texture2d<float, access::write> t[4];
     texture2d<float> atlas;
@@ -949,6 +966,7 @@ struct FBind {
     device atomic_uint* counts;
     texture2d<float, access::read> r[4];   // round 3c: the same surfaces, read (the scroll copy's source)
     texture2d<float> img;      // premultiplied RGBA images and gradient ramps (the glyph atlas until one exists)
+    device FCert* cert[4];     // round 6: each surface's certificates (below)
 };
 constant uint FBIND_OFF = 128;
 // The column table (header + FCOL_OFF, round 6, lane memory): every GPU-read column's GPU address. Each column
@@ -970,6 +988,22 @@ struct FCols {
 };
 constant uint FCOL_OFF = 256;
 static device const FCols& fcols(device const uchar* pool) { return *(device const FCols*)(pool + FCOL_OFF); }
+// Row certificates (round 6). A band is 32 x 4 px of a tile (the tile pass shades one band per simdgroup).
+// Every surface has a plane of one `FCert` per tile (`cert[ty * tiles_x + tx]`): per band a colour `c` (the
+// bits of a half4; 0 = none) and a mask of the band's 4 pixel rows.
+// INVARIANT: mask bit j of a band is set only if every pixel of row j of that band (32 px) holds, in that
+// surface, the bytes that `write(float4(c))` produces: each was written so, or copied from such a pixel.
+// Whoever writes pixels keeps it: the tile pass certifies a band it has just shaded when all 128 of its
+// accumulators are bit-equal; the scroll copy derives each destination row's certificate from the source
+// rows it would read (rows, not bands: a move by any dy keeps what is known, nothing erodes). That makes a
+// frame's work per row of a band DATA, not a code path chosen ahead:
+//   PAINT  the damage row marks the tile                                  -> fs_tile shades it
+//   SKIP   source row certified c, destination row certified c            -> nothing is read or written
+//   FILL   source row certified c, destination not                        -> 32 writes of c, no read
+//   MOVE   otherwise                                                      -> read at p - d, write
+// A zero plane (a fresh, resized or trimmed surface) is all MOVE: the copy as it was before certificates.
+constant uint CERT_FROZEN = 0x100u;   // FSlot.src bit: the copy leaves the destination's certificates as they are
+                                      // (kernel timing: every repetition of a frame decides as the first)
 typedef Instance FInst;
 constant uint F_RUN = 0x80000000u;
 constant uint F_IRUN = 0x40000000u;
@@ -1091,6 +1125,10 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
     threadgroup uint hl[256];      // L3 hits: payload, absolute ink, clip id; paint order
     threadgroup uint2 hk[256];
     threadgroup uint hc[256];
+    threadgroup uint sp[256];      // hit -> its first segment
+    threadgroup uint sd[256];      // segment: an instance, an instance run (payload) or a glyph run (run | F_RUN)
+    threadgroup uint sh[256];      // segment -> its hit
+    threadgroup uint ip[256];      // segment -> its first item
     uint nb = 0;
     uint cap = h.bin_cap;
     device uint4* bin = bins + ty * cap;
@@ -1146,88 +1184,127 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                 uint rs = compact(rh, lane, sg, sgc, nr);
                 if (rh) { hl[rs] = ii; hk[rs] = uint2(as_type<uint>(ink.xy), as_type<uint>(ink.zw)); hc[rs] = cid; }
                 threadgroup_barrier(mem_flags::mem_threadgroup);
-                // append in paint order: stretches of single-instance hits in parallel; runs expanded cooperatively
-                uint k = 0;
-                while (k < nr) {
-                    uint j = k;
-                    while (j < nr && (hl[j] & (F_RUN | F_IRUN)) == 0u) j++;
-                    if (li < j - k && nb + li < cap) {
-                        uint idx = k + li;
-                        bin[nb + li] = uint4(hl[idx] & h.m_inst, hk[idx].x, hk[idx].y, hc[idx] << 20);
-                    }
-                    nb += j - k;
-                    if (j < nr) {
-                        uint p = hl[j];
-                        uint cid2 = hc[j];
-                        float4 cl = f_clip(pool, h, cid2);
-                        if ((p & F_RUN) != 0u) {
-                            uint r0 = p & 0xFFFFFu, rn = ((p >> 20) & 0x7FFu) + 1u;
-                            for (uint run0 = r0; run0 < r0 + rn; run0++) {
-                                uint run = run0 & h.m_run;
-                                device const RunHeader& rhd = ((device const RunHeader*)(fcols(pool).runs))[run];
-                                uint rlen = min(rhd.len, h.m_glyph + 1u), rbase = rhd.base;
-                                for (uint g0 = 0; g0 < rlen; g0 += 256) {
-                                    uint gk2 = g0 + li;
-                                    bool gh2 = false;
-                                    short4 gi = short4(0);
-                                    if (gk2 < rlen) {
+                // Append in paint order (round 6). A hit is one instance, an instance run or a text record of
+                // several glyph runs. Hits expand to SEGMENTS (an instance, an instance run, one glyph run)
+                // and segments to ITEMS (an instance, a glyph); both expansions are prefix sums, and a
+                // thread finds its segment or item by a binary search over them, so 256 items are tested
+                // per step whatever runs they belong to. (Before, every run took its own steps: a row of
+                // 30 short labels took 30, and run expansion was 60 % of the bin pass on text.) Segments
+                // and items are numbered in paint order, and compaction keeps it.
+                uint v = 0;
+                if (li < nr) {
+                    uint p = hl[li];
+                    v = (p & F_RUN) != 0u ? ((((p >> 20) & 0x7FFu) + 1u) | 1u << 20) : ((p & F_IRUN) != 0u ? (1u | 1u << 20) : 1u);
+                }
+                uint vt;
+                uint vp = prefix(v, lane, sg, sgc, vt);
+                uint nseg = vt & 0xFFFFFu;
+                if ((vt >> 20) == 0u) {
+                    // no run among the hits: the hits are the items
+                    if (li < nr && nb + li < cap) bin[nb + li] = uint4(hl[li] & h.m_inst, hk[li].x, hk[li].y, hc[li] << 20);
+                    nb += nr;
+                } else {
+                    if (li < nr) sp[li] = vp & 0xFFFFFu;
+                    threadgroup_barrier(mem_flags::mem_threadgroup);
+                    for (uint s0 = 0; s0 < nseg; s0 += 256) {
+                        // this thread's segment: its hit (the last whose first segment is <= s), then what it is
+                        uint sgi = s0 + li, c = 0, desc = 0, hit = 0;
+                        if (sgi < nseg) {
+                            uint lo = 0, hi = nr;
+                            while (hi - lo > 1u) {
+                                uint mid = (lo + hi) >> 1;
+                                if (sp[mid] <= sgi) lo = mid; else hi = mid;
+                            }
+                            hit = lo;
+                            uint p = hl[lo];
+                            if ((p & F_RUN) != 0u) {
+                                uint run = ((p & 0xFFFFFu) + (sgi - sp[lo])) & h.m_run;
+                                c = min(((device const RunHeader*)(fcols(pool).runs))[run].len, h.m_glyph + 1u);
+                                desc = run | F_RUN;
+                            } else if ((p & F_IRUN) != 0u) {
+                                c = ((p >> 18) & 0xFFFu) + 1u;
+                                desc = p;
+                            } else {
+                                c = 1u;
+                                desc = p & h.m_inst;
+                            }
+                        }
+                        threadgroup_barrier(mem_flags::mem_threadgroup);   // the previous chunk's readers of sd, sh, ip are done
+                        uint nitem;
+                        uint cp = prefix(c, lane, sg, sgc, nitem);
+                        sd[li] = desc;
+                        sh[li] = hit;
+                        ip[li] = cp;
+                        uint ns = min(nseg - s0, 256u);
+                        for (uint t0 = 0; t0 < nitem; t0 += 256) {
+                            threadgroup_barrier(mem_flags::mem_threadgroup);   // sd, sh, ip are written; the previous step's readers of sgc are done
+                            uint t = t0 + li;
+                            bool ok = false;
+                            uint4 e = uint4(0u);
+                            if (t < nitem) {
+                                // this thread's item: its segment (the last whose first item is <= t), then its place in it
+                                uint lo = 0, hi = ns;
+                                while (hi - lo > 1u) {
+                                    uint mid = (lo + hi) >> 1;
+                                    if (ip[mid] <= t) lo = mid; else hi = mid;
+                                }
+                                uint u = t - ip[lo], d = sd[lo], hx = sh[lo];
+                                uint cid2 = hc[hx];
+                                if ((d & (F_RUN | F_IRUN)) == 0u) {
+                                    ok = true;
+                                    e = uint4(d, hk[hx].x, hk[hx].y, cid2 << 20);
+                                } else {
+                                    float4 cl = f_clip(pool, h, cid2);
+                                    float2 qa = float2(0.0), qb = float2(0.0);
+                                    uint spc = 0u;
+                                    bool have = false;
+                                    if ((d & F_RUN) != 0u) {
+                                        uint run = d & ~F_RUN;
+                                        uint slot = ((device const RunHeader*)(fcols(pool).runs))[run].base + u;
                                         float2 q0, size;
                                         uint color;
                                         ushort2 uv;
-                                        if (f_glyph(pool, h, run, rbase + gk2, q0, size, color, uv)) {
-                                            float2 qa = q0 - 1.0, qb = q0 - 1.0 + (size + 2.0);
-                                            float4 xm; float2 xk, xt;
-                                            if (f_xf(pool, h, f_run_space(pool, h, run), xm, xk, xt)) {
-                                                float4 bb = f_xbox(qa, qb, xm, xk, xt);
-                                                qa = bb.xy; qb = bb.zw;
-                                            }
-                                            qa = clamp(qa, cl.xy, cl.zw);
-                                            qb = clamp(qb, cl.xy, cl.zw);
-                                            if (qa.x < qb.x && qa.y < qb.y) {
-                                                gi = f_qink(qa, qb);
-                                                gh2 = all(gi < th);
-                                            }
+                                        if (f_glyph(pool, h, run, slot, q0, size, color, uv)) {
+                                            qa = q0 - 1.0;
+                                            qb = q0 - 1.0 + (size + 2.0);
+                                            spc = f_run_space(pool, h, run);
+                                            have = true;
+                                        }
+                                        e = uint4(d, 0u, 0u, (cid2 << 20) | (slot & h.m_glyph));
+                                    } else {
+                                        uint idx = ((d & 0x3FFFFu) + u) & h.m_inst;
+                                        device const FInst& q = inst[idx];
+                                        float2 q0 = q.pos + f_space(pool, h, q.space);
+                                        float m = f_margin(q.kind, q.flags);
+                                        qa = q0 - m;
+                                        qb = q0 + q.size + m;
+                                        spc = q.space;
+                                        have = true;
+                                        e = uint4(idx, 0u, 0u, cid2 << 20);
+                                    }
+                                    if (have) {
+                                        float4 xm; float2 xk, xt;
+                                        if (f_xf(pool, h, spc, xm, xk, xt)) {
+                                            float4 bb = f_xbox(qa, qb, xm, xk, xt);
+                                            qa = bb.xy; qb = bb.zw;
+                                        }
+                                        qa = clamp(qa, cl.xy, cl.zw);
+                                        qb = clamp(qb, cl.xy, cl.zw);
+                                        if (qa.x < qb.x && qa.y < qb.y) {
+                                            short4 gi = f_qink(qa, qb);
+                                            ok = all(gi < th);
+                                            e.y = as_type<uint>(gi.xy);
+                                            e.z = as_type<uint>(gi.zw);
                                         }
                                     }
-                                    threadgroup_barrier(mem_flags::mem_threadgroup);
-                                    uint ng2;
-                                    uint gs2 = compact(gh2, lane, sg, sgc, ng2);
-                                    if (gh2 && nb + gs2 < cap) bin[nb + gs2] = uint4(run | F_RUN, as_type<uint>(gi.xy), as_type<uint>(gi.zw), (cid2 << 20) | ((rbase + gk2) & h.m_glyph));
-                                    nb += ng2;
                                 }
                             }
-                        } else {
-                            uint i0 = p & 0x3FFFFu, in_ = ((p >> 18) & 0xFFFu) + 1u;
-                            for (uint g0 = 0; g0 < in_; g0 += 256) {
-                                uint gk2 = g0 + li;
-                                bool gh2 = false;
-                                short4 gi = short4(0);
-                                if (gk2 < in_) {
-                                    device const FInst& q = inst[(i0 + gk2) & h.m_inst];
-                                    float2 q0 = q.pos + f_space(pool, h, q.space);
-                                    float m = f_margin(q.kind, q.flags);
-                                    float2 qa = q0 - m, qb = q0 + q.size + m;
-                                    float4 xm; float2 xk, xt;
-                                    if (f_xf(pool, h, q.space, xm, xk, xt)) {
-                                        float4 bb = f_xbox(qa, qb, xm, xk, xt);
-                                        qa = bb.xy; qb = bb.zw;
-                                    }
-                                    qa = clamp(qa, cl.xy, cl.zw);
-                                    qb = clamp(qb, cl.xy, cl.zw);
-                                    if (qa.x < qb.x && qa.y < qb.y) {
-                                        gi = f_qink(qa, qb);
-                                        gh2 = all(gi < th);
-                                    }
-                                }
-                                threadgroup_barrier(mem_flags::mem_threadgroup);
-                                uint ng2;
-                                uint gs2 = compact(gh2, lane, sg, sgc, ng2);
-                                if (gh2 && nb + gs2 < cap) bin[nb + gs2] = uint4((i0 + gk2) & h.m_inst, as_type<uint>(gi.xy), as_type<uint>(gi.zw), cid2 << 20);
-                                nb += ng2;
-                            }
+                            uint na;
+                            uint as_ = compact(ok, lane, sg, sgc, na);
+                            if (ok && nb + as_ < cap) bin[nb + as_] = e;
+                            nb += na;
                         }
                     }
-                    k = j + 1;
                 }
                 threadgroup_barrier(mem_flags::mem_threadgroup);
             }
@@ -1273,7 +1350,8 @@ static float f_sd(float2 c, float4 b, float r) {
     return precise::sqrt(fma(m.y, m.y, m.x * m.x)) + min(max(q.x, q.y), 0.0) - r;
 }
 
-static half4 f_shade(threadgroup const FRec& r, float2 c, texture2d<float> atlas) {
+// `lim`: the atlas's last texel (its size - 1), read once per kernel by the caller.
+static half4 f_shade(threadgroup const FRec& r, float2 c, texture2d<float> atlas, uint2 lim) {
     if (!(c.x >= r.q.x && c.x < r.q.z && c.y >= r.q.y && c.y < r.q.w)) return half4(0.0h);
     switch (r.kind) {
     case 0:
@@ -1290,7 +1368,6 @@ static half4 f_shade(threadgroup const FRec& r, float2 c, texture2d<float> atlas
         float2 t = c - r.b.xy;
         half cov = 0.0h;
         if (all(t >= 0.0) && all(t < r.b.zw - r.b.xy)) {
-            uint2 lim = uint2(atlas.get_width() - 1u, atlas.get_height() - 1u);
             cov = half(atlas.read(min(uint2(float2(r.uv)) + uint2(t), lim)).r);
         }
         return r.pm * cov; }
@@ -1370,7 +1447,7 @@ static half4 f_shade_x(threadgroup const FRec& r, float2 c, texture2d<float> atl
         c = r.xk + float2(r.xi.x * (c.x - r.xt.x) + r.xi.y * (c.y - r.xt.y), r.xi.z * (c.x - r.xt.x) + r.xi.w * (c.y - r.xt.y));
         if (r.kind < 4u) return f_shade_t(r, c, atlas);
     } else {
-        if (r.kind < 4u) return f_shade(r, c, atlas);
+        if (r.kind < 4u) return f_shade(r, c, atlas, uint2(atlas.get_width() - 1u, atlas.get_height() - 1u));
         if (!(c.x >= r.q.x && c.x < r.q.z && c.y >= r.q.y && c.y < r.q.w)) return half4(0.0h);
     }
     float2 hs = (r.b.zw - r.b.xy) * 0.5;
@@ -1531,42 +1608,105 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
     threadgroup uint flo[8];
     threadgroup FRec rec[128];
     half4 acc[4] = { half4(0.0h), half4(0.0h), half4(0.0h), half4(0.0h) };
+    uint2 alim = uint2(atlas.get_width() - 1u, atlas.get_height() - 1u);
     device const uint4* bin = bins + tile.y * h.bin_cap;
     uint nb = atomic_load_explicit(fb.counts + tile.y, memory_order_relaxed);
-    for (uint b0 = 0; b0 < nb; b0 += 128) {
-        bool rh = false, cover = false;
-        FRec r;
+    // 256 entries of the row list per step. All 256 threads test one entry each against the tile and the hits
+    // are compacted, in order, BEFORE they are staged (round 6; before, 128 threads tested and staged in one
+    // go). A step costs its barriers and the simdgroups that run the staging code, whatever it finds: a
+    // glyph-dense row (170-210 entries, ~10 hits) now takes one step, not two, and its hits are staged by one
+    // simdgroup, not four (measured: lab stream 44 -> 39 us per frame, same bytes).
+    threadgroup uint hl[256];
+    for (uint b0 = 0; b0 < nb; b0 += 256) {
         uint bi = b0 + li;
-        if (li < 128 && bi < nb) {
+        bool ih = false;
+        if (bi < nb) {
             uint4 en = bin[bi];
-            short4 ink = short4(as_type<short2>(en.y), as_type<short2>(en.z));
-            if (all(ink < th)) {
-                float4 cl = f_clip(pool, h, en.w >> 20);
-                if ((en.x & F_RUN) != 0u) {
-                    rh = f_stage_glyph(pool, h, en.x & h.m_run, en.w & h.m_glyph, cl, r);
-                } else {
-                    device const FInst& in = inst[en.x & h.m_inst];
-                    rh = f_stage_rec(in, f_space(pool, h, in.space), cl, o, r, cover, pool, h);
-                }
-            }
+            ih = all(short4(as_type<short2>(en.y), as_type<short2>(en.z)) < th);
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        uint nr;
-        uint rs = compact(rh, lane, sg, sgc, nr);
-        if (rh) rec[rs] = r;
-        uint fl = simd_max((rh && cover) ? rs + 1u : 0u);
+        threadgroup_barrier(mem_flags::mem_threadgroup);   // the previous step's readers of hl and rec are done
+        uint nh;
+        uint hs = compact(ih, lane, sg, sgc, nh);
+        if (ih) hl[hs] = bi;
+        // the hits are staged 128 at a time by the first threads (one simdgroup stages up to 32 hits)
+        for (uint h0 = 0; h0 < nh; h0 += 128) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);   // hl is written; the previous chunk's readers of rec are done
+        bool cover = false;
+        uint nr = min(nh - h0, 128u);
+        if (li < nr) {
+            uint4 en = bin[hl[h0 + li]];
+            FRec r;
+            bool rh;
+            float4 cl = f_clip(pool, h, en.w >> 20);
+            if ((en.x & F_RUN) != 0u) {
+                rh = f_stage_glyph(pool, h, en.x & h.m_run, en.w & h.m_glyph, cl, r);
+            } else {
+                device const FInst& in = inst[en.x & h.m_inst];
+                rh = f_stage_rec(in, f_space(pool, h, in.space), cl, o, r, cover, pool, h);
+            }
+            if (!rh) {   // clipped away: an empty window, which no block meets
+                r.q = float4(1e30, 1e30, -1e30, -1e30);
+                r.core = float4(0.0);
+                cover = false;
+            }
+            rec[li] = r;
+        }
+        uint fl = simd_max(cover ? li + 1u : 0u);
         if (lane == 0) flo[sg] = fl;
         threadgroup_barrier(mem_flags::mem_threadgroup);
         uint k0 = 0;
         for (uint s2 = 0; s2 < 8; s2++) k0 = max(k0, flo[s2]);
         k0 = k0 > 0 ? k0 - 1u : 0u;
         uint kend = h.debug == 1u ? k0 : nr;   // debug 1: cull and stage only (no shading)
-        for (uint k = k0; k < kend; k++) {
-            threadgroup const FRec& rr = rec[k];
-            if (rr.q.x > blk.z || rr.q.z <= blk.x || rr.q.y > blk.w || rr.q.w <= blk.y) continue;
+        // Survivors first, then shading (round 6). Each thread marks the staged records whose window meets
+        // its 2x2 block (bit = index in `rec` = paint order; one word per 32 records), then walks its own
+        // set bits. The threads of a simdgroup step together, so a step shades a DIFFERENT record in every
+        // lane that still has one, and a band takes as many steps as its busiest block has records (2-4 on
+        // text), not one per record that touches the band anywhere (measured: lab stream 54 -> 44 us per
+        // frame, same bytes).
+        // (Tried and rejected, same bytes: the marks as the AND of per-block-row and per-block-column sets
+        // built by 32 threads. Its extra threadgroup barrier per step cost more than the 224 tests it
+        // saved: heavy stream 0.90 -> 0.98 of the original, lab stream 0.62 -> 0.67.)
+        for (uint w = k0 >> 5; w * 32u < kend; w++) {
+        uint m = 0u;
+        for (uint k = max(k0, w * 32u); k < min(kend, w * 32u + 32u); k++) {
+            float4 q = rec[k].q;
+            m |= uint(!(q.x > blk.z || q.z <= blk.x || q.y > blk.w || q.w <= blk.y)) << (k & 31u);
+        }
+        for (; m != 0u; m &= m - 1u) {
+            threadgroup const FRec& rr = rec[w * 32u + ctz(m)];
             if (blk.x >= rr.core.x && blk.z < rr.core.z && blk.y >= rr.core.y && blk.w < rr.core.w) {
                 half4 cv = rr.cv;
                 for (uint j = 0; j < 4; j++) acc[j] = fma(acc[j], half4(1.0h - cv.a), cv);
+                continue;
+            }
+            // The untransformed base kinds (solid, rounded, border, glyph: all text and almost every box) are
+            // shaded here, not through `f_shade_x`: with the transformed, image, gradient and shadow paths in
+            // the same per-pixel call a glyph sample cost 4x what it does alone (round 6, measured: lab
+            // stream 71 -> 43 us per frame, same bytes). The arithmetic is `f_shade`'s, unchanged.
+            if (rr.xs == 0.0 && rr.kind == 3u) {
+                float4 gq = rr.q, gb = rr.b;
+                half4 pm = rr.pm;
+                uint2 uv = uint2(float2(rr.uv));
+                for (uint j = 0; j < 4; j++) {
+                    float2 c = c00 + float2(float(j & 1u), float(j >> 1));
+                    float2 t = c - gb.xy;
+                    // `sh` is the product or exactly zero, as `f_shade` returns it: written as `pm * cov`
+                    // alone the compiler contracts it into the blend (an fma), and 35 pixels of the animate
+                    // scene round differently from the original kernels
+                    half4 sh = half4(0.0h);
+                    if (c.x >= gq.x && c.x < gq.z && c.y >= gq.y && c.y < gq.w && all(t >= 0.0) && all(t < gb.zw - gb.xy)) {
+                        sh = pm * half(atlas.read(min(uv + uint2(t), alim)).r);
+                    }
+                    acc[j] = fma(acc[j], half4(1.0h - sh.a), sh);   // one rounding (lane memory): the CPU executor relies on it
+                }
+                continue;
+            }
+            if (rr.xs == 0.0 && rr.kind < 3u) {
+                for (uint j = 0; j < 4; j++) {
+                    half4 sh = f_shade(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas, alim);
+                    acc[j] = fma(acc[j], half4(1.0h - sh.a), sh);   // one rounding (lane memory): the CPU executor relies on it
+                }
                 continue;
             }
             for (uint j = 0; j < 4; j++) {
@@ -1574,23 +1714,45 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
                 acc[j] = fma(acc[j], half4(1.0h - sh.a), sh);   // one rounding: the CPU repair backend relies on it
             }
         }
+        }
+        }
     }
     for (uint j = 0; j < 4; j++) {
         uint2 px = o + 2u * lt + uint2(j & 1u, j >> 1);
         if (px.x >= uint(h.viewport.x) || px.y >= uint(h.viewport.y)) continue;
         fb.t[fs.target & 3u].write(float4(acc[j]), px);
     }
+    // Certify this simdgroup's band: one colour iff the 4 accumulators of all its 32 threads are bit-equal
+    // (min == max of their bit patterns), and the simdgroup IS a band (32 threads of one band row). The
+    // band's first thread stores the verdict, so every band of a shaded tile is rewritten, never left stale.
+    uint2 a0 = as_type<uint2>(acc[0]), a1 = as_type<uint2>(acc[1]), a2 = as_type<uint2>(acc[2]), a3 = as_type<uint2>(acc[3]);
+    uint2 lo2 = min(min(a0, a1), min(a2, a3)), hi2 = max(max(a0, a1), max(a2, a3));
+    uint band = lt.y >> 1;
+    uint2 clo = uint2(simd_min(lo2.x), simd_min(lo2.y)), chi = uint2(simd_max(hi2.x), simd_max(hi2.y));
+    bool whole = simd_sum(1u) == 32u && simd_min(band) == simd_max(band);
+#ifdef MUTANT_CERT_TILE
+    chi = clo;   // mutant: a band is certified by its smallest pixel alone
+#endif
+    if (lt.x == 0u && (lt.y & 1u) == 0u && tile.x < h.tiles_x && tile.y < h.tiles_y) {
+        device FCert& ct = fb.cert[fs.target & 3u][tile.y * h.tiles_x + tile.x];
+        bool one = whole && all(clo == chi) && any(clo != uint2(0u));
+        ct.c[band] = one ? clo : uint2(0u);
+        ct.m[band] = one ? uchar(15) : uchar(0);
+    }
 }
 
 // Scroll by copy (RESULTS §15): the pixels of a scrolled clip already exist in the surface showing the previous
-// frame. One threadgroup per 32x32 tile of the destination rect's tile span copies the tile's pixels inside the
+// frame. One threadgroup per 32x32 tile of the destination rect's tile span moves the tile's pixels inside the
 // rect from the source at p - d, unless the frame's damaged rows mark the tile (the tile pass writes those whole),
-// so copy and repair write disjoint tiles and no barrier orders them. 32 x 8 threads x 4 rows: a simdgroup moves
-// 32 consecutive pixels of one row.
+// so copy and repair write disjoint tiles and no barrier orders them. 32 x 8 threads x 4 rows: thread row y is
+// band y of the tile (32 x 4 px), which is SKIPped, FILLed or MOVEd by its certificates (see `FBind`); the
+// copy is bound by memory traffic (measured: 2.3 Mpx read + written in ~165 us, written alone in ~65 us), so
+// the bands it does not read or write are its only saving.
 kernel void fs_copy(uint2 tgid2 [[threadgroup_position_in_grid]],
                     uint2 lt [[thread_position_in_threadgroup]],
                     device const uchar* pool [[buffer(0)]],
                     constant uint2& slot [[buffer(1)]]) {
+    device const FHdr& h = *(device const FHdr*)pool;
     device const FSlot& fs = *(device const FSlot*)(pool + slot.x);
     device const FBind& fb = *(device const FBind*)(pool + FBIND_OFF);
     device const FRow* frows = (device const FRow*)(pool + slot.x + FSLOT_ROWS);
@@ -1605,11 +1767,81 @@ kernel void fs_copy(uint2 tgid2 [[threadgroup_position_in_grid]],
     if (lo < fs.nrows && frows[lo].ty == tile.y && ((frows[lo].bits[(tile.x >> 5) & 3u] >> (tile.x & 31u)) & 1u) != 0u) return;
     int2 d = int2(as_type<short2>(fs.d));
     uint2 r0 = uint2(fs.dst0 & 0xffffu, fs.dst0 >> 16), r1 = uint2(fs.dst1 & 0xffffu, fs.dst1 >> 16);
-    texture2d<float, access::read> src = fb.r[fs.src & 3u];
+    uint tx = h.tiles_x, tys = h.tiles_y;
+    if (tile.x >= tx || tile.y >= tys) return;
+    uint2 org = tile * 32u;
+    // The tile's 8 band decisions are made by 8 threads of its first row (thread x decides band x: one
+    // simdgroup executes the decision once, 8 lanes wide) and handed to the tile through threadgroup memory.
+    // (Measured: decided by every thread, by every band's first thread, or by one thread for all bands, the
+    // decision cost more than moving the pixels: the kernel is bound by instructions per simdgroup.)
+    // Band b's certificate is read and replaced by that one thread, so nothing races.
+    threadgroup uint tg_k[8];     // per band: rows of one colour (K) | rows the destination holds (keep) << 4 | rows in the rect (W) << 8
+    threadgroup uint2 tg_c[8];    // per band: that colour
+    if (lt.y == 0u && lt.x < 8u) {
+        uint band = lt.x;
+        uint y0 = org.y + 4u * band;
+        bool xall = org.x >= r0.x && org.x + 32u <= r1.x, xany = org.x < r1.x && org.x + 32u > r0.x;
+        device FCert& dc = fb.cert[fs.target & 3u][tile.y * tx + tile.x];
+        uint2 O = dc.c[band];
+        uint M = uint(dc.m[band]);
+        // The source rows: pixel rows y0 - dy .. + 3 lie in at most two source bands (A: row 0's, B: row 3's)
+        // of at most two tile columns (0, 1); a destination row is one colour iff its source row is certified
+        // in both columns with the same colour, and all 32 of its pixels are copied (`xall`).
+        device const FCert* sc = fb.cert[fs.src & 3u];
+        int sx = int(org.x) - d.x, sy = int(y0) - d.y;
+        uint sx0 = min(uint(max(sx, 0)) >> 5, tx - 1u), sx1 = min(uint(max(sx + 31, 0)) >> 5, tx - 1u);
+        uint ya = min(uint(max(sy, 0)), tys * 32u - 1u), yb = min(uint(max(sy + 3, 0)), tys * 32u - 1u);
+        uint ia = (ya >> 5) * tx, ib = (yb >> 5) * tx, ba = (ya >> 2) & 7u, bb = (yb >> 2) & 7u;
+        uint2 cA = sc[ia + sx0].c[ba], cB = sc[ib + sx0].c[bb];
+        uint mA = uint(sc[ia + sx0].m[ba]) & uint(sc[ia + sx1].m[ba]), mB = uint(sc[ib + sx0].m[bb]) & uint(sc[ib + sx1].m[bb]);
+        if (!xall || any(cA != sc[ia + sx1].c[ba]) || all(cA == uint2(0u))) mA = 0u;
+        if (!xall || any(cB != sc[ib + sx1].c[bb]) || all(cB == uint2(0u))) mB = 0u;
+        uint2 C = uint2(0u);
+        uint K = 0u, W = 0u;
+        for (uint j = 0; j < 4u; j++) {
+            uint y = y0 + j;
+            if (!(xany && y >= r0.y && y < r1.y)) continue;
+            W |= 1u << j;
+            uint ys = uint(max(int(y) - d.y, 0));
+            bool inA = (ys >> 2) == (ya >> 2);
+            if ((((inA ? mA : mB) >> (ys & 3u)) & 1u) == 0u) continue;
+            uint2 cj = inA ? cA : cB;
+            if (all(C == uint2(0u))) C = cj;
+            if (all(cj == C)) K |= 1u << j;
+        }
+        uint2 Cn = K != 0u ? C : O;
+        uint keep = all(O == Cn) ? M : 0u;   // rows the destination already holds in colour Cn
+#ifdef MUTANT_CERT_SKIP
+        keep = 15u;   // mutant: the destination's own certificate is not consulted
+#endif
+        uint mask = K | (keep & ~W);         // moved rows lose their bit; rows off the rect keep theirs in the same colour
+#ifdef MUTANT_CERT_STALE
+        mask |= keep;   // mutant: a moved row keeps the certificate of what it held before
+#endif
+        if (W != 0u && (fs.src & CERT_FROZEN) == 0u) {
+            dc.c[band] = Cn;
+            dc.m[band] = uchar(mask);
+        }
+        tg_k[band] = K | keep << 4 | W << 8;
+        tg_c[band] = Cn;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // this thread: column lt.x of band lt.y, pixel rows y0 .. y0 + 3
+    uint kk = tg_k[lt.y];
+    uint K = kk & 15u, keep = (kk >> 4) & 15u, W = kk >> 8;
+    if ((W & ~(K & keep)) == 0u) return;                    // no row of the band is filled or moved
+    uint y0 = org.y + 4u * lt.y;
     texture2d<float, access::write> dst = fb.t[fs.target & 3u];
-    for (uint j = 0; j < 4; j++) {
-        uint2 px = tile * 32u + uint2(lt.x, lt.y + 8u * j);
-        if (all(px >= r0) && all(px < r1)) dst.write(src.read(uint2(int2(px) - d)), px);
+    texture2d<float, access::read> src = fb.r[fs.src & 3u];
+    float4 v = float4(as_type<half4>(tg_c[lt.y]));
+    for (uint j = 0; j < 4u; j++) {
+        if (((W >> j) & 1u) == 0u) continue;
+        uint2 px = uint2(org.x + lt.x, y0 + j);
+        if (((K >> j) & 1u) != 0u) {
+            if (((keep >> j) & 1u) == 0u) dst.write(v, px);                                 // FILL (else SKIP)
+        } else if (px.x >= r0.x && px.x < r1.x) {
+            dst.write(src.read(uint2(int2(px) - d)), px);                                   // MOVE
+        }
     }
 }
 

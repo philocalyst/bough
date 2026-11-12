@@ -133,6 +133,8 @@ fn bin_overflow_grows_the_bins_and_redraws_exactly() {
     let mut work = Heavy::from_env();
     work.mode = Mode::Both;
     let mut app = App::new(Dash::new(&work), cfg(2), true);
+    // the row bins belong to the presenter's Metal kernels (the kernel backend's tile lists have no capacity)
+    app.repair = bough::app::Repair::Gpu;
     app.reset_bins(8);
     app.frame();
     for t in 1..=40 {
@@ -144,6 +146,8 @@ fn bin_overflow_grows_the_bins_and_redraws_exactly() {
             assert!(px == r, "tick {t}: presented != full redraw after bin growth");
         }
     }
+    // the GPU's row bins (the CPU executor has none)
+    #[cfg(target_os = "macos")]
     assert!(app.gpu.as_ref().unwrap().bin_growths > 0, "the small bins never overflowed");
     assert!(!app.bins_overflowed());
 }

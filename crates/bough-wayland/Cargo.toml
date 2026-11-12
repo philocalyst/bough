@@ -1,0 +1,14 @@
+[package]
+name = "bough-wayland"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "bough's Wayland host: an xdg-shell toplevel presenting wl_shm buffers with exact damage, frame callbacks, pointer and keyboard (xkb), resize, scale and the suspended state; no libwayland, no toolkit (Linux; empty elsewhere)"
+
+# Pure-Rust protocol implementation (wayland-backend without `client_system`), xkbcommon loaded at run time
+# (as winit and smithay-client-toolkit do), so the binary links no Wayland or xkb library.
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+xkbcommon-dl = "0.4"
+libc = "0.2"

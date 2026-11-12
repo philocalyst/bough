@@ -1,3 +1,5 @@
+//! macOS only: the Metal presenter's publisher thread and layer.
+#![cfg(target_os = "macos")]
 //! The presenter's publication path and window resize (bough-metal RESULTS Part IV):
 //! * the publisher thread puts every drawn or held surface on the layer (detached here: no window) once
 //!   the GPU is done, the main thread never waits, and the surface it shows is exact;

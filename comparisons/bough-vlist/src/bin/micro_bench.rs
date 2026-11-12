@@ -58,7 +58,7 @@ impl Bench {
     fn settle(&mut self) {
         #[cfg(target_os = "macos")]
         if self.render {
-            self.app.gpu.as_mut().unwrap().sync();
+            self.app.wait_presented();
         }
     }
 }

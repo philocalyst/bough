@@ -27,8 +27,8 @@ use bough_core::page::Page;
 use bough_core::nrect::WRect;
 use bough_core::{Bough, Handle, NRect, RecordInit};
 use bough_mem::{Col, Region};
-use bough_metal::fused::{Layout, Masks, HDR_BYTES};
-use bough_metal::instance::Instance;
+use bough_frame::{Layout, Masks, HDR_BYTES};
+use bough_frame::Instance;
 use bough_text::atlas::TokStrike;
 use bough_text::pool::{GlyphPool, PoolColumns, RunHeader};
 use std::collections::VecDeque;
@@ -61,7 +61,8 @@ pub fn edge_band(kind: u8, radius: f32, bw: f32) -> i16 {
 /// invariant anywhere (-1: their whole visible ink).
 #[inline]
 fn scroll_band(inst: &Col<Instance>, kind: u8, payload: u32) -> i16 {
-    if kind != REC_QUAD || payload & (bough_metal::fused::PAY_RUN | bough_metal::fused::PAY_IRUN) != 0 {
+    // the kind's low bits (the high ones are interaction flags, `KF_MASK`: a hoverable or scrolling box is still a box)
+    if kind & !bough_core::KF_MASK != REC_QUAD || payload & (bough_frame::PAY_RUN | bough_frame::PAY_IRUN) != 0 {
         return -1;
     }
     if payload as usize >= inst.len() {
@@ -640,7 +641,7 @@ impl Rt {
         };
         let mut layout = layout;
         {
-            use bough_metal::fused::*;
+            use bough_frame::*;
             let d = |off: u32, elem: usize, cap: usize, group: usize| ColumnDesc { off, elem: elem as u32, reserve: u32::try_from(elem * cap).expect("a GPU column's reservation fits 32 bits"), group: group as u8 };
             let l = &mut layout;
             l.cols[COL_INST] = d(l.inst_off, size_of::<Instance>(), icap, G_INST);
@@ -754,6 +755,7 @@ impl Rt {
         self._region.base()
     }
     /// The region's memory and a keep-alive share of it (a presenter wraps it, or views of it).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn region_mem(&self) -> (*mut u8, usize, Box<dyn std::any::Any>) {
         (self._region.base(), self._region.len(), self._region.keeper())
     }
@@ -762,7 +764,7 @@ impl Rt {
     /// high-water mark. A presenter with column views must cover them before a frame
     /// (`Fused::ensure_columns`); loads and compares only.
     #[inline]
-    pub fn column_needs(&self) -> [usize; bough_metal::fused::NGROUPS] {
+    pub fn column_needs(&self) -> [usize; bough_frame::NGROUPS] {
         let (pages, dir, clips) = self.bough.gpu_extent();
         [
             // the runs' region's high-water mark, and the per-element instances after it (`ibase + id`)
@@ -1544,7 +1546,7 @@ impl Rt {
     /// the two, so this is the comparable form). Each item: `(kind, x, y, w, h, color, color2, radius, bw,
     /// uv w, uv h)` with positions absolute (space added).
     pub fn expand_payload(&self, payload: u32) -> Vec<(u8, [f32; 4], u32, u32, f32, f32, [u16; 2])> {
-        use bough_metal::fused::{PAY_IRUN, PAY_RUN};
+        use bough_frame::{PAY_IRUN, PAY_RUN};
         let mut out = Vec::new();
         let quad = |i: &Instance, out: &mut Vec<_>| {
             let sp = self.glyphs.spaces[i.space as usize];

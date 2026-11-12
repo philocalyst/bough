@@ -12,7 +12,7 @@ pub fn selected(name: &str) -> bool {
 
 /// The GPU caught up and the presented frame read back (nothing headless).
 pub fn finish<V: View>(app: &mut App<V>) {
-    if app.gpu.is_some() {
+    if app.has_surfaces() {
         let px = app.presented_pixels();
         std::hint::black_box(px);
     }

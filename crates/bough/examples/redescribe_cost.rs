@@ -7,7 +7,7 @@
 //!     cargo run --release -p bough --example redescribe_cost -- [rows...]
 use bough::prelude::*;
 use bough::raw::{App, Caps, Config};
-use bough_metal::perf::tinstr;
+use bough_sys::perf::tinstr;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 

@@ -1,7 +1,7 @@
 //! Where does the GPU driver's ~100 MB first-submission footprint come from? Stage by stage.
 //!   cargo run --release -p bough --example memprobe -- <stage> [w h]
 use block2::RcBlock;
-use bough_metal::perf::snap;
+use bough_sys::perf::snap;
 use dispatch2::DispatchData;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::rc::Retained;
@@ -14,7 +14,7 @@ static METALLIB: &[u8] = bough_metal::gpu::METALLIB;
 fn mb() -> f64 {
     snap().footprint as f64 / 1048576.0
 }
-fn main() {
+pub fn main() {
     let a: Vec<String> = std::env::args().collect();
     let stage: u32 = a.get(1).and_then(|s| s.parse().ok()).unwrap_or(9);
     let w: usize = a.get(2).and_then(|s| s.parse().ok()).unwrap_or(2560);

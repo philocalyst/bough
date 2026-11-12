@@ -13,7 +13,7 @@
 use bough::prelude::*;
 use bough::raw::{App, Caps, Config};
 use bough::NumFmt;
-use bough_metal::perf::tinstr;
+use bough_sys::perf::tinstr;
 
 const MAX: usize = 256;
 

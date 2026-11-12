@@ -47,8 +47,26 @@ pub enum ShaderSource {
     Runtime,
 }
 
+#[cfg(feature = "mutant_cert_skip")]
+const M_SKIP: &str = "#define MUTANT_CERT_SKIP 1\n";
+#[cfg(not(feature = "mutant_cert_skip"))]
+const M_SKIP: &str = "";
+#[cfg(feature = "mutant_cert_stale")]
+const M_STALE: &str = "#define MUTANT_CERT_STALE 1\n";
+#[cfg(not(feature = "mutant_cert_stale"))]
+const M_STALE: &str = "";
+#[cfg(feature = "mutant_cert_tile")]
+const M_TILE: &str = "#define MUTANT_CERT_TILE 1\n";
+#[cfg(not(feature = "mutant_cert_tile"))]
+const M_TILE: &str = "";
+
 pub static SHADER_SRC: &str = include_str!("shader.metal");
 pub static METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.metallib"));
+
+/// `#define`s of the gate mutants this build enables (none in any shipped build), prepended to the source.
+fn mutant_defines() -> String {
+    [M_SKIP, M_STALE, M_TILE].concat()
+}
 
 /// The shader library: the embedded metallib, or, when the build had no Metal compiler (empty `METALLIB`),
 /// `shader.metal` compiled from source.
@@ -59,7 +77,9 @@ pub fn load_library(device: &ProtocolObject<dyn MTLDevice>) -> Retained<Protocol
         return device.newLibraryWithSource_options_error(&NSString::from_str(&src), None).expect("msl compile");
     }
     if METALLIB.is_empty() {
-        let s = NSString::from_str(SHADER_SRC);
+        // a build without a Metal compiler (kernel development): `BOUGH_MSL` names a source to compile instead
+        let over = std::env::var_os("BOUGH_MSL").map(|p| std::fs::read_to_string(p).expect("BOUGH_MSL"));
+        let s = NSString::from_str(&format!("{}{}", mutant_defines(), over.as_deref().unwrap_or(SHADER_SRC)));
         device.newLibraryWithSource_options_error(&s, None).expect("msl compile")
     } else {
         let data = DispatchData::from_static_bytes(METALLIB);
