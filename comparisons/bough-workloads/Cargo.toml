@@ -19,7 +19,7 @@ libc = "0.2"
 bough-metal = { path = "../../crates/bough-metal" }
 
 [features]
-default = ["sheet", "ide", "dash", "canvas", "chat"]
+default = ["sheet", "ide", "dash", "canvas", "chat", "gbcanvas"]
 # One feature per scene, so a scene can be built alone (`--no-default-features --features ide`) while another
 # is being edited.
 sheet = []
@@ -27,6 +27,8 @@ ide = []
 dash = []
 canvas = []
 chat = []
+# the gui-bench edition of the canvas (comparisons/bough-guibench-scenes), the Mac reference of the cross-framework cells
+gbcanvas = []
 # hotpath's phase profile of the turn (bough's own measure sites) printed at exit: instrumented, never a
 # release number (docs/lanes/bench/MEASUREMENT.md).
 hotpath = ["bough/hotpath"]

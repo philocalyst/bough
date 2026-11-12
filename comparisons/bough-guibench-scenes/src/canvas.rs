@@ -109,6 +109,10 @@ pub struct Canvas {
 }
 
 impl Canvas {
+    /// The node count (a multiple of the frame count).
+    pub fn nodes(&self) -> usize {
+        self.nodes
+    }
     pub fn new(nodes: usize) -> Canvas {
         let per = (nodes / sc::FRAMES).max(5);
         Canvas { nodes: per * sc::FRAMES, per, look: Signal::new(NO_HOT), layers: Signal::new(0.0), sel_x: Signal::new(sc::MOVE_A) }

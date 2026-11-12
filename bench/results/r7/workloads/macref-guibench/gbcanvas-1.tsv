@@ -1,0 +1,16 @@
+# host=mileswirht os=Darwin 24.6.0 arch=arm64
+# cpu=Apple M3 Pro cores=11 mem=36GiB
+# load=26.80 24.91 21.92
+# commit=392d870c13 dirty date=2026-11-12T13:49:53Z rustc=1.101.0-nightly_5d8fec066_2026-10-16
+# binary=workload profile=dist sha256=93699becd8642002 bytes=6453488
+# env SCENE_SCALE=1 REPS=16 MODE=redescribe RENDER=1 SCALE=2 PHASES=cold,steady,hover,theme,resize,idle BOUGH_PMU=
+scene	phase	steps	instr_p50	instr_p95	cycles_p50	wall_us_p50	wall_us_p95	wall_us_max	allocs_per_step	footprint_mib	peak_mib
+# scene=gbcanvas model="5000 nodes in 20 frames (the gui-bench spec's canvas)" fanout=1000 scene_scale=1 mode=redescribe render=1 device_scale=2 window=1280x800 reps=16
+# records=7180 since_exec_ms=351.6 build_ms=0.0
+gbcanvas	mount	1	119567560	119567560	76891502	62883.6	62883.6	62883.6	-	126.4	37.4
+gbcanvas	first_frame	1	7741443	7741443	6541679	30910.8	30910.8	30910.8	-	126.5	37.4
+gbcanvas	steady	16	4842176	7965014	2321813	1288.0	10580.3	17944.3	-	174.8	38.9
+gbcanvas	hover	16	5068352	5126205	2989183	5539.9	6101.4	6389.0	-	175.2	38.9
+gbcanvas	theme	16	5546583	5565415	3212500	8789.7	9537.9	9622.8	-	175.3	38.9
+gbcanvas	resize	16	14749508	15804238	10866765	14804.8	19695.0	20608.5	-	129.6	40.0
+gbcanvas	idle	16	4807097	4839469	1811741	718.2	1297.5	1326.3	-	129.6	40.0

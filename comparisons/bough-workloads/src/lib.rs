@@ -23,6 +23,8 @@ pub mod sys;
 /// bough's sheet is the scene every framework draws.
 #[path = "../../gui-bench-scenes/overlay/apps/shared/scenes.rs"]
 pub mod guibench_spec;
+/// The spec under the name the gui-bench editions use (`crate::spec`).
+pub use guibench_spec as spec;
 
 #[cfg(feature = "canvas")]
 pub mod canvas;
@@ -34,6 +36,8 @@ pub mod dash;
 pub mod ide;
 #[cfg(feature = "sheet")]
 pub mod sheet;
+#[cfg(feature = "gbcanvas")]
+pub mod gbcanvas;
 
 use bough::raw::{App, Caps};
 
@@ -91,6 +95,8 @@ pub fn run_scene(name: &str, cfg: &harness::RunCfg) -> bool {
         "canvas" => harness::run::<canvas::Canvas>(cfg),
         #[cfg(feature = "chat")]
         "chat" => harness::run::<chat::Chat>(cfg),
+        #[cfg(feature = "gbcanvas")]
+        "gbcanvas" => harness::run::<gbcanvas::Canvas>(cfg),
         _ => return false,
     }
     true
