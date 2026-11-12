@@ -149,12 +149,42 @@ def analyse(rows, scene=None, ngaps=5):
         w["queue_ms"] = dist([(t[M_DISPATCH] - t[M_EVENT]) / 1e6 for t in ins if t[M_EVENT]])
         w["turn_cpu_ms"] = dist([t[M_CPU] / 1e6 for t in ins])
         w["faults_per_turn"] = dist([t[M_FLT] for t in ins])
+        # the latch: how late its timer fired, and where the commit ended against the latch's target vsync
+        lat_notes = sorted((n[2], n[3], n[4]) for n in notes if n[1] == 16)
+        armed = [x[0] for x in lat_notes]
+        lateness, vs_target = [], []
+        pub_by_seq = {r[1]: r for r in pubs if r[7] == 1}
+        for t in turns:
+            if t[1] != 10 or not (a <= t[M_DISPATCH] < b):
+                continue
+            j = bisect.bisect_right(armed, t[M_DISPATCH]) - 1
+            if j < 0 or t[M_DISPATCH] - lat_notes[j][2] > 5e6 or lat_notes[j][2] - t[M_DISPATCH] > 2e5:
+                continue  # an immediate present, not a latch
+            lateness.append((t[M_DISPATCH] - lat_notes[j][2]) / 1e3)
+            r = pub_by_seq.get(t[M_FID])
+            if r:
+                vs_target.append((r[6] - lat_notes[j][1]) / 1e3)
+        w["latch_lateness_us"] = dist(lateness)
+        w["commit_end_minus_target_us"] = dist(vs_target)
+        w["latch_commits_after_target"] = sum(1 for x in vs_target if x > 0)
         w["notes"] = {NOTES.get(k, k): sum(1 for n in notes if n[1] == k and a <= n[2] < b) for k in sorted({n[1] for n in notes})}
         out["windows"][name] = w
     # every posted event received, per kind (synthetic runs), over the whole run
     from collections import Counter
     out["posted_by_kind"] = dict(Counter(KIND.get(p[3], p[3]) for p in posted))
     out["received_by_kind"] = dict(Counter(KIND.get(e[1], e[1]) for e in events))
+    # G2a: every posted event was received (matched by kind and its own timestamp; events the probe did not
+    # post, e.g. a real pointer crossing the window, are counted apart)
+    rec = Counter((e[1], e[2]) for e in events)
+    missing = 0
+    for p in posted:
+        k = (p[3], p[4])
+        if rec[k] > 0:
+            rec[k] -= 1
+        else:
+            missing += 1
+    out["posted_missing"] = missing
+    out["unposted_received"] = sum(rec.values())
     # idle windows (pairs of wakeup notes): what bough itself did in them
     wk = sorted((n[2], n[3], n[4]) for n in notes if n[1] == 11)
     out["idle"] = []
@@ -220,6 +250,9 @@ def main():
             print(f"     {k:6s}            {fmt(d)}")
         print(f"   input turn ms       {fmt(w['input_turn_ms'])}")
         print(f"   queue ms            {fmt(w['queue_ms'])}")
+        if w["latch_lateness_us"].get("n"):
+            print(f"   latch late us       {fmt(w['latch_lateness_us'])}")
+            print(f"   commit - target us  {fmt(w['commit_end_minus_target_us'])}  after target: {w['latch_commits_after_target']}")
         print(f"   notes {w['notes']}")
     print("posted", out["posted_by_kind"], "received", out["received_by_kind"])
     for i in out["idle"]:

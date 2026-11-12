@@ -218,7 +218,11 @@ pub fn no_app_nap() {
 
 /// Float the window above normal windows (it still never becomes key or active): a covered window is
 /// throttled by the window server, which would invalidate the run (the AWAGY harness rejects such runs).
+///
+/// The window also ignores the user's real mouse (click-through): only events posted to this process reach
+/// the app, and the user's pointer passes to whatever is beneath.
 pub fn float(host: &bough_metal::app::Host) {
+    host.window.setIgnoresMouseEvents(true);
     host.window.setLevel(objc2_app_kit::NSFloatingWindowLevel);
     host.window.orderFrontRegardless();
 }

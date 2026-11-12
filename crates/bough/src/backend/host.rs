@@ -361,9 +361,18 @@ struct Pacer {
     last_present: Cell<f64>,
     /// The refresh period (the link's target - timestamp; at first 1 / the screen's maximum rate).
     period: Cell<f64>,
-    /// How long before the target vsync the latch runs: the frame's CPU part, the GPU, the publisher's
-    /// wake and the commit.
-    lead: f64,
+    /// How long before the target vsync the latch runs: the timer's wake, the frame's CPU part, the GPU, the
+    /// publisher's wake and the commit. Adaptive: the largest of the last `SAMPLES` measured spans from a
+    /// latch's scheduled time to its commit's end (so a loaded machine latches earlier, a quiet one later).
+    lead: Cell<f64>,
+    /// `BOUGH_LEAD_US` (frame-log builds): a fixed lead, for comparison.
+    fixed_lead: bool,
+    samples: RefCell<[f64; SAMPLES]>,
+    n_samples: Cell<usize>,
+    /// The last latch present not yet sampled: (its scheduled time, when it started).
+    probe: Cell<Option<(f64, f64)>>,
+    /// The armed latch's scheduled time.
+    latch_at: Cell<f64>,
     /// The link's last target vsync (the refresh phase), host seconds.
     last_target: Cell<Option<f64>>,
     /// The target the animations were last stepped to.
@@ -382,14 +391,21 @@ struct Pacer {
 const IDLE_CALLBACKS: u32 = 3;
 /// A latch closer than this is run at once.
 const LATCH_MIN: f64 = 0.0002;
+/// Latch-to-commit spans the adaptive lead keeps.
+const SAMPLES: usize = 32;
+/// The lead before any sample, and its bounds (the upper one: a refresh less 1 ms).
+const LEAD_START: f64 = 0.003;
+const LEAD_MIN: f64 = 0.0005;
 
 impl Pacer {
     fn new(max_fps: f64) -> Pacer {
-        let mut lead = 0.003;
+        let mut lead = LEAD_START;
         let mut at_tick = false;
+        let mut fixed_lead = false;
         if fl::ON {
             if let Some(us) = std::env::var("BOUGH_LEAD_US").ok().and_then(|s| s.parse::<f64>().ok()) {
                 lead = us * 1e-6;
+                fixed_lead = true;
             }
             at_tick = std::env::var("BOUGH_LATCH").is_ok_and(|v| v == "tick");
         }
@@ -399,7 +415,12 @@ impl Pacer {
             link_on: Cell::new(false),
             last_present: Cell::new(0.0),
             period: Cell::new(1.0 / max_fps.max(1.0)),
-            lead,
+            lead: Cell::new(lead),
+            fixed_lead,
+            samples: RefCell::new([0.0; SAMPLES]),
+            n_samples: Cell::new(0),
+            probe: Cell::new(None),
+            latch_at: Cell::new(0.0),
             last_target: Cell::new(None),
             anim_target: Cell::new(None),
             idle_callbacks: Cell::new(0),
@@ -438,18 +459,39 @@ impl Pacer {
         if now - t > 1.0 {
             return false;
         }
-        if t - self.lead < now + LATCH_MIN {
-            t += ((now + LATCH_MIN + self.lead - t) / p).ceil() * p;
+        let lead = self.lead.get();
+        if t - lead < now + LATCH_MIN {
+            t += ((now + LATCH_MIN + lead - t) / p).ceil() * p;
         }
         if self.latch_target.get().is_some_and(|armed| armed <= t + 1e-4) {
             return true; // an earlier (or the same) latch presents it
         }
         self.latch_target.set(Some(t));
-        fl::note(fl::N_LATCH, fl::secs_to_ns(t), fl::secs_to_ns(t - self.lead));
+        self.latch_at.set(t - lead);
+        fl::note(fl::N_LATCH, fl::secs_to_ns(t), fl::secs_to_ns(t - lead));
         if let Some(timer) = self.latch.borrow().as_ref() {
-            timer.setFireDate(&objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(t - self.lead - now));
+            timer.setFireDate(&objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(t - lead - now));
         }
         true
+    }
+
+    /// Fold the last latch's span (scheduled time to commit end) into the adaptive lead, once its commit ended.
+    fn sample<V: View>(&self, a: &App<V>) {
+        let Some((at, start)) = self.probe.get() else { return };
+        let Some(c) = a.last_commit_time() else { return };
+        if c < start {
+            return; // not committed yet (the publisher runs behind the main thread)
+        }
+        self.probe.set(None);
+        if self.fixed_lead {
+            return;
+        }
+        let n = self.n_samples.get();
+        let mut s = self.samples.borrow_mut();
+        s[n % SAMPLES] = c - at;
+        self.n_samples.set(n + 1);
+        let worst = s[..(n + 1).min(SAMPLES)].iter().copied().fold(0.0f64, f64::max);
+        self.lead.set(worst.clamp(LEAD_MIN, (self.period.get() - 0.001).max(LEAD_MIN)));
     }
 
     /// Step the input animations to target `t` (they are sampled for the vsync that shows them).
@@ -513,6 +555,7 @@ impl Pacer {
         }
         self.last_target.set(Some(t));
         let Ok(mut a) = app.try_borrow_mut() else { return };
+        self.sample(&a);
         if self.noframe {
             fl::turn_begin(fl::K_TICK, 0);
             if !self.animate(&mut a, t) {
@@ -548,6 +591,8 @@ impl Pacer {
     fn on_latch<V: View>(&self, app: &Rc<RefCell<App<V>>>, trim: &Rc<Trim>) {
         let Some(t) = self.latch_target.take() else { return };
         let Ok(mut a) = app.try_borrow_mut() else { return };
+        self.sample(&a);
+        let start = objc2_quartz_core::CACurrentMediaTime();
         pace::drain(&self.q, &mut a);
         if a.animating() {
             fl::turn_begin(fl::K_TICK, 0);
@@ -556,6 +601,9 @@ impl Pacer {
         }
         if a.has_damage() {
             self.present(app, &mut a, trim);
+            if self.probe.get().is_none() {
+                self.probe.set(Some((self.latch_at.get(), start)));
+            }
         }
         self.pending.set(false);
     }

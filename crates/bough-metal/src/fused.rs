@@ -379,6 +379,8 @@ struct PubShared {
     queued: std::sync::atomic::AtomicUsize,
     commits: AtomicU64,
     held_back: AtomicU64,
+    /// Host-clock seconds (f64 bits) when the last commit ended (a pacer sizes its latch's lead from it).
+    last_commit: AtomicU64,
 }
 struct PubState {
     job: Option<PubJob>,
@@ -415,6 +417,7 @@ impl Publisher {
             queued: AtomicUsize::new(NONE_SURF),
             commits: AtomicU64::new(0),
             held_back: AtomicU64::new(0),
+            last_commit: AtomicU64::new(0),
         });
         let (s2, objs) = (sh.clone(), PubObjs { kern, layer });
         let thread = std::thread::Builder::new()
@@ -473,6 +476,7 @@ impl Publisher {
                 let _ = t_c0;
                 sh.last.store(job.surf, Relaxed);
                 sh.commits.fetch_add(1, Relaxed);
+                sh.last_commit.store(now().to_bits(), Relaxed);
             } else {
                 #[cfg(feature = "framelog")]
                 fl::publish(job.seq, job.t_post, t_take, t_drawn, 0, 0, false, job.surf, false);
@@ -569,8 +573,9 @@ pub struct Fused {
     img: Option<Tex>,
     /// A clock-driven frame drawn but not yet committed (published at the next `sync`).
     pending: Option<usize>,
-    /// The surface the last calling-thread commit put on screen.
+    /// The surface the last calling-thread commit put on screen, and when that commit ended.
     last_main: usize,
+    last_main_commit: f64,
     /// Frame log: publications so far (the sequence number of the last).
     #[cfg(feature = "framelog")]
     fl_seq: u64,
@@ -781,6 +786,7 @@ impl Fused {
             img: None,
             pending: None,
             last_main: NONE_SURF,
+            last_main_commit: 0.0,
             #[cfg(feature = "framelog")]
             fl_seq: 0,
             #[cfg(feature = "framelog")]
@@ -1261,6 +1267,7 @@ impl Fused {
         fl::publish(self.fl_pend.0, self.fl_pend.1, t_c0, t_c0, t_c0, fl::now_ns(), true, i, true);
         let _ = t_c0;
         self.last_main = i;
+        self.last_main_commit = now();
         if let Some(p) = &self.publisher {
             p.sh.last.store(i, Relaxed);
         }
@@ -1317,6 +1324,12 @@ impl Fused {
                 self.post(i, 0);
             }
         }
+    }
+
+    /// Host-clock seconds (`CACurrentMediaTime`) when the last commit (publisher or calling thread) ended.
+    pub fn last_commit_time(&self) -> f64 {
+        let p = self.publisher.as_ref().map_or(0.0, |p| f64::from_bits(p.sh.last_commit.load(Relaxed)));
+        p.max(self.last_main_commit)
     }
 
     /// Publisher counters: (transactions committed, frames held back by a bin overflow).

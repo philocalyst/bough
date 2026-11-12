@@ -9,7 +9,7 @@ import json, os, statistics, sys
 from collections import defaultdict
 
 METRICS = [("commit_interval_ms", "commit interval"), ("input_to_commit_ms", "input→commit"), ("input_to_vsync_after_commit_ms", "input→vsync after commit"),
-           ("input_turn_ms", "input turn"), ("queue_ms", "queueing")]
+           ("input_turn_ms", "input turn"), ("queue_ms", "queueing"), ("latch_lateness_us", "latch lateness µs"), ("commit_end_minus_target_us", "commit end − target µs")]
 
 
 def med(xs):
@@ -25,6 +25,14 @@ def main():
     d = sys.argv[1]
     md = "--md" in sys.argv
     b = json.load(open(os.path.join(d, "batch.json")))
+    # summaries are recomputed from the logs (the analysis may be newer than the batch)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import framelog
+    for r in b["runs"]:
+        log = os.path.join(d, r["name"] + ".log")
+        scene = "dashboard" if r["name"].startswith("dash") else "scroll" if r["name"].startswith("scroll") else "hover" if r["name"].startswith("hover") else "idle"
+        if os.path.exists(log):
+            r["summary"] = framelog.analyse(framelog.load(log), scene, 5)
     groups = defaultdict(list)  # (workload, label) -> runs
     for r in b["runs"]:
         if "summary" not in r:
@@ -35,9 +43,10 @@ def main():
     print(f"batch {d}: {len(b['runs'])} runs, {b['started']} .. {b.get('ended')}, 1-min load average min {min(loads):.1f} median {statistics.median(loads):.1f} max {max(loads):.1f}")
     for (wl, label), runs in sorted(groups.items()):
         wins = sorted(runs[0]["summary"]["windows"].keys(), key=lambda k: ["typing", "refresh", "toggle", "scroll", "all"].index(k) if k in ["typing", "refresh", "toggle", "scroll", "all"] else 9)
-        g2 = all(r["summary"]["posted_by_kind"] == r["summary"]["received_by_kind"] for r in runs)
+        g2 = all(r["summary"].get("posted_missing", 0) == 0 for r in runs)
+        extra = sum(r["summary"].get("unposted_received", 0) for r in runs)
         rc = sorted({r["rc"] for r in runs})
-        print(f"\n## {wl} / {label}: {len(runs)} runs, exit codes {rc}, every posted event received in every run: {g2}")
+        print(f"\n## {wl} / {label}: {len(runs)} runs, exit codes {rc}, every posted event received in every run: {g2}; events not posted by the probe: {extra}")
         if md:
             print("\n| window | presents/s | refreshes/s | 2+ commits / refreshes | worst gap ms (median, max) | " + " | ".join(f"{n} p50 / p95 / p99 / max" for _, n in METRICS) + " |")
             print("|---|---|---|---|---|" + "---|" * len(METRICS))
@@ -53,7 +62,7 @@ def main():
             gaps = [x["worst_gap_ms"] for x in ws]
             cells = []
             for k, _ in METRICS:
-                ds = [x[k] for x in ws if x[k].get("n")]
+                ds = [x[k] for x in ws if x.get(k, {}).get("n")]
                 cells.append(" / ".join(f(med([dd[q] for dd in ds])) for q in ("p50", "p95", "p99")) + " / " + f(max([dd["max"] for dd in ds]) if ds else None))
             if md:
                 print(f"| {w} | {f(pps,1)} | {f(rps,1)} | {dbl} / {refs} {'(G1 ok)' if g1 else '(G1 FAIL)'} | {f(med(gaps))}, {f(max(gaps))} | " + " | ".join(cells) + " |")

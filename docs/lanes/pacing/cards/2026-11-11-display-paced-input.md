@@ -99,3 +99,21 @@ Changes, mechanism otherwise as frozen:
    the callback; the `BOUGH_LATCH=tick` comparison variant steps and presents at the callback.
 
 Gates and thresholds unchanged.
+
+## Amendment 2 (after the lead sweep, before the A/B batch)
+
+The lead sweep (batch `sweep1`: leads 1.0 / 1.5 / 2.0 / 3.0 ms and the at-callback variant, dashboard x 4,
+hover x 2, scroll 1,000 rows x 2 each; 1-minute load average 59-77 throughout although the lock was held) found
+the latch timer firing 1.2-1.9 ms late at the median (p95 2.0-2.6 ms): with a fixed lead below 3 ms most
+commits ended after the target vsync, and at 3 ms the lead was wasted whenever the machine was quieter. Changes:
+
+1. The lead is adaptive: the largest of the last 32 measured spans from a latch's scheduled time to the end of
+   its commit (the presenter now records its last commit time), clamped to [0.5 ms, one refresh - 1 ms],
+   starting at 3 ms. `BOUGH_LEAD_US` still fixes it in frame-log builds, for comparison.
+2. The probe's floating window ignores the user's real mouse (`setIgnoresMouseEvents`): the sweep received events
+   the probe never posted (the user's pointer crossing the window, a few clicks). G2a now matches every posted
+   event to a received one by kind and timestamp, and counts foreign events apart.
+
+The compositor-deadline calibration (`2026-11-11-compositor-deadline.md`) was measured in between: the window
+server takes what was committed by ~0.3-1.3 ms after a vsync. G1's second clause is still evaluated against the
+vsync itself (no allowance for that sliver), as frozen.

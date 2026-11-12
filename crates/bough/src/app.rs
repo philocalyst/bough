@@ -729,6 +729,15 @@ impl<V: View> App<V> {
         self.frame_as::<true>()
     }
 
+    /// Host-clock seconds when the presenter's last commit ended (direct Metal; `None` without a presenter or
+    /// on the wgpu one). The interactive host's pacer sizes its latch from it.
+    pub fn last_commit_time(&self) -> Option<f64> {
+        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+        return self.gpu.as_ref().map(|g| g.last_commit_time());
+        #[cfg(not(all(target_os = "macos", not(feature = "wgpu"))))]
+        None
+    }
+
     /// Does the current epoch have damage (would `frame` draw or publish)?
     pub fn has_damage(&self) -> bool {
         !self.rt.bough.plane(0).is_clear() || !self.rt.paint.plane(0).is_clear()
