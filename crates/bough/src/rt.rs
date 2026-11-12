@@ -1025,7 +1025,9 @@ impl Rt {
         p.size = [w, h];
         let band = edge_band_of(p);
         let ink = self.ink_rect(space, x + tx, y + ty, w, h, margin);
+        let t0 = crate::layout::attr::t(crate::layout::attr::QUAD_INK);
         self.bough.set_ink_handle_edges(hd, ink, moved, band);
+        crate::layout::attr::add(crate::layout::attr::QUAD_INK, t0);
     }
 
     /// Re-derive a quad node's ink and write it through: the old and the new ink are damaged even when the

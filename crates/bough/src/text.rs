@@ -200,10 +200,16 @@ impl TextSys {
     /// Make face `f` current: its shaper, rustybuzz face and metrics move into the fields every shaping
     /// path reads (boxes and a few words: no table is copied). Operations on another face's text select it
     /// and select 0 again when done.
+    #[inline(always)]
     pub fn select(&mut self, f: u8) {
-        if f == self.cur {
-            return;
+        if f != self.cur {
+            self.select_other(f);
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn select_other(&mut self, f: u8) {
         let mut st = match self.alt[f as usize].take().expect("face") {
             Parked::Ready(s) => s,
             Parked::Pending(font) => take_face(&font),
@@ -483,6 +489,12 @@ impl bough_text::pool::Marks for NoMarks {
     fn or_rows(&mut self, _: i32, _: i32, _: u128) {}
 }
 
+/// Gate support: a moved-only text placement that forgets its last line (`tests/seals.rs` must fail with it).
+fn move_mutant() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("BOUGH_MOVE_MUTANT").is_some())
+}
+
 /// Ink of a line window `[0, w]` (font units) at baseline `oy`, pen origin `ox`, in space `sp`.
 fn line_ink(b: &LineBounds, scale: f32, ox: f32, oy: i32, w: i32, sp: [i32; 2]) -> NRect {
     if w <= 0 {
@@ -676,6 +688,32 @@ impl Rt {
             s.extend_from_slice(spans);
             *bl = Some(block);
         }
+    }
+
+    /// Text node `ti`'s line windows moved to its pen origin `(t.ox, t.oy)` and nothing else changed (same
+    /// block, spans and widths): each line header's origin and the node's ink, by the expressions of
+    /// `lines_point`. Returns the ink. `BOUGH_MOVE_MUTANT=1` (gate support) forgets the last line.
+    pub(crate) fn lines_move(&mut self, ti: u32) -> NRect {
+        let strike = self.texts[ti as usize].strike as StrikeId;
+        let b = self.text.bounds(strike);
+        let scale = self.tscale(&self.texts[ti as usize]);
+        let t = &self.texts[ti as usize];
+        let (ox, oy, lh, space) = (t.ox, t.oy, t.line_h, t.space);
+        let TShape::Lines { first, n, widths, .. } = &t.shape else { unreachable!() };
+        let (first, mut n) = (*first as usize, *n as usize);
+        if move_mutant() {
+            n -= 1;
+        }
+        let sp = self.glyphs.spaces[space as usize];
+        let runs = &mut self.glyphs.runs[first..first + n];
+        let mut ink = NRect::EMPTY;
+        for (i, (h, &w)) in runs.iter_mut().zip(&widths[..n]).enumerate() {
+            let base = (oy + i as f32 * lh).round();
+            ink = ink.union(line_ink(&b, scale, ox, base as i32, w, sp));
+            h.origin = [ox, base];
+        }
+        self.texts[ti as usize].ink = ink;
+        ink
     }
 
     /// Glyph instances (beyond Latin-1, a trigger the token table refuses, or per-glyph colour).

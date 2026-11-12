@@ -37,6 +37,8 @@ dispatch2 = "0.3"
 wgpu = ["dep:bough-gpu"]
 # Gate sabotage (RESULTS §15): the scroll copy reads one pixel off; every scroll pixel gate must fail with it.
 sabotage_copy = []
+# Layout attribution brackets (`layout::attr`): instruction counters around the phases of layout and its write-back.
+lay_attr = []
 
 [dev-dependencies]
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }

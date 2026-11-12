@@ -74,4 +74,5 @@ pub mod raw {
     pub use crate::sig;
     pub use crate::signal::{Signal, Wired};
     pub use bough_text::numeric::NumFmt;
+    pub use crate::layout::attr::{take as lay_attr_take, NAMES as LAY_ATTR_NAMES};
 }

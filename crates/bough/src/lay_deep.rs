@@ -305,7 +305,7 @@ impl Deep {
 
     pub fn invalidate(&mut self, b: &Bough, n: u32) {
         let mut sched = std::mem::take(&mut self.scheduler);
-        sched.mark(&mut DView { d: self, b, speculation: 0, observed: 0 }, nid(n));
+        sched.mark(&mut DView { d: self, b, speculation: 0, observed: 0, #[cfg(feature = "lay_attr")] depth: 0 }, nid(n));
         self.scheduler = sched;
     }
 
@@ -360,7 +360,7 @@ impl Deep {
         let root_query_changed = self.last_root != Some((root, avail));
         let mut sched = std::mem::take(&mut self.scheduler);
         {
-            let mut v = DView { d: self, b, speculation: 0, observed: 0 };
+            let mut v = DView { d: self, b, speculation: 0, observed: 0, #[cfg(feature = "lay_attr")] depth: 0 };
             sched.run(&mut v, nid(root), root_query_changed);
             if root_query_changed {
                 v.d.n[root as usize].cache.clear();
@@ -472,6 +472,8 @@ struct DView<'a> {
     b: &'a Bough,
     speculation: u32,
     observed: u8,
+    #[cfg(feature = "lay_attr")]
+    depth: u32,
 }
 
 impl DView<'_> {
@@ -549,6 +551,7 @@ impl LayoutTree for DView<'_> {
         if self.speculation > 0 {
             return;
         }
+        let _t0 = crate::layout::attr::t(crate::layout::attr::SETLAYOUT);
         let hgen = self.d.generation;
         let i = ix(node);
         let nd = &mut self.d.n[i];
@@ -558,11 +561,25 @@ impl LayoutTree for DView<'_> {
         }
         // written even when equal: equal layouts may differ in the sign of a zero
         self.d.n[i].layout = *layout;
+        crate::layout::attr::add(crate::layout::attr::SETLAYOUT, _t0);
     }
     fn unrounded_layout(&self, node: NodeId) -> Option<Layout> {
         Some(self.d.n[ix(node)].layout)
     }
     fn compute_child_layout(&mut self, node: NodeId, inputs: LayoutInput, block_ctx: Option<&mut BlockContext<'_>>) -> LayoutOutput {
+        #[cfg(feature = "lay_attr")]
+        {
+            // the questions a re-run container asks its children (depth 1 below the scheduler's own call)
+            self.depth += 1;
+            let t0 = if self.depth == 1 { crate::layout::attr::t(crate::layout::attr::CHILD) } else { 0 };
+            let out = cephal::compute::compute_child_layout(self, node, inputs, block_ctx);
+            if self.depth == 1 {
+                crate::layout::attr::add(crate::layout::attr::CHILD, t0);
+            }
+            self.depth -= 1;
+            return out;
+        }
+        #[cfg(not(feature = "lay_attr"))]
         cephal::compute::compute_child_layout(self, node, inputs, block_ctx)
     }
     #[inline]

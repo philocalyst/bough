@@ -925,6 +925,78 @@ impl LProf {
     }
 }
 
+/// Attribution brackets (cargo feature `lay_attr`; nothing is compiled without it). One bracket is live per
+/// process (`LAY_ATTR=<id>`), so a bracket never contains another's counter calls; `redescribe_cost` prints
+/// the accumulated instructions and entries of the live one.
+pub mod attr {
+    pub const ENG: usize = 0;
+    pub const CHILD: usize = 1;
+    pub const SETLAYOUT: usize = 2;
+    pub const WRITEBACK: usize = 3;
+    pub const QUAD: usize = 4;
+    pub const TEXT: usize = 5;
+    pub const TEXT_INK: usize = 6;
+    pub const QUAD_INK: usize = 7;
+    pub const MARK: usize = 8;
+    pub const MOVE_RUN: usize = 9;
+    pub const NAMES: [&str; 10] = ["cephal layout (whole)", "cephal child visits (depth 1)", "set_unrounded_layout", "lay_writeback (whole)", "place_quad", "place_text", "text ink + damage", "quad ink + damage", "changed -> dirty", "moved-run pass"];
+    #[cfg(feature = "lay_attr")]
+    mod on {
+        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
+        pub static ACC: AtomicU64 = AtomicU64::new(0);
+        pub static CNT: AtomicU64 = AtomicU64::new(0);
+        pub static LIVE: AtomicUsize = AtomicUsize::new(usize::MAX - 1);
+        pub static OVH: AtomicU64 = AtomicU64::new(0);
+        pub fn live() -> usize {
+            let l = LIVE.load(Relaxed);
+            if l != usize::MAX - 1 {
+                return l;
+            }
+            let l = std::env::var("LAY_ATTR").ok().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
+            OVH.store(bough_metal::perf::tinstr_overhead(), Relaxed);
+            LIVE.store(l, Relaxed);
+            l
+        }
+    }
+    #[inline(always)]
+    pub fn t(_id: usize) -> u64 {
+        #[cfg(feature = "lay_attr")]
+        if on::live() == _id {
+            return bough_metal::perf::tinstr();
+        }
+        0
+    }
+    #[inline(always)]
+    pub fn add(_id: usize, _t0: u64) {
+        #[cfg(feature = "lay_attr")]
+        if on::live() == _id {
+            use std::sync::atomic::Ordering::Relaxed;
+            let d = bough_metal::perf::tinstr() - _t0;
+            on::ACC.fetch_add(d.saturating_sub(on::OVH.load(Relaxed)), Relaxed);
+            on::CNT.fetch_add(1, Relaxed);
+        }
+    }
+    /// (bracket id, instructions, entries) of the live bracket, and reset.
+    pub fn take() -> Option<(usize, u64, u64)> {
+        #[cfg(feature = "lay_attr")]
+        {
+            use std::sync::atomic::Ordering::Relaxed;
+            let l = on::live();
+            if l < NAMES.len() {
+                return Some((l, on::ACC.swap(0, Relaxed), on::CNT.swap(0, Relaxed)));
+            }
+        }
+        None
+    }
+}
+
+/// Gate support: `BOUGH_LAY_NO_MOVE=1` sends moved-only nodes through the full placement (the path the
+/// moved-only one must equal).
+fn lay_no_move_path() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| std::env::var_os("BOUGH_LAY_NO_MOVE").is_some())
+}
+
 pub struct Lay {
     pub eng: Eng,
     pub prof: LProf,
@@ -940,6 +1012,8 @@ pub struct Lay {
     pub scale: f32,
     pub stats: LayStats,
     stack: Vec<(u32, f32, f32, bool)>,
+    /// The inks of the nodes a write-back only moved, until they are written in one batch.
+    moved_inks: Vec<(bough_core::Handle, NRect)>,
     kids: Vec<u32>,
     /// The layout node of the last box mounted (a scroll box reads its port's node here).
     pub last_box: u32,
@@ -969,6 +1043,7 @@ impl Lay {
             scale,
             stats: LayStats::default(),
             stack: Vec::new(),
+            moved_inks: Vec::new(),
             kids: Vec::new(),
             specs: Default::default(),
             descs: SpecTable::default(),
@@ -1082,15 +1157,19 @@ impl Rt {
                 width: if li.avail_w.is_nan() { AvailableSpace::MaxContent } else { AvailableSpace::Definite(li.avail_w) },
                 height: if li.avail_h.is_nan() { AvailableSpace::MaxContent } else { AvailableSpace::Definite(li.avail_h) },
             };
+            let t0 = attr::t(attr::ENG);
             self.lay.eng.layout(&self.bough, r, avail);
+            attr::add(attr::ENG, t0);
             self.lay.stats.computes += 1;
             // what moved / resized: the write-back starts from exactly these nodes
+            let t0 = attr::t(attr::MARK);
             let mut i = 0;
             while let Some(c) = self.lay.eng.changed_at(i) {
                 i += 1;
                 self.lay.info[c as usize].needs = true;
                 self.lay.dirty.push(c);
             }
+            attr::add(attr::MARK, t0);
             self.lay.info[r as usize].queued = false;
             self.lay.ready.push(r);
             self.lists_root_computed(r);
@@ -1103,7 +1182,9 @@ impl Rt {
     /// Write the laid-out groups back into instances and ink.
     pub fn lay_writeback_ready(&mut self) {
         self.lay.prof.reset();
+        let t0 = attr::t(attr::WRITEBACK);
         self.lay_writeback();
+        attr::add(attr::WRITEBACK, t0);
         self.lay.ready.clear();
         self.lay.prof.mark(LP_WRITE);
     }
@@ -1131,29 +1212,44 @@ impl Rt {
     /// otherwise only from the nodes whose layout or text changed (their absolute position is the sum of the
     /// rects up their parent chain), descending into a node's children only if it moved. A node's untouched
     /// siblings are never visited.
+    ///
+    /// **A node that only moved** (written before, same size, same text) takes `move_quad` / `move_text`:
+    /// its position is computed exactly as above, and only what depends on the position is written (a quad's
+    /// instance position; a text's pen origin in each line header). Its ink is the same expression the full
+    /// placement evaluates, written in one batch at the end (`Bough::set_inks_handles_merged`: pages settle
+    /// once and a run that moved together is two damage marks). The batch is written before any placement
+    /// hook runs, since a hook may translate records (an anchored view) whose inks are still pending.
     fn lay_writeback(&mut self) {
         let mut stack = std::mem::take(&mut self.lay.stack);
-        let mut kids = std::mem::take(&mut self.lay.kids);
         let mut dirty = std::mem::take(&mut self.lay.dirty);
+        let mut moved_inks = std::mem::take(&mut self.lay.moved_inks);
         stack.clear();
+        moved_inks.clear();
         for &r in &self.lay.ready {
             if !self.lay.info[r as usize].written {
                 stack.push((r, 0.0, 0.0, false));
             }
         }
+        // consecutive dirty nodes are mostly siblings (a container's children in flow order): their parent's
+        // absolute position is summed once
+        let (mut last_parent, mut lpx, mut lpy) = (NONE, 0.0f32, 0.0f32);
         for &c in &dirty {
-            let ci = self.lay.info[c as usize];
+            let ci = &self.lay.info[c as usize];
             if !ci.live || !(ci.needs || ci.tdirty) {
                 continue;
             }
-            let (mut px, mut py, mut p) = (0.0f32, 0.0f32, ci.parent);
-            while p != NONE {
-                let (x, y, _, _) = self.lay.eng.rect(p);
-                px += x;
-                py += y;
-                p = self.lay.info[p as usize].parent;
+            if ci.parent != last_parent || ci.parent == NONE {
+                let (mut px, mut py, mut p) = (0.0f32, 0.0f32, ci.parent);
+                last_parent = p;
+                while p != NONE {
+                    let (x, y, _, _) = self.lay.eng.rect(p);
+                    px += x;
+                    py += y;
+                    p = self.lay.info[p as usize].parent;
+                }
+                (lpx, lpy) = (px, py);
             }
-            stack.push((c, px, py, false));
+            stack.push((c, lpx, lpy, false));
         }
         dirty.clear();
         self.lay.dirty = dirty;
@@ -1168,13 +1264,33 @@ impl Rt {
             let moved = !li.written || ax != li.ax || ay != li.ay;
             let sized = !li.written || w != li.aw || h != li.ah;
             if li.kind != 0 && (moved || sized || li.tdirty) {
+                let only_moved = !(sized || li.tdirty) && !lay_no_move_path();
                 match li.kind {
-                    1 => self.place_quad(n, ax, ay, w, h),
-                    _ => self.place_text(n, ax, ay, w, h, sized || li.tdirty),
+                    1 => {
+                        let t0 = attr::t(attr::QUAD);
+                        if only_moved {
+                            self.move_quad(li.rtn, ax, ay, &mut moved_inks);
+                        } else {
+                            self.place_quad(n, ax, ay, w, h);
+                        }
+                        attr::add(attr::QUAD, t0);
+                    }
+                    _ => {
+                        let t0 = attr::t(attr::TEXT);
+                        if !(only_moved && self.move_text(li.rtn, ax, ay, &mut moved_inks)) {
+                            self.place_text(n, ax, ay, w, h, sized || li.tdirty);
+                        }
+                        attr::add(attr::TEXT, t0);
+                    }
                 }
                 self.lay.stats.nodes_written += 1;
             }
             if li.hook != NONE && (moved || sized) {
+                // the hook may move records whose batched inks are pending: they are written first
+                if !moved_inks.is_empty() {
+                    self.bough.set_inks_handles_merged(&moved_inks);
+                    moved_inks.clear();
+                }
                 self.lay_hook(li.hook, li.space, ax, ay, w, h);
             }
             {
@@ -1188,19 +1304,65 @@ impl Rt {
                 l.desc = false;
                 l.tdirty = false;
             }
-            kids.clear();
-            self.lay.eng.children_into(&self.bough, n, &mut kids);
             let fc = force || moved;
-            for &c in &kids {
-                // only what moved (a moved parent moves everything below it) or is flagged is visited
+            // only what moved (a moved parent moves everything below it) or is flagged is visited; children
+            // are pushed in reverse so they pop in flow order (the ink batch then runs along the records)
+            for &c in self.lay.eng.kids(n).iter().rev() {
                 let ci = &self.lay.info[c as usize];
                 if fc || ci.needs || ci.desc || !ci.written || ci.tdirty {
                     stack.push((c, ax, ay, fc));
                 }
             }
         }
+        if !moved_inks.is_empty() {
+            let t0 = attr::t(attr::MOVE_RUN);
+            self.bough.set_inks_handles_merged(&moved_inks);
+            attr::add(attr::MOVE_RUN, t0);
+            moved_inks.clear();
+        }
+        self.lay.moved_inks = moved_inks;
         self.lay.stack = stack;
-        self.lay.kids = kids;
+    }
+
+    /// A quad whose box only moved to `(x, y)` (same size): what `quad_geom` writes for it (node position,
+    /// instance position, the same ink expression), with the ink deferred to `inks`.
+    #[inline]
+    fn move_quad(&mut self, node: u32, x: f32, y: f32, inks: &mut Vec<(bough_core::Handle, NRect)>) {
+        let (x, y) = (snap(x), snap(y));
+        let n = &mut self.nodes[node as usize];
+        if n.x == x && n.y == y {
+            // a move below the geometry grid: `quad_geom` writes nothing either
+            return;
+        }
+        (n.x, n.y) = (x, y);
+        let (inst, margin, hd, space, tx, ty, w, h) = (self.runs[n.run as usize].first, n.margin, n.handle, n.space, n.tx, n.ty, n.w, n.h);
+        self.inst_mut(inst).pos = [x + tx, y + ty];
+        let ink = self.ink_rect(space, x + tx, y + ty, w, h, margin);
+        inks.push((hd, ink));
+    }
+
+    /// A text whose box only moved to `(x, y)` (same width, same text): its lines keep their windows, so the
+    /// retained widths are the ones `lines_point` would recompute and only the pen origins and the ink
+    /// change (`Rt::lines_move`). False (nothing written) when the text is not drawn as line windows onto a
+    /// plain block; the caller places it in full then.
+    #[inline]
+    fn move_text(&mut self, node: u32, x: f32, y: f32, inks: &mut Vec<(bough_core::Handle, NRect)>) -> bool {
+        let ti = self.nodes[node as usize].text;
+        let t = &self.texts[ti as usize];
+        let TShape::Lines { block: Some(b), n, .. } = &t.shape else { return false };
+        if b.exotic || *n == 0 {
+            return false;
+        }
+        let (strike, size_px, lh, hd) = (t.strike as bough_text::atlas::StrikeId, t.size_px, t.line_h, t.handle);
+        let base_off = self.text.baseline_of(strike, size_px, lh);
+        {
+            let t = &mut self.texts[ti as usize];
+            t.ox = x;
+            t.oy = (y + base_off).round();
+        }
+        let ink = self.lines_move(ti);
+        inks.push((hd, ink));
+        true
     }
 
     fn place_quad(&mut self, lid: u32, x: f32, y: f32, w: f32, h: f32) {
@@ -1301,8 +1463,10 @@ impl Rt {
         }
         self.lay.prof.mark(LP_TEXT_EMIT);
         let ink = self.texts[ti as usize].ink;
+        let t0 = attr::t(attr::TEXT_INK);
         self.bough.damage_rect(old_ink);
         self.bough.set_ink_handle(hd, ink);
+        attr::add(attr::TEXT_INK, t0);
         self.lay.prof.mark(LP_TEXT_COPY);
     }
 }

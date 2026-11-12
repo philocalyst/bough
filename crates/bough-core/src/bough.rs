@@ -1369,6 +1369,50 @@ impl Bough {
         self.dirty_scratch = dirty;
     }
 
+    /// `set_inks_handles` for records that **moved** (layout's moved-only write-back): every ink is stored and
+    /// the pages settled once, and the damage is merged instead of marked per record. Each changed record
+    /// contributes its old and its new ink, clipped to its clip and to the window; consecutive contributions
+    /// are united while the union stays within 5/4 of the area they sum to (a run of rows that moved
+    /// together: two marks for the run, like `translate_run`), and marked apart otherwise (two boxes at
+    /// opposite corners never damage what lies between them). A superset of the per-record marks, so a
+    /// repaired frame still equals a full redraw. Records of a transformed page take `set_ink` as before.
+    pub fn set_inks_handles_merged(&mut self, writes: &[(Handle, NRect)]) {
+        let mut dirty = core::mem::take(&mut self.dirty_scratch);
+        let win = self.window();
+        let (mut old_acc, mut new_acc) = (Merge::new(), Merge::new());
+        for &(h, ink) in writes {
+            let Some((p, s)) = self.handle_ptr(h) else { continue };
+            let ink = ink.canon();
+            // SAFETY: p is a live page of this Bough (a bound handle); s < CAP.
+            let pg = unsafe { &mut *p };
+            if pg.is_xf() {
+                let d = pg.dir as usize;
+                self.set_ink_at(d, s, ink, true);
+                continue;
+            }
+            pg.wgen = pg.wgen.wrapping_add(1);
+            let old = pg.abs(pg.ink[s]);
+            if old == ink {
+                continue;
+            }
+            let id = pg.clip[s];
+            pg.store_abs(s, ink);
+            if pg.dirty == 0 {
+                dirty.push(pg.dir);
+            }
+            pg.dirty |= 1 << (s / GROUP);
+            let (old, ink) = (self.clipped(old, id).intersect(win), self.clipped(ink, id).intersect(win));
+            if !merge_mutant() {
+                old_acc.add(old, &mut self.ring);
+            }
+            new_acc.add(ink, &mut self.ring);
+        }
+        old_acc.flush(&mut self.ring);
+        new_acc.flush(&mut self.ring);
+        self.settle_pages(&mut dirty);
+        self.dirty_scratch = dirty;
+    }
+
     #[inline(always)]
     fn write_ink_deferred(&mut self, p: *mut Page, s: usize, ink: NRect, damage: bool, dirty: &mut Vec<u32>) {
         let ink = ink.canon();
@@ -2242,5 +2286,58 @@ fn quad_cover(q: &[[f32; 2]; 4], mut f: impl FnMut(NRect)) {
             f(NRect::new((lo - 1.0).floor() as i32, ty * 32, (hi + 1.0).ceil() as i32, ty * 32 + 32));
         }
         ty += 1;
+    }
+}
+
+/// Gate support: `BOUGH_MERGE_MUTANT=1` makes the merged ink batch forget the old inks' damage (the pixel
+/// gates must fail with it: a moved record's old place would keep its pixels).
+fn merge_mutant() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("BOUGH_MERGE_MUTANT").is_some())
+}
+
+/// A run of damage rects (inside the window) united while their union stays near the area they sum to
+/// (`Bough::set_inks_handles_merged`).
+struct Merge {
+    u: NRect,
+    area: i64,
+}
+
+impl Merge {
+    #[inline(always)]
+    fn new() -> Merge {
+        Merge { u: NRect::EMPTY, area: 0 }
+    }
+    #[inline(always)]
+    fn area(r: NRect) -> i64 {
+        let [x0, y0, x1, y1] = r.to_xyxy();
+        (x1 - x0) as i64 * (y1 - y0) as i64
+    }
+    /// `r` is inside the window (possibly empty, not necessarily canonical).
+    #[inline(always)]
+    fn add(&mut self, r: NRect, ring: &mut crate::damage::DamageRing) {
+        if r.is_empty() {
+            return;
+        }
+        let a = Self::area(r);
+        if self.area == 0 {
+            (self.u, self.area) = (r, a);
+            return;
+        }
+        let u = self.u.union(r);
+        let sum = self.area + a;
+        if Self::area(u) <= sum + sum / 4 {
+            (self.u, self.area) = (u, sum);
+        } else {
+            ring.add_inside(self.u);
+            (self.u, self.area) = (r, a);
+        }
+    }
+    #[inline(always)]
+    fn flush(&mut self, ring: &mut crate::damage::DamageRing) {
+        if self.area != 0 {
+            ring.add_inside(self.u);
+            self.area = 0;
+        }
     }
 }

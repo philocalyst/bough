@@ -105,6 +105,10 @@ fn main() {
         for n in std::env::args().skip(1).filter_map(|s| s.parse::<usize>().ok()) {
             let c = churn(n);
             println!("{n},{c},{}", c / n as u64);
+            if let Some((id, acc, cnt)) = bough::raw::lay_attr_take() {
+                // the whole run (warm-up included): 18 remove+insert pairs
+                println!("attr,{n},{},{},{},{}", bough::raw::LAY_ATTR_NAMES[id], acc / 18, cnt / 18, acc / 18 / n as u64);
+            }
         }
         return;
     }
