@@ -27,6 +27,13 @@ pub mod ops {
     pub fn x_sel(c: u32, a: u32, b: u32) -> u32 {
         select(b, a, c != 0u32)
     }
+    pub fn x_seli(c: u32, a: i32, b: i32) -> i32 {
+        select(b, a, c != 0u32)
+    }
+    /// ONE less a Q15 value.
+    pub fn x_inv(t: u32) -> u32 {
+        ONE - min(t, ONE)
+    }
     pub fn x_selv(c: u32, a: Vec4u, b: Vec4u) -> Vec4u {
         if c != 0u32 {
             return a;

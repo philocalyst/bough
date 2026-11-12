@@ -84,6 +84,8 @@ macro_rules! op {
 op!(/// 1 when two words are equal.
     Eq = x_eq(a: A: u32, b: B: u32) -> u32; opaque = false);
 op!(Sel = x_sel(c: C: u32, a: A: u32, b: B: u32) -> u32; opaque = A::OPAQUE && B::OPAQUE);
+op!(SelI = x_seli(c: C: u32, a: A: i32, b: B: i32) -> i32; opaque = false);
+op!(Inv = x_inv(t: T: u32) -> u32; opaque = false);
 op!(SelV = x_selv(c: C: u32, a: A: Vec4u, b: B: Vec4u) -> Vec4u; opaque = A::OPAQUE && B::OPAQUE);
 op!(/// A packed RGBA8 word as a premultiplied Q15 colour.
     Pm = x_pm(c: C: u32) -> Vec4u; opaque = C::OPAQUE);

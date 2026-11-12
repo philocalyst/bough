@@ -252,7 +252,7 @@ kernel void k_bin(const device uint* META [[buffer(1)]], const device uint* WINS
         n++;
     }
     TILES[2u * t] = base;
-    TILES[2u * t + 1u] = metal::min(n, cap);
+    TILES[2u * t + 1u] = metal::min(n, cap) | (n > cap ? 0x80000000u : 0u);
     // a tile with more entries than a slab holds: counted, and redrawn by the CPU kernel (it is exact)
     if (n > cap) { metal::atomic_fetch_add_explicit(&PICK[1], 1u, metal::memory_order_relaxed); }
 }
