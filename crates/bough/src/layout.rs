@@ -1486,6 +1486,13 @@ pub(crate) fn attach<V>(m: &mut Mounter<'_, V>, lid: u32) -> u32 {
     }
     if parent != NONE {
         m.rt.lay.eng.append(parent, lid);
+        if m.rt.lay.info[parent as usize].written {
+            // a subtree added to a tree that was written: the write-back starts from its root even when the
+            // engine does not report it (its first layout can equal the zero layout it starts from: a 0x0
+            // box at its parent's origin), and reaches the rest of it as never written
+            m.rt.lay.info[lid as usize].needs = true;
+            m.rt.lay.dirty.push(lid);
+        }
     } else {
         let (aw, ah) = m.rt.lay.mount_avail;
         let l = &mut m.rt.lay.info[lid as usize];
