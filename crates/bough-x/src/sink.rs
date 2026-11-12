@@ -398,6 +398,7 @@ impl<'w, 'c, V, B: Backend> Sink<V> for Write<'w, 'c, V, B> {
         let mut fresh = self.fresh;
         if q == self.st.subs.len() {
             self.st.subs.push(Store::new(1, space));
+            crate::store::SHAPE.fetch_add(1, Ordering::Relaxed);
             self.st.order.push(Pass::Sub(q as u32));
             fresh = true;
         }
@@ -525,6 +526,7 @@ fn list_new(parent: &mut Store, l: &List<'_>) {
     st.seen = l.edits.ver;
     parent.order.push(Pass::Sub(parent.subs.len() as u32));
     parent.subs.push(st);
+    crate::store::SHAPE.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Decide what a list pass does, and do everything that does not need the row's type: replay the relation's

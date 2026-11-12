@@ -220,6 +220,8 @@ pub trait Arch: Words {
     const STAGE: StageId;
     /// The record's paint reads `Time`: it can change with no turn.
     const TIMED: bool = false;
+    /// No record of this archetype ever rests (it reads `Time` through something that gives no bound).
+    const ENDLESS: bool = false;
     /// The value of `Time` from which this record shows the same thing whatever the time, under the other
     /// words of `u` (0: it is at rest now; `u32::MAX`: never).
     #[inline(always)]
@@ -304,7 +306,7 @@ pub struct StoreView<'a> {
     pub live: Live<'a>,
 }
 
-pub type DeltaFn = unsafe fn(&RawCol, &StoreView, &U, &U, &mut Tiles);
+pub type DeltaFn = unsafe fn(&ColEnt, &U, &U, &mut Tiles);
 pub type ActiveFn = unsafe fn(&RawCol, &StoreView, &U) -> (u32, Rect);
 pub type HitFn = unsafe fn(&RawCol, &StoreView, &U, i32, i32) -> u32;
 /// A column whose records have handlers: their handler face (kinds, hit kernel, trampoline, captures), constant
@@ -314,6 +316,37 @@ pub type Hov = &'static crate::event::Ons;
 pub const fn hit_fn<A: Arch>() -> HitFn {
     hit_col::<A>
 }
+
+/// A column as the path from a block write to its pages sees it: one line, in a table of all the columns of a
+/// world in paint order. Everything a delta kernel needs is here or one load from here (the space), so the
+/// store tree is not on that path. The pointers are into the store tree and hold until its shape next changes
+/// ([`SHAPE`]): the world rebuilds the table then.
+#[repr(C, align(64))]
+#[derive(Clone, Copy)]
+pub struct ColEnt {
+    pub reads: u64,
+    /// The words that move the column's space: if one changed, the space is damaged as a whole instead.
+    pub skip: u64,
+    pub delta: DeltaFn,
+    pub pages: *const u8,
+    pub live: *const u64,
+    pub space: *const Space,
+    pub npages: u32,
+    pub nrec: u32,
+    pub cap: u32,
+    pub timed: u32,
+}
+impl ColEnt {
+    /// SAFETY: the entry is current (built since the store tree last changed shape).
+    #[inline(always)]
+    unsafe fn live(&self) -> Live<'_> {
+        // SAFETY: `live` is the store's `row_live`, which holds `max(cap / 64, 1)` words.
+        Live { cap: self.cap, rows: unsafe { core::slice::from_raw_parts(self.live, (self.cap as usize / 64).max(1)) }, nrec: self.nrec }
+    }
+}
+
+/// Bumped whenever a store gains a column or a child: what the world's column table is checked against.
+pub static SHAPE: AtomicU32 = AtomicU32::new(0);
 
 /// The cold face of an archetype: what a store needs to run passes over a column it cannot name the type of.
 pub struct Desc {
@@ -599,6 +632,7 @@ impl Store {
         });
         self.reads |= d.reads;
         self.timed |= d.timed;
+        SHAPE.fetch_add(1, Ordering::Relaxed);
         let c = &mut self.cols[j];
         let base = c.k * self.cap;
         c.k += 1;
@@ -624,9 +658,35 @@ impl Store {
         }
     }
 
-    /// The damage of a change of the block from `old` to `new` (`ch` = the changed words), for this store and
-    /// the stores under it. One indirect call per column that reads a changed word. A column whose records
-    /// read `Time` also says, once, until when and where they will be in motion.
+    /// Column `c` as a table entry.
+    pub fn ent(&self, c: &RawCol) -> ColEnt {
+        ColEnt { reads: c.reads, skip: self.space.reads(), delta: c.delta, pages: c.pages, live: self.row_live.as_ptr(), space: &self.space, npages: c.npages, nrec: c.nrec, cap: self.cap, timed: c.desc.timed as u32 }
+    }
+    /// Append this store's columns and those of the stores under it, in paint order; `cold` gets, per entry,
+    /// the store and column it came from (for the rare things the entry does not carry).
+    pub fn table(&self, out: &mut Vec<ColEnt>, cold: &mut Vec<(*const Store, u32)>) {
+        for p in &self.order {
+            match *p {
+                Pass::Col(j) => {
+                    out.push(self.ent(&self.cols[j as usize]));
+                    cold.push((self, j));
+                }
+                Pass::Sub(q) => self.subs[q as usize].table(out, cold),
+            }
+        }
+    }
+    /// The stores, this one and those under it, whose space moves with a block word.
+    pub fn moving_spaces(&self, out: &mut Vec<(u64, *const Store)>) {
+        if self.space.reads() != 0 {
+            out.push((self.space.reads(), self));
+        }
+        for s in &self.subs {
+            s.moving_spaces(out);
+        }
+    }
+
+    /// The same damage as the world's table walk, by walking the tree: the reference the table is held to
+    /// (`tests/table.rs`), and what a caller without a world uses.
     pub fn delta(&self, old: &U, new: &U, ch: u64, tiles: &mut Tiles) {
         if self.space.reads() & ch != 0 {
             // the space moved: everything it shows is somewhere else
@@ -635,16 +695,13 @@ impl Store {
                 self.resweep(new, tiles);
             }
         } else if self.reads & ch != 0 {
-            let live = Live { cap: self.cap, rows: &self.row_live, nrec: 0 };
             for c in &self.cols {
                 if c.reads & ch != 0 {
-                    let sv = StoreView { space: &self.space, live: Live { nrec: c.nrec, ..live } };
-                    // SAFETY: `delta` and `active` were instantiated for the archetype `c` was created with.
-                    unsafe {
-                        (c.delta)(c, &sv, old, new, tiles);
-                        if c.desc.timed {
-                            tiles.set_sweep(c.id, self.space, (c.desc.active)(c, &sv, new));
-                        }
+                    // SAFETY: `delta` was instantiated for the archetype `c` was created with; the entry is
+                    // built here, from the store as it is.
+                    unsafe { (c.delta)(&self.ent(c), old, new, tiles) };
+                    if c.desc.timed {
+                        self.resweep_col(c, new, tiles);
                     }
                 }
             }
@@ -653,6 +710,13 @@ impl Store {
             s.delta(old, new, ch, tiles);
         }
     }
+    /// Say again whether column `c` is in motion, until when and where.
+    #[inline(never)]
+    pub fn resweep_col(&self, c: &RawCol, u: &U, tiles: &mut Tiles) {
+        let sv = StoreView { space: &self.space, live: Live { cap: self.cap, rows: &self.row_live, nrec: c.nrec } };
+        // SAFETY: `active` was instantiated for the archetype `c` was created with.
+        tiles.set_sweep(c.id, self.space, unsafe { (c.desc.active)(c, &sv, u) });
+    }
 
     /// Records of this store were written: say again which of its timed columns are in motion. Cold unless
     /// the store has such a column.
@@ -660,9 +724,7 @@ impl Store {
     pub fn resweep(&self, u: &U, tiles: &mut Tiles) {
         for c in &self.cols {
             if c.desc.timed {
-                let sv = StoreView { space: &self.space, live: Live { cap: self.cap, rows: &self.row_live, nrec: c.nrec } };
-                // SAFETY: `active` was instantiated for the archetype `c` was created with.
-                tiles.set_sweep(c.id, self.space, unsafe { (c.desc.active)(c, &sv, u) });
+                self.resweep_col(c, u, tiles);
             }
         }
     }
@@ -792,13 +854,14 @@ pub fn changed_sparse<A: Arch>(pg: &Page<A>, mut live: u64, old: &U, new: &U) ->
     m
 }
 
-unsafe fn delta_col<A: Arch>(col: &RawCol, sv: &StoreView, old: &U, new: &U, tiles: &mut Tiles) {
-    // SAFETY: the caller instantiated this for the column's archetype.
-    let pages = unsafe { col.all::<A>() };
-    let org = sv.space.origin(new);
-    let clip = sv.space.clip;
+unsafe fn delta_col<A: Arch>(e: &ColEnt, old: &U, new: &U, tiles: &mut Tiles) {
+    // SAFETY: the caller instantiated this for the column's archetype and the entry is current: `pages` holds
+    // `npages` pages of `A`, `space` is the column's store's.
+    let (pages, space, lv) = unsafe { (core::slice::from_raw_parts(e.pages as *const Page<A>, e.npages as usize), &*e.space, e.live()) };
+    let org = space.origin(new);
+    let clip = space.clip;
     for (pi, pg) in pages.iter().enumerate() {
-        let live = sv.live.page(pi);
+        let live = lv.page(pi);
         if live == 0 {
             continue;
         }
@@ -817,6 +880,11 @@ unsafe fn delta_col<A: Arch>(col: &RawCol, sv: &StoreView, old: &U, new: &U, til
 unsafe fn active_col<A: Arch>(col: &RawCol, sv: &StoreView, u: &U) -> (u32, Rect) {
     // SAFETY: the caller instantiated this for the column's archetype.
     let pages = unsafe { col.all::<A>() };
+    if A::ENDLESS {
+        // every record is in motion for ever: the column is, wherever its space shows it, if it has a record
+        let any = (0..pages.len()).any(|pi| sv.live.page(pi) != 0);
+        return if any { (u32::MAX, Rect::EVERYWHERE) } else { (0, Rect::default()) };
+    }
     let now = u.w[U_TIME];
     let (mut until, mut sweep) = (0u32, Rect { x0: i32::MAX, y0: i32::MAX, x1: i32::MIN, y1: i32::MIN });
     for (pi, pg) in pages.iter().enumerate() {
