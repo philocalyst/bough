@@ -49,6 +49,8 @@ mutant_grain_plan = []
 mutant_grain_track = []
 # The owner seal answers "unchanged" without comparing (tests/owner_grain.rs).
 mutant_owner_seal = []
+# A list's item-flag change skips the second row it changes (tests/flags.rs).
+mutant_flags_range = []
 
 [dev-dependencies]
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }

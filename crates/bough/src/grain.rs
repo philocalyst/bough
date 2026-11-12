@@ -163,9 +163,7 @@ tuples!(()(A)(A, B)(A, B, C)(A, B, C, D)(A, B, C, D, E)(A, B, C, D, E, F)(A, B, 
 
 #[rustc_comptime]
 fn walk(p: &mut Plan, t: std::any::TypeId, off: usize, depth: u32) {
-    if !p.exact {
-        return;
-    }
+    // (an inexact plan keeps walking: whether the type holds cells is still needed)
     let size = match t.size() {
         Some(z) => z,
         None => {

@@ -1567,15 +1567,18 @@ where
             let (ins, _kind, margin) = quad_instance(bg, self.radius * s, self.border, s, m.space);
             let inst = m.rt.runs[m.rt.nodes[node as usize].run as usize].first;
             let old = *m.rt.inst_mut(inst);
-            if old.radius != ins.radius || old.kind != ins.kind || old.bw != ins.bw || (self.border.is_some() && old.color != ins.color) {
+            // under variants the description's border is the table's base (`flags.rs`), not what a variant shows
+            let border = m.rt.flags_base_border(node).unwrap_or(old.color);
+            if old.radius != ins.radius || old.kind != ins.kind || old.bw != ins.bw || (self.border.is_some() && border != ins.color) {
                 let p = m.rt.inst_mut(inst);
                 let (pos, size) = (p.pos, p.size);
                 *p = Instance { pos, size, ..ins };
                 let n = &mut m.rt.nodes[node as usize];
                 n.margin = margin;
                 n.color = bg.0;
-                n.kind = if self.border.is_some() { NK_BORDER } else { NK_QUAD };
+                n.kind = if self.border.is_some() { NK_BORDER } else { NK_QUAD } | (n.kind & NK_HOVERED);
                 m.rt.quad_ink(node);
+                m.rt.flags_reshow_node(node);
             } else {
                 <ApplyBg as crate::elem::Apply>::apply(m.rt, node, &bg);
             }

@@ -329,7 +329,8 @@ impl<V: View> App<V> {
         rt.root_ty = std::any::TypeId::of::<V>();
         let mut deps = crate::grain::OwnerDeps::default();
         // a re-describing root records the cells its description reads plainly (`grain.rs`)
-        let rec = (!once).then(crate::grain::Describing::begin);
+        // (an owner type without cells cannot read one: nothing to record)
+        let rec = (!once && crate::grain::plan::<V>().cells).then(crate::grain::Describing::begin);
         let mut seal = crate::describe::OwnerSeal::default();
         {
             let el = owner.view();
@@ -340,18 +341,20 @@ impl<V: View> App<V> {
             let mut m = Mounter { rt: &mut rt, owner: ptr, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None, cls: 0, tape: tp, ti: 0, pos: 0, kid: 0, keep: false, own: OwnerRef::ROOT };
             el.mount(&mut m);
         }
-        if let Some(rec) = rec {
+        if !once {
             // SAFETY: `ptr` is the owner just mounted, borrowed by nothing else.
             unsafe { Self::described(&mut rt, &mut deps, ptr, rec) };
         }
         rt.bough.insert_run(0, &recs);
         // layout groups of the first mount (list regions mount their first rows between its passes)
         rt.lay_flush();
+        rt.flags_flush();
         let mut owner = owner;
         // wires queued while mounting (a producer's first request flips its reader to pending)
         // SAFETY: the owner just mounted, uniquely borrowed here.
         unsafe { rt.settle(&mut *owner as *mut V as *const u8) };
         rt.lay_flush();
+        rt.flags_flush();
         drop(scope); // the root scope lives as long as the app: nothing of it is ever released
         let mut startup = Startup { mount_ns: t_mount.elapsed().as_nanos() as u64, ..Startup::default() };
         #[cfg(target_os = "macos")]
@@ -465,8 +468,10 @@ impl<V: View> App<V> {
         self.redescribe_dirty();
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
+        self.rt.flags_flush();
         self.prof.mark(PH_TEXT);
         self.after_turn();
+        self.blur_disabled();
     }
 
     /// What the turn moved under a resting pointer is entered and left (`rehover`); a hover route that ran
@@ -480,6 +485,7 @@ impl<V: View> App<V> {
             self.effects();
             self.redescribe_dirty();
             self.rt.lay_flush();
+            self.rt.flags_flush();
         }
     }
 
@@ -508,6 +514,7 @@ impl<V: View> App<V> {
         self.effects();
         self.redescribe_dirty();
         self.rt.lay_flush();
+        self.rt.flags_flush();
         self.after_turn();
     }
 
@@ -574,7 +581,7 @@ impl<V: View> App<V> {
             if !self.rt.lists.redesc.is_empty() {
                 self.rt.lists_redescribe();
             }
-            let rec = crate::grain::Describing::begin();
+            let rec = crate::grain::plan::<V>().cells.then(crate::grain::Describing::begin);
             // SAFETY: the tape was recorded by this owner's mount at the start of the Bough.
             unsafe { crate::describe::redescribe(&mut self.rt, &*self.owner, &mut self.tape, &mut self.seal) };
             let o = &*self.owner as *const V;
@@ -594,19 +601,19 @@ impl<V: View> App<V> {
     }
 
     /// Does the root need describing again? A cell its last description read plainly was written (its wake
-    /// wire set `Rt::redesc_root`; so does a route on an entity it shows), its plain bytes differ from those it
-    /// was described from, or a handler ran on it and its type's plan cannot tell (a `Vec`, a `String`: as
-    /// before this mechanism) or its description reads a cell whose writes cannot all be seen (`grain.rs`).
-    /// Clears the wake and the handler mark.
+    /// wire set `Rt::redesc_root`; so does a route on an entity it shows), or a handler ran on it and its plain
+    /// bytes differ from those it was described from, its type's plan cannot tell (a `Vec`, a `String`: as
+    /// before this mechanism) or its description reads a cell whose writes cannot all be seen (`grain.rs`). A
+    /// turn of wires alone (no handler on the root) compares nothing. Clears the wake and the handler mark.
     pub(crate) fn root_dirty(&mut self) -> bool {
         let woken = std::mem::take(&mut self.rt.redesc_root);
         let handled = std::mem::take(&mut self.root_handled);
-        if self.once {
+        if self.once || !(woken || handled) {
             return false;
         }
         let plan = crate::grain::plan::<V>();
         // SAFETY: the owner is live and not borrowed; `described` is a snapshot of this plan.
-        woken || (handled && (self.deps.always || !plan.exact)) || (plan.exact && !unsafe { plan.same(&*self.owner as *const V as *const u8, &self.deps.described) })
+        woken || self.deps.always || !plan.exact || !unsafe { plan.same(&*self.owner as *const V as *const u8, &self.deps.described) }
     }
 
     /// The root has just described itself (mounted or re-described, under `rec`): it subscribes to the cells
@@ -615,12 +622,12 @@ impl<V: View> App<V> {
     ///
     /// # Safety
     /// `o` is the root owner `rt` was mounted for, not borrowed during the call.
-    unsafe fn described(rt: &mut Rt, deps: &mut crate::grain::OwnerDeps, o: *const V, rec: crate::grain::Describing) {
+    unsafe fn described(rt: &mut Rt, deps: &mut crate::grain::OwnerDeps, o: *const V, rec: Option<crate::grain::Describing>) {
         use crate::grain::Dep;
         let lo = o as usize;
         let mut reads = std::mem::take(&mut deps.reads);
         reads.clear();
-        let mut always = rec.end(lo, size_of::<V>(), &mut reads);
+        let mut always = rec.is_some_and(|r| r.end(lo, size_of::<V>(), &mut reads));
         for r in &reads {
             if r.dep == Dep::Always {
                 always = true;

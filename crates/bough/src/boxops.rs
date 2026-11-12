@@ -229,12 +229,31 @@ impl Apply for ApplyTextColor {
         if ti == NONE {
             return; // mounting: the node's text is created after its operands are lowered
         }
+        if rt.nodes[node as usize].kind & NK_HOVERED != 0 {
+            // under variants (`flags.rs`): the colour is the base; the table shows what the flags select
+            rt.nodes[node as usize].color = v.0;
+            let a = rt.input.act_of_handle(h);
+            return rt.flags_rebase(a, None, Some(v.0));
+        }
+        rt.nodes[node as usize].color = v.0;
+        text_color(rt, node, v.0);
+    }
+}
+
+/// Show colour `c` on laid-out text `node` (its lines' run headers, or its label's run): a paint write. The
+/// node's own colour (the description's, the base under variants) is not touched.
+pub(crate) fn text_color(rt: &mut Rt, node: u32, c: u32) {
+    let (ti, h) = (rt.nodes[node as usize].text, rt.nodes[node as usize].handle);
+    if ti == NONE {
+        return;
+    }
+    let v = crate::color::Color(c);
+    {
         let old = rt.texts[ti as usize].color;
         if old == v.0 {
             return;
         }
         rt.texts[ti as usize].color = v.0;
-        rt.nodes[node as usize].color = v.0;
         match &rt.texts[ti as usize].shape {
             crate::text::TShape::Lines { first, cap, .. } => {
                 let (first, cap) = (*first, *cap);

@@ -12,6 +12,7 @@ pub mod deco;
 pub mod describe;
 pub mod elem;
 pub mod entity;
+pub mod flags;
 pub mod grain;
 pub mod input;
 pub mod inspect;
@@ -43,6 +44,7 @@ pub mod prelude {
     pub use crate::color::{rgb, Color};
     pub use crate::elem::{each, Element, IntoProp};
     pub use crate::entity::{Entities, Entity};
+    pub use crate::flags::{Flag, Flagged, Look};
     pub use crate::list::{List, Slot};
     pub use crate::listview::list;
     pub use crate::reader::{boundary, Reader, Request};
@@ -64,6 +66,7 @@ pub mod raw {
     pub use crate::elem::{at, bars, clip, each, quad, text, virtual_list, Element, IntoProp, Mounter, Quad, TextSrc};
     pub use crate::changed::Changed;
     pub use crate::entity::{entity_view, Entities, Entity};
+    pub use crate::flags::{Flag, Flagged, Look};
     pub use crate::input::{no_hit, text_field, tooltip, Button, Ev, Interact, Key, Mods, TipStyle};
     pub use crate::ltemplate::{ltemplate, wire_restyle, Decls, LCtx, LHooked, LNode, P};
     pub use crate::template::{anchor, clip_by, offset, port_list, port_list_in, scroll_y, template, wired_clip, Hooked, TNode, T_CLIP, T_FOCUS, T_HOOK};

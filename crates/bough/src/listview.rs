@@ -63,11 +63,13 @@ pub struct LRow {
     /// Displacement its records' ink has not taken yet (device px): a moving row outside its clip is moved by
     /// its space alone; its ink catches up when it is about to be seen, or when the motion ends.
     pub pend: i32,
+    /// The handle index of the row's first record (its root): where the item's flags are set (`flags.rs`).
+    pub fh: u32,
 }
 
 impl LRow {
     fn hole() -> LRow {
-        LRow { slot: NONE, nrec: 0, scope: NONE, space: 0, mounted: false, placed: false, root: NONE, y: 0, cur: 0, d0: 0.0, pend: 0 }
+        LRow { slot: NONE, nrec: 0, scope: NONE, space: 0, mounted: false, placed: false, root: NONE, y: 0, cur: 0, d0: 0.0, pend: 0, fh: 0 }
     }
 }
 
@@ -410,8 +412,23 @@ unsafe fn mount_lrow<T: 'static>(rt: &mut Rt, reg: u32, l: *const u8, slot: u32,
     // the row's path: this region, the item's slot and the generation it has now
     // SAFETY: the function contract (shared read of the live list).
     let own = OwnerRef::row(reg, slot, unsafe { (*(l as *const List<T>)).slot_gen(slot) });
+    let before = recs.len();
     // SAFETY: a live slot holds an initialised `T`, the row's owner (class `cls`, path `own`).
-    unsafe { mount_row(rt, reg, row as *const T, cls, own, taped, recs, |m| f(&*(row as *const T), m)) }
+    let r = unsafe { mount_row(rt, reg, row as *const T, cls, own, taped, recs, |m| f(&*(row as *const T), m)) };
+    // the item's flags: set on the row's root for its subtree once its records are in the Bough (`flags.rs`)
+    // SAFETY: shared read of the live list.
+    let fl = unsafe { (*(l as *const List<T>)).flags_raw(slot) };
+    if fl != 0 && r.fh != 0 {
+        let h = rt.bough.handle_gen(r.fh);
+        let a = rt.input.ensure_act(h);
+        recs[before].kind |= bough_core::KF_INTERACT;
+        // (the effective word follows at the flush, which shows the look)
+        let act = &mut rt.input.acts[a as usize];
+        (act.own, act.sub) = (act.own | fl, act.sub | fl);
+        rt.input.any_sub = true;
+        rt.input.flags_pending.push((a, fl));
+    }
+    r
 }
 
 /// Re-describe window row `k` of region `reg` against its tape (see `Rt::lists_redescribe`).
@@ -443,7 +460,7 @@ unsafe fn update_lrow<T: 'static>(rt: &mut Rt, reg: u32, k: usize) {
     rt.lay.cur = NONE;
     rt.lay.mount_avail = (width, f32::NAN);
     rt.lists.mounting.push((reg, slot));
-    let rec = crate::grain::Describing::begin();
+    let rec = crate::grain::plan::<T>().cells.then(crate::grain::Describing::begin);
     let pos1 = {
         let mut m = Mounter { rt, owner: row, recs: &mut recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls, tape: &mut tape as *mut Vec<u32>, ti: 0, pos: pos0, kid: 0, keep: false, own };
         // SAFETY: the row is live (see above); only shared access to it during the walk.
@@ -451,7 +468,9 @@ unsafe fn update_lrow<T: 'static>(rt: &mut Rt, reg: u32, k: usize) {
         debug_assert_eq!(m.ti, tape.len(), "a row's re-description walked a different shape than its tape");
         m.pos
     };
-    rt.row_described(reg, row as *const u8, size_of::<T>(), rec);
+    if let Some(rec) = rec {
+        rt.row_described(reg, row as *const u8, size_of::<T>(), rec);
+    }
     rt.lists.mounting.pop();
     rt.lay.cur = prev;
     rt.lay.mount_avail = avail;
@@ -507,7 +526,7 @@ unsafe fn mount_row<O>(rt: &mut Rt, reg: u32, owner: *const O, cls: u32, own: Ow
     let mut tape: Vec<u32> = Vec::new();
     // rows are mounted by the placement, outside any view's mount: no view is being mounted
     let view = rt.input.mounting_view.take();
-    let rec = (taped && rt.describes).then(crate::grain::Describing::begin);
+    let rec = (taped && rt.describes && crate::grain::plan::<O>().cells).then(crate::grain::Describing::begin);
     {
         let tp: *mut Vec<u32> = if taped && rt.describes { &mut tape } else { std::ptr::null_mut() };
         let mut m = Mounter { rt, owner, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls, tape: tp, ti: 0, pos: 0, kid: 0, keep: false, own };
@@ -534,7 +553,8 @@ unsafe fn mount_row<O>(rt: &mut Rt, reg: u32, owner: *const O, cls: u32, own: Ow
     }
     rt.lists.regs[reg as usize].stats.rows_mounted += 1;
     let scope = rt.lists.put_scope(scope, tape);
-    LRow { slot: 0, nrec: (recs.len() - before) as u32, scope, space, mounted: true, placed: false, root, y: 0, cur: 0, d0: 0.0, pend: 0 }
+    let fh = if recs.len() > before { recs[before].handle } else { 0 };
+    LRow { slot: 0, nrec: (recs.len() - before) as u32, scope, space, mounted: true, placed: false, root, y: 0, cur: 0, d0: 0.0, pend: 0, fh }
 }
 
 fn view_row<T: crate::app::View>(v: &T, m: &mut Mounter<'_, T>) {
@@ -922,6 +942,7 @@ impl Rt {
             perm.extend_from_slice(p);
         }
         let mut low = usize::MAX;
+        let mut flags = false;
         let mut i = 0;
         while i < ops.len() {
             match ops[i] {
@@ -971,6 +992,10 @@ impl Rt {
                     i += 1;
                 }
                 Op::Edit { .. } => i += 1,
+                Op::Flags => {
+                    flags = true;
+                    i += 1;
+                }
             }
         }
         // SAFETY: shared read of the live list.
@@ -1008,6 +1033,35 @@ impl Rt {
         }
         self.lists.ops = ops;
         self.lists.perm = perm;
+        if flags {
+            // item flags: each mounted row whose item's flags are not those it shows (`flags.rs`)
+            let mut seen = 0;
+            for k in 0..self.lists.regs[reg].rows.len() {
+                let x = &self.lists.regs[reg].rows[k];
+                if !x.mounted || x.fh == 0 {
+                    continue;
+                }
+
+                let (slot, h) = (x.slot, self.bough.handle_gen(x.fh));
+                // SAFETY: a mounted row's slot is live.
+                let want = unsafe { (*l).flags_raw(slot) };
+                let mut a = self.input.act_of_handle(h);
+                let have = if a == 0 { 0 } else { self.input.acts[a as usize].sub };
+                if want != have {
+                    // the gate's mutant: the second row whose flags changed keeps its old ones
+                    seen += 1;
+                    if cfg!(feature = "mutant_flags_range") && seen == 2 {
+                        continue;
+                    }
+                    if a == 0 {
+                        a = self.input.ensure_act(h);
+                        self.bough.set_kind_flags(h, bough_core::KF_INTERACT, 0);
+                    }
+                    self.flags_write(a, want & !have, true, true);
+                    self.flags_write(a, have & !want, false, true);
+                }
+            }
+        }
     }
 
     /// End of the turn's settle: close every list whose log a region replayed.
@@ -1706,7 +1760,7 @@ pub(crate) unsafe fn wake_list<T>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner:
         rt.lists.ends.push((sig, end_list::<T>));
         rt.pubs.list(sig as usize, l.log().0);
     }
-    if w.recipe[0] != 1 || l.log().0.iter().any(|op| !matches!(op, Op::Edit { .. })) {
+    if w.recipe[0] != 1 || l.log().0.iter().any(|op| !matches!(op, Op::Edit { .. } | Op::Flags)) {
         rt.redesc_root = true;
     }
 }

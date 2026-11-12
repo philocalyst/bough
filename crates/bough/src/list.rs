@@ -74,6 +74,9 @@ pub enum Op {
     /// Positions `at..at+n` now hold `perm[off..off+n]` (slot ids), a permutation of what they held.
     Permute { at: u32, n: u32, off: u32 },
     Edit { slot: u32 },
+    /// Item flags changed this turn (`set_flag`, `set_flag_range`, `clear_flag`): logged once per turn; a
+    /// region compares its mounted rows' flags with their items'.
+    Flags,
 }
 
 /// A slab chunk: 64 item slots allocated once and never moved, held by its raw pointer (from
@@ -123,6 +126,11 @@ pub struct List<T> {
     snap: Vec<u8>,
     snap_at: Vec<(u32, u32)>,
     snap_stale: bool,
+    /// Per slot: the item's state flags (`flags.rs`: selected, checked, expanded, search hits, ...), shown by
+    /// its row and inherited by the row's subtree. Data of the item, kept by slot (a move does not touch it).
+    fl: Vec<u16>,
+    /// `Op::Flags` was logged this turn.
+    fl_noted: bool,
 }
 
 // SAFETY: `#[repr(C)]` with the head first.
@@ -171,7 +179,7 @@ impl<T> Drop for List<T> {
 
 impl<T> List<T> {
     pub fn new() -> List<T> {
-        List { head: WireHead::new(), chunks: Vec::new(), meta: Vec::new(), order: Vec::new(), free: Vec::new(), pending_free: Vec::new(), log: Vec::new(), perm: Vec::new(), wired: Default::default(), registered: Cell::new(false), snap: Vec::new(), snap_at: Vec::new(), snap_stale: false }
+        List { head: WireHead::new(), chunks: Vec::new(), meta: Vec::new(), order: Vec::new(), free: Vec::new(), pending_free: Vec::new(), log: Vec::new(), perm: Vec::new(), wired: Default::default(), registered: Cell::new(false), snap: Vec::new(), snap_at: Vec::new(), snap_stale: false, fl: Vec::new(), fl_noted: false }
     }
     pub fn with_capacity(n: usize) -> List<T> {
         let mut l = List::new();
@@ -220,9 +228,11 @@ impl<T> List<T> {
                     self.chunks.push(Chunk::new());
                 }
                 self.meta.push(0);
+                self.fl.push(0);
                 s
             }
         };
+        self.fl[s as usize] = 0;
         // SAFETY: a free slot holds no value.
         unsafe { self.slot_ptr(s).write(v) };
         self.meta[s as usize] = (self.meta[s as usize] & GEN) | LIVE;
@@ -308,6 +318,63 @@ impl<T> List<T> {
     pub fn slots(&self) -> impl ExactSizeIterator<Item = Slot<T>> + '_ {
         self.read_shape();
         self.order.iter().map(move |&s| self.slot_of(s))
+    }
+
+    // ------------------------------------------------------------------ item flags
+    /// Is flag `f` set on the item at slot `s`? (A plain read: an owner describing itself subscribes to the
+    /// list's items.)
+    pub fn flag(&self, s: Slot<T>, f: crate::flags::Flag) -> bool {
+        self.read_items();
+        self.live(s) && self.fl[s.idx as usize] & f.bit() != 0
+    }
+    /// The item's flag word.
+    pub(crate) fn flags_raw(&self, s: u32) -> u16 {
+        self.fl[s as usize]
+    }
+    #[inline]
+    fn note_flags(&mut self) {
+        if !self.fl_noted && self.displayed() {
+            self.fl_noted = true;
+            self.note(Op::Flags);
+        }
+    }
+    /// Set or clear flag `f` on the item at slot `s`: its row (if mounted) shows it at the turn's settle,
+    /// with no description and no signal; a row mounted later shows it from its mount.
+    pub fn set_flag(&mut self, s: Slot<T>, f: crate::flags::Flag, on: bool) {
+        if !self.live(s) {
+            return;
+        }
+        let w = &mut self.fl[s.idx as usize];
+        let n = if on { *w | f.bit() } else { *w & !f.bit() };
+        if n != *w {
+            *w = n;
+            self.note_flags();
+        }
+    }
+    /// `set_flag` on the item at `pos`.
+    pub fn set_flag_at(&mut self, pos: usize, f: crate::flags::Flag, on: bool) {
+        let s = self.order[pos];
+        self.set_flag(self.slot_of(s), f, on);
+    }
+    /// Set or clear flag `f` on the items at `range` (a shift-click selection, a "select all"): one store per
+    /// item, and only the rows mounted now are written.
+    pub fn set_flag_range(&mut self, range: std::ops::Range<usize>, f: crate::flags::Flag, on: bool) {
+        let b = f.bit();
+        let mut any = false;
+        for &s in &self.order[range] {
+            let w = &mut self.fl[s as usize];
+            let n = if on { *w | b } else { *w & !b };
+            any |= n != *w;
+            *w = n;
+        }
+        if any {
+            self.note_flags();
+        }
+    }
+    /// Clear flag `f` on every item.
+    pub fn clear_flag(&mut self, f: crate::flags::Flag) {
+        let n = self.order.len();
+        self.set_flag_range(0..n, f, false);
     }
 
     // ------------------------------------------------------------------ ops
@@ -508,6 +575,7 @@ impl<T> List<T> {
         self.free.append(&mut self.pending_free);
         self.registered.set(false);
         self.snap_stale = true;
+        self.fl_noted = false;
     }
     #[inline]
     pub(crate) fn slot_live(&self, s: u32) -> bool {
@@ -537,7 +605,7 @@ pub fn replay<X: Copy>(rows: &mut Vec<X>, op: Op, perm: &[u32], resolve: impl Fn
                 rows[at as usize + i] = resolve(perm[off as usize + i]);
             }
         }
-        Op::Edit { .. } => {}
+        Op::Edit { .. } | Op::Flags => {}
     }
 }
 

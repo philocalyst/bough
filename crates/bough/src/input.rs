@@ -187,13 +187,14 @@ pub(crate) struct Act {
     pub node: u32,
     /// Its single instance (the payload of a quad record), or NONE.
     pub inst: u32,
-    pub hover_bg: Option<u32>,
-    /// The instance's colour when it has no node (a constant background): restored on leave.
-    pub base: u32,
-    /// The instance is a border box: its background is `color2`.
-    pub bordered: bool,
-    /// The pointer is over it (its hover style shows).
-    pub hovered: bool,
+    /// Its variant table (`Input::vtabs`, `flags.rs`), or NONE.
+    pub vt: u32,
+    /// Its state flags (`flags.rs`): its own, those it sets for its subtree, those it inherits, and the
+    /// effective word (own | inherited) its table is indexed by.
+    pub own: u16,
+    pub sub: u16,
+    pub inh: u16,
+    pub eff: u16,
     pub click: Option<Route>,
     pub press: Option<Route>,
     pub hover: Option<Route>,
@@ -209,7 +210,7 @@ pub(crate) struct Act {
 
 impl Act {
     fn new(handle: Handle) -> Act {
-        Act { handle, node: NONE, inst: NONE, hover_bg: None, base: 0, bordered: false, hovered: false, click: None, press: None, hover: None, key: None, drag: None, scroll: NONE, field: NONE, tip: NONE }
+        Act { handle, node: NONE, inst: NONE, vt: NONE, own: 0, sub: 0, inh: 0, eff: 0, click: None, press: None, hover: None, key: None, drag: None, scroll: NONE, field: NONE, tip: NONE }
     }
 }
 
@@ -326,6 +327,18 @@ pub struct Input {
     blink_t: f32,
     chain: Vec<usize>,
     chain_h: Vec<Handle>,
+    /// Variant tables (`flags.rs`), by `Act::vt`.
+    pub(crate) vtabs: Vec<crate::flags::VTab>,
+    /// Acts whose subtree flags wait for their records to be in the Bough (`Rt::flags_flush`).
+    pub(crate) flags_pending: Vec<(u32, u16)>,
+    pub(crate) flag_scratch: Vec<usize>,
+    pub(crate) flag_stack: Vec<(u16, u16)>,
+    /// The records `PRESSED` and `DRAG_OVER` are set on now.
+    pressed_chain: Vec<Handle>,
+    drag_over: Vec<Handle>,
+    focus_within: Vec<Handle>,
+    /// Some record sets flags for its subtree (a record mounted later may inherit them).
+    pub(crate) any_sub: bool,
 }
 
 impl Default for Input {
@@ -366,6 +379,14 @@ impl Default for Input {
             blink_t: 0.0,
             chain: Vec::new(),
             chain_h: Vec::new(),
+            vtabs: Vec::new(),
+            flags_pending: Vec::new(),
+            flag_scratch: Vec::new(),
+            flag_stack: Vec::new(),
+            pressed_chain: Vec::new(),
+            drag_over: Vec::new(),
+            focus_within: Vec::new(),
+            any_sub: false,
         }
     }
 }
@@ -422,7 +443,7 @@ impl Input {
 
 /// Make the first record `m` pushed since `before` interactive: give it a handle (if it has none), flag
 /// it, and return its act. A quad's node and instance are found so interaction styles can write it.
-fn act_for<V>(m: &mut Mounter<'_, V>, before: usize, nodes_before: usize, flags: u8) -> u32 {
+pub(crate) fn act_for<V>(m: &mut Mounter<'_, V>, before: usize, nodes_before: usize, flags: u8) -> u32 {
     assert!(m.recs.len() > before, "an interactive element mounts a record");
     let rec = m.recs[before];
     let node = m.scope.nodes[nodes_before..].iter().copied().find(|&n| m.rt.nodes[n as usize].handle.idx == rec.handle && rec.handle != 0).unwrap_or(NONE);
@@ -595,18 +616,13 @@ impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for H
         seal_route(s, 3, self.0);
     }
 }
+/// The background while hovered: one variant of the record's flags (`.hover(|s| s.bg(c))`, `flags.rs`).
 pub struct HoverBg(pub Color);
 impl<V> ActOp<V> for HoverBg {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
-        let inst = m.rt.input.acts[a as usize].inst;
-        assert!(inst != NONE, "hover_bg needs a painted quad");
-        let i = &m.rt.inst[inst as usize];
-        let bordered = i.kind == KIND_BORDER;
-        let base = if bordered { i.color2 } else { i.color };
-        let act = &mut m.rt.input.acts[a as usize];
-        act.hover_bg = Some(self.0 .0);
-        act.base = base;
-        act.bordered = bordered;
+        let act = m.rt.input.acts[a as usize];
+        assert!(act.inst != NONE, "hover_bg needs a painted quad");
+        crate::flags::install_variants(m.rt, a, &[crate::flags::Variant { when: crate::flags::Flag::HOVERED.bit(), look: crate::flags::Look::default().bg(self.0) }]);
     }
     /// The hover colour is a paint operand (it never changes a shape).
     #[inline(always)]
@@ -614,26 +630,9 @@ impl<V> ActOp<V> for HoverBg {
         s.word(0x0107);
         s.paint(self.0 .0);
     }
-    /// A new hover colour: stored; shown at once if the pointer is over the element.
+    /// A new hover colour: the table is resolved again (shown at once if the pointer is over the element).
     fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
-        let act = m.rt.input.acts[a as usize];
-        if act.hover_bg == Some(self.0 .0) {
-            return;
-        }
-        m.rt.input.acts[a as usize].hover_bg = Some(self.0 .0);
-        if act.hovered {
-            let p = m.rt.inst_mut(act.inst);
-            let old = pair(p.color, p.color2);
-            if act.bordered {
-                p.color2 = self.0 .0;
-            } else {
-                p.color = self.0 .0;
-            }
-            let now = pair(p.color, p.color2);
-            if old != now {
-                m.rt.paint_write(act.handle, old, now);
-            }
-        }
+        crate::flags::refresh_variants(m.rt, a, &[crate::flags::Variant { when: crate::flags::Flag::HOVERED.bit(), look: crate::flags::Look::default().bg(self.0) }]);
     }
 }
 pub struct Focusable;
@@ -734,16 +733,12 @@ impl<'a, T: 'static, V, F: Fn(&T) -> (Color, Color) + Copy + 'static> ActOp<V> f
         assert!(inst != NONE, "paint_with needs a painted quad");
         let bordered = m.rt.inst[inst as usize].kind == KIND_BORDER;
         let (c1, c2) = (self.f)(self.sig.get());
-        let act = &mut m.rt.input.acts[a as usize];
-        act.bordered = bordered;
         let p = &mut m.rt.inst[inst as usize];
         if bordered {
             p.color = c1.0;
             p.color2 = c2.0;
-            act.base = c2.0;
         } else {
             p.color = c2.0;
-            act.base = c2.0;
         }
         m.wire(&self.sig, patch_paint2::<T, F>, a, recipe(self.f));
     }
@@ -771,18 +766,20 @@ unsafe fn patch_paint2<T: 'static, F: Fn(&T) -> (Color, Color) + Copy>(rt: &mut 
     paint2(rt, w.node, c1, c2);
 }
 
-/// Write act `a`'s two colour words (hover-aware).
+/// Write act `a`'s two colour words: its base look under variants (`flags.rs`), else the instance itself.
 fn paint2(rt: &mut Rt, a: u32, c1: Color, c2: Color) {
     let act = rt.input.acts[a as usize];
-    rt.input.acts[a as usize].base = c2.0;
+    if act.vt != NONE {
+        return rt.flags_rebase(a, Some(c2.0), Some(c1.0));
+    }
     let p = rt.inst_mut(act.inst);
+    let bordered = p.kind == KIND_BORDER;
     let old = pair(p.color, p.color2);
-    let fill = if act.hovered && act.hover_bg.is_some() { act.hover_bg.unwrap() } else { c2.0 };
-    if act.bordered {
+    if bordered {
         p.color = c1.0;
-        p.color2 = fill;
+        p.color2 = c2.0;
     } else {
-        p.color = fill;
+        p.color = c2.0;
     }
     let now = pair(p.color, p.color2);
     if now != old {
@@ -1263,7 +1260,18 @@ impl<V: View> App<V> {
         if self.rehover() {
             self.settle_pass();
         }
+        self.blur_disabled();
         self.sync_ring();
+    }
+
+    /// A focused record that became disabled (its own flag, or a subtree's) loses focus, as a disabled
+    /// control does.
+    pub(crate) fn blur_disabled(&mut self) {
+        if let Some(h) = self.rt.input.focus {
+            if self.rt.flags_of(h) & crate::flags::Flag::DISABLED.bit() != 0 {
+                self.set_focus(None, false);
+            }
+        }
     }
 
     /// Settle, run the `changed` waves, re-describe the owners a handler ran on, lay out.
@@ -1278,6 +1286,7 @@ impl<V: View> App<V> {
         // alone (a hover colour, a wheel, a glide's tick, a keystroke in a field) re-describes nothing.
         self.redescribe_dirty();
         self.rt.lay_flush();
+        self.rt.flags_flush();
     }
 
     /// Bring the hover chain up to date with the tree under a resting pointer (no pointer, or a drag's
@@ -1315,6 +1324,7 @@ impl<V: View> App<V> {
                 let e = Ev { dx: x - x0, dy: y - y0, ..Ev::at(x, y) };
                 self.run_route(r, &e);
                 self.settle_input();
+                self.set_drag_over(Some((px, py)));
                 return;
             }
         }
@@ -1381,32 +1391,15 @@ impl<V: View> App<V> {
         if self.rt.bough.pos_of(h).is_none() {
             // the element was removed while hovered (a re-description dropped it, its row left): what its act
             // names (an instance, a tooltip, a route's captures) is no longer its own, so nothing is written or run
-            self.rt.input.acts[a as usize].hovered = false;
+            let act = &mut self.rt.input.acts[a as usize];
+            let hb = crate::flags::Flag::HOVERED.bit();
+            (act.own, act.eff) = (act.own & !hb, act.eff & !(hb & !act.inh));
             return false;
         }
-        self.rt.input.acts[a as usize].hovered = on;
+        // the hover colour and every other `HOVERED` variant: a flag write (a paint write, `flags.rs`)
+        self.rt.flags_write(a, crate::flags::Flag::HOVERED.bit(), on, false);
         let act = self.rt.input.acts[a as usize];
         let mut ran = false;
-        if let Some(c) = act.hover_bg {
-            let base = if act.node != NONE { self.rt.nodes[act.node as usize].color } else { act.base };
-            let new = if on { c } else { base };
-            if act.node != NONE {
-                // while hovered the base colour wire writes `n.color` only (ApplyBg reads the flag)
-                let n = &mut self.rt.nodes[act.node as usize];
-                n.kind = if on { n.kind | crate::rt::NK_HOVERED } else { n.kind & !crate::rt::NK_HOVERED };
-            }
-            let p = self.rt.inst_mut(act.inst);
-            let old = pair(p.color, p.color2);
-            if act.bordered {
-                p.color2 = new;
-            } else {
-                p.color = new;
-            }
-            let now = pair(p.color, p.color2);
-            if old != now {
-                self.rt.paint_write(h, old, now);
-            }
-        }
         if act.tip != NONE {
             let k = act.tip as usize;
             let (clip, rect, fade) = {
@@ -1422,12 +1415,73 @@ impl<V: View> App<V> {
                 tip_alpha(&mut self.rt, k, if on { 1.0 } else { 0.0 });
             }
         }
-        if let Some(r) = act.hover {
+        if let Some(r) = act.hover.filter(|_| act.eff & crate::flags::Flag::DISABLED.bit() == 0) {
             let e = Ev { on, ..Ev::at(x, y) };
             self.run_route(r, &e);
             ran = true;
         }
         ran
+    }
+
+    /// `PRESSED` on the records of `chain` and on no other (the press chain: the pressed record and its
+    /// interactive ancestors, as CSS's `:active`).
+    fn set_pressed(&mut self, chain: &[Handle]) {
+        let old = std::mem::take(&mut self.rt.input.pressed_chain);
+        let b = crate::flags::Flag::PRESSED.bit();
+        for h in &old {
+            if !chain.contains(h) {
+                let a = self.rt.input.act_of(*h);
+                if a != 0 {
+                    self.rt.flags_write(a, b, false, false);
+                }
+            }
+        }
+        for h in chain {
+            if !old.contains(h) {
+                let a = self.rt.input.act_of(*h);
+                if a != 0 {
+                    self.rt.flags_write(a, b, true, false);
+                }
+            }
+        }
+        let mut old = old;
+        old.clear();
+        old.extend_from_slice(chain);
+        self.rt.input.pressed_chain = old;
+    }
+
+    /// `DRAG_OVER` on the interactive records under the pointer while a drag holds it (a drop target's
+    /// variant), cleared when the drag ends (`None`).
+    fn set_drag_over(&mut self, at: Option<(i32, i32)>) {
+        let mut chain: Vec<Handle> = Vec::new();
+        if let Some((px, py)) = at {
+            let b = &self.rt.bough;
+            if let Some(t) = b.hit_top(px, py) {
+                let mut c = std::mem::take(&mut self.rt.input.chain);
+                b.flagged_chain(t, KF_INTERACT, &mut c);
+                chain.extend(c.iter().filter_map(|&p| b.handle_at(p)));
+                self.rt.input.chain = c;
+            }
+        }
+        let old = std::mem::take(&mut self.rt.input.drag_over);
+        let bit = crate::flags::Flag::DRAG_OVER.bit();
+        for h in &old {
+            if !chain.contains(h) {
+                let a = self.rt.input.act_of(*h);
+                if a != 0 {
+                    self.rt.flags_write(a, bit, false, false);
+                }
+            }
+        }
+        for h in &chain {
+            if !old.contains(h) {
+                let a = self.rt.input.act_of(*h);
+                if a != 0 {
+                    self.rt.flags_write(a, bit, true, false);
+                }
+            }
+        }
+        self.rt.input.drag_over = chain;
     }
 
     /// A button pressed at (x, y): the hover chain is brought up to date, focus moves to the nearest
@@ -1439,16 +1493,17 @@ impl<V: View> App<V> {
         self.rt.input.pointer = Some((px, py));
         self.update_hover(px, py, x, y);
         let chain = self.rt.input.hover.clone();
-        // nearest focusable in the chain
+        // nearest focusable in the chain (a disabled one takes no focus)
         let mut focus = None;
         for &h in &chain {
             if let Some(p) = self.rt.bough.pos_of(h) {
-                if self.rt.bough.kind_at(p) & KF_FOCUS != 0 {
+                if self.rt.bough.kind_at(p) & KF_FOCUS != 0 && self.rt.flags_of(h) & crate::flags::Flag::DISABLED.bit() == 0 {
                     focus = Some(h);
                     break;
                 }
             }
         }
+        self.set_pressed(&chain);
         if button == Button::Primary {
             self.set_focus(focus, false);
         }
@@ -1456,17 +1511,22 @@ impl<V: View> App<V> {
         self.rt.input.pressed = target;
         self.rt.input.press_at = (x, y);
         self.rt.input.dragging = false;
-        // the press route and drag capture: nearest act in the chain that has one
+        // the press route and drag capture: nearest act in the chain that has one (a disabled record runs none
+        // and stops the search, as a disabled control takes no pointer events)
         for &h in &chain {
             let a = self.rt.input.act_of(h);
             let act = self.rt.input.acts[a as usize];
+            if act.eff & crate::flags::Flag::DISABLED.bit() != 0 {
+                break;
+            }
             if let Some(r) = act.press {
                 let e = Ev { button, ..Ev::at(x, y) };
                 self.run_route(r, &e);
                 break;
             }
         }
-        if let Some(a) = chain.iter().map(|&h| self.rt.input.act_of(h)).find(|&a| self.rt.input.acts[a as usize].drag.is_some()) {
+        let live = chain.iter().map(|&h| self.rt.input.act_of(h)).take_while(|&a| self.rt.input.acts[a as usize].eff & crate::flags::Flag::DISABLED.bit() == 0);
+        if let Some(a) = live.into_iter().find(|&a| self.rt.input.acts[a as usize].drag.is_some()) {
             self.rt.input.pressed = a;
             self.rt.input.dragging = true;
         }
@@ -1483,7 +1543,9 @@ impl<V: View> App<V> {
         let dragging = std::mem::replace(&mut self.rt.input.dragging, false);
         let (px, py) = self.dev(x, y);
         self.rt.input.pointer = Some((px, py));
+        self.set_pressed(&[]);
         if dragging {
+            self.set_drag_over(None);
             if let Some(r) = self.rt.input.acts[pa as usize].drag {
                 let (x0, y0) = self.rt.input.press_at;
                 let e = Ev { dx: x - x0, dy: y - y0, on: false, ..Ev::at(x, y) };
@@ -1500,6 +1562,9 @@ impl<V: View> App<V> {
                 let chain = self.rt.input.hover[i..].to_vec();
                 for h in chain {
                     let a = self.rt.input.act_of(h);
+                    if self.rt.input.acts[a as usize].eff & crate::flags::Flag::DISABLED.bit() != 0 {
+                        break;
+                    }
                     if let Some(r) = self.rt.input.acts[a as usize].click {
                         self.run_route(r, &Ev::at(x, y));
                         break;
@@ -1667,7 +1732,15 @@ impl<V: View> App<V> {
         self.sync_pub();
         if key == Key::Tab {
             let cur = self.rt.input.focus.and_then(|h| self.rt.bough.pos_of(h));
-            let next = self.rt.bough.next_flagged(cur, KF_FOCUS, mods.shift);
+            // the next tab stop that is not disabled
+            let mut next = self.rt.bough.next_flagged(cur, KF_FOCUS, mods.shift);
+            let first = next;
+            while let Some(p) = next {
+                if self.rt.bough.handle_at(p).is_none_or(|h| self.rt.flags_of(h) & crate::flags::Flag::DISABLED.bit() == 0) {
+                    break;
+                }
+                next = self.rt.bough.next_flagged(Some(p), KF_FOCUS, mods.shift).filter(|&q| Some(q) != first);
+            }
             let h = next.and_then(|p| self.rt.bough.handle_at(p));
             self.set_focus(h, true);
             self.settle_input();
@@ -1688,6 +1761,9 @@ impl<V: View> App<V> {
                 for q in chain {
                     let Some(h) = self.rt.bough.handle_at(q) else { continue };
                     let a = self.rt.input.act_of(h);
+                    if self.rt.input.acts[a as usize].eff & crate::flags::Flag::DISABLED.bit() != 0 {
+                        break;
+                    }
                     if let Some(r) = self.rt.input.acts[a as usize].key {
                         let e = Ev { key: Some(key), mods, ..Ev::at(0.0, 0.0) };
                         self.run_route(r, &e);
@@ -1773,8 +1849,10 @@ impl<V: View> App<V> {
                 place_caret(&mut self.rt, f);
             }
         }
+        self.focus_flags(false);
         self.rt.input.focus = h;
         self.rt.input.focus_visible = visible;
+        self.focus_flags(true);
         let a = h.map_or(0, |h| self.rt.input.act_of(h));
         self.rt.input.focus_act = a;
         if a != 0 {
@@ -1787,6 +1865,44 @@ impl<V: View> App<V> {
             }
         }
         self.sync_ring();
+    }
+
+    /// `FOCUSED` on the focused record and `FOCUS_WITHIN` on its ancestors that have acts (`on`), or off them
+    /// again (the ancestors are those it had when focus came: kept, so a removed record's are found).
+    fn focus_flags(&mut self, on: bool) {
+        let Some(h) = self.rt.input.focus else { return };
+        let a = self.rt.input.act_of(h);
+        if a != 0 {
+            self.rt.flags_write(a, crate::flags::Flag::FOCUSED.bit(), on, false);
+        }
+        let fw = crate::flags::Flag::FOCUS_WITHIN.bit();
+        if on {
+            let mut anc = std::mem::take(&mut self.rt.input.flag_scratch);
+            anc.clear();
+            if let Some(p) = self.rt.bough.pos_of(h) {
+                self.rt.bough.ancestors(p, &mut anc);
+            }
+            let mut within = std::mem::take(&mut self.rt.input.focus_within);
+            within.clear();
+            for &p in &anc {
+                if let Some(x) = self.rt.bough.handle_at(p) {
+                    let b = self.rt.input.act_of(x);
+                    if b != 0 {
+                        within.push(x);
+                        self.rt.flags_write(b, fw, true, false);
+                    }
+                }
+            }
+            self.rt.input.focus_within = within;
+            self.rt.input.flag_scratch = anc;
+        } else {
+            for x in std::mem::take(&mut self.rt.input.focus_within) {
+                let b = self.rt.input.act_of(x);
+                if b != 0 {
+                    self.rt.flags_write(b, fw, false, false);
+                }
+            }
+        }
     }
 
     /// Keep the focus ring on the focused element (keyboard focus only): one record at the end of the

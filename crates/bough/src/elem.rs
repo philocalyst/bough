@@ -350,7 +350,9 @@ impl Apply for ApplyBg {
         let old = n.color;
         n.color = v.0;
         if n.kind & NK_HOVERED != 0 {
-            return; // the hover colour shows; the base returns when the pointer leaves (input.rs)
+            // under variants (`flags.rs`): the colour is the base; the table shows what the flags select
+            let a = rt.input.act_of_handle(n.handle);
+            return rt.flags_rebase(a, Some(v.0), None);
         }
         let (h, inst, bordered, a) = (n.handle, rt.runs[n.run as usize].first, n.kind == NK_BORDER, n.alpha);
         let p = rt.inst_mut(inst);
@@ -533,13 +535,14 @@ where
         }
         let old = *m.rt.inst_mut(inst);
         let geo = old.pos != ins.pos || old.size != ins.size || old.radius != ins.radius || old.kind != ins.kind || old.bw != ins.bw || old.space != ins.space;
-        // the border colour is geometry-class damage (one record, one paint state: its fill, see `paint_write`)
-        let border_c = self.border.is_some() && old.color != ins.color;
+        // the border colour is geometry-class damage (one record, one paint state: its fill, see `paint_write`);
+        // under variants the description's border is the table's base, not what a variant shows
+        let border_c = self.border.is_some() && m.rt.flags_base_border(node).unwrap_or(old.color) != ins.color;
         if geo || border_c || m.rt.nodes[node as usize].kind != nk {
             *m.rt.inst_mut(inst) = ins;
             {
                 let n = &mut m.rt.nodes[node as usize];
-                n.kind = nk;
+                n.kind = nk | (n.kind & NK_HOVERED);
                 n.x = x_px;
                 n.y = y_px;
                 n.y0 = y0_px;
@@ -550,6 +553,7 @@ where
                 n.space = m.space;
             }
             m.rt.quad_ink(node);
+            m.rt.flags_reshow_node(node);
             let _ = hd;
         } else {
             m.rt.nodes[node as usize].y0 = y0_px;
