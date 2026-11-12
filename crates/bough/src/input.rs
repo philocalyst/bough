@@ -98,6 +98,8 @@ pub(crate) type RouteFn = unsafe fn(*mut u8, &[u8; 16], &Ev);
 pub(crate) struct Route {
     f: RouteFn,
     r: [u8; 16],
+    /// Where the route's owner lives inside the dispatching (root) owner: 0, or an embedded view's offset.
+    base: u32,
 }
 
 impl Route {
@@ -105,8 +107,9 @@ impl Route {
     /// `owner` points at the live owner the route was lowered for.
     #[inline]
     unsafe fn call(&self, owner: *mut u8, e: &Ev) {
-        // SAFETY: see the function contract; the recipe holds the closure the trampoline reads.
-        unsafe { (self.f)(owner, &self.r, e) }
+        // SAFETY: see the function contract; the recipe holds the closure the trampoline reads; `base` is the
+        // `offset_of!`-proven offset of the route's owner in the root owner (`Mounter::base`).
+        unsafe { (self.f)(owner.add(self.base as usize), &self.r, e) }
     }
 }
 
@@ -134,11 +137,11 @@ unsafe fn call_ev<V, F: Fn(&mut V, &Ev) + Copy>(o: *mut u8, r: &[u8; 16], e: &Ev
     f(unsafe { &mut *(o as *mut V) }, e)
 }
 
-fn route_plain<V, F: Fn(&mut V) + Copy + 'static>(f: F) -> Route {
-    Route { f: call_plain::<V, F>, r: recipe(f) }
+fn route_plain<V, F: Fn(&mut V) + Copy + 'static>(f: F, base: u32) -> Route {
+    Route { f: call_plain::<V, F>, r: recipe(f), base }
 }
-fn route_ev<V, F: Fn(&mut V, &Ev) + Copy + 'static>(f: F) -> Route {
-    Route { f: call_ev::<V, F>, r: recipe(f) }
+fn route_ev<V, F: Fn(&mut V, &Ev) + Copy + 'static>(f: F, base: u32) -> Route {
+    Route { f: call_ev::<V, F>, r: recipe(f), base }
 }
 
 /// A guard on a part's click route (`part.rs`): a trampoline monomorphised for (owner type, closure type), the
@@ -146,6 +149,8 @@ fn route_ev<V, F: Fn(&mut V, &Ev) + Copy + 'static>(f: F) -> Route {
 pub(crate) type GuardFn = unsafe fn(*mut u8, &[u8; 16], &crate::part::PartEv) -> crate::part::Flow;
 #[derive(Clone, Copy)]
 pub(crate) struct Guard {
+    /// Offset of the guard's owner in the root owner (as `Route::base`).
+    pub base: u32,
     pub act: u32,
     pub f: GuardFn,
     pub r: [u8; 16],
@@ -480,21 +485,21 @@ pub struct Click<F>(pub F);
 impl<V: 'static, F: Fn(&mut V) + Copy + 'static> ActOp<V> for Click<F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         root_owner_only(m, "click");
-        m.rt.input.acts[a as usize].click = Some(route_plain::<V, F>(self.0));
+        m.rt.input.acts[a as usize].click = Some(route_plain::<V, F>(self.0, m.base));
     }
 }
 pub struct Press<F>(pub F);
 impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Press<F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         root_owner_only(m, "press");
-        m.rt.input.acts[a as usize].press = Some(route_ev::<V, F>(self.0));
+        m.rt.input.acts[a as usize].press = Some(route_ev::<V, F>(self.0, m.base));
     }
 }
 pub struct Hover<F>(pub F);
 impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Hover<F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         root_owner_only(m, "hover");
-        m.rt.input.acts[a as usize].hover = Some(route_ev::<V, F>(self.0));
+        m.rt.input.acts[a as usize].hover = Some(route_ev::<V, F>(self.0, m.base));
     }
 }
 pub struct HoverBg(pub Color);
@@ -521,14 +526,14 @@ impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for OnKey<F> {
     const FLAGS: u8 = KF_FOCUS;
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         root_owner_only(m, "onkey");
-        m.rt.input.acts[a as usize].key = Some(route_ev::<V, F>(self.0));
+        m.rt.input.acts[a as usize].key = Some(route_ev::<V, F>(self.0, m.base));
     }
 }
 pub struct Drag<F>(pub F);
 impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Drag<F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         root_owner_only(m, "drag");
-        m.rt.input.acts[a as usize].drag = Some(route_ev::<V, F>(self.0));
+        m.rt.input.acts[a as usize].drag = Some(route_ev::<V, F>(self.0, m.base));
     }
 }
 /// The element scrolls the owner's `Signal<f32>` (points, `0..=max`) with wheel glides.
@@ -540,6 +545,7 @@ pub struct Scrolls<'a, V> {
 impl<V> ActOp<V> for Scrolls<'_, V> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         root_owner_only(m, "scrolls");
+        assert!(m.base == 0, "scrolls inside an embedded view (embed!) is not built yet");
         m.rt.input.scrollers.push(Scroller { off: self.sig.off, line: self.line, max: self.max, glide: None, root: NONE, port_h: 0.0 });
         m.rt.input.acts[a as usize].scroll = (m.rt.input.scrollers.len() - 1) as u32;
     }
@@ -910,6 +916,7 @@ impl<V: 'static> TextField<'_, V> {
     fn mount_in(self, m: &mut Mounter<'_, V>) {
         use crate::elem::{quad, text};
         root_owner_only(m, "text_field");
+        assert!(m.base == 0, "text_field inside an embedded view (embed!) is not built yet");
         let [x, y, w, h] = self.rect;
         let (before, nodes_before) = (m.recs.len(), m.scope.nodes.len());
         let s = m.rt.scale;
@@ -1009,7 +1016,7 @@ impl<V: View> App<V> {
             }
             // SAFETY: the guard was lowered by a `With` mounted by the root owner's description (`With::mount`
             // refuses any other owner), for this owner type.
-            let flow = unsafe { (g.f)(o, &g.r, &crate::part::PartEv { ev: *e, index: g.index }) };
+            let flow = unsafe { (g.f)(o.add(g.base as usize), &g.r, &crate::part::PartEv { ev: *e, index: g.index }) };
             if flow == crate::part::Flow::Stop && !after {
                 return false;
             }

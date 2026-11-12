@@ -288,7 +288,7 @@ impl<'a, T: crate::app::View, V: 'static> EntityView<'a, T, V> {
         {
             // the entity is the owner of what its view mounts (its own class); resources go to this scope
             // SAFETY: reborrows of the mounter's own buffer and scope for the sub-mount.
-            let mut sub = Mounter { rt: &mut *m.rt, owner: p, recs: unsafe { &mut *recs }, scope: unsafe { &mut *scope }, depth: m.depth, ox: m.ox, oy: m.oy, space: m.space, clip: m.clip, pending_num: None, cls, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false, ov: std::ptr::null() };
+            let mut sub = Mounter { rt: &mut *m.rt, owner: p, recs: unsafe { &mut *recs }, scope: unsafe { &mut *scope }, depth: m.depth, ox: m.ox, oy: m.oy, space: m.space, clip: m.clip, pending_num: None, cls, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false, ov: std::ptr::null(), base: 0 };
             // SAFETY: `p` is the live entity (its slab never moves).
             unsafe { &*p }.view().mount(&mut sub);
         }

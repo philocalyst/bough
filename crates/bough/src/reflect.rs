@@ -750,6 +750,37 @@ pub struct Reflect {
     pub(crate) types: Vec<&'static str>,
     /// Parts (`part.rs`) by record handle index: sparse, only part sites pay.
     pub(crate) parts: std::collections::HashMap<u32, PartInfo>,
+    /// Live owners inside the root owner (`embed!`): where, what type, and its type's reflection thunks.
+    pub(crate) owners: Vec<OwnerInfo>,
+}
+/// An embedded owner: its offset in the root owner and the monomorphic thunks that reflect its type (taken
+/// at the `embed!` site, where the type is known; the component's author wrote nothing).
+pub(crate) struct OwnerInfo {
+    pub base: u32,
+    pub type_name: &'static str,
+    pub fields: unsafe fn(*const u8) -> Vec<FieldView>,
+    pub set: unsafe fn(*mut u8, &str, &str) -> bool,
+}
+/// # Safety
+/// `p` points at a live `T`.
+pub(crate) unsafe fn owner_fields<T>(p: *const u8) -> Vec<FieldView> {
+    // SAFETY: see the function contract.
+    fields_of::<T>(unsafe { &*(p as *const T) })
+}
+/// # Safety
+/// `p` points at a live, uniquely borrowed `T`.
+pub(crate) unsafe fn owner_set<T>(p: *mut u8, path: &str, text: &str) -> bool {
+    // SAFETY: see the function contract.
+    set_in::<T>(unsafe { &mut *(p as *mut T) }, path, text)
+}
+/// A live owner as reflection lists it.
+#[derive(Clone, Debug)]
+pub struct OwnerView {
+    /// Index for `reflect_owner_fields` / `reflect_set_owner` (0 is the root).
+    pub index: usize,
+    pub type_name: &'static str,
+    /// Byte offset inside the root owner.
+    pub offset: u32,
 }
 /// A part site's reflection: its key's name, index, where it was marked, and the generation of the handle it
 /// was recorded for (a reused handle index is another record).
@@ -847,6 +878,39 @@ impl<V: crate::app::View> crate::app::App<V> {
     /// Every field of the app's root owner, preorder (its type's compile-time schema).
     pub fn reflect_fields(&self) -> Vec<FieldView> {
         fields_of::<V>(&self.owner)
+    }
+
+    /// Every live owner whose state reflection reaches: the root, then each embedded view (`embed!`) in
+    /// mount order.
+    pub fn reflect_owners(&self) -> Vec<OwnerView> {
+        let mut v = vec![OwnerView { index: 0, type_name: std::any::type_name::<V>(), offset: 0 }];
+        v.extend(self.rt.reflect.owners.iter().enumerate().map(|(i, o)| OwnerView { index: i + 1, type_name: o.type_name, offset: o.base }));
+        v
+    }
+
+    /// The fields of owner `index` (`reflect_owners`), preorder.
+    pub fn reflect_owner_fields(&self, index: usize) -> Vec<FieldView> {
+        if index == 0 {
+            return self.reflect_fields();
+        }
+        let o = &self.rt.reflect.owners[index - 1];
+        // SAFETY: the owner was embedded at this `offset_of!`-proven offset of the root owner, as this type.
+        unsafe { (o.fields)((&*self.owner as *const V as *const u8).add(o.base as usize)) }
+    }
+
+    /// Edit a field of owner `index` from text, as a handler's write in a turn.
+    pub fn reflect_set_owner(&mut self, index: usize, path: &str, value: &str) -> bool {
+        if index == 0 {
+            return self.reflect_set(path, value);
+        }
+        let (base, set) = {
+            let o = &self.rt.reflect.owners[index - 1];
+            (o.base, o.set)
+        };
+        let mut ok = false;
+        // SAFETY: as `reflect_owner_fields`, from the turn's unique borrow of the root owner.
+        self.turn(|v| ok = unsafe { set((v as *mut V as *mut u8).add(base as usize), path, value) });
+        ok
     }
 
     /// Edit a field of the root owner from text, as a handler's write in a turn: the cell's wires run, then

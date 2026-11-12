@@ -43,6 +43,10 @@ pub struct Mounter<'a, V> {
     /// The override chain in force (`part.rs`): frames on the stack of the `With` elements being mounted
     /// around this point; null when there is none.
     pub(crate) ov: *const crate::part::OvFrame,
+    /// Offset of `owner` inside the owner its class settles and dispatches with (0, except in an embedded
+    /// view, `part.rs` `embed!`: the embedded value's `offset_of!`-proven offset in the embedding owner).
+    /// Wires and routes add it, so the embedded view's cells are cells of the embedding owner's class.
+    pub(crate) base: u32,
 }
 
 impl<V> Mounter<'_, V> {
@@ -83,7 +87,7 @@ impl<V> Mounter<'_, V> {
     /// A mounter for a sub-part (a dynamic item) of this one: same position state, its own scope, records
     /// buffer and tape.
     pub(crate) fn sub<'b>(&'b mut self, recs: &'b mut Vec<RecordInit>, scope: &'b mut Scope, tape: *mut Vec<u32>) -> Mounter<'b, V> {
-        Mounter { rt: &mut *self.rt, owner: self.owner, recs, scope, depth: self.depth, ox: self.ox, oy: self.oy, space: self.space, clip: self.clip, pending_num: None, cls: self.cls, tape, ti: 0, pos: self.pos, kid: self.kid, keep: false, ov: self.ov }
+        Mounter { rt: &mut *self.rt, owner: self.owner, recs, scope, depth: self.depth, ox: self.ox, oy: self.oy, space: self.space, clip: self.clip, pending_num: None, cls: self.cls, tape, ti: 0, pos: self.pos, kid: self.kid, keep: false, ov: self.ov, base: self.base }
     }
     pub fn mount(&mut self, e: impl Element<V>) {
         e.mount(self)
@@ -95,7 +99,7 @@ impl<V> Mounter<'_, V> {
         debug_assert_eq!(w.sig as *const Signal<T> as usize, self.owner as usize + w.off as usize, "sig! operand is not a field of the mounted owner");
         // SAFETY: `w.off` is `offset_of!`-proven for owner type `V` (`Wired<_, V>` comes only from `sig!`),
         // and every caller passes a patch monomorphised for the signal's `T` with the recipe it reads.
-        let i = unsafe { self.rt.add_wire(w.sig.head(), w.off, self.cls, patch, node, recipe) };
+        let i = unsafe { self.rt.add_wire(w.sig.head(), w.off + self.base, self.cls, patch, node, recipe) };
         self.scope.wires.push(i);
     }
     /// Install a wire on any headed cell of this owner (lists, readers): `head` at `owner + off`.
@@ -105,6 +109,9 @@ impl<V> Mounter<'_, V> {
     /// and `patch` reads exactly that cell type.
     pub(crate) unsafe fn wire_cell(&mut self, head: &std::cell::Cell<u32>, off: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
         debug_assert_eq!(head as *const _ as usize, self.owner as usize + off as usize, "operand is not a field of the mounted owner");
+        // these patches (lists, readers, entities, virtual lists) are handed the class's owner and read it as
+        // the mounting owner: inside an embedded view that is the embedding owner
+        assert!(self.base == 0, "lists, readers, entities and virtual lists inside an embedded view (embed!) are not built yet");
         let i = unsafe { self.rt.add_wire(head, off, self.cls, patch, node, recipe) };
         self.scope.wires.push(i);
         i
@@ -973,7 +980,7 @@ pub(crate) unsafe fn mount_row<V: 'static>(rt: &mut Rt, owner: *const u8, reg: u
     let mut scope = Scope::default();
     let before = recs.len();
     {
-        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls: 0, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false, ov: std::ptr::null() };
+        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls: 0, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false, ov: std::ptr::null(), base: 0 };
         // SAFETY: see the function contract.
         f(unsafe { &*(owner as *const V) }, row, &mut m);
     }

@@ -50,6 +50,7 @@ pub mod prelude {
     pub use crate::reader::{boundary, Reader, Request};
     pub use crate::input::{text_field, tooltip, Interact, Key, Mods};
     pub use crate::layout::{block, column, para, row, Align, Justify, Styled};
+    pub use crate::embed;
     pub use crate::sig;
     pub use crate::signal::{Signal, Wired};
     pub use crate::transition::{Curve, Ease};

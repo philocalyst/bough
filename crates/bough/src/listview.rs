@@ -394,7 +394,7 @@ unsafe fn mount_row<O>(rt: &mut Rt, reg: u32, owner: *const O, cls: u32, recs: &
     rt.lay.mount_avail = (width, f32::NAN);
     let mut scope = Scope::default();
     {
-        let mut m = Mounter { rt, owner, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false, ov: std::ptr::null() };
+        let mut m = Mounter { rt, owner, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false, ov: std::ptr::null(), base: 0 };
         body(&mut m);
     }
     rt.lay.cur = prev;

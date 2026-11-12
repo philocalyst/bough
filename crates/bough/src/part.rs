@@ -252,7 +252,7 @@ pub enum Flow {
 enum FrameKind {
     /// A style rewrite: the closure (borrowed from the `With` being mounted) and its monomorphic applier.
     Style { f: *const (), apply: unsafe fn(*const (), *mut ()) },
-    Guard { f: GuardFn, r: [u8; 16], after: bool },
+    Guard { f: GuardFn, r: [u8; 16], after: bool, base: u32 },
 }
 
 /// One wrapper's override, on the Rust stack while its element mounts or re-describes.
@@ -268,7 +268,8 @@ pub struct OvFrame {
 pub trait Override<V> {
     /// A guard runs on the root owner (as routes do).
     const ROUTE: bool;
-    fn frame(&self, parent: *const OvFrame) -> OvFrame;
+    /// `base`: where the wrapper's owner lives in the root owner (`Mounter::base`).
+    fn frame(&self, parent: *const OvFrame, base: u32) -> OvFrame;
 }
 
 /// `restyle`'s override.
@@ -287,7 +288,7 @@ unsafe fn apply_style<S: Copy, F: Fn(S) -> S>(f: *const (), s: *mut ()) {
 }
 impl<V, S: Copy + 'static, F: Fn(S) -> S> Override<V> for StyleOv<S, F> {
     const ROUTE: bool = false;
-    fn frame(&self, parent: *const OvFrame) -> OvFrame {
+    fn frame(&self, parent: *const OvFrame, _base: u32) -> OvFrame {
         OvFrame { parent, name: self.key.name, ty: TypeId::of::<S>(), kind: FrameKind::Style { f: &self.f as *const F as *const (), apply: apply_style::<S, F> } }
     }
 }
@@ -315,8 +316,8 @@ unsafe fn call_after<V, F: Fn(&mut V, &PartEv) + Copy>(o: *mut u8, r: &[u8; 16],
 }
 impl<V: 'static, S: 'static, F: Fn(&mut V, &PartEv) -> Flow + Copy + 'static> Override<V> for GuardOv<S, F> {
     const ROUTE: bool = true;
-    fn frame(&self, parent: *const OvFrame) -> OvFrame {
-        OvFrame { parent, name: self.key.name, ty: TypeId::of::<S>(), kind: FrameKind::Guard { f: call_guard::<V, F>, r: crate::input::recipe(self.f), after: self.after } }
+    fn frame(&self, parent: *const OvFrame, base: u32) -> OvFrame {
+        OvFrame { parent, name: self.key.name, ty: TypeId::of::<S>(), kind: FrameKind::Guard { f: call_guard::<V, F>, r: crate::input::recipe(self.f), after: self.after, base } }
     }
 }
 /// `after`'s closure returns nothing.
@@ -326,8 +327,8 @@ pub struct AfterOv<S, F> {
 }
 impl<V: 'static, S: 'static, F: Fn(&mut V, &PartEv) + Copy + 'static> Override<V> for AfterOv<S, F> {
     const ROUTE: bool = true;
-    fn frame(&self, parent: *const OvFrame) -> OvFrame {
-        OvFrame { parent, name: self.key.name, ty: TypeId::of::<S>(), kind: FrameKind::Guard { f: call_after::<V, F>, r: crate::input::recipe(self.f), after: true } }
+    fn frame(&self, parent: *const OvFrame, base: u32) -> OvFrame {
+        OvFrame { parent, name: self.key.name, ty: TypeId::of::<S>(), kind: FrameKind::Guard { f: call_after::<V, F>, r: crate::input::recipe(self.f), after: true, base } }
     }
 }
 
@@ -338,14 +339,14 @@ impl<V, E: Element<V>, O: Override<V>> Element<V> for With<E, O> {
     fn mount(self, m: &mut Mounter<'_, V>) {
         assert!(!O::ROUTE || m.cls == 0, "intercept/after inside a list row or an entity view: guards run on the app's root owner");
         let With(e, o) = self;
-        let fr = o.frame(m.ov);
+        let fr = o.frame(m.ov, m.base);
         let saved = std::mem::replace(&mut m.ov, &fr);
         e.mount(m);
         m.ov = saved;
     }
     fn update(self, m: &mut Mounter<'_, V>) {
         let With(e, o) = self;
-        let fr = o.frame(m.ov);
+        let fr = o.frame(m.ov, m.base);
         let saved = std::mem::replace(&mut m.ov, &fr);
         e.update(m);
         m.ov = saved;
@@ -426,11 +427,11 @@ where
         while !fr.is_null() {
             // SAFETY: as in `apply_chain`.
             let f = unsafe { &*fr };
-            if let FrameKind::Guard { f: g, r, after } = f.kind {
+            if let FrameKind::Guard { f: g, r, after, base } = f.kind {
                 if f.ty == TypeId::of::<S>() && (std::ptr::eq(f.name, name) || f.name == name) {
                     let a = m.rt.input.act_of_handle(hd);
                     assert!(a != 0, "intercept on part `{name}`: the part has no route (put `.part(..)` after `.on_click(..)`)");
-                    m.rt.input.guards.push(Guard { act: a, f: g, r, after, index });
+                    m.rt.input.guards.push(Guard { base, act: a, f: g, r, after, index });
                 }
             }
             fr = f.parent;
@@ -508,6 +509,125 @@ impl<'a, T, V> crate::signal::Wired<'a, T, V> {
     /// This field as a lens (see [`Lens`]).
     pub fn lens(&self) -> Lens<T, V> {
         Lens { off: self.off, _p: PhantomData }
+    }
+}
+
+// =============================================================================== embedded views
+
+/// A view that is a field of another view, mounted in its place: `embed!(self.picker)`.
+///
+/// This is how a component with its own state composes without naming its consumer: the component is a
+/// plain `View` (`impl View for DatePicker`, its handlers `&mut DatePicker` methods, its operands
+/// `sig!(self.month)`), and the consumer holds it as a field. Nothing about the consumer's type appears in the
+/// component, and nothing is boxed or erased: the embedded view is mounted by a `Mounter<C>` that shares
+/// everything with the consumer's but the owner pointer and its `base`, the field's `offset_of!`-proven
+/// offset. Its signals become wired cells of the consumer's class at `base + offset` (one settle pass, no
+/// second owner), and its routes are dispatched with `owner + base`.
+pub struct Embed<'a, C, V> {
+    c: &'a C,
+    off: u32,
+    _v: PhantomData<fn(&V)>,
+}
+
+/// `embed!`'s expansion.
+///
+/// # Safety
+/// `off` must be `offset_of!(V, path)` for the same struct field path as `_path` (the macro computes both from
+/// one token sequence; nothing else may call this).
+#[doc(hidden)]
+#[inline(always)]
+pub unsafe fn embed_proven<'a, C, V>(c: &'a C, off: usize, _path: fn(&V) -> &C) -> Embed<'a, C, V> {
+    assert!(off + size_of::<C>() <= size_of::<V>() && off <= u32::MAX as usize);
+    Embed { c, off: off as u32, _v: PhantomData }
+}
+
+/// Mount the view held in a field of this view: `embed!(self.picker)` (a struct field path, as `sig!`).
+///
+/// ```
+/// use bough::prelude::*;
+/// struct Stepper { n: Signal<u32> }
+/// impl Stepper { fn inc(&mut self) { *self.n += 1; } }
+/// impl View for Stepper {
+///     fn view(&self) -> impl Element<Self> + '_ {
+///         row((text(sig!(self.n).map(|n| n.to_string())), button("+").on_click(Stepper::inc)))
+///     }
+/// }
+/// struct Page { a: Stepper, b: Stepper }
+/// impl View for Page {
+///     fn view(&self) -> impl Element<Self> + '_ {
+///         column((embed!(self.a), embed!(self.b)))
+///     }
+/// }
+/// ```
+///
+/// Only a struct field path is accepted (the offset must hold for the owner's life):
+///
+/// ```compile_fail
+/// use bough::prelude::*;
+/// struct Stepper { n: Signal<u32> }
+/// impl View for Stepper {
+///     fn view(&self) -> impl Element<Self> + '_ { text(sig!(self.n).map(|n| n.to_string())) }
+/// }
+/// struct Page { a: Box<Stepper> }
+/// impl View for Page {
+///     fn view(&self) -> impl Element<Self> + '_ { embed!(self.a) } // a Box is not a view, and its target is not a field
+/// }
+/// ```
+#[macro_export]
+macro_rules! embed {
+    ($s:tt . $($f:ident).+) => {{
+        let r = &$s.$($f).+;
+        let p: fn(&Self) -> &_ = |o: &Self| &o.$($f).+;
+        // SAFETY: the offset and the accessor name the same struct field path of `Self`.
+        unsafe { $crate::part::embed_proven::<_, Self>(r, ::core::mem::offset_of!(Self, $($f).+), p) }
+    }};
+}
+
+impl<'a, C: crate::app::View, V: 'static> Embed<'a, C, V> {
+    /// A mounter for the embedded view over `m`'s state.
+    fn sub<'b>(&self, m: &'b mut Mounter<'_, V>) -> Mounter<'b, C> {
+        Mounter {
+            rt: &mut *m.rt,
+            owner: self.c as *const C,
+            recs: &mut *m.recs,
+            scope: &mut *m.scope,
+            depth: m.depth,
+            ox: m.ox,
+            oy: m.oy,
+            space: m.space,
+            clip: m.clip,
+            pending_num: None,
+            cls: m.cls,
+            tape: m.tape,
+            ti: m.ti,
+            pos: m.pos,
+            kid: m.kid,
+            keep: false,
+            ov: m.ov,
+            base: m.base + self.off,
+        }
+    }
+}
+
+impl<'a, C: crate::app::View, V: 'static> Element<V> for Embed<'a, C, V> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        debug_assert_eq!(self.c as *const C as usize, m.owner as usize + self.off as usize, "embed! operand is not a field of the mounted owner");
+        if m.cls == 0 {
+            // reflection: a live owner inside the root owner (`App::reflect_owners`)
+            m.rt.reflect.owners.push(crate::reflect::OwnerInfo { base: m.base + self.off, type_name: std::any::type_name::<C>(), fields: crate::reflect::owner_fields::<C>, set: crate::reflect::owner_set::<C> });
+        }
+        let el = self.c.view();
+        let mut sub = self.sub(m);
+        el.mount(&mut sub);
+        let (ti, pos, kid) = (sub.ti, sub.pos, sub.kid);
+        (m.ti, m.pos, m.kid) = (ti, pos, kid);
+    }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        let el = self.c.view();
+        let mut sub = self.sub(m);
+        el.update(&mut sub);
+        let (ti, pos, kid) = (sub.ti, sub.pos, sub.kid);
+        (m.ti, m.pos, m.kid) = (ti, pos, kid);
     }
 }
 

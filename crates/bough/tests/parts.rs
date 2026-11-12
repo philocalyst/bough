@@ -254,3 +254,154 @@ fn the_inspector_lists_and_edits_parts_and_foreign_elements() {
     assert_eq!(box_of(&app, day_part(&app, 12).handle).0, SELECTED.0);
     exact(&mut app, "after the inspector's state edit");
 }
+
+// ------------------------------------------------------------------ a stateful component, embedded
+
+/// A component with state of its own, written as a plain `View`: nothing in it names its consumer (no owner
+/// type parameter, no `impl Element<V>` in a signature). Its handlers are its own methods.
+mod monthpicker {
+    use bough::prelude::*;
+
+    pub const DAY: Part<BoxStyle> = Part::new("month-picker.day");
+    pub const NEXT: Part<BoxStyle> = Part::new("month-picker.next");
+
+    pub struct MonthPicker {
+        pub month: Signal<u32>,
+        pub selected: Signal<u32>,
+    }
+    impl MonthPicker {
+        pub fn new(month: u32) -> MonthPicker {
+            MonthPicker { month: Signal::new(month), selected: Signal::new(0) }
+        }
+        fn next(&mut self) {
+            *self.month = *self.month % 12 + 1;
+            *self.selected = 0;
+        }
+        fn day(&self, d: u32) -> impl Element<Self> + '_ {
+            row((text(format!("{d}")).color(rgb(0x202020)),))
+                .center()
+                .w(24.0)
+                .h(24.0)
+                .bg(sig!(self.selected).map(move |s| if *s == d { rgb(0x2f6bff) } else { rgb(0xeeeeee) }))
+                .on_click(move |p: &mut MonthPicker| *p.selected = d)
+                .part_at(DAY, d)
+        }
+    }
+    impl View for MonthPicker {
+        fn view(&self) -> impl Element<Self> + '_ {
+            column((
+                row((text(sig!(self.month).map(|m| format!("month {m}"))), button(">").on_click(MonthPicker::next).part(NEXT))).gap(8.0).items(Align::Center),
+                row(each((1..=7u32).map(|d| self.day(d)))).gap(2.0),
+            ))
+            .gap(4.0)
+            .p(4.0)
+            .bg(rgb(0xffffff))
+        }
+    }
+}
+use monthpicker::MonthPicker;
+
+/// The consumer holds two pickers as fields. It restyles the days of the second, refuses day 7 in the first,
+/// and keeps a derived value of its own up to date after either selects.
+struct Trip {
+    depart: MonthPicker,
+    back: MonthPicker,
+    nights: Signal<i32>,
+    refused: u32,
+}
+impl Trip {
+    fn recompute(&mut self) {
+        *self.nights = *self.back.selected as i32 - *self.depart.selected as i32;
+    }
+}
+impl View for Trip {
+    fn view(&self) -> impl Element<Self> + '_ {
+        div()
+            .p(10.0)
+            .gap(10.0)
+            .bg(rgb(0x303030))
+            .child(
+                embed!(self.depart)
+                    .intercept(monthpicker::DAY, |me: &mut Trip, e: &PartEv| {
+                        if e.index == 7 {
+                            me.refused += 1;
+                            Flow::Stop
+                        } else {
+                            Flow::Continue
+                        }
+                    })
+                    .after(monthpicker::DAY, |me: &mut Trip, _: &PartEv| me.recompute()),
+            )
+            .child(embed!(self.back).restyle(monthpicker::DAY, |s| s.rounded(12.0)).after(monthpicker::DAY, |me: &mut Trip, _: &PartEv| me.recompute()))
+            .child(text(sig!(self.nights).map(|n| format!("{n} nights"))).color(rgb(0xffffff)))
+    }
+}
+
+fn click_part<V: View>(app: &mut App<V>, name: &str, index: u32, nth: usize) {
+    let p = app.reflect_parts().into_iter().filter(|p| p.name == name && p.index == index).nth(nth).expect("the part");
+    let [x, y, w, h] = app.record_view(p.pos).layout.expect("a layout box");
+    let (cx, cy) = ((x + w / 2.0) / S, (y + h / 2.0) / S);
+    app.pointer_down(cx, cy, Button::Primary);
+    app.pointer_up(cx, cy, Button::Primary);
+}
+
+#[test]
+fn an_embedded_view_keeps_its_own_state_routes_and_wires() {
+    let mut app = app(Trip { depart: MonthPicker::new(3), back: MonthPicker::new(4), nights: Signal::new(0), refused: 0 });
+    let state = |app: &mut App<Trip>| {
+        let mut s = (0, 0, 0, 0, 0, 0);
+        app.write(|v| s = (*v.depart.month, *v.depart.selected, *v.back.month, *v.back.selected, *v.nights, v.refused));
+        s
+    };
+    exact(&mut app, "first frame");
+    // a day of the first picker: its own route writes its own field; the consumer's `after` sees the result
+    click_part(&mut app, "month-picker.day", 2, 0);
+    assert_eq!(state(&mut app), (3, 2, 4, 0, -2, 0));
+    // a day of the second: the same component code, another owner address
+    click_part(&mut app, "month-picker.day", 6, 1);
+    assert_eq!(state(&mut app), (3, 2, 4, 6, 4, 0));
+    assert!(app.frame());
+    exact(&mut app, "after two selections (the embedded views' wires patched their cells and the label)");
+    // the consumer's guard on the first picker only
+    click_part(&mut app, "month-picker.day", 7, 0);
+    assert_eq!(state(&mut app), (3, 2, 4, 6, 4, 1), "day 7 of the first picker is refused");
+    click_part(&mut app, "month-picker.day", 7, 1);
+    assert_eq!(state(&mut app), (3, 2, 4, 7, 5, 1), "the second picker has no guard");
+    // the component's own method route, through its part
+    click_part(&mut app, "month-picker.next", 0, 0);
+    assert_eq!(state(&mut app), (4, 0, 4, 7, 5, 1), "MonthPicker::next ran on the first picker");
+    app.frame();
+    exact(&mut app, "after next");
+    // the restyle reached only the second picker's days
+    let days: Vec<_> = app.reflect_parts().into_iter().filter(|p| p.name == "month-picker.day").collect();
+    assert_eq!(days.len(), 14);
+    assert_eq!(box_of(&app, days[0].handle).1, 0.0);
+    assert_eq!(box_of(&app, days[7].handle).1, 12.0 * S);
+    // retained == a fresh mount of the same state (the pointer leaves first: the button's hover colour is
+    // interaction state, which a fresh mount does not have)
+    app.pointer_leave();
+    app.frame();
+    let mut fresh = self::app(Trip { depart: MonthPicker { month: Signal::new(4), selected: Signal::new(0) }, back: MonthPicker { month: Signal::new(4), selected: Signal::new(7) }, nights: Signal::new(5), refused: 1 });
+    assert!(app.reference_pixels() == fresh.reference_pixels(), "retained == fresh mount");
+}
+
+#[test]
+fn reflection_reaches_every_embedded_owner() {
+    let mut app = app(Trip { depart: MonthPicker::new(3), back: MonthPicker::new(4), nights: Signal::new(0), refused: 0 });
+    let owners = app.reflect_owners();
+    let names: Vec<&str> = owners.iter().map(|o| o.type_name.rsplit("::").next().unwrap()).collect();
+    assert_eq!(names, ["Trip", "MonthPicker", "MonthPicker"]);
+    assert_eq!(owners[2].offset as usize, std::mem::offset_of!(Trip, back));
+    let f = app.reflect_owner_fields(2);
+    let month = f.iter().find(|f| f.path == "month").expect("MonthPicker.month");
+    assert_eq!((month.value.as_deref(), month.reactive, month.editable), (Some("4"), true, true));
+    // an edit of an embedded owner's state is an ordinary write: its wire runs, the frame repairs
+    assert!(app.reflect_set_owner(2, "month", "9"));
+    assert!(app.frame());
+    let mut m = 0;
+    app.write(|v| m = *v.back.month);
+    assert_eq!(m, 9);
+    exact(&mut app, "after editing an embedded owner");
+    let recs = app.reflect_records();
+    assert!(recs.iter().any(|r| r.text.as_deref() == Some("month 9")), "the label shows the edited month");
+}
