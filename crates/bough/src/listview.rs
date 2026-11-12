@@ -1148,6 +1148,11 @@ impl Rt {
     }
 
     /// What is visible of region `reg`'s rows: their clip ∩ the window (absolute device px).
+    /// `lr_visible` for the layout pass's exposure check.
+    pub(crate) fn lr_exposure(&self, reg: usize) -> NRect {
+        self.lr_visible(reg)
+    }
+
     fn lr_visible(&self, reg: usize) -> NRect {
         let win = NRect::new(0, 0, self.win_w as i32, self.win_h as i32);
         self.bough.clip_rect(self.lists.regs[reg].clip).intersect(win).canon()

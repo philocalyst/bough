@@ -1129,13 +1129,25 @@ impl Rt {
         }
         // list regions place their rows between a compute pass and the write-back; a placement may queue
         // more layout (a container's height, rows at a new width): bounded passes
-        for _ in 0..8 {
-            self.lay_compute_pending();
-            if !self.lists_place() || self.lay.pending.is_empty() {
+        for round in 0..3 {
+            for _ in 0..8 {
+                self.lay_compute_pending();
+                if !self.lists_place() || self.lay.pending.is_empty() {
+                    break;
+                }
+            }
+            self.lay_writeback_ready();
+            // a non-virtual region's exposure is its clip ∩ the window, and a clip (a scroll port's) gets its rect
+            // in the write-back just done: a region that measured an empty exposure at its first placement must
+            // place again now, or a list in a scroll box shows no rows until the first input (lane memory, r7)
+            let exposed = (0..self.lists.regs.len()).any(|i| {
+                let r = &self.lists.regs[i];
+                !r.dead && !r.virt && self.lay.info[r.lid as usize].live && self.lr_exposure(i) != r.vis
+            });
+            if !exposed || round == 2 {
                 break;
             }
         }
-        self.lay_writeback_ready();
     }
 
     /// Write back every group laid out since the last call: a cold group (never written) from its root down;
