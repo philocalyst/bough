@@ -28,7 +28,7 @@ impl View for Rows {
     fn view(&self) -> impl Element<Self> + '_ {
         let line = move |i: usize| {
             row((
-                text(sig!(self.count).at(i).num(|n| *n as f32, NumFmt::new("", "", 0))).w(64.0),
+                text(sig!(self.count).at(i).num(|n| *n as f32, NumFmt::new("", None, ""))).w(64.0),
                 text(sig!(self.name).at(i).map(|n| format!("Row label {n}"))),
             ))
             .w(960.0)
@@ -86,6 +86,14 @@ fn cells(n: usize, once: bool) -> [u64; 4] {
 }
 
 fn main() {
+    if let Some(reps) = std::env::var("SPIN").ok().and_then(|v| v.parse::<u32>().ok()) {
+        // profiling: idle turns of a re-describing owner, nothing else
+        let mut a = app(MAX, false);
+        for _ in 0..reps {
+            a.turn(|_| {});
+        }
+        return;
+    }
     let sizes: Vec<usize> = std::env::args().skip(1).filter_map(|s| s.parse().ok()).collect();
     let sizes = if sizes.is_empty() { vec![16, 64, 256] } else { sizes };
     println!("rows,mode,colour,number,string,idle");

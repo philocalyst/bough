@@ -266,6 +266,16 @@ pub struct Wire {
     pub recipe: [u8; 16],
 }
 
+impl Drop for Rt {
+    fn drop(&mut self) {
+        crate::signal::LOG.with(|l| {
+            if l as *const _ as usize == self.log_home {
+                l.live.set(l.live.get() - 1);
+            }
+        })
+    }
+}
+
 /// `View::changed` of an owner class, type-erased: `(owner, publications, committed readers)`.
 pub type ChangedFn = unsafe fn(*mut u8, &crate::changed::Pubs, &[usize]);
 
@@ -407,6 +417,15 @@ pub struct Rt {
     /// Per owner class: the offsets of its wired cells (class 0 is the app's root owner; every list
     /// region adds one class shared by all its rows, `list.rs`).
     pub(crate) classes: Vec<Vec<u32>>,
+    /// Per class, indexed by `offset / 4`: 1 + the cell's position in `classes[cls]`, or 0 where no wired
+    /// cell starts. It answers "is this offset a wired cell" in one load (a wire being added; an address
+    /// from the write log) and gives the log's entries the order a scan would run them in.
+    pub(crate) class_rank: Vec<Vec<u32>>,
+    /// The thread's write log this runtime was made on, and the log epoch it last scanned its owner at.
+    log_home: usize,
+    log_epoch: u32,
+    /// `BOUGH_SETTLE_AUDIT`: after settling from the log, scan the owner and panic on a queued head.
+    settle_audit: bool,
     /// Per owner class: its `View::changed` (rows and entity views of a `View` type; class 0 is the app's).
     pub(crate) class_changed: Vec<Option<ChangedFn>>,
     pub texts: Vec<crate::text::TextNode>,
@@ -534,6 +553,14 @@ impl Rt {
             wires: vec![Wire { next: 0, dead: true, latest: false, node: 0, head: 0, cls: 0, patch: nop, recipe: [0; 16] }],
             wire_free: Vec::new(),
             classes: vec![Vec::new()],
+            class_rank: vec![Vec::new()],
+            log_home: crate::signal::LOG.with(|l| {
+                l.live.set(l.live.get() + 1);
+                l as *const _ as usize
+            }),
+            // one behind: the first settle scans
+            log_epoch: crate::signal::LOG.with(|l| l.epoch.get().wrapping_sub(1)),
+            settle_audit: std::env::var_os("BOUGH_SETTLE_AUDIT").is_some(),
             class_changed: vec![None],
             texts: Vec::new(),
             text_free: Vec::new(),
@@ -878,9 +905,15 @@ impl Rt {
         if first != 0 && self.wires.get(first as usize).is_none_or(|w| w.head != addr) {
             first = 0;
         }
-        let c = &mut self.classes[cls as usize];
-        if !c.contains(&off) {
+        let (c, r) = (&mut self.classes[cls as usize], &mut self.class_rank[cls as usize]);
+        debug_assert!(off % 4 == 0);
+        let k = (off / 4) as usize;
+        if k >= r.len() {
+            r.resize(k + 1, 0);
+        }
+        if r[k] == 0 {
             c.push(off);
+            r[k] = c.len() as u32;
         }
         // `latest` wires (producers, `latest(..)` operands) stay at the front of the chain: they run before a
         // held source's other wires are skipped (`run_head`), whatever the declaration order
@@ -910,6 +943,7 @@ impl Rt {
     /// A new owner class (list rows, entities): its wired offsets start empty.
     pub(crate) fn new_class(&mut self) -> u32 {
         self.classes.push(Vec::new());
+        self.class_rank.push(Vec::new());
         self.class_changed.push(None);
         (self.classes.len() - 1) as u32
     }
@@ -921,14 +955,82 @@ impl Rt {
     /// (every offset in class 0 is an `offset_of!`-proven headed field of it; the head is the first field of
     /// every cell, `#[repr(C)]`), and be derived from a unique borrow (list patches write their cell).
     pub unsafe fn settle(&mut self, owner: *const u8) {
-        loop {
+        // waves: a wire may queue further cells of the owner (bounded: a cycle is left for the next turn)
+        for _ in 0..64 {
             // SAFETY: this fn's contract (`owner` is the live root owner).
-            unsafe { self.settle_cls(owner, 0) };
-            if !std::mem::take(&mut self.asy.rescan) {
+            let more = unsafe { self.settle_logged(owner) };
+            if !std::mem::take(&mut self.asy.rescan) && !more {
                 break;
             }
         }
+        if self.settle_audit {
+            for &off in &self.classes[0] {
+                let h = unsafe { &*(owner.add(off as usize) as *const std::cell::Cell<u32>) }.get();
+                assert!(h & crate::signal::QUEUED == 0 || h & crate::signal::HELD != 0, "settle left a queued head at offset {off}");
+            }
+        }
         self.lists_end_turn();
+    }
+
+    /// One wave of the root owner's settle, from the thread's write log (`signal.rs`): the logged heads that
+    /// are wired cells of `owner` run in the order a scan would meet them. Returns whether any ran. A scan of
+    /// the whole class replaces it when the log cannot be trusted to hold every write: it overflowed since
+    /// this runtime last scanned, or the runtime is settling on another thread than it was made on.
+    ///
+    /// # Safety
+    /// As `settle`.
+    unsafe fn settle_logged(&mut self, owner: *const u8) -> bool {
+        use crate::signal::{LOG, LOG_CAP};
+        let mut run = [(0u32, 0u32); LOG_CAP];
+        let mut n = 0;
+        let rank = &self.class_rank[0];
+        let mut away = false;
+        let scan = LOG.with(|l| {
+            if l as *const _ as usize != self.log_home {
+                away = true;
+                return true;
+            }
+            let scan = l.epoch.get() != self.log_epoch;
+            self.log_epoch = l.epoch.get();
+            let (len, mut keep) = (l.n.get() as usize, 0);
+            for i in 0..len {
+                let a = l.at[i].get();
+                let off = a.wrapping_sub(owner as usize);
+                // a wired cell of this owner (an address is only ever dereferenced through this test)
+                let r = if off % 4 == 0 { rank.get(off / 4).copied().unwrap_or(0) } else { 0 };
+                if r != 0 {
+                    run[n] = (r, off as u32);
+                    n += 1;
+                } else if l.live.get() > 1 {
+                    // another runtime's on this thread: its to take
+                    l.at[keep].set(a);
+                    keep += 1;
+                }
+            }
+            l.n.set(keep as u32);
+            scan
+        });
+        if scan {
+            unsafe { self.settle_cls(owner, 0) };
+            // what the scan's wires queued is in the log (not when away: the next turn's scan finds it)
+            return !away;
+        }
+        // scan order (insertion sort: a handful of entries)
+        for i in 1..n {
+            let mut j = i;
+            while j > 0 && run[j - 1].0 > run[j].0 {
+                run.swap(j - 1, j);
+                j -= 1;
+            }
+        }
+        for &(_, off) in &run[..n] {
+            let sig = unsafe { owner.add(off as usize) };
+            let head = unsafe { &*(sig as *const std::cell::Cell<u32>) };
+            if head.get() & crate::signal::QUEUED != 0 {
+                unsafe { self.run_head(head, sig, owner) };
+            }
+        }
+        n != 0
     }
 
     /// `settle` for the owner at `owner` of class `cls` (a list row, an entity).

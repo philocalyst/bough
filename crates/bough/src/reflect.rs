@@ -734,8 +734,7 @@ pub(crate) unsafe fn set_raw(s: &'static Schema, root: *mut u8, path: &str, text
     for h in heads {
         // SAFETY: the wire head of a reactive cell on the path (its node's `head` offset).
         let h = unsafe { &*h };
-        let x = h.get();
-        h.set(x | (((x != 0) as u32) << 31));
+        crate::signal::queue(h);
     }
     for (c, k) in touched {
         // SAFETY: a live container on the path, reached from the unique borrow.

@@ -16,7 +16,7 @@
 use crate::signal::WireHead;
 use crate::elem::{Apply, IntoProp, Mounter, TextSrc};
 use crate::rt::*;
-use crate::signal::{Headed, Signal, Wired, HELD, QUEUED};
+use crate::signal::{Headed, Signal, Wired, HELD};
 use std::any::Any;
 use std::cell::{Cell, UnsafeCell};
 use std::collections::VecDeque;
@@ -345,10 +345,7 @@ unsafe fn commit<T: 'static>(addr: usize) {
     let has = r.state.get() & HAS != 0 || !failed;
     r.state.set(if has { HAS } else { 0 } | if failed { FAULT } else { 0 });
     for h in [&r.head, &r.phead] {
-        let x = h.get();
-        if x != 0 {
-            h.set(x | QUEUED);
-        }
+        crate::signal::queue(h);
     }
 }
 
@@ -396,8 +393,8 @@ impl Rt {
             for &h in &c.held {
                 // SAFETY: a held head is a signal head of the live owner.
                 let head = unsafe { &*(h as *const Cell<u32>) };
-                let x = head.get() & !HELD;
-                head.set(if x != 0 { x | QUEUED } else { x });
+                head.set(head.get() & !HELD);
+                crate::signal::queue(head);
             }
             self.asy.stats.commits += 1;
             for (o, cls) in std::mem::take(&mut self.asy.settle_owners) {
@@ -485,9 +482,8 @@ unsafe fn patch_produce<S: PartialEq + Clone + 'static, T: Send + 'static>(rt: &
     rt.asy.stats.requests += 1;
     if r.state.get() & PENDING == 0 {
         r.state.set(r.state.get() | PENDING);
-        let x = r.phead.get();
-        if x != 0 {
-            r.phead.set(x | QUEUED);
+        if r.phead.get() != 0 {
+            crate::signal::queue(&r.phead);
             rt.asy.rescan = true;
         }
     }
