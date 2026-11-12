@@ -245,3 +245,79 @@ What this deletes: the GPU kernel's texture stores (and with them the "which of 
 was a wgsl-rs gap, the unorm conversion that made the old CPU model's exactness depend on the hardware, and
 the residency-set entry per surface). Both executors now have the same output contract:
 `out[y * stride + x] = bgra`, into the memory the compositor reads.
+
+### Phase B: the kernel in the app (`BOUGH_REPAIR=kernel`, opt-in; commit `eb06240d21` + strict flag)
+
+`crates/bough/src/kernel_backend.rs` (about 280 lines) is the whole backend: stage the records the page cull
+returns for the damaged tiles into kernel commands (solids, rounded boxes, borders, glyph runs and glyph
+instances, shadows clipped to the record's ink); bin; `cpu::choose`; run on this thread, on the pool, or on
+the GPU through a buffer that aliases the target IOSurface; scroll by a CPU row copy from the surface that
+shows the previous epoch (identity 5 makes copied pixels equal re-rastered ones); zero the presenter's
+certificates for what was written (`Fused::forget_tiles`: the hook the gpu and memory handoffs asked for).
+`App::reference_pixels` in this mode is `cpu::reference`: the kernel's definition folded over every tile's
+uncut list. A frame holding an image, a ramp gradient or a transformed space is refused before a byte is
+written and the App switches to the presenter's kernels for good (every surface repainted once);
+`BOUGH_KERNEL_STRICT=1` turns that into a panic so a gate cannot pass by falling back.
+`BOUGH_KERNEL_EXEC=cpu1|cpun|gpu|auto` pins the executor.
+
+First run of the app's pixel gates in kernel mode, one core
+(`BOUGH_REPAIR=kernel BOUGH_KERNEL_EXEC=cpu1 cargo test --release --no-fail-fast -p bough-heavy -p
+bough-scenes -p bough-vlist`, load 40-53): **29 passed, 2 failed, 1 ignored.** Both failures assert that the
+presenter's GPU row bins overflowed and grew (`bin_overflow_grows_the_bins...`, `animate_in_throughput_mode`
+line 291): that mechanism does not exist here; no pixel assertion failed. For comparison the old CPU backend
+(`BOUGH_REPAIR=cpu`) fails 21 of the same 32 on this merged tree, several with "the kernels' full redraw
+differs from the original kernels'" and one with a GPU address fault: it shared surfaces, certificates and a
+GPU-rendered oracle with kernels it only imitated. Nothing was debugged to get from 21 failures to 0 pixel
+failures; the structure that produced them is not there.
+(This run was not strict: a scene that was refused would have passed on the old kernels. The strict runs on
+the GPU executor and the pool follow.)
+
+### Phase B gates, strict, every executor (2026-11-12, release, load 26-53, one run each)
+
+`BOUGH_KERNEL_STRICT=1 BOUGH_REPAIR=kernel BOUGH_KERNEL_EXEC=<e> cargo test --release --no-fail-fast -p
+bough-heavy -p bough-scenes -p bough-vlist` for e = `cpun` (the pool), `gpu`, `auto`: **28 passed, 3 failed,
+1 ignored, identically for all three** (one core, not strict: 29 / 2). The three failures are not pixel
+failures:
+
+* `bin_overflow_grows_the_bins_and_redraws_exactly` and `animate_in_throughput_mode_is_pixel_exact` assert
+  that the presenter's GPU row bins overflowed and grew. There are no row bins in this backend (a tile's list
+  is exactly as long as it needs to be); the pixel assertions before those lines pass.
+* `corrupted_region_renders_without_reading_outside_its_columns` corrupts the region on purpose; the backend
+  refuses the frame (out-of-range clip id), which strict mode turns into a panic. Not strict, it falls back
+  and passes.
+
+So every scene of the three suites is drawn by the kernel backend with no fallback, and on the GPU executor
+the gates compare frames the GPU wrote (through the aliased surface) with a reference the CPU computed:
+CPU == GPU in the real application, at every ring age, across scroll copies, resizes, trims and the
+publisher. Logs: `runtime/lanes/compute/r/gate-kernel-*.log`. Not run in kernel mode: bough-suite, the
+workspace suite, any windowed session, the `sabotage_copy` control.
+
+### The signal-write frame (the checkpoint's order-of-magnitude case)
+
+`micro_bench` (`comparisons/bough-scenes`), `SCENE=state RENDER=1`, release profile, M3 Pro, load 28-31.
+Instructions: slope of `/usr/bin/time -l` between `OPS=2000` and `OPS=8000`, three repetitions each (they
+agree within 1 %). CPU time: the bench's own median per frame at `OPS=8000`.
+
+| backend | instructions per frame | process CPU time per frame |
+|---|---:|---:|
+| presenter kernels on the GPU (`BOUGH_REPAIR=gpu`) | 104,036-106,210 | 28.7-29.6 us, plus the GPU's round trip (0.46-0.87 ms at cadence, gpu lane) |
+| old f16 CPU backend (`BOUGH_REPAIR=cpu`) | 85,886-86,235 | not measured |
+| kernel backend, first form | 133,697-134,061 | 7.4 us |
+| kernel backend, binning against the damage box | 86,007-86,097 | 4.6 us |
+| **kernel backend, slot map restricted to the damage box** | **54,197-55,138** | **3.0 us** (p10 2.9, p90 3.5) |
+| kernel backend pinned to its GPU executor | 382,116-388,413 | not measured |
+| no render (`RENDER=0`) | 3,786-4,164 | 0.2 us |
+
+Prediction (checkpoint and both handoffs): 107 K -> 20-40 K instructions, p50 under 50 us. **Instructions:
+missed (55 K). Time: 3 us of CPU and the frame is on the surface when `frame()` returns**, against ~29 us of
+CPU plus the GPU round trip. The first form was *worse* than the GPU path in instructions and I had assumed
+it would not be: the binner walked every tile of the window for each staged command (a 2-tile repair paid
+2,700 tile tests per command, twice). Per-frame work must be proportional to damage at every step, and the
+first version of a new stage rarely is. What is left in the 55 K (traced with `BOUGH_KERNEL_TRACE=1`, which
+costs ~7 K per mark): staging 10 commands ~4 K; IOSurface lock ~3 K and unlock + certificates ~2 K; the
+frame's 2-4 text tiles at 13-18 K each (every row of a tile with glyphs is shaded and stored: ~12 scalar
+instructions per stored pixel); the turn itself 3.8 K. The tile cost is the next lever (the store and blend
+loops do not vectorise across pixels as written; see the micro table).
+The kernel backend's own GPU executor costs 385 K per frame here: one command buffer and encoder per frame,
+an atlas upload per frame and a synchronous wait. It exists for large frames; the choice never takes it for
+this one.

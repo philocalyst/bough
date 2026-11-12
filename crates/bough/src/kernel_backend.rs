@@ -49,6 +49,8 @@ pub struct KernelBackend {
     plane: Box<Plane>,
     tiles: Vec<(u16, u16)>,
     force: Force,
+    /// `BOUGH_KERNEL_TRACE`: one line per frame on stderr.
+    pub trace: bool,
     #[cfg(target_os = "macos")]
     gpu: Option<bough_kernel::metal::Gpu>,
     /// Per surface: the address its target buffer wraps, and the buffer.
@@ -86,6 +88,7 @@ impl KernelBackend {
             plane: Box::new(Plane::EMPTY),
             tiles: Vec::new(),
             force,
+            trace: std::env::var_os("BOUGH_KERNEL_TRACE").is_some(),
             #[cfg(target_os = "macos")]
             gpu: None,
             #[cfg(target_os = "macos")]
@@ -217,7 +220,11 @@ impl KernelBackend {
         let atlas = Atlas { px: &a.pixels, w: a.width };
         let stride = bpr / 4;
         let damage = if full { Damage::All } else { Damage::Tiles(&self.tiles) };
+        #[cfg(target_os = "macos")]
+        let i0 = if self.trace { instrs() } else { 0 };
         self.bin.bin(&self.scene, w, h, stride as u32, &atlas, 0, &damage, true, &mut self.prog);
+        #[cfg(target_os = "macos")]
+        let i1 = if self.trace { instrs() } else { 0 };
         let (tiles, entries) = (self.prog.tiles() as u64, self.prog.entries() as u64);
         #[cfg(target_os = "macos")]
         let gpu_able = true;
@@ -281,6 +288,11 @@ impl KernelBackend {
                 self.stats.cpu1 += 1;
             }
         }
+        if self.trace {
+            #[cfg(target_os = "macos")]
+            eprintln!("kernel run: bin {} instructions, choose + execute {}", i1 - i0, instrs() - i1);
+            eprintln!("kernel frame: {} staged commands, {tiles} tiles, {entries} entries, estimate {} ns, {exec:?}", self.scene.len(), self.bin.est_cpu_ns);
+        }
         self.stats.frames += 1;
         self.stats.tiles += tiles;
         self.stats.entries += entries;
@@ -321,4 +333,16 @@ impl KernelBackend {
         cpu::reference(&self.scene, w, h, &atlas, 0, &mut out, w as usize, &self.pool);
         Some(out.iter().flat_map(|p| p.to_le_bytes()).collect())
     }
+}
+
+/// Retired instructions of this process so far (trace only; the call itself costs a few thousand).
+#[cfg(target_os = "macos")]
+pub fn instrs() -> u64 {
+    unsafe extern "C" {
+        fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut u64) -> i32;
+    }
+    let mut b = [0u64; 64];
+    // SAFETY: flavor 4 (RUSAGE_INFO_V4) writes 296 bytes; the buffer holds 512.
+    unsafe { proc_pid_rusage(std::process::id() as i32, 4, b.as_mut_ptr()) };
+    b[31]
 }

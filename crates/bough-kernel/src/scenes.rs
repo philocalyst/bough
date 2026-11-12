@@ -192,3 +192,32 @@ pub fn grid(fw: u32, fh: u32, cw: u32, ch: u32, text: bool, hot: Option<u32>) ->
     }
     s
 }
+
+/// A list: `rows` rows of `pitch` px (avatar disc, two lines of text, a hairline, a hover-able background),
+/// beside a sidebar and under a toolbar: what most application windows are made of.
+pub fn list(fw: u32, fh: u32, pitch: u32, text: bool, hot: Option<u32>) -> Scene {
+    let mut r = Rng(1234);
+    let mut s = Scene::default();
+    let (fwf, fhf) = (fw as f32, fh as f32);
+    s.add(stage::solid(0.0, 0.0, fwf, fhf, 0xfffa_fafa, &NO_CLIP));
+    s.add(stage::solid(0.0, 0.0, 240.0, fhf, 0xffee_ecea, &NO_CLIP));
+    s.add(stage::shadow(0.0, 0.0, fwf, 48.0, 0.0, 4.0, 0x3000_0000, &NO_CLIP));
+    s.add(stage::solid(0.0, 0.0, fwf, 48.0, 0xffff_ffff, &NO_CLIP));
+    let clip = [240.0, 48.0, fwf, fhf];
+    for i in 0..(fh - 48).div_ceil(pitch) {
+        let y = (48 + i * pitch) as f32;
+        if hot == Some(i) {
+            s.add(stage::solid(240.0, y, fwf - 240.0, pitch as f32, 0xfffc_e8d8, &clip));
+        }
+        s.add(stage::rrect(252.0, y + 6.0, pitch as f32 - 12.0, pitch as f32 - 12.0, 9999.0, 0xff80_a0c0, &clip));
+        s.add(stage::solid(240.0, y + pitch as f32 - 1.0, fwf - 240.0, 1.0, 0xffe0_e0e0, &clip));
+        if text {
+            for l in 0..2 {
+                for g in 0..(10 + r.u(40)) {
+                    s.add(stage::glyph(252.0 + pitch as f32 + g as f32 * 9.0, y + 6.0 + l as f32 * 20.0, CELL_W, CELL_H, cell(r.u(ATLAS_CELLS)), 0xff20_2020, &clip));
+                }
+            }
+        }
+    }
+    s
+}

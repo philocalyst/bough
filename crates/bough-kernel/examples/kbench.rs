@@ -161,6 +161,8 @@ fn scene_by_name(name: &str, fw: u32, fh: u32, nodes: usize) -> Scene {
         "gridtext" => scenes::grid(fw, fh, 96, 24, true, None),
         "gridhot" => scenes::grid(fw, fh, 96, 24, true, Some(3)),
         "adv" => scenes::adversarial(3, fw, fh, nodes),
+        "list" => scenes::list(fw, fh, nodes as u32, false, None),
+        "listtext" => scenes::list(fw, fh, nodes as u32, true, None),
         _ => panic!("unknown scene {name}"),
     }
 }
@@ -178,6 +180,14 @@ fn scene(b: &mut Bench, name: &str, fw: u32, fh: u32, nodes: usize) {
         };
         let (t, _, i, st) = b.cpu(&s, 0, Opt::default(), 10);
         println!("cut={cut}\ttiles {}\tentries/tile {:.2}\tbin {:.0} us {:.0} Kinstr\traster1 {:.0} us {:.0} Kinstr", st.tiles, st.entries as f64 / st.tiles as f64, tb * 1e6, ib / 1e3, t * 1e6, i / 1e3);
+    }
+    // repetition (E11): distinct origin-relative tile programs
+    {
+        b.bin(&s, fw, fh, &Damage::All, true);
+        let (bin_prog, scene_ref) = (&b.prog, &s);
+        let mut d = (0, 0);
+        let (t, _, i) = time(5, || d = cpu::distinct_tiles(scene_ref, bin_prog));
+        println!("distinct tile programs {} of {} ({:.1} %)\tkeying {:.0} us {:.0} Kinstr", d.1, d.0, 100.0 * d.1 as f64 / d.0 as f64, t * 1e6, i / 1e3);
     }
     // flat rows (E10)
     for flat in [false, true] {
@@ -244,6 +254,79 @@ fn scene(b: &mut Bench, name: &str, fw: u32, fh: u32, nodes: usize) {
     }
 }
 
+/// E12: a hover with thousands of dependents as a transition. Every cell of a grid has its own animated
+/// background (two states and a clock). The program is binned once; a frame is "write `now`, repair".
+fn anim(b: &mut Bench, fw: u32, fh: u32, cw: u32, ch: u32) {
+    let build = |at: Option<u32>| {
+        let mut r = scenes::Rng(9);
+        let mut s = Scene::default();
+        s.add(stage::solid(0.0, 0.0, fw as f32, fh as f32, 0xffff_ffff, &NO_CLIP));
+        let mut cells = 0;
+        for y in 0..fh.div_ceil(ch) {
+            for x in 0..fw.div_ceil(cw) {
+                let (px, py) = ((x * cw) as f32 + 1.0, (y * ch) as f32 + 1.0);
+                let a = stage::rrect(px, py, cw as f32 - 2.0, ch as f32 - 2.0, 3.0, 0xfff0_f0f0, &NO_CLIP).unwrap();
+                let c = stage::rrect(px, py, cw as f32 - 2.0, ch as f32 - 2.0, 3.0, 0xff40_90f0 | (r.next() as u32 & 0x3f3f), &NO_CLIP).unwrap();
+                match at {
+                    // the transition as data: evaluated by the kernel at the presenter's clock
+                    None => {
+                        s.push_anim(a, c, 0, 200, 1);
+                    }
+                    // the turn-per-frame model: the application computes this frame's state and restages it
+                    Some(now) => {
+                        s.push(k::at(a, c, k::progress(now, 0, 200, 1)));
+                    }
+                }
+                s.add(stage::glyph(px + 4.0, py - 2.0, scenes::CELL_W, scenes::CELL_H, scenes::cell(r.u(10)), 0xff20_2020, &[px, py, px + cw as f32 - 2.0, py + ch as f32 - 2.0]));
+                cells += 1;
+            }
+        }
+        (s, cells)
+    };
+    let (s, cells) = build(None);
+    let workers = b.pool.workers();
+    println!("# anim: {cells} cells of {cw}x{ch} in {fw}x{fh}, each a transition; commands {}", s.len());
+    b.bin(&s, fw, fh, &Damage::All, true);
+    println!("program: {} tiles, {} entries, binned once", b.prog.tiles(), b.prog.entries());
+    // what a turn per frame costs before a pixel is drawn: restage every animated command and bin again
+    let (t, _, i) = time(10, || {
+        let (s2, _) = build(Some(77));
+        std::hint::black_box(&s2);
+    });
+    let (tb, _, ib) = {
+        let (s2, _) = build(Some(77));
+        let (bin, prog) = (&mut b.bin, &mut bough_kernel::cpu::Prog::default());
+        let atlas = Atlas { px: &b.atlas, w: scenes::ATLAS_W };
+        time(10, || bin.bin(&s2, fw, fh, fw, &atlas, 0, &Damage::All, true, prog))
+    };
+    println!("turn per frame, before raster: restage {:.0} us {:.0} Kinstr + bin {:.0} us {:.0} Kinstr; as a kernel parameter: one word written", t * 1e6, i / 1e3, tb * 1e6, ib / 1e3);
+    println!("now\tcpu1_us\tcpu1_Ki\tcpuN_us\tgpu_wall_us\tgpu_kernel_us\tgpu_vs_cpu_differing_words\tstatic_twin_differing_words");
+    let words = (fw * fh) as usize;
+    for now in [0u32, 30, 77, 140, 200, 500] {
+        b.prog.set_now(now);
+        let c1 = b.cpu(&s, 0, Opt::default(), 10);
+        let cn = b.cpu(&s, workers, Opt::default(), 10);
+        let cpu_px = b.out.clone();
+        let (g, diff) = match b.gpu(&s, 10, 0) {
+            Some(g) => {
+                #[cfg(target_os = "macos")]
+                let d = b.gpu.as_ref().unwrap().out(words).iter().zip(&cpu_px).filter(|(a, b)| a != b).count();
+                #[cfg(not(target_os = "macos"))]
+                let d = 0;
+                (format!("{:.0}\t{:.0}", g.0 * 1e6, g.2 * 1e6), d.to_string())
+            }
+            None => ("-\t-".into(), "-".into()),
+        };
+        // the same frame staged statically by the application must be the same pixels
+        let (s2, _) = build(Some(now));
+        let mut out2 = vec![0u32; words];
+        let atlas = Atlas { px: &b.atlas, w: scenes::ATLAS_W };
+        cpu::naive_tiles(&s2, fw, fh, &atlas, &mut out2, fw as usize, &b.pool);
+        let twin = out2.iter().zip(&cpu_px).filter(|(a, b)| a != b).count();
+        println!("{now}\t{:.0}\t{:.0}\t{:.0}\t{g}\t{diff}\t{twin}", c1.0 * 1e6, c1.2 / 1e3, cn.0 * 1e6);
+    }
+}
+
 fn hash() {
     let atlas_px = scenes::atlas();
     let atlas = Atlas { px: &atlas_px, w: scenes::ATLAS_W };
@@ -276,6 +359,7 @@ fn main() {
             scene(&mut Bench::new(), &a[2], w, h, a.get(5).and_then(|s| s.parse().ok()).unwrap_or(600));
         }
         Some("hash") => hash(),
-        _ => eprintln!("usage: kbench micro | scene <canvas|grid|gridtext|gridhot|adv> <w> <h> [nodes] | hash"),
+        Some("anim") => anim(&mut Bench::new(), a[2].parse().unwrap(), a[3].parse().unwrap(), a[4].parse().unwrap(), a[5].parse().unwrap()),
+        _ => eprintln!("usage: kbench anim <w> <h> <cell_w> <cell_h> | micro | scene <canvas|grid|gridtext|gridhot|adv> <w> <h> [nodes] | hash"),
     }
 }

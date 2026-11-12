@@ -1015,7 +1015,16 @@ impl<V: View> App<V> {
         if self.repair == Repair::Kernel {
             if let Some(g) = self.gpu.as_mut() {
                 let kb = self.kernel.get_or_insert_with(Default::default);
+                let tr = kb.trace;
+                let mut marks = [0u64; 6];
+                let mut mark = |k: usize| {
+                    if tr {
+                        marks[k] = crate::kernel_backend::instrs();
+                    }
+                };
+                mark(0);
                 if kb.stage(&self.rt, &self.rows, full) {
+                    mark(1);
                     let (p, bpr, _) = g.write_begin(i);
                     let (_, _, alloc) = g.surface_mem(i);
                     if !copy.is_none() {
@@ -1027,17 +1036,27 @@ impl<V: View> App<V> {
                     }
                     // SAFETY: surface `i` is locked for this thread, `bpr` bytes per row, `alloc` bytes, page
                     // aligned (an IOSurface), and lives until a resize replaces it (a new address re-wraps).
+                    mark(2);
                     self.repaired_tiles = unsafe { kb.run(&self.rt, full, p, bpr, alloc, i) };
+                    mark(3);
                     // nothing is known to the presenter's kernels about what was written (the copy included)
                     g.forget_tiles(i, &self.rows, full || !copy.is_none());
                     g.write_end(i);
+                    mark(4);
                     g.show_held::<PACED>(i);
+                    mark(5);
+                    if tr {
+                        let d = |a: usize, b: usize| marks[b] - marks[a];
+                        eprintln!("kernel phases (instructions, each mark costs ~its own call): stage {} lock+copy {} run {} forget+unlock {} show {}", d(0, 1), d(1, 2), d(2, 3), d(3, 4), d(4, 5));
+                    }
                     self.surf_stats.cpu += 1;
                     drawn = true;
                 } else {
                     // something this kernel does not draw: the presenter's kernels take over for good. Their
                     // pixels differ, so every surface is repainted whole at its next use.
                     kb.stats.refused += 1;
+                    // gates: a scene that silently fell back would pass on the other kernels
+                    assert!(std::env::var_os("BOUGH_KERNEL_STRICT").is_none(), "the kernel backend refused a frame (an image, a ramp gradient or a transformed space)");
                     self.repair = Repair::Gpu;
                     self.held.iter_mut().for_each(|h| *h = None);
                     self.shown = None;

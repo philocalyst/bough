@@ -125,17 +125,28 @@ impl Binner {
         let (aw, alim) = (atlas.w, (atlas.px.len() as u32).saturating_sub(1));
         let (tx, ty) = (fw.div_ceil(32) as usize, fh.div_ceil(32) as usize);
         self.slot.clear();
+        // the damage's bounding box in tiles: a command is tested against it, not against the window (a
+        // background would otherwise walk every tile of the window for a two-tile repair)
+        let (mut bx0, mut by0, mut bx1, mut by1) = (0, 0, tx, ty);
         let nt = match damage {
             Damage::All => {
                 self.slot.extend(0..(tx * ty) as u32);
                 tx * ty
             }
             Damage::Tiles(t) => {
-                self.slot.resize(tx * ty, u32::MAX);
                 let mut n = 0u32;
-                // row-major slots: a band of tile rows is a contiguous range of the table
+                (bx0, by0, bx1, by1) = (tx, ty, 0, 0);
                 for &(x, y) in t.iter() {
-                    self.slot[y as usize * tx + x as usize] = 0;
+                    (bx0, by0, bx1, by1) = (bx0.min(x as usize), by0.min(y as usize), bx1.max(x as usize + 1), by1.max(y as usize + 1));
+                }
+                if t.is_empty() {
+                    (bx0, by0, bx1, by1) = (0, 0, 0, 0);
+                }
+                // the slot map covers the box only; row-major slots, so a band of tile rows is a contiguous
+                // range of the table
+                self.slot.resize((bx1 - bx0) * (by1 - by0), u32::MAX);
+                for &(x, y) in t.iter() {
+                    self.slot[(y as usize - by0) * (bx1 - bx0) + (x as usize - bx0)] = 0;
                 }
                 for s in self.slot.iter_mut() {
                     if *s == 0 {
@@ -146,6 +157,7 @@ impl Binner {
                 n as usize
             }
         };
+        let bw = bx1 - bx0;
         self.count.clear();
         self.count.resize(nt, 0);
         self.floor.clear();
@@ -153,10 +165,10 @@ impl Binner {
         self.est_cpu_ns = 0;
         let n = scene.len() as u32;
         let span = |c: &Cmd| {
-            let x0 = (c.win.x.max(0) as usize) >> 5;
-            let y0 = (c.win.y.max(0) as usize) >> 5;
-            let x1 = ((c.win.z.max(0) as usize + 31) >> 5).min(tx);
-            let y1 = ((c.win.w.max(0) as usize + 31) >> 5).min(ty);
+            let x0 = ((c.win.x.max(0) as usize) >> 5).max(bx0);
+            let y0 = ((c.win.y.max(0) as usize) >> 5).max(by0);
+            let x1 = ((c.win.z.max(0) as usize + 31) >> 5).min(bx1);
+            let y1 = ((c.win.w.max(0) as usize + 31) >> 5).min(by1);
             (x0, y0, x1, y1)
         };
         for i in 0..n {
@@ -172,7 +184,7 @@ impl Binner {
             let opaque = cut && h & k::F_ANIM == 0 && (k::opaque(c) || (cfg!(feature = "mutant_cut") && c.pm.w >= k::ONE / 2));
             for y in y0..y1 {
                 for x in x0..x1 {
-                    let s = self.slot[y * tx + x];
+                    let s = self.slot[(y - by0) * bw + (x - bx0)];
                     if s == u32::MAX {
                         continue;
                     }
@@ -198,8 +210,8 @@ impl Binner {
                 continue;
             }
             let t = HDR + 4 * s as usize;
-            w[t] = (i % tx) as u32 * 32;
-            w[t + 1] = (i / tx) as u32 * 32;
+            w[t] = (bx0 + i % bw) as u32 * 32;
+            w[t + 1] = (by0 + i / bw) as u32 * 32;
             w[t + 2] = off;
             off += self.count[s as usize];
         }
@@ -212,7 +224,7 @@ impl Binner {
             let (x0, y0, x1, y1) = span(&c);
             for y in y0..y1 {
                 for x in x0..x1 {
-                    let s = self.slot[y * tx + x];
+                    let s = self.slot[(y - by0) * bw + (x - bx0)];
                     if s == u32::MAX || i < self.floor[s as usize] {
                         continue;
                     }
@@ -297,9 +309,34 @@ fn over(row: &mut [[u16; 4]], sh: Vec4u) {
     if sh.w == k::ONE {
         row.fill(st(sh));
     } else {
-        for p in row {
-            *p = st(k::blend(ld(p), sh));
+        // `k::blend` with a constant source, as one flat pass over the 16-bit lanes (two pixels per step
+        // carry the source's four channels twice): vectorises across pixels
+        let (kk, s) = (k::ONE - sh.w, st(sh));
+        let s8 = [s[0], s[1], s[2], s[3], s[0], s[1], s[2], s[3]];
+        let lanes = row.as_flattened_mut();
+        let (pairs, rest) = lanes.as_chunks_mut::<8>();
+        for p in pairs {
+            for j in 0..8 {
+                p[j] = (s8[j] as u32 + k::mul15(p[j] as u32, kk)) as u16;
+            }
         }
+        for (j, p) in rest.iter_mut().enumerate() {
+            *p = (s8[j] as u32 + k::mul15(*p as u32, kk)) as u16;
+        }
+    }
+}
+/// A row of accumulators to stored pixels: `k::store8` per pixel, shaped as two flat lane-wise passes (the
+/// channel conversion over 16-bit lanes, then the RGBA -> BGRA word permutation) so both vectorise across
+/// pixels. The gate holds it equal to `store8`.
+#[inline(always)]
+fn store_row(acc: &[[u16; 4]], out: &mut [u32]) {
+    let mut b = [0u8; 128];
+    for (o, v) in b.iter_mut().zip(acc.as_flattened()) {
+        *o = k::ch8(*v as u32) as u8;
+    }
+    for (o, c) in out.iter_mut().zip(b.as_chunks::<4>().0) {
+        let v = u32::from_le_bytes(*c);
+        *o = (v & 0xff00_ff00) | (v & 0xff) << 16 | (v >> 16) & 0xff;
     }
 }
 /// Bits [a, b) of a 32-row mask.
@@ -449,10 +486,7 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
     }
     for y in 0..nrows {
         if need >> y & 1 != 0 {
-            let out = &mut dst[y * stride..y * stride + cols];
-            for (o, p) in out.iter_mut().zip(&sc.acc[y * 32..y * 32 + cols]) {
-                *o = k::store8(ld(p));
-            }
+            store_row(&sc.acc[y * 32..y * 32 + cols], &mut dst[y * stride..y * stride + cols]);
         } else {
             dst.copy_within((y - 1) * stride..(y - 1) * stride + cols, y * stride);
         }
@@ -628,6 +662,11 @@ pub fn reference(scene: &Scene, fw: u32, fh: u32, atlas: &Atlas, now: u32, out: 
     raster(scene, &prog, atlas, out, stride, pool, pool.workers(), Opt { flat: false, spec: true });
 }
 
+/// `reference` at clock 0 (a scene with no transitions).
+pub fn naive_tiles(scene: &Scene, fw: u32, fh: u32, atlas: &Atlas, out: &mut [u32], stride: usize, pool: &Pool) {
+    reference(scene, fw, fh, atlas, 0, out, stride, pool);
+}
+
 /// The specification: every pixel of the frame folds every command of the scene, in order, with no binning,
 /// no cut, no core, no span (identities 1-4 are what make `raster` and the GPU equal to this).
 pub fn naive(scene: &Scene, fw: u32, fh: u32, atlas: &Atlas, now: u32, out: &mut [u32], stride: usize) {
@@ -646,3 +685,56 @@ pub fn naive(scene: &Scene, fw: u32, fh: u32, atlas: &Atlas, now: u32, out: &mut
 }
 
 const _: () = assert!(WORDS == 20);
+
+/// Identity 5 as a key: a 128-bit hash of a tile's program *relative to the tile's origin*, with every
+/// command reduced to what the tile can see of it (its window clamped to the tile; a command whose visible
+/// part lies inside its core is just its colour). Tiles with equal keys hold equal pixels: rows of a list,
+/// cells of a grid, every tile of a plain background.
+pub fn tile_key(scene: &Scene, list: &[u32], ox: i32, oy: i32, now: u32) -> u128 {
+    let mut h = (0x9e37_79b9_7f4a_7c15u64, 0xc2b2_ae3d_27d4_eb4fu64);
+    let mut mix = |v: u64| {
+        h.0 = (h.0 ^ v).wrapping_mul(0x0000_0100_0000_01b3).rotate_left(29);
+        h.1 = (h.1.rotate_left(23) ^ v).wrapping_mul(0xff51_afd7_ed55_8ccd);
+    };
+    let p4 = |a: i32, b: i32, c: i32, d: i32| (a as u16 as u64) | (b as u16 as u64) << 16 | (c as u16 as u64) << 32 | (d as u16 as u64) << 48;
+    let c4 = |v: Vec4u| (v.x as u64) | (v.y as u64) << 16 | (v.z as u64) << 32 | (v.w as u64) << 48;
+    for &i in list {
+        let c = scene.load_at(i, now);
+        let (x0, y0, x1, y1) = ((c.win.x - ox).clamp(0, 32), (c.win.y - oy).clamp(0, 32), (c.win.z - ox).clamp(0, 32), (c.win.w - oy).clamp(0, 32));
+        if x0 >= x1 || y0 >= y1 {
+            continue;
+        }
+        mix(p4(x0, y0, x1, y1));
+        let kind = c.par.x;
+        let in_core = c.core.x <= ox + x0 && c.core.y <= oy + y0 && c.core.z >= ox + x1 && c.core.w >= oy + y1;
+        if kind == k::K_SOLID || (in_core && (kind == k::K_RRECT || kind == k::K_BORDER || kind == k::K_SHADOW)) {
+            mix(c4(if kind == k::K_BORDER { c.pm2 } else { c.pm }));
+            continue;
+        }
+        mix(kind as u64 | (c.par.y as u64) << 8 | (c.par.z as u64) << 16 | (c.par.w as u64) << 48);
+        mix(p4((c.core.x - ox).clamp(0, 32), (c.core.y - oy).clamp(0, 32), (c.core.z - ox).clamp(0, 32), (c.core.w - oy).clamp(0, 32)));
+        mix(((c.b.x - ox * 256) as u32 as u64) | ((c.b.y - oy * 256) as u32 as u64) << 32);
+        mix(((c.b.z - ox * 256) as u32 as u64) | ((c.b.w - oy * 256) as u32 as u64) << 32);
+        mix((c.rad.x as u32 as u64) | (c.rad.y as u32 as u64) << 32);
+        mix((c.rad.z as u32 as u64) | (c.rad.w as u32 as u64) << 32);
+        mix(c4(c.pm));
+        mix(c4(c.pm2));
+        if kind == k::K_USER {
+            mix(now as u64);
+        }
+    }
+    (h.0 as u128) << 64 | h.1 as u128
+}
+
+/// (tiles, distinct keys) of a program: how much of a frame is repetition (E11).
+pub fn distinct_tiles(scene: &Scene, prog: &Prog) -> (usize, usize) {
+    let mut keys: Vec<u128> = (0..prog.tiles())
+        .map(|t| {
+            let (ox, oy, list) = prog.tile(t);
+            tile_key(scene, list, ox, oy, prog.now())
+        })
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    (prog.tiles(), keys.len())
+}
