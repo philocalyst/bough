@@ -321,3 +321,55 @@ loops do not vectorise across pixels as written; see the micro table).
 The kernel backend's own GPU executor costs 385 K per frame here: one command buffer and encoder per frame,
 an atlas upload per frame and a synchronous wait. It exists for large frames; the choice never takes it for
 this one.
+
+### Quiet-machine sweeps (M3 Pro, load 3-9 at start, dist, 2026-11-12 03:32; raw `runtime/.../quiet-*.tsv`)
+
+The other lanes stopped for a while; these replace the loaded numbers where they overlap.
+
+gridtext 2560x1600, wall us, minimum [median], 10 workers unless noted:
+
+| tiles | 1 core | 5 workers | 10 workers | GPU wall | at cadence: 1 core / 10 workers / GPU |
+|---:|---:|---:|---:|---:|---|
+| 1 | 1.6 | 1.6 | 1.6 | 145 | 7 / 8 / 539 |
+| 16 | 16.8 | 13.2 [42] | 12.8 [31] | 148 | 30 / 97 / 577 |
+| 64 | 61.7 | 44.5 [93] | 44.8 [59] | 231 | 83 / 130 / 632 |
+| 256 | 243 | 125 [171] | 130 [169] | 409 | 347 / 192 / 854 |
+| 1,024 | 961 | 407 [536] | 321 [359] | 680 | 1,098 / 397 / 1,540 |
+| 4,000 | 4,031 | 1,136 [1,428] | 1,028 [1,159] | 1,073 | 4,210 / 1,149 / 1,592 |
+
+On a text grid the GPU does not win at any size at a display's cadence, and only ties the pool for the whole
+window back to back. listtext (a toolbar, a sidebar, 56 px rows): one core 0.2 us for a tile, 85 us for 512,
+2.26 ms for the window (pool 0.81-0.91, GPU 0.67-0.71 back to back, 2.0 at cadence). canvas, 5 workers: one
+core 38 us for a tile, 232 us for 8, 242 ms for the window; GPU 244-280 us up to 8 tiles, 5.49 ms for the
+window.
+
+**The estimator against these sweeps** (`cpu::choose`, columns `est_cpu1_us`, `choice_*` of kbench): on
+gridtext the one-core estimate is within 0.65-0.75x of the measurement at every size and the choice is the
+measured minimum except at 64-128 tiles back to back, where it wakes workers for a 15-30 % gain that the
+median does not show. On listtext it under-estimates by 10x below 512 tiles (0.5 us estimated for 5 us: a
+tile's store is not in the per-kind weights) but the choice is still right, since both are far below the
+wake cost. On the canvas it over-estimates 5x (209 us for a 38 us tile: the weights assume a command covers
+its tile) and so sends 4-8 tile repairs to the GPU when one core is 2x faster; from 16 tiles up the choice
+is right. So the form holds and the weights need a per-tile constant and an area term; the bench lane's
+five scenes are the validation set (task 3 of the lead's list).
+
+### E11: repetition measured, cache not built
+
+`cpu::tile_key`: a 128-bit hash of a tile's program relative to its origin, each command reduced to what the
+tile can see of it. Distinct keys, full window: grid 6 of 4,000 (0.1 %); listtext 644 (16 %); gridtext 2,574
+(64 %). Keying costs 0.4-1.0 K instructions per tile. Prediction (<= 1 % on the grid) confirmed; the cache
+it was meant to justify is not worth building for these: a flat tile already costs 0.2 us, about what
+copying 4 KB costs, because identity 4 took the win first. Where a cache would pay is repeated *effect*
+tiles (a grid of shadowed cards) and states revisited across frames (hover on, hover off). Parked with the
+key function in place.
+
+### E12: a transition is a kernel parameter: CONFIRMED in the kernel crate (`kbench anim 2560 1600 32 12`)
+
+10,720 cells, each with its own colour transition (two states and a clock in the command), plus a glyph
+each: 32,161 commands, binned once into 4,000 tiles / 30,720 entries. At clocks 0, 30, 77, 140, 200, 500:
+**0 differing words between the GPU and the CPU, and 0 between the kernel-evaluated transition and the same
+frame staged statically by the application** (`k::at` on the CPU, then the reference). A frame is one word
+written and a repair: GPU 1.34-1.84 ms, pool 2.3-3.0 ms, one core 12 ms (184 M instructions: 10,720 small
+rounded boxes are nearly all edge). What a turn per frame adds before any pixel, in this crate alone:
+restaging 0.43 ms / 6.8 M instructions and binning 0.25 ms / 7.3 M; in the application also 10,720 writes,
+their damage and the applier. Not wired to the façade yet (`transition.rs` still applies per frame).

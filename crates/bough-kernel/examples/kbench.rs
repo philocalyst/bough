@@ -196,7 +196,7 @@ fn scene(b: &mut Bench, name: &str, fw: u32, fh: u32, nodes: usize) {
     }
     // the gradient (E5): compact damage of n tiles; one core, some cores, all cores, GPU
     println!("# crossover: damage is a compact block of tiles; us = min of reps (median in brackets); Ki = K instructions per frame, all threads");
-    println!("tiles\tentries\tcpu1_us\tcpu1_Ki\tcpu2_us\tcpu4_us\tcpuN_us\tcpuN_Ki\tgpu_wall_us\tgpu_kernel_us\tgpu_Ki\tgpu_cadence_us\tcpu1_cadence_us\tcpuN_cadence_us");
+    println!("tiles\tentries\tcpu1_us\tcpu1_Ki\tcpu2_us\tcpu4_us\tcpuN_us\tcpuN_Ki\tgpu_wall_us\tgpu_kernel_us\tgpu_Ki\tgpu_cadence_us\tcpu1_cadence_us\tcpuN_cadence_us\test_cpu1_us\tchoice_warm\tchoice_cadence");
     let (tx, ty) = (fw.div_ceil(32), fh.div_ceil(32));
     let mut n = 1u32;
     loop {
@@ -207,6 +207,8 @@ fn scene(b: &mut Bench, name: &str, fw: u32, fh: u32, nodes: usize) {
         let (x0, y0) = ((tx - bw) / 2, (ty - bh) / 2);
         let tiles: Vec<(u16, u16)> = (0..bh).flat_map(|y| (0..bw).map(move |x| ((x0 + x) as u16, (y0 + y) as u16))).take(n_eff as usize).collect();
         b.bin(&s, fw, fh, &Damage::Tiles(&tiles), true);
+        let (est, nt, ne) = (b.bin.est_cpu_ns, b.prog.tiles() as u64, b.prog.entries() as u64);
+        let pick = |warm: bool| format!("{:?}", cpu::choose(est, nt, ne, workers.min(5), cfg!(target_os = "macos"), warm, &cpu::COSTS));
         let reps = if n_eff < 64 { 200 } else if n_eff < 1024 { 60 } else { 20 };
         let c1 = b.cpu(&s, 0, Opt::default(), reps);
         let c2 = b.cpu(&s, 1, Opt::default(), reps);
@@ -231,7 +233,7 @@ fn scene(b: &mut Bench, name: &str, fw: u32, fh: u32, nodes: usize) {
         let (k1, kn) = (cad(b, 0), cad(b, workers));
         let us = |a: f64, m: f64| format!("{:.1} [{:.1}]", a * 1e6, m * 1e6);
         println!(
-            "{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}",
+            "{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{:.1}\t{}\t{}",
             n_eff,
             c1.3.entries,
             us(c1.0, c1.1),
@@ -246,6 +248,9 @@ fn scene(b: &mut Bench, name: &str, fw: u32, fh: u32, nodes: usize) {
             gc.map_or("-".into(), |g| format!("{:.1}", g.1 * 1e6)),
             k1 * 1e6,
             kn * 1e6,
+            est as f64 / 1e3,
+            pick(true),
+            pick(false),
         );
         if n_eff == tx * ty {
             break;
