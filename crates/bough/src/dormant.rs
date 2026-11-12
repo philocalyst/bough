@@ -37,7 +37,7 @@
 //! `TrustedRandomAccessNoCoerce` (std's own marker: ranges, slice iterators, and `map` / `enumerate` / `zip`
 //! / `cloned` / `copied` / `skip` over them). `Iterator::nth` is not used: `Map::nth` calls the closure for
 //! every skipped item.
-use crate::describe::{mount_item, remove_items, repack_seals, rewrite_item, sealed_as, DynItem};
+use crate::describe::{mount_item, remove_items, repack_seals, rewrite_item, seal_context, sealed_as, DynItem, Seals};
 use crate::elem::{Element, Mounter};
 use crate::layout::Spec;
 use crate::rt::*;
@@ -125,6 +125,8 @@ pub struct Dorm {
     pub(crate) gap: f32,
     /// The widest measured item (device px): a run's cross size, so a content-sized container keeps its width.
     pub(crate) cross: f32,
+    /// The container's width the sizes were measured at (`NaN`: not laid out yet).
+    cw: f32,
     /// Remembered pitches of released items whose pitch is not the estimate, as run-length groups
     /// (first item, items, pitch), ascending and disjoint: a thousand released rows of one height are one
     /// group, and rows of the estimated height are none.
@@ -176,6 +178,9 @@ pub struct DormStats {
     /// Scroll offsets moved by anchoring, and the device px moved in total.
     pub anchored: u64,
     pub anchored_px: i64,
+    /// Run extents set past the exact range of the layout's f32 coordinates (2^24 px with a pitch that is
+    /// not a multiple of the float spacing there): items after such a run are not placed exactly.
+    pub inexact: u64,
     /// Parts that were dormant-capable and fell back to eager (a run could not stand for their items).
     pub fell_back: u64,
 }
@@ -496,6 +501,14 @@ impl Rt {
             }
             runs += 1;
             let size = [p.cross, p.run_size(i, e.run)];
+            // layout coordinates are f32: past 2^24 px a position is exact only if the pitch is a multiple of
+            // the spacing of floats there (the ceiling of this representation, DORMANT.md)
+            if size[1] >= 16_777_216.0 {
+                let ulp = f32::from_bits(size[1].to_bits() + 1) - size[1];
+                if (p.est + p.gap) % ulp != 0.0 || !p.rem.is_empty() {
+                    self.dorm.stats.inexact += 1;
+                }
+            }
             any |= self.lay.eng.resize_dormant(&self.bough, e.head, size);
             i += e.run;
         }
@@ -638,6 +651,15 @@ impl Rt {
         p.col_lay = lay;
         p.measured = cnt;
         p.unseen = unseen;
+        // the container's width changed (a resize): every remembered size was measured at the other width,
+        // so none is kept and the estimate is what is realised now
+        let cw = self.lay.info[p.lid as usize].aw;
+        let rewidth = cw != p.cw && !p.cw.is_nan();
+        p.cw = cw;
+        if rewidth {
+            p.rem.clear();
+            p.est = f32::NAN;
+        }
         // the estimate: the mean measured size, whole px, moved only when it is off by more than an eighth
         // (every move re-sizes the runs, which moves everything below them)
         let mut resize = false;
@@ -648,6 +670,7 @@ impl Rt {
                 resize = true;
             }
         }
+        resize |= rewidth;
         if cross != p.cross {
             p.cross = cross;
             resize = true;
@@ -992,16 +1015,20 @@ where
     let n = src.count_items() as u32;
     let seed = n.min(SEED);
     let lid = m.rt.lay.cur;
+    let mut seals = Seals::default();
+    let cx = (m.clip, m.space, m.depth, m.ox, m.oy);
     let mut out = Vec::with_capacity(seed as usize + 1);
     for i in 0..seed {
         // SAFETY: an indexed source (the caller checked), `i < n`, ascending.
         let e = unsafe { src.item(i as usize) };
         let key = e.dyn_key();
         let r0 = m.recs.len();
+        let seal = seal_new(m, &e, &mut seals, cx);
         let mut it = mount_item(m, e, None);
         it.key = key;
+        it.seal = seal;
         it.head = m.recs.get(r0).map_or(0, |r| r.handle);
-                out.push(it);
+        out.push(it);
     }
     let mut runs = 0;
     if n > seed {
@@ -1023,6 +1050,7 @@ where
         est: f32::NAN,
         gap,
         cross: 0.0,
+        cw: f32::NAN,
         rem: Vec::new(),
         want: Vec::new(),
         drop: Vec::new(),
@@ -1044,6 +1072,7 @@ where
         cand: Vec::new(),
     };
     m.rt.dyns.parts[d as usize] = out;
+    m.rt.dyns.seals[d as usize] = seals;
     m.rt.dyns.dorm[d as usize] = Some(Box::new(dorm));
     m.rt.dorm.live.push(d);
     m.rt.dorm.lclip.push(m.clip);
@@ -1055,10 +1084,11 @@ where
 
 /// Mount items `[a, b)` of `src` at the walk's position (their records inserted there, their layout
 /// children placed there) and return their entries. `first`: item `a`, if it was already fetched.
-fn realise<V, I: Source>(m: &mut Mounter<'_, V>, src: &mut I, lid: u32, a: u32, b: u32, mut first: Option<I::Item>) -> Vec<DynItem>
+fn realise<V, I: Source>(m: &mut Mounter<'_, V>, src: &mut I, lid: u32, a: u32, b: u32, mut first: Option<I::Item>, seals: &mut Seals) -> Vec<DynItem>
 where
     I::Item: Element<V>,
 {
+    let cx = (m.clip, m.space, m.depth, m.ox, m.oy);
     let mut buf: Vec<RecordInit> = Vec::new();
     let mut items = Vec::with_capacity((b - a) as usize);
     let mut nk = 0usize;
@@ -1070,10 +1100,12 @@ where
         };
         let key = e.dyn_key();
         let r0 = buf.len();
+        let seal = seal_new(m, &e, seals, cx);
         let mut it = mount_item(m, e, Some(&mut buf));
         it.key = key;
+        it.seal = seal;
         it.head = buf.get(r0).map_or(0, |r| r.handle);
-                nk += it.nkid as usize;
+        nk += it.nkid as usize;
         items.push(it);
     }
     m.rt.bough.insert_run(m.pos, &buf);
@@ -1084,6 +1116,32 @@ where
     m.kid += nk;
     m.rt.dorm.stats.realised += (b - a) as u64;
     items
+}
+
+/// The seal of a description about to be mounted (a mount leaves what an update with the same description
+/// would: the item is stepped over from its first walk on, instead of being rewritten once to learn its seal).
+#[inline(always)]
+fn seal_new<V, E: Element<V>>(m: &mut Mounter<'_, V>, e: &E, seals: &mut Seals, cx: (u16, u16, u16, f32, f32)) -> (u32, u32) {
+    if seals.refused || no_seal_at_mount() {
+        return (0, 0);
+    }
+    let o = seals.bytes.len();
+    let mut w = crate::seal::SealWrite { out: &mut seals.bytes, descs: &mut m.rt.lay.descs, ok: true };
+    seal_context(cx, &mut w);
+    e.seal(&mut w);
+    if !w.ok {
+        seals.bytes.truncate(o);
+        seals.refused = true;
+        return (0, 0);
+    }
+    (o as u32, (seals.bytes.len() - o) as u32)
+}
+
+/// `EXPERIMENTS.md`, 1 (killed: under 1 % on a scroll frame, +4 % on a wake): sealing at realisation is off
+/// unless `BOUGH_DORM_SEAL=1`; an item learns its seal at its first walk, as an eagerly mounted one does.
+fn no_seal_at_mount() -> bool {
+    static M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *M.get_or_init(|| std::env::var_os("BOUGH_DORM_SEAL").is_none())
 }
 
 /// A new dormant run of `count` items at the walk's position: its record and its leaf.
@@ -1184,7 +1242,7 @@ where
                 k += 1;
             }
             p.forget(a, b);
-            let items = realise(m, &mut src, lid, a, b, first);
+            let items = realise(m, &mut src, lid, a, b, first, &mut seals);
             let ni = items.len();
             if lead > 0 {
                 old.splice(k..k, items);
@@ -1260,7 +1318,7 @@ where
             seals.dead += gone.seal.1;
             remove_items(m, lid, gone.nrec as usize, gone.nkid as usize);
             m.rt.release_scope(gone.scope);
-            let mut it = realise(m, &mut src, lid, i, i + 1, Some(e));
+            let mut it = realise(m, &mut src, lid, i, i + 1, Some(e), &mut seals);
             old[k] = it.pop().unwrap();
             touched = true;
             i += 1;
@@ -1293,7 +1351,7 @@ where
                 let hit = sealed_as(&old[k], &e2, &seals, &m.rt.lay.descs, cx).1;
                 pending = Some(e2);
                 if hit {
-                    let mut it = realise(m, &mut src, lid, i, i + 1, Some(e));
+                    let mut it = realise(m, &mut src, lid, i, i + 1, Some(e), &mut seals);
                     m.rt.dorm.stats.realised -= 1;
                     old.insert(k, it.pop().unwrap());
                     p.shift(i, 1);

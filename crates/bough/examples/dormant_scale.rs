@@ -70,12 +70,35 @@ fn one(n: usize) {
     };
     sel(&mut a, 8);
     let (lo, hi) = (sel(&mut a, 16), sel(&mut a, 48));
+    let sel_turn = (hi - lo) / 32;
+    // the same write aimed at a row that is dormant (the last row): the re-description never reaches it
+    let last = n - 1;
+    let mut dorm = |a: &mut App<Rows>, reps: usize| {
+        let t0 = tinstr();
+        for k in 0..reps {
+            a.turn(|r| r.selected = if k % 2 == 0 { last } else { usize::MAX });
+        }
+        tinstr() - t0
+    };
+    dorm(&mut a, 8);
+    let (lo, hi) = (dorm(&mut a, 16), dorm(&mut a, 48));
+    let dorm_turn = (hi - lo) / 32;
+    // wake: a jump to somewhere else realises a screenful; instructions per realised item (description,
+    // records, instances, shaping, layout, the walk and the scans included)
+    let r0 = a.rt.dorm.stats.realised;
+    let t0 = tinstr();
+    a.turn(|r| {
+        r.y.set(mid * 0.5 + 3.0);
+    });
+    let wake = (tinstr() - t0) / (a.rt.dorm.stats.realised - r0).max(1);
+    let woke = a.rt.dorm.stats.realised - r0;
     let st = a.rt.dorm.stats;
-    println!("{n},{records},{mount},{per_frame},{jump},{},{},{},{}", (hi - lo) / 32, foot / 1024, a.record_count(), st.unconverged);
+    println!("{n},{records},{mount},{per_frame},{jump},{sel_turn},{dorm_turn},{wake},{woke},{},{},{}", foot / 1024, a.record_count(), st.unconverged);
 }
 
 fn main() {
-    println!("rows,records_at_mount,mount_instr,scroll_frame_instr,jump_instr,select_turn_instr,mount_footprint_kib,records_after,unconverged");
+    eprintln!("bytes: entry (DynItem) {}, part state (Dorm) {}", std::mem::size_of::<bough::describe::DynItem>(), std::mem::size_of::<bough::dormant::Dorm>());
+    println!("rows,records_at_mount,mount_instr,scroll_frame_instr,jump_instr,select_turn_instr,dormant_row_turn_instr,wake_instr_per_item,items_woken,mount_footprint_kib,records_after,unconverged");
     for n in std::env::args().skip(1).filter_map(|s| s.parse::<usize>().ok()) {
         one(n);
     }

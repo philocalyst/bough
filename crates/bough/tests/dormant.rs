@@ -491,6 +491,91 @@ fn what_cannot_be_a_run_mounts_eagerly_and_nested_parts_nest() {
     assert_eq!(app.rt.dorm.stats.unconverged, 0);
 }
 
+// ------------------------------------------------------------------ a resize that changes every height
+
+/// Paragraphs that wrap at the port's width: every row's height is a function of the width.
+struct Prose {
+    n: usize,
+    y: Signal<f32>,
+    pw: f32,
+}
+impl View for Prose {
+    fn view(&self) -> impl Element<Self> + '_ {
+        let line = |i: usize| {
+            let words = ["alpha beta gamma delta", "a much longer line of words that wraps more than once at any width here", "x", "epsilon zeta eta theta iota kappa lambda"];
+            column((para(words[i % 4]).font(12.0, 16.0).color(rgb(0xffffff)),)).w_pct(1.0).py(3.0).bg(if i % 2 == 0 { rgb(0x283848) } else { rgb(0x384858) })
+        };
+        column((text("prose").color(rgb(0xffffff)), div().w(self.pw).h(200.0).scroll(sig!(self.y)).child(each((0..self.n).map(line))))).bg(rgb(0x101010))
+    }
+}
+fn prose(n: usize, y: f32, pw: f32, eager: bool) -> App<Prose> {
+    let mut c = Config::new(320.0, 240.0, 2.0, FONT.to_vec());
+    c.eager_parts = eager;
+    App::new(Prose { n, y: Signal::new(y), pw }, c, true)
+}
+
+#[test]
+fn a_resize_that_changes_every_height() {
+    if mutant() != Mutant::None {
+        return;
+    }
+    let mut app = prose(3000, 0.0, 260.0, false);
+    app.frame();
+    let mut r = Rng(77);
+    let mut pw = 260.0;
+    for step in 0..24 {
+        match step % 4 {
+            0 => {
+                let y = r.below(40_000) as f32;
+                app.turn(|d| {
+                    d.y.set(y);
+                });
+            }
+            1 => {
+                pw = [120.0, 300.0, 180.0, 90.0, 260.0][r.below(5)];
+                app.turn(|d| d.pw = pw);
+            }
+            2 => {
+                let y = (*app.owner.y - 45.0).max(0.0);
+                app.turn(|d| {
+                    d.y.set(y);
+                });
+            }
+            _ => {
+                let y = *app.owner.y + 23.0;
+                app.turn(|d| {
+                    d.y.set(y);
+                });
+            }
+        }
+        app.frame();
+        let retained = app.reference_pixels();
+        assert_eq!(diff(&app.presented_pixels(), &retained), 0, "step {step}: presented != full redraw");
+        assert_eq!(app.rt.dorm.stats.unconverged, 0, "step {step}: no fixed point");
+        let p = app.rt.parts().into_iter().find(|p| p.dormant).unwrap();
+        assert!(p.realised < 80, "step {step}: {p:?}");
+        let s = app.rt.scale;
+        let port_top = 20.0 * s;
+        let Some(k) = p.ranges.iter().flat_map(|r| r.0..r.1).find(|&k| app.rt.dorm_item_y(p.part, k).is_some_and(|t| t >= port_top)) else { continue };
+        let at = (app.rt.dorm_item_y(p.part, k).unwrap() - port_top) / s;
+        // a fresh mount at this width, scrolled to the same anchor: it never saw the other widths
+        let mut fresh = prose(3000, 0.0, pw, false);
+        let fp = fresh.rt.parts().into_iter().find(|p| p.dormant).unwrap().part;
+        assert!(fresh.scroll_to_item(fp, k as usize, at));
+        fresh.frame();
+        let n = diff(&retained, &fresh.reference_pixels());
+        assert_eq!(n, 0, "step {step} (width {pw}, anchor item {k} at {at}): retained != fresh mount at the anchor ({n} px)");
+    }
+    // at the top, against every item mounted (a shorter list: the same first rows)
+    app.turn(|d| {
+        d.y.set(0.0);
+    });
+    app.frame();
+    let mut eager = prose(200, 0.0, pw, true);
+    eager.frame();
+    assert_eq!(diff(&app.reference_pixels(), &eager.reference_pixels()), 0, "at the top: retained != every item mounted");
+}
+
 // ------------------------------------------------------------------ holds, traversal
 
 /// Rows that take focus.
