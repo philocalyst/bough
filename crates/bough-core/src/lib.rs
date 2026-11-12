@@ -29,6 +29,7 @@ pub mod page;
 pub mod prefix;
 pub mod rng;
 pub mod shapes;
+pub mod state;
 
 /// Cull work counters (feature `stats`): pages, groups, group none/all/partial, refined records.
 #[cfg(feature = "stats")]

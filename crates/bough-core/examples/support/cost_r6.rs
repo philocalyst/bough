@@ -494,6 +494,69 @@ fn handles(rs: &[RecordInit], ov: u64) {
         b.check_invariants();
         emit(n, "ordered-wide", name, 0, pages, count, &values, 0);
     }
+    // Record state planes: what a flag flip costs (the signal path): one record through its handle,
+    // the consumer's turn after it (flips + commit), a range write of half the tree, and the summary
+    // query over the whole tree with nothing set and with one record set.
+    for name in [
+        "state-set-handle",
+        "state-flip-turn",
+        "state-run-half",
+        "state-any-none",
+        "state-any-one",
+    ] {
+        if !want(name) {
+            continue;
+        }
+        let mut values = Vec::new();
+        let mut hits = 0usize;
+        for _ in 0..SAMPLES {
+            b.set_state_run(0, n, 5, false);
+            b.commit_state(5);
+            if name == "state-any-one" {
+                b.set_state(n - 1, 5, true);
+            }
+            values.push(match name {
+                "state-set-handle" => timed(
+                    || {
+                        black_box(b.set_state_handle(black_box(h), 5, i & 1 == 0));
+                        i += 1;
+                    },
+                    count,
+                    ov,
+                ),
+                "state-flip-turn" => timed(
+                    || {
+                        b.set_state_handle(black_box(h), 5, i & 1 == 0);
+                        i += 1;
+                        b.flips(5, |pos, now| hits += pos + now as usize);
+                        b.commit_state(5);
+                    },
+                    count,
+                    ov,
+                ),
+                "state-run-half" => timed(
+                    || {
+                        b.set_state_run(black_box(n / 4), n / 2, 5, i & 1 == 0);
+                        i += 1;
+                    },
+                    count,
+                    ov,
+                ),
+                _ => timed(
+                    || {
+                        hits += black_box(b.any_state(black_box(0), n, 5)) as usize;
+                    },
+                    count,
+                    ov,
+                ),
+            });
+        }
+        black_box(hits);
+        b.set_state_run(0, n, 5, false);
+        b.commit_state(5);
+        b.check_invariants();
+        emit(n, "ordered-wide", name, 0, pages, count, &values, 0);
+    }
     let new: Vec<_> = (0..8)
         .map(|i| RecordInit::new(1, NRect::new(2, 2, 14, 14), 1, (n + i) as u32))
         .collect();

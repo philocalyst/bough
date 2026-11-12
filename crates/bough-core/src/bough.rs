@@ -18,6 +18,7 @@ use crate::nrect::{COORD_MAX, COORD_MIN, NRect, Thresh, WRect, lt_mask, lt8, tra
 use crate::page::{F_FAR, F_WIDE, F_XF, CAP, GROUP, NGROUPS, PAD_DEPTH, Page, PagePool, Record, find_first_le, find_last_lt, page_find_first_le, page_find_last_lt};
 pub use crate::page::RecordInit;
 use crate::prefix::Prefix;
+use crate::state::{STATE_PLANES, StatePool, low};
 use bough_mem::Col;
 
 /// Pointer and focus queries (hit test, hit cell, flagged chains, tab order): `bough/hit.rs`.
@@ -77,6 +78,10 @@ pub struct Bough {
     /// The exact rects of the records in wide pages (`F_WIDE`: one record no 16-bit frame can hold), by
     /// page id. A handful at most (a document's background, a dormant run's extent).
     wide: Vec<(u32, WRect)>,
+    /// Record state planes (`state.rs`): the state pages by page id, and per plane the ids of the pages
+    /// whose bits differ from what the plane's consumer last acknowledged.
+    state: StatePool,
+    flip: [Vec<u32>; STATE_PLANES],
     dirty_scratch: Vec<u32>,
     /// Clip rects by id (absolute); id 0 = the whole domain (unclipped). GPU-visible (the shader clamps
     /// every record to `clips[page.clip[slot]]`).
@@ -200,6 +205,8 @@ impl Bough {
             scratch: Vec::new(),
             rel_scratch: Vec::new(),
             wide: Vec::new(),
+            state: StatePool::default(),
+            flip: Default::default(),
             dirty_scratch: Vec::new(),
             clips,
             uniform: [0; 4],
@@ -544,6 +551,248 @@ impl Bough {
         self.ring.repair(age)
     }
 
+    // ------------------------------------------------------------------ record state planes
+
+    /// The words of `pp`'s state page were written: summaries, flip lists, and the page's state byte.
+    #[inline]
+    fn st_settle(&mut self, pp: *mut Page) {
+        // SAFETY: pp is a live page of this Bough; &mut self is exclusive.
+        let id = unsafe { (*pp).id };
+        let sp = self.state.get_mut(id);
+        sp.summarise();
+        let mut new = sp.changed & !sp.listed;
+        sp.listed |= new;
+        let blank = sp.is_blank();
+        while new != 0 {
+            self.flip[new.trailing_zeros() as usize].push(id);
+            new &= new - 1;
+        }
+        unsafe { (*pp).state = !blank as u8 };
+    }
+    /// Plane `f` of page `pp` becomes `new`: the word, its two summary bits, the flip list and the page's
+    /// state byte, without touching the other fifteen planes.
+    #[inline(always)]
+    fn st_write(&mut self, pp: *mut Page, f: u8, new: u64) {
+        // SAFETY: pp is a live page of this Bough; &mut self is exclusive.
+        let (id, has) = unsafe { ((*pp).id, (*pp).state != 0) };
+        let sp = if has { self.state.get_mut(id) } else { self.state.ensure(id) };
+        let (fi, bit) = (f as usize, 1u16 << f);
+        if sp.bits[fi] == new {
+            return;
+        }
+        sp.bits[fi] = new;
+        let ch = new != sp.seen[fi];
+        sp.any = (sp.any & !bit) | ((new != 0) as u16) << f;
+        sp.changed = (sp.changed & !bit) | (ch as u16) << f;
+        let blank = sp.any | sp.changed == 0;
+        if ch && sp.listed & bit == 0 {
+            sp.listed |= bit;
+            self.flip[fi].push(id);
+        }
+        unsafe { (*pp).state = !blank as u8 };
+    }
+    /// The state half of `copy_virtual`: virtual slots `[lo, hi)` of `old[0..s) ++ k new ++ old[s..)` to
+    /// `dst[0..]` (new records have no state).
+    fn st_copy_virtual(&mut self, dst: *mut Page, lo: usize, hi: usize, old: *mut Page, s: usize, k: usize) {
+        // SAFETY: both are live pages; the caller checked `(*old).state != 0`.
+        let (di, oi) = unsafe { ((*dst).id, (*old).id) };
+        let src = *self.state.get(oi);
+        let sp = self.state.ensure(di);
+        let b = hi.min(s);
+        if lo < b {
+            sp.copy(0, &src, lo, b - lo);
+        }
+        let a = lo.max(s + k);
+        if a < hi {
+            sp.copy(a - lo, &src, a - k, hi - a);
+        }
+        self.st_settle(dst);
+    }
+    /// A freed page keeps no state (its flip-list entries, if any, find nothing changed).
+    #[inline]
+    fn st_free(&mut self, pp: *mut Page) {
+        // SAFETY: a live page about to be freed.
+        if unsafe { (*pp).state } != 0 {
+            let sp = self.state.get_mut(unsafe { (*pp).id });
+            (sp.bits, sp.seen, sp.any, sp.changed) = ([0; STATE_PLANES], [0; STATE_PLANES], 0, 0);
+        }
+    }
+    /// The (bits, seen) of every record of `[start, start + len)`, or `None` if no page of the run has state.
+    fn st_read_run(&self, start: usize, len: usize) -> Option<Vec<(u16, u16)>> {
+        let (mut d, mut s) = self.locate(start);
+        let mut rem = len;
+        let mut any = false;
+        let mut out = Vec::new();
+        while rem > 0 {
+            let n = rem.min(self.d_len[d] as usize - s);
+            let p = self.page(d);
+            if p.state != 0 {
+                any = true;
+                let sp = self.state.get(p.id);
+                out.extend((s..s + n).map(|i| sp.get(i)));
+            } else {
+                out.extend(core::iter::repeat_n((0, 0), n));
+            }
+            rem -= n;
+            d += 1;
+            s = 0;
+        }
+        any.then_some(out)
+    }
+    fn st_put(&mut self, pos: usize, v: (u16, u16)) {
+        let (d, s) = self.locate(pos);
+        let pp = self.page_ptr(d);
+        // SAFETY: a live page.
+        self.state.ensure(unsafe { (*pp).id }).put(s, v);
+        self.st_settle(pp);
+    }
+
+    /// Set or clear state plane `f` for the records `[start, start + len)`: one mask write per page.
+    pub fn set_state_run(&mut self, start: usize, len: usize, f: u8, on: bool) {
+        assert!((f as usize) < STATE_PLANES && start + len <= self.total);
+        if len == 0 {
+            return;
+        }
+        let (mut d, mut s) = self.locate(start);
+        let mut rem = len;
+        while rem > 0 {
+            let n = rem.min(self.d_len[d] as usize - s);
+            let pp = self.page_ptr(d);
+            // SAFETY: a live page; &mut self is exclusive.
+            let (id, has) = unsafe { ((*pp).id, (*pp).state != 0) };
+            if on || has {
+                let m = low(n) << s;
+                let w = if has { self.state.get(id).bits[f as usize] } else { 0 };
+                self.st_write(pp, f, if on { w | m } else { w & !m });
+            }
+            rem -= n;
+            d += 1;
+            s = 0;
+        }
+    }
+    pub fn set_state(&mut self, pos: usize, f: u8, on: bool) {
+        self.set_state_run(pos, 1, f, on);
+    }
+    pub fn set_state_handle(&mut self, h: Handle, f: u8, on: bool) -> bool {
+        let Some((pp, s)) = self.handle_ptr(h) else { return false };
+        assert!((f as usize) < STATE_PLANES);
+        // SAFETY: bound handles point at live pages.
+        let (id, has) = unsafe { ((*pp).id, (*pp).state != 0) };
+        if on || has {
+            let w = if has { self.state.get(id).bits[f as usize] } else { 0 };
+            self.st_write(pp, f, if on { w | 1 << s } else { w & !(1 << s) });
+        }
+        true
+    }
+    /// Is state `f` set for the record at `pos`?
+    pub fn state(&self, pos: usize, f: u8) -> bool {
+        let (d, s) = self.locate(pos);
+        let p = self.page(d);
+        p.state != 0 && self.state.get(p.id).bits[f as usize] >> s & 1 != 0
+    }
+    pub fn state_handle(&self, h: Handle, f: u8) -> Option<bool> {
+        let (pp, s) = self.handle_ptr(h)?;
+        // SAFETY: bound handles point at live pages.
+        let p = unsafe { &*pp };
+        Some(p.state != 0 && self.state.get(p.id).bits[f as usize] >> s & 1 != 0)
+    }
+    /// The records of `[start, start + len)` with state `f`, per page: `g(page start, mask of slots)`.
+    /// Pages without state, or without plane `f` (the page summary), are skipped on one test.
+    #[inline]
+    fn st_scan(&self, start: usize, len: usize, f: u8, mut g: impl FnMut(usize, u64) -> bool) {
+        if len == 0 {
+            return;
+        }
+        let (mut d, mut s, mut base) = self.locate_base(start);
+        let mut rem = len;
+        while rem > 0 {
+            let l = self.d_len[d] as usize;
+            let n = rem.min(l - s);
+            let p = self.page(d);
+            if p.state != 0 {
+                let sp = self.state.get(p.id);
+                if sp.any >> f & 1 != 0 {
+                    let m = sp.bits[f as usize] & (low(n) << s);
+                    if m != 0 && g(base, m) {
+                        return;
+                    }
+                }
+            }
+            rem -= n;
+            base += l;
+            d += 1;
+            s = 0;
+        }
+    }
+    /// Does any record of `[start, start + len)` have state `f`? (focus-within, "anything selected here")
+    pub fn any_state(&self, start: usize, len: usize, f: u8) -> bool {
+        let mut any = false;
+        self.st_scan(start, len, f, |_, _| {
+            any = true;
+            true
+        });
+        any
+    }
+    pub fn count_state(&self, start: usize, len: usize, f: u8) -> usize {
+        let mut c = 0;
+        self.st_scan(start, len, f, |_, m| {
+            c += m.count_ones() as usize;
+            false
+        });
+        c
+    }
+    /// The first record at or after `pos` with state `f`.
+    pub fn next_state(&self, pos: usize, f: u8) -> Option<usize> {
+        let mut r = None;
+        if pos < self.total {
+            self.st_scan(pos, self.total - pos, f, |base, m| {
+                r = Some(base + m.trailing_zeros() as usize);
+                true
+            });
+        }
+        r
+    }
+    /// Every record whose state `f` differs from what the plane's consumer last acknowledged
+    /// (`commit_state`): `g(position, now)`. Visits only the pages that hold such a record.
+    pub fn flips(&self, f: u8, mut g: impl FnMut(usize, bool)) {
+        for &id in &self.flip[f as usize] {
+            let sp = self.state.get(id);
+            if sp.changed >> f & 1 == 0 {
+                continue;
+            }
+            // SAFETY: a page with a changed plane is live (a freed page's state is cleared).
+            let base = self.start_of(unsafe { (*self.pool.ptr(id)).dir } as usize);
+            let now = sp.bits[f as usize];
+            let mut m = now ^ sp.seen[f as usize];
+            while m != 0 {
+                let s = m.trailing_zeros() as usize;
+                m &= m - 1;
+                g(base + s, now >> s & 1 != 0);
+            }
+        }
+    }
+    /// The consumer of plane `f` has applied its flips.
+    pub fn commit_state(&mut self, f: u8) {
+        let list = core::mem::take(&mut self.flip[f as usize]);
+        for &id in &list {
+            let sp = self.state.get_mut(id);
+            sp.seen[f as usize] = sp.bits[f as usize];
+            sp.listed &= !(1 << f);
+            sp.changed &= !(1 << f);
+            let blank = sp.is_blank();
+            let pp = self.pool.ptr(id);
+            // SAFETY: a pool page (valid for the pool's life); a free page's state byte is 0 and stays 0.
+            unsafe {
+                if (*pp).state != 0 {
+                    (*pp).state = !blank as u8;
+                }
+            }
+        }
+        let mut list = list;
+        list.clear();
+        self.flip[f as usize] = list;
+    }
+
     // ------------------------------------------------------------------ directory plumbing
 
     /// Recompute the chunk summaries covering directory entries `[lo, hi)` (and resize the column).
@@ -637,6 +886,7 @@ impl Bough {
             if fl & F_WIDE != 0 {
                 self.wide_drop(id);
             }
+            self.st_free(self.d_ptr[i]);
             self.pool.free(id);
         }
         let n = self.d_ptr.len();
@@ -663,6 +913,7 @@ impl Bough {
         if fl & F_WIDE != 0 {
             self.wide_drop(id);
         }
+        self.st_free(self.d_ptr[d]);
         attr!(2, self.d_ptr.remove(d));
         attr!(1, self.d_id.remove(d));
         attr!(3, self.d_ink.remove(d));
@@ -1054,6 +1305,16 @@ impl Bough {
         }
         p.regroup_range(s, l + k);
         let u = p.union_abs();
+        if p.state != 0 {
+            // the records above the gap take their state with them; the new ones have none
+            let (pp, id) = (p as *mut Page, p.id);
+            let sp = self.state.get_mut(id);
+            if s < l {
+                sp.shift(s, s + k, l - s);
+            }
+            sp.clear(s, s + k);
+            self.st_settle(pp);
+        }
         self.fixup_handles(d, s, l + k);
         self.d_len[d] = (l + k) as u32;
         let old = self.d_ink[d];
@@ -1084,6 +1345,9 @@ impl Bough {
             newp.flags = oldp.flags;
             copy_virtual(newp, off, off + szi, oldp, s, k, recs);
             newp.version += 1;
+            if oldp.state != 0 {
+                self.st_copy_virtual(self.page_ptr(di), off, off + szi, self.page_ptr(d), s, k);
+            }
             self.d_len[di] = szi as u32;
             self.fixup_handles(di, 0, szi);
             off += szi;
@@ -1104,6 +1368,19 @@ impl Bough {
             for (i, r) in recs.iter().take(nrec).enumerate() {
                 p.write(s + i, r);
             }
+        }
+        if p.state != 0 {
+            let (pp, id) = (p as *mut Page, p.id);
+            let sp = self.state.get_mut(id);
+            if sz0 > s {
+                let tail_n = sz0.saturating_sub(s + k);
+                if tail_n > 0 {
+                    sp.shift(s, s + k, tail_n);
+                }
+                sp.clear(s, (s + k).min(sz0));
+            }
+            sp.clear(sz0, CAP);
+            self.st_settle(pp);
         }
         self.d_len[d] = sz0 as u32;
         if sz0 > s {
@@ -1181,6 +1458,15 @@ impl Bough {
                 }
                 p.set_sentinel(l - n, CAP);
                 p.regroup_range(s, l);
+                if p.state != 0 {
+                    let (pp, id) = (p as *mut Page, p.id);
+                    let sp = self.state.get_mut(id);
+                    if s + n < l {
+                        sp.shift(s + n, s, l - s - n);
+                    }
+                    sp.clear(l - n, CAP);
+                    self.st_settle(pp);
+                }
                 self.d_len[d] = (l - n) as u32;
                 let old = self.d_ink[d];
                 self.d_ink[d] = self.page(d).union_abs();
@@ -1257,6 +1543,12 @@ impl Bough {
             }
             a.regroup_range(la, la + lb);
         }
+        if self.page(d + 1).state != 0 {
+            let (pa, src) = (self.page_ptr(d), *self.state.get(self.page(d + 1).id));
+            // SAFETY: a live page.
+            self.state.ensure(unsafe { (*pa).id }).copy(la, &src, 0, lb);
+            self.st_settle(pa);
+        }
         self.fixup_handles(d, la, la + lb);
         self.d_len[d] = (la + lb) as u32;
         self.d_ink[d] = self.d_ink[d].union(self.d_ink[d + 1]);
@@ -1287,7 +1579,10 @@ impl Bough {
         assert!(start + len <= self.total && to <= self.total - len);
         let mut stage = core::mem::take(&mut self.scratch);
         stage.clear();
-        if self.read_run_impl(start, len, ddepth, &mut stage) {
+        let (far, has_state) = self.read_run_impl(start, len, ddepth, &mut stage);
+        // the records pass through a staging buffer: their state bits ride beside it
+        let st = if has_state { self.st_read_run(start, len) } else { None };
+        if far {
             // some of the run is outside the domain: its 16-bit inks are views; carry the exact rects
             let wide: Vec<WRect> = (start..start + len).map(|pos| self.ink_wide_at(pos)).collect();
             self.remove_impl(start, len, false, true);
@@ -1296,15 +1591,24 @@ impl Bough {
             self.remove_impl(start, len, false, true);
             self.insert_impl(to, &stage, false);
         }
+        if let Some(st) = st {
+            for (i, v) in st.into_iter().enumerate() {
+                if v != (0, 0) {
+                    self.st_put(to + i, v);
+                }
+            }
+        }
         stage.clear();
         self.scratch = stage;
     }
 
-    /// Returns whether any page of the run is far or wide (then the inks pushed are clamped views).
-    fn read_run_impl(&self, start: usize, len: usize, ddepth: i32, out: &mut Vec<RecordInit>) -> bool {
+    /// Returns whether any page of the run is far or wide (then the inks pushed are clamped views), and
+    /// whether any has state bits.
+    fn read_run_impl(&self, start: usize, len: usize, ddepth: i32, out: &mut Vec<RecordInit>) -> (bool, bool) {
         if len == 0 {
-            return false;
+            return (false, false);
         }
+        let mut st = 0u8;
         let (mut d, mut s) = self.locate(start);
         let mut rem = len;
         let mut far = 0u8;
@@ -1313,6 +1617,7 @@ impl Bough {
             let n = rem.min(l - s);
             let p = self.page(d);
             far |= p.flags;
+            st |= p.state;
             for i in s..s + n {
                 out.push(RecordInit {
                     depth: (p.depth[i] as i32 + ddepth) as u16,
@@ -1327,7 +1632,7 @@ impl Bough {
             d += 1;
             s = 0;
         }
-        far & (F_FAR | F_WIDE) != 0
+        (far & (F_FAR | F_WIDE) != 0, st != 0)
     }
 
     /// Append the records `[start, start+len)` to `out` (absolute ink, handles kept): the input of a
@@ -1348,8 +1653,10 @@ impl Bough {
         if recs.is_empty() {
             return;
         }
+        let st = self.st_read_by_handle(start, recs.len());
         self.remove_impl(start, recs.len(), false, true);
         self.insert_core(start, recs, Some(wide), true);
+        self.st_put_by_handle(start, recs, st);
     }
 
     /// Replace the run `[start, start+recs.len())` by `recs`, a rearrangement of the same records (their
@@ -1358,8 +1665,36 @@ impl Bough {
         if recs.is_empty() {
             return;
         }
+        let st = self.st_read_by_handle(start, recs.len());
         self.remove_impl(start, recs.len(), false, true);
         self.insert_impl(start, recs, true);
+        self.st_put_by_handle(start, recs, st);
+    }
+    /// The state of the run's records that have a handle, by handle index (a rewrite restates the run in
+    /// another order; a record is recognised by its handle).
+    fn st_read_by_handle(&self, start: usize, len: usize) -> Vec<(u32, (u16, u16))> {
+        let Some(st) = self.st_read_run(start, len) else { return Vec::new() };
+        let mut out = Vec::new();
+        for (i, v) in st.into_iter().enumerate() {
+            if v != (0, 0) {
+                let (d, s) = self.locate(start + i);
+                let h = self.page(d).handle[s];
+                if h != 0 {
+                    out.push((h, v));
+                }
+            }
+        }
+        out
+    }
+    fn st_put_by_handle(&mut self, start: usize, recs: &[RecordInit], st: Vec<(u32, (u16, u16))>) {
+        if st.is_empty() {
+            return;
+        }
+        for (i, r) in recs.iter().enumerate() {
+            if let Some(&(_, v)) = st.iter().find(|e| e.0 == r.handle && r.handle != 0) {
+                self.st_put(start + i, v);
+            }
+        }
     }
 
     // ------------------------------------------------------------------ translate / ink / touch
@@ -2053,6 +2388,13 @@ impl Bough {
             copy_virtual(newp, s, l, oldp, s, 0, &[]);
             newp.version += 1;
         }
+        if self.page(d).state != 0 {
+            let (po, pn) = (self.page_ptr(d), self.page_ptr(d + 1));
+            self.st_copy_virtual(pn, s, l, po, s, 0);
+            // SAFETY: a live page.
+            self.state.get_mut(unsafe { (*po).id }).clear(s, CAP);
+            self.st_settle(po);
+        }
         self.d_len[d + 1] = (l - s) as u32;
         self.fixup_handles(d + 1, 0, l - s);
         {
@@ -2496,6 +2838,7 @@ impl Bough {
         self.pool.heap_bytes()
             + n * (8 + 8 + 2 + 4)
             + self.c_ink.capacity() * 8
+            + self.state.heap_bytes()
             + self.prefix.heap_bytes()
             + self.htab.capacity() * core::mem::size_of::<HEntry>()
             + core::mem::size_of::<Plane>() * RING
@@ -2525,6 +2868,24 @@ impl Bough {
             }
             let l = self.d_len[d] as usize;
             assert!((1..=CAP).contains(&l), "page {d} has len {l}");
+            // state planes: a page's state byte says whether its state page holds anything; bits only in
+            // live slots; the summaries are the words'; a changed plane is on its flip list
+            if self.state.has(p.id) {
+                let sp = self.state.get(p.id);
+                let mut q = *sp;
+                q.summarise();
+                assert_eq!((q.any, q.changed), (sp.any, sp.changed), "page {d} state summaries");
+                assert_eq!(p.state != 0, !sp.is_blank(), "page {d} state byte");
+                assert_eq!(sp.changed & !sp.listed, 0, "page {d}: a changed plane is not listed");
+                for f in 0..STATE_PLANES {
+                    assert_eq!((sp.bits[f] | sp.seen[f]) & !low(l), 0, "page {d} plane {f}: state in padding");
+                    if sp.listed >> f & 1 != 0 {
+                        assert!(self.flip[f].contains(&p.id), "page {d} plane {f}: listed but not on the list");
+                    }
+                }
+            } else {
+                assert_eq!(p.state, 0, "page {d}: state byte without a state page");
+            }
             // frames (round 6): a plain page's ink is inside the domain and its offset in 16 bits; a far
             // page's offset is in 16 bits on every axis where it is not wholly beyond the domain; a wide
             // page is one record whose exact rect is in the table
