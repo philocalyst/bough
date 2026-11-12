@@ -55,6 +55,16 @@ impl U {
     #[inline(always)]
     pub fn diff(&self, other: &U, n: usize) -> u64 {
         let n = if n < WORDS { n } else { WORDS };
+        // nothing differs, usually: one pass that folds to a few vector compares
+        let mut any = 0u32;
+        let mut i = 0;
+        while i < n {
+            any |= self.w[i] ^ other.w[i];
+            i += 1;
+        }
+        if any == 0 {
+            return 0;
+        }
         let mut m = 0u64;
         let mut i = 0;
         while i < n {

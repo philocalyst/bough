@@ -1,6 +1,6 @@
 //! Paint kinds: the closed set of things a record can be, each generic over the expressions of its operands.
 //! A kind applied to expression types is an archetype ([`Arch`]).
-use crate::expr::{Color, Expr, Stage, U};
+use crate::expr::{Color, Cx, Expr, StageId, U, Words, later};
 use crate::store::{Arch, Backend, ColRef};
 
 pub trait FillArch: Arch {
@@ -8,7 +8,7 @@ pub trait FillArch: Arch {
 }
 pub trait NumArch: Arch {
     const DECIMALS: u8;
-    fn value(&self, u: &U) -> f32;
+    fn value(&self, u: &U) -> i32;
     fn color(&self, u: &U) -> Color;
 }
 pub trait LabelArch: Arch {
@@ -22,15 +22,17 @@ pub trait OutlineArch: Arch {
 
 /// A filled rectangle.
 #[repr(transparent)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 pub struct Fill<E>(pub E);
+// SAFETY: transparent over `E: Words`.
+unsafe impl<E: Words> Words for Fill<E> {}
 impl<E: Expr<Out = Color>> Arch for Fill<E> {
     const READS: u64 = E::READS;
     const NAME: &'static str = "fill";
-    const STAGE: &'static str = E::Stage::NAME;
+    const STAGE: StageId = E::STAGE;
     #[inline(always)]
     fn changed(&self, old: &U, new: &U) -> bool {
-        self.0.eval(old) != self.0.eval(new)
+        self.0.eval(&Cx::of(old)) != self.0.eval(&Cx::of(new))
     }
     #[inline(always)]
     fn paint<B: Backend>(b: &mut B, col: ColRef<'_, Self>, u: &U) {
@@ -40,73 +42,84 @@ impl<E: Expr<Out = Color>> Arch for Fill<E> {
 impl<E: Expr<Out = Color>> FillArch for Fill<E> {
     #[inline(always)]
     fn color(&self, u: &U) -> Color {
-        self.0.eval(u)
+        self.0.eval(&Cx::of(u))
     }
 }
 
-/// A number with `D` decimals in tabular digits. The value is an expression (a record constant for a cell, a
-/// word of the block for a total); it is formatted while shading, so there is no shaped text to keep.
+/// A number with `D` decimals in tabular digits. The value is an integer scaled by `10^D` (hundredths for
+/// `D = 2`), from an expression: a record constant for a cell, a word of the block for a total. It is formatted
+/// while shading, in integer arithmetic, so there is no shaped text to keep.
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 pub struct Num<const D: u8, V, C>(pub V, pub C);
-impl<const D: u8, V: Expr<Out = f32>, C: Expr<Out = Color>> Arch for Num<D, V, C> {
+// SAFETY: `repr(C)` over `Words` operands: whole words at alignment 4, so no padding.
+unsafe impl<const D: u8, V: Words, C: Words> Words for Num<D, V, C> {}
+impl<const D: u8, V: Expr<Out = i32>, C: Expr<Out = Color>> Arch for Num<D, V, C> {
     const READS: u64 = V::READS | C::READS;
     const NAME: &'static str = "num";
-    const STAGE: &'static str = if <V::Stage as Stage>::RANK > <C::Stage as Stage>::RANK { V::Stage::NAME } else { C::Stage::NAME };
+    const STAGE: StageId = later(&[V::STAGE, C::STAGE]);
     #[inline(always)]
     fn changed(&self, old: &U, new: &U) -> bool {
-        (self.0.eval(old).to_bits() != self.0.eval(new).to_bits()) | (self.1.eval(old) != self.1.eval(new))
+        (self.0.eval(&Cx::of(old)) != self.0.eval(&Cx::of(new))) | (self.1.eval(&Cx::of(old)) != self.1.eval(&Cx::of(new)))
     }
     #[inline(always)]
     fn paint<B: Backend>(b: &mut B, col: ColRef<'_, Self>, u: &U) {
         b.num(col, u)
     }
 }
-impl<const D: u8, V: Expr<Out = f32>, C: Expr<Out = Color>> NumArch for Num<D, V, C> {
+impl<const D: u8, V: Expr<Out = i32>, C: Expr<Out = Color>> NumArch for Num<D, V, C> {
     const DECIMALS: u8 = D;
     #[inline(always)]
-    fn value(&self, u: &U) -> f32 {
-        self.0.eval(u)
+    fn value(&self, u: &U) -> i32 {
+        self.0.eval(&Cx::of(u))
     }
     #[inline(always)]
     fn color(&self, u: &U) -> Color {
-        self.1.eval(u)
+        self.1.eval(&Cx::of(u))
     }
 }
 
-/// Up to 12 bytes of text inline. A stand-in for the text lane's handle to shaped text.
+/// Up to 12 bytes of text inline, as three words. A stand-in for the text lane's handle to shaped text.
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub struct Txt(pub [u8; 12]);
+pub struct Txt(pub [u32; 3]);
+// SAFETY: three words.
+unsafe impl Words for Txt {}
 impl Txt {
     pub const fn new(s: &str) -> Txt {
         let b = s.as_bytes();
         assert!(b.len() <= 12);
-        let mut t = [0u8; 12];
+        let mut t = [0u32; 3];
         let mut i = 0;
         while i < b.len() {
-            t[i] = b[i];
+            t[i / 4] |= (b[i] as u32) << (8 * (i % 4));
             i += 1;
         }
         Txt(t)
     }
-    pub fn bytes(&self) -> &[u8] {
-        let n = self.0.iter().position(|&b| b == 0).unwrap_or(12);
-        &self.0[..n]
+    /// The bytes and how many of them are text.
+    pub fn bytes(&self) -> ([u8; 12], usize) {
+        let mut b = [0u8; 12];
+        for i in 0..12 {
+            b[i] = (self.0[i / 4] >> (8 * (i % 4))) as u8;
+        }
+        (b, b.iter().position(|&c| c == 0).unwrap_or(12))
     }
 }
 
 /// A short constant label.
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 pub struct Label<C>(pub Txt, pub C);
+// SAFETY: `repr(C)` over `Words` operands.
+unsafe impl<C: Words> Words for Label<C> {}
 impl<C: Expr<Out = Color>> Arch for Label<C> {
     const READS: u64 = C::READS;
     const NAME: &'static str = "label";
-    const STAGE: &'static str = C::Stage::NAME;
+    const STAGE: StageId = C::STAGE;
     #[inline(always)]
     fn changed(&self, old: &U, new: &U) -> bool {
-        self.1.eval(old) != self.1.eval(new)
+        self.1.eval(&Cx::of(old)) != self.1.eval(&Cx::of(new))
     }
     #[inline(always)]
     fn paint<B: Backend>(b: &mut B, col: ColRef<'_, Self>, u: &U) {
@@ -120,27 +133,29 @@ impl<C: Expr<Out = Color>> LabelArch for Label<C> {
     }
     #[inline(always)]
     fn color(&self, u: &U) -> Color {
-        self.1.eval(u)
+        self.1.eval(&Cx::of(u))
     }
 }
 
 /// A border of `W` device pixels, translated by a Frame-stage expression: it moves without a turn of layout,
 /// and its damage is where it was and where it is.
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 pub struct Outline<const W: i32, C, T>(pub C, pub T);
+// SAFETY: `repr(C)` over `Words` operands.
+unsafe impl<const W: i32, C: Words, T: Words> Words for Outline<W, C, T> {}
 impl<const W: i32, C: Expr<Out = Color>, T: Expr<Out = (i32, i32)>> Arch for Outline<W, C, T> {
     const READS: u64 = C::READS | T::READS;
     const MOVES: bool = T::READS != 0;
     const NAME: &'static str = "outline";
-    const STAGE: &'static str = if <T::Stage as Stage>::RANK > <C::Stage as Stage>::RANK { T::Stage::NAME } else { C::Stage::NAME };
+    const STAGE: StageId = later(&[T::STAGE, C::STAGE]);
     #[inline(always)]
     fn changed(&self, old: &U, new: &U) -> bool {
-        self.0.eval(old) != self.0.eval(new)
+        self.0.eval(&Cx::of(old)) != self.0.eval(&Cx::of(new))
     }
     #[inline(always)]
     fn offset(&self, u: &U) -> (i32, i32) {
-        self.1.eval(u)
+        self.1.eval(&Cx::of(u))
     }
     #[inline(always)]
     fn paint<B: Backend>(b: &mut B, col: ColRef<'_, Self>, u: &U) {
@@ -151,6 +166,6 @@ impl<const W: i32, C: Expr<Out = Color>, T: Expr<Out = (i32, i32)>> OutlineArch 
     const WIDTH: i32 = W;
     #[inline(always)]
     fn color(&self, u: &U) -> Color {
-        self.0.eval(u)
+        self.0.eval(&Cx::of(u))
     }
 }

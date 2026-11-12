@@ -4,7 +4,7 @@
 //! not generic. A column is created by the first record described at a position of the shape and is written
 //! through a typed pointer; every pass over a column (damage, hit testing, paint) is one function monomorphised
 //! for the column's archetype, reached once per column through its [`Desc`].
-use crate::expr::U;
+use crate::expr::{StageId, U, Words};
 use core::any::TypeId;
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 
@@ -57,56 +57,74 @@ pub struct Tiles {
     pub stride: usize,
     pub rows: usize,
     pub bits: Vec<u64>,
+    /// The tile rows that may hold a mark: `lo..hi`. Reading and clearing the damage touch only these.
+    pub lo: usize,
+    pub hi: usize,
 }
 impl Tiles {
     pub fn new(w: i32, h: i32) -> Tiles {
         let cols = ((w + TILE - 1) >> TILE_SHIFT) as usize;
         let rows = ((h + TILE - 1) >> TILE_SHIFT) as usize;
         let stride = cols.div_ceil(64).max(1);
-        Tiles { w, h, stride, rows, bits: vec![0; stride * rows] }
+        Tiles { w, h, stride, rows, bits: vec![0; stride * rows], lo: usize::MAX, hi: 0 }
     }
     /// Mark the tiles a screen rectangle touches.
     #[inline]
     pub fn mark(&mut self, r: Rect) {
         let (x0, y0, x1, y1) = (r.x0.max(0), r.y0.max(0), r.x1.min(self.w), r.y1.min(self.h));
-        if x0 >= x1 || y0 >= y1 {
+        if (x0 >= x1) | (y0 >= y1) {
             return;
         }
         let (a, b) = ((x0 >> TILE_SHIFT) as usize, ((x1 - 1) >> TILE_SHIFT) as usize);
         let (c, d) = ((y0 >> TILE_SHIFT) as usize, ((y1 - 1) >> TILE_SHIFT) as usize);
-        if self.stride == 1 {
-            let m = (!0u64 << a) & (!0u64 >> (63 - b));
-            for row in &mut self.bits[c..=d] {
-                *row |= m;
-            }
-        } else {
-            self.mark_wide(a, b, c, d);
-        }
-    }
-    #[inline]
-    fn mark_wide(&mut self, a: usize, b: usize, c: usize, d: usize) {
+        self.lo = self.lo.min(c);
+        self.hi = self.hi.max(d + 1);
         let (wa, wb) = (a >> 6, b >> 6);
-        for ty in c..=d {
-            let row = &mut self.bits[ty * self.stride..(ty + 1) * self.stride];
-            for (w, word) in row.iter_mut().enumerate().take(wb + 1).skip(wa) {
-                let lo = if w == wa { a & 63 } else { 0 };
-                let hi = if w == wb { b & 63 } else { 63 };
-                *word |= (!0u64 << lo) & (!0u64 >> (63 - hi));
+        let (ma, mb) = (!0u64 << (a & 63), !0u64 >> (63 - (b & 63)));
+        debug_assert!(d < self.rows && wb < self.stride);
+        // SAFETY: the rect was cut to the window, so `c..=d` are tile rows and `wa..=wb` words of a row; `bits`
+        // holds `rows * stride` words.
+        unsafe {
+            let mut p = self.bits.as_mut_ptr().add(c * self.stride);
+            if wa == wb {
+                let m = ma & mb;
+                for _ in c..=d {
+                    *p.add(wa) |= m;
+                    p = p.add(self.stride);
+                }
+            } else {
+                for _ in c..=d {
+                    *p.add(wa) |= ma;
+                    for w in wa + 1..wb {
+                        *p.add(w) = !0;
+                    }
+                    *p.add(wb) |= mb;
+                    p = p.add(self.stride);
+                }
             }
         }
     }
     pub fn mark_all(&mut self) {
         self.mark(Rect { x0: 0, y0: 0, x1: self.w, y1: self.h });
     }
+    #[inline]
     pub fn clear(&mut self) {
-        self.bits.fill(0);
+        if self.lo < self.hi {
+            self.bits[self.lo * self.stride..self.hi * self.stride].fill(0);
+        }
+        (self.lo, self.hi) = (usize::MAX, 0);
     }
+    #[inline]
+    pub fn any(&self) -> bool {
+        self.lo < self.hi
+    }
+    #[inline]
     pub fn count(&self) -> u32 {
-        self.bits.iter().map(|w| w.count_ones()).sum()
+        if self.lo < self.hi { self.bits[self.lo * self.stride..self.hi * self.stride].iter().map(|w| w.count_ones()).sum() } else { 0 }
     }
     /// Each marked tile as a screen rectangle.
     pub fn each(&self, mut f: impl FnMut(Rect)) {
-        for ty in 0..self.rows {
+        for ty in self.lo.min(self.hi)..self.hi {
             for w in 0..self.stride {
                 let mut m = self.bits[ty * self.stride + w];
                 while m != 0 {
@@ -122,7 +140,7 @@ impl Tiles {
 pub const NO_WORD: u8 = 0xff;
 
 /// A coordinate space: where a store's records are on screen. The origin moves with one word of the block
-/// (a scroll offset in device pixels), so scrolling rewrites no record.
+/// (a scroll offset, an `i32` of device pixels), so scrolling rewrites no record.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Space {
     pub clip: Rect,
@@ -135,7 +153,7 @@ impl Space {
     }
     #[inline(always)]
     pub fn origin(&self, u: &U) -> (i32, i32) {
-        if self.scroll == NO_WORD { self.base } else { (self.base.0, self.base.1 - f32::from_bits(u.w[self.scroll as usize & 63]).round() as i32) }
+        if self.scroll == NO_WORD { self.base } else { (self.base.0, self.base.1 - u.w[self.scroll as usize & 63] as i32) }
     }
     #[inline(always)]
     pub fn reads(&self) -> u64 {
@@ -168,14 +186,14 @@ impl<A> Page<A> {
 }
 
 /// An archetype: a paint kind applied to expression types. The value is one record's constants.
-pub trait Arch: Copy + PartialEq + 'static {
+pub trait Arch: Words {
     /// The words of the block whose change can change what a record of this archetype shows.
     const READS: u64;
     /// The record's place on screen depends on the block (a Frame-stage transform).
     const MOVES: bool = false;
     const NAME: &'static str;
     /// The latest stage among its expressions.
-    const STAGE: &'static str;
+    const STAGE: StageId;
     /// The derivative: does this record show something else under `new` than under `old`?
     fn changed(&self, old: &U, new: &U) -> bool;
     #[inline(always)]
@@ -242,18 +260,25 @@ pub struct StoreView<'a> {
 }
 
 pub type HoverFn = unsafe fn(*mut (), *const u8, bool);
+pub type HitFn = unsafe fn(&RawCol, &StoreView, &U, i32, i32) -> u32;
+/// A column that hears the pointer: its handler and the hit kernel of its archetype (instantiated only for
+/// archetypes that have a handler).
+pub type Hov = (HoverFn, HitFn);
+#[inline(always)]
+pub fn hit_fn<A: Arch>() -> HitFn {
+    hit_col::<A>
+}
 
 /// The cold face of an archetype: what a store needs to run passes over a column it cannot name the type of.
 pub struct Desc {
     pub name: &'static str,
-    pub stage: &'static str,
+    pub stage: StageId,
     pub rec_size: usize,
     pub rec_off: usize,
     pub page: Layout,
     pub reads: u64,
     pub moves: bool,
     delta: unsafe fn(&RawCol, &StoreView, &U, &U, &mut Tiles),
-    hit: unsafe fn(&RawCol, &StoreView, &U, i32, i32) -> u32,
     paint: unsafe fn(&RawCol, &StoreView, &U, *mut ()),
 }
 
@@ -268,7 +293,6 @@ impl<A: Arch, B: Backend> Holder<A, B> {
         reads: A::READS,
         moves: A::MOVES,
         delta: delta_col::<A>,
-        hit: hit_col::<A>,
         paint: paint_col::<A, B>,
     };
 }
@@ -290,9 +314,7 @@ pub struct RawCol {
     pub desc: &'static Desc,
     /// How many child stores were described before this column's first site: its place in paint order.
     pub seg: u32,
-    pub hover: Option<HoverFn>,
-    /// Pages written since the raster last took them (bit `page mod 64`).
-    pub dirty: u64,
+    pub hover: Option<Hov>,
 }
 impl RawCol {
     fn grow(&mut self, npages: u32) {
@@ -345,9 +367,52 @@ impl Drop for RawCol {
 
 #[derive(Clone, Copy)]
 pub struct Site {
+    /// The page that holds this site's slot 0 (slot `s` is record `s mod 64` of page `s / 64` from here).
+    pub page: *mut u8,
+    pub page_size: u32,
     pub col: u32,
     /// The first record of this site: record = base + row slot.
     pub base: u32,
+}
+impl Site {
+    /// Store a record's rect. The four rect lanes are the first kilobyte of every page, whatever its archetype.
+    ///
+    /// SAFETY: `slot` is under the store's capacity and the site's pointers are current (`Store::fix_sites`).
+    #[inline(always)]
+    pub unsafe fn set_rect(&self, slot: u32, r: Rect) {
+        // SAFETY: the page exists (caller); `Page<A>` is `repr(C)` and starts with four `[i32; 64]` lanes.
+        unsafe {
+            let p = (self.page.add((slot >> 6) as usize * self.page_size as usize) as *mut i32).add((self.base + slot) as usize & 63);
+            *p = r.x0;
+            *p.add(64) = r.y0;
+            *p.add(128) = r.x1;
+            *p.add(192) = r.y1;
+        }
+    }
+    /// SAFETY: as `set_rect`.
+    #[inline(always)]
+    pub unsafe fn rect(&self, slot: u32) -> Rect {
+        // SAFETY: as `set_rect`.
+        unsafe {
+            let p = (self.page.add((slot >> 6) as usize * self.page_size as usize) as *const i32).add((self.base + slot) as usize & 63);
+            Rect { x0: *p, y0: *p.add(64), x1: *p.add(128), y1: *p.add(192) }
+        }
+    }
+    /// The record at `slot`.
+    ///
+    /// SAFETY: as `set_rect`, and `A` is the archetype of the site's column.
+    #[inline(always)]
+    pub unsafe fn rec<A>(&self, slot: u32) -> *mut A {
+        // SAFETY: as `set_rect`; the page is a `Page<A>`.
+        unsafe { (&raw mut (*(self.page as *mut Page<A>).add((slot >> 6) as usize)).rec as *mut A).add((self.base + slot) as usize & 63) }
+    }
+}
+
+/// Which store, from the root: the child index at each level.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Path {
+    pub at: [u16; 6],
+    pub n: u16,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -372,13 +437,19 @@ pub struct Store {
     pub hi: u32,
     /// The relation version this window was last brought up to.
     pub seen: u32,
-    pub row_ty: Option<TypeId>,
+    /// The rows of the shape: the type of each row value described here and its first site.
+    pub rows: Vec<(TypeId, u32)>,
+    /// A list's layout: the rects of one row relative to the row, and where and how tall rows are.
+    pub tmpl: Vec<Rect>,
+    /// Where the slice `tmpl` was copied from was: an identity check before a content compare.
+    pub tmpl_at: usize,
+    pub geo: (i32, i32, i32),
 }
 
 impl Store {
     pub fn new(cap: u32, space: Space) -> Store {
         assert!(cap == 1 || (cap >= 64 && cap.is_power_of_two()));
-        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, row_ty: None }
+        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0) }
     }
     #[inline(always)]
     pub fn view(&self) -> StoreView<'_> {
@@ -391,7 +462,7 @@ impl Store {
     /// a later column, overlaps the new one.
     #[cold]
     #[inline(never)]
-    pub fn discover<A: Arch, B: Backend>(&mut self, rect: Rect, key: TypeId, hover: Option<HoverFn>) {
+    pub fn discover<A: Arch, B: Backend>(&mut self, rect: Rect, key: TypeId, hover: Option<Hov>) {
         let seg = self.subs.len() as u32;
         let mut pick = None;
         for (j, c) in self.cols.iter().enumerate() {
@@ -402,7 +473,7 @@ impl Store {
         }
         let j = pick.unwrap_or_else(|| {
             let d = desc::<A, B>();
-            self.cols.push(RawCol { pages: core::ptr::null_mut(), npages: 0, nrec: 0, k: 0, reads: d.reads, key, desc: d, seg, hover, dirty: 0 });
+            self.cols.push(RawCol { pages: core::ptr::null_mut(), npages: 0, nrec: 0, k: 0, reads: d.reads, key, desc: d, seg, hover });
             self.order.push(Pass::Col(self.cols.len() as u32 - 1));
             self.cols.len() - 1
         });
@@ -412,7 +483,17 @@ impl Store {
         c.nrec = c.k * self.cap;
         c.grow(c.nrec.div_ceil(64));
         self.disc.push((j as u32, rect));
-        self.sites.push(Site { col: j as u32, base });
+        self.sites.push(Site { page: core::ptr::null_mut(), page_size: 0, col: j as u32, base });
+        self.fix_sites();
+    }
+    /// Point every site at its column's pages. Run whenever a column's pages may have moved.
+    fn fix_sites(&mut self) {
+        for s in &mut self.sites {
+            let c = &self.cols[s.col as usize];
+            // SAFETY: `base / 64` is a page of the column (`discover` grew it to hold the site).
+            s.page = unsafe { c.pages.add((s.base >> 6) as usize * c.desc.page.size()) };
+            s.page_size = c.desc.page.size() as u32;
+        }
     }
 
     /// The damage of a change of the block from `old` to `new` (`ch` = the changed words), for this store and
@@ -453,33 +534,33 @@ impl Store {
     }
 
     /// The topmost record with a hover handler under a point: (path of child indices, column, record).
-    pub fn hit(&self, u: &U, x: i32, y: i32, path: &mut Vec<u16>, best: &mut Option<(Vec<u16>, u32, u32)>) {
+    pub fn hit(&self, u: &U, x: i32, y: i32, path: &mut Path, best: &mut Option<(Path, u32, u32)>) {
         for p in &self.order {
             match *p {
                 Pass::Col(j) => {
                     let c = &self.cols[j as usize];
-                    if c.hover.is_none() {
-                        continue;
-                    }
+                    let Some((_, hit)) = c.hover else { continue };
                     let sv = StoreView { space: &self.space, live: Live { cap: self.cap, rows: &self.row_live, nrec: c.nrec } };
-                    // SAFETY: as in `delta`.
-                    let r = unsafe { (c.desc.hit)(c, &sv, u, x, y) };
+                    // SAFETY: `hit` was instantiated for the archetype `c` was created with.
+                    let r = unsafe { hit(c, &sv, u, x, y) };
                     if r != u32::MAX {
-                        *best = Some((path.clone(), j, r));
+                        *best = Some((*path, j, r));
                     }
                 }
                 Pass::Sub(q) => {
-                    path.push(q as u16);
+                    assert!((path.n as usize) < path.at.len(), "stores nest at most six deep");
+                    path.at[path.n as usize] = q as u16;
+                    path.n += 1;
                     self.subs[q as usize].hit(u, x, y, path, best);
-                    path.pop();
+                    path.n -= 1;
                 }
             }
         }
     }
 
-    pub fn at(&self, path: &[u16]) -> Option<&Store> {
+    pub fn at(&self, path: &Path) -> Option<&Store> {
         let mut s = self;
-        for &q in path {
+        for &q in &path.at[..path.n as usize] {
             s = s.subs.get(q as usize)?;
         }
         Some(s)
@@ -528,6 +609,19 @@ pub fn changed_mask<A: Arch>(pg: &Page<A>, old: &U, new: &U) -> u64 {
     pack(&b)
 }
 
+/// The same for a page with few live records: only those are evaluated.
+#[inline(always)]
+pub fn changed_sparse<A: Arch>(pg: &Page<A>, mut live: u64, old: &U, new: &U) -> u64 {
+    let mut m = 0u64;
+    while live != 0 {
+        let i = live.trailing_zeros() as usize;
+        live &= live - 1;
+        let c = pg.rec[i].changed(old, new) | (A::MOVES && pg.rec[i].offset(old) != pg.rec[i].offset(new));
+        m |= (c as u64) << i;
+    }
+    m
+}
+
 unsafe fn delta_col<A: Arch>(col: &RawCol, sv: &StoreView, old: &U, new: &U, tiles: &mut Tiles) {
     // SAFETY: the caller instantiated this for the column's archetype.
     let pages = unsafe { col.all::<A>() };
@@ -538,7 +632,7 @@ unsafe fn delta_col<A: Arch>(col: &RawCol, sv: &StoreView, old: &U, new: &U, til
         if live == 0 {
             continue;
         }
-        let m = changed_mask(pg, old, new) & live;
+        let m = if live.count_ones() <= 12 { changed_sparse(pg, live, old, new) } else { changed_mask(pg, old, new) & live };
         #[cfg(feature = "mutant_delta")]
         let m = m & 0x5555_5555_5555_5555;
         if m != 0 {
@@ -594,11 +688,21 @@ unsafe fn hit_col<A: Arch>(col: &RawCol, sv: &StoreView, u: &U, x: i32, y: i32) 
         if live == 0 {
             continue;
         }
-        let mut b = [0u8; 64];
-        for i in 0..64 {
-            b[i] = ((x >= pg.x0[i]) & (x < pg.x1[i]) & (y >= pg.y0[i]) & (y < pg.y1[i])) as u8;
-        }
-        let m = pack(&b) & live;
+        let m = if live.count_ones() <= 12 {
+            let (mut m, mut l) = (0u64, live);
+            while l != 0 {
+                let i = l.trailing_zeros() as usize;
+                l &= l - 1;
+                m |= (((x >= pg.x0[i]) & (x < pg.x1[i]) & (y >= pg.y0[i]) & (y < pg.y1[i])) as u64) << i;
+            }
+            m
+        } else {
+            let mut b = [0u8; 64];
+            for i in 0..64 {
+                b[i] = ((x >= pg.x0[i]) & (x < pg.x1[i]) & (y >= pg.y0[i]) & (y < pg.y1[i])) as u8;
+            }
+            pack(&b) & live
+        };
         if m != 0 {
             best = pi as u32 * 64 + 63 - m.leading_zeros();
         }

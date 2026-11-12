@@ -21,13 +21,19 @@ pub const BODY: Rect = Rect { x0: 0, y0: TOOLBAR + HEADER, x1: W, y1: H - CELL_H
 lens!(pub Theme: u32 = 0);
 lens!(pub Hover: u32 = 1);
 lens!(pub Sel: u32 = 2);
-lens!(pub Scroll: f32 = 3);
-lens!(pub Sum[COLS]: f32 = 4);
+lens!(pub Scroll: i32 = 3);
+// the column totals, in hundredths
+lens!(pub Sum[COLS]: i32 = 4);
 pub const NWORDS: usize = 4 + COLS;
 
 pub struct Sheet {
     pub u: U,
     pub rows: Rel<[f32; COLS]>,
+}
+
+/// A cell's value as the integer the column holds: hundredths.
+fn cents(v: f32) -> i32 {
+    (v as f64 * 100.0).round() as i32
 }
 
 fn fill((dark, hot, k): (u32, u32, u32)) -> Color {
@@ -70,7 +76,7 @@ impl Sheet {
         let mut u = U::default();
         u.set::<Hover>(NO_HOVER);
         for c in 0..COLS {
-            u.w[Sum::BASE + c] = items.iter().map(|row| row[c]).sum::<f32>().to_bits();
+            u.set_at::<Sum>(c, items.iter().map(|row| cents(row[c])).sum());
         }
         Sheet { u, rows: Rel::new(items) }
     }
@@ -86,32 +92,58 @@ impl Sheet {
         self.u.set::<Theme>(t);
     }
     pub fn edit(&mut self, r: usize, c: usize, v: f32) {
-        let cell = &mut self.rows.edit(r)[c];
-        let old = core::mem::replace(cell, v);
-        let s = f32::from_bits(self.u.w[Sum::BASE + c]) + v - old;
-        self.u.w[Sum::BASE + c] = s.to_bits();
+        let old = core::mem::replace(&mut self.rows.edit(r)[c], v);
+        self.total(c, cents(v) - cents(old));
+    }
+    /// The same edit with no note taken (for re-describing mode): only the total follows.
+    pub fn edit_opaque(&mut self, r: usize, c: usize, v: f32) {
+        let old = core::mem::replace(&mut self.rows.items_mut()[r][c], v);
+        self.total(c, cents(v) - cents(old));
+    }
+    fn total(&mut self, c: usize, d: i32) {
+        let s = self.u.at::<Sum>(c) + d;
+        self.u.set_at::<Sum>(c, s);
     }
     pub fn select(&mut self, i: u32) {
         self.u.set::<Sel>(i);
     }
-    pub fn scroll_by(&mut self, dy: f32) {
-        let max = (self.rows.len() as i32 * CELL_H - (BODY.y1 - BODY.y0)).max(0) as f32;
-        let y = (self.u.get::<Scroll>() + dy).clamp(0.0, max);
+    pub fn scroll_by(&mut self, dy: i32) {
+        let max = (self.rows.len() as i32 * CELL_H - (BODY.y1 - BODY.y0)).max(0);
+        let y = (self.u.get::<Scroll>() + dy).clamp(0, max);
         self.u.set::<Scroll>(y);
     }
-    pub fn insert_row(&mut self, at: usize, row: [f32; COLS]) {
+    pub fn insert_row(&mut self, at: usize, row: [f32; COLS], opaque: bool) {
         for c in 0..COLS {
-            self.u.w[Sum::BASE + c] = (f32::from_bits(self.u.w[Sum::BASE + c]) + row[c]).to_bits();
+            self.total(c, cents(row[c]));
         }
-        self.rows.insert(at, row);
+        if opaque { self.rows.items_mut().insert(at, row) } else { self.rows.insert(at, row) }
     }
-    pub fn remove_row(&mut self, at: usize) {
-        let row = self.rows.remove(at);
+    pub fn remove_row(&mut self, at: usize, opaque: bool) {
+        let row = if opaque { self.rows.items_mut().remove(at) } else { self.rows.remove(at) };
         for c in 0..COLS {
-            self.u.w[Sum::BASE + c] = (f32::from_bits(self.u.w[Sum::BASE + c]) - row[c]).to_bits();
+            self.total(c, -cents(row[c]));
         }
-        self.scroll_by(0.0);
+        self.scroll_by(0);
     }
+}
+
+/// The layout of one row: the gutter fill and its number, then a fill and a number per cell. Phase 1 has no
+/// layout engine: these are the fixed boxes of the workload, placed by arithmetic, once.
+const ROW_SHAPE: [Rect; 2 + 2 * COLS] = {
+    let mut r = [Rect::new(0, 0, GUTTER, CELL_H); 2 + 2 * COLS];
+    let mut c = 0;
+    while c < COLS {
+        r[2 + 2 * c] = Rect::new(GUTTER + c as i32 * CELL_W, 0, CELL_W, CELL_H);
+        r[3 + 2 * c] = r[2 + 2 * c];
+        c += 1;
+    }
+    r
+};
+const fn header(c: usize) -> Rect {
+    Rect::new(GUTTER + c as i32 * CELL_W, TOOLBAR, CELL_W, HEADER)
+}
+const fn total(c: usize) -> Rect {
+    Rect::new(GUTTER + c as i32 * CELL_W, H - CELL_H, CELL_W, CELL_H)
 }
 
 impl View for Sheet {
@@ -120,41 +152,54 @@ impl View for Sheet {
     }
     fn view<S: Sink<Self>>(&self, s: &mut S) {
         let theme = un::<Theme>();
-        s.emit(Rect::new(0, 0, W, H), Fill(theme.map(page)));
-        // toolbar
-        s.emit(Rect::new(0, 0, W, TOOLBAR), Fill(theme.map(chrome)));
-        s.emit(Rect::new(24, 20, 200, 40), Label(Txt::new("Sheet 1"), theme.map(ink)));
-        s.emit(Rect::new(256, 20, 200, 40), Label(Txt::new("Σ totals"), Kc::<0x7a808c>));
-        // header: hovering a cell highlights its column
-        s.emit(Rect::new(0, TOOLBAR, GUTTER, HEADER), Fill(theme.map(chrome)));
-        for c in 0..COLS {
-            let r = Rect::new(GUTTER + c as i32 * CELL_W, TOOLBAR, CELL_W, HEADER);
-            s.emit_hover(r, Fill((theme, un::<Hover>(), rec(c as u32)).map(head)), |v: &mut Sheet, a, on| v.hover_header(a.0.0.2.0, on));
-            s.emit(r, Label(Txt::new(NAMES[c]), theme.map(ink)));
-        }
+        // the page, the toolbar, the header: hovering a header cell highlights its column
+        s.row(|| {
+            let mut rects = [Rect::new(0, 0, W, H); 5 + 2 * COLS];
+            rects[1] = Rect::new(0, 0, W, TOOLBAR);
+            rects[2] = Rect::new(24, 20, 200, 40);
+            rects[3] = Rect::new(256, 20, 200, 40);
+            rects[4] = Rect::new(0, TOOLBAR, GUTTER, HEADER);
+            for c in 0..COLS {
+                rects[5 + 2 * c] = header(c);
+                rects[6 + 2 * c] = header(c);
+            }
+            let row = (
+                Fill(theme.map(page)),
+                Fill(theme.map(chrome)),
+                Label(Txt::new("Sheet 1"), theme.map(ink)),
+                Label(Txt::new("Σ totals"), Kc::<0x7a808c>),
+                Fill(theme.map(chrome)),
+                std::array::from_fn::<_, COLS, _>(|c| {
+                    (
+                        hover(Fill((theme, un::<Hover>(), rec(c as u32)).map(head)), |v: &mut Sheet, a, on| v.hover_header(a.0.0.2.0, on)),
+                        Label(Txt::new(NAMES[c]), theme.map(ink)),
+                    )
+                }),
+            );
+            (rects, row)
+        });
         // body: the rows scroll under the header; the selection outline rides above them
         s.scope(Space { clip: BODY, base: (0, BODY.y0), scroll: Scroll::SLOT as u8 }, |s| {
-            s.list(&List { n: self.rows.len() as u32, row_h: CELL_H, x: 0, y: 0, edits: &self.rows.journal }, |r| {
+            s.list(&List { n: self.rows.len() as u32, row_h: CELL_H, x: 0, y: 0, shape: &ROW_SHAPE, edits: &self.rows.journal }, |r| {
                 let vals = self.rows.get(r);
                 (
-                    At(Rect::new(0, 0, GUTTER, CELL_H), Fill(theme.map(chrome))),
-                    At(Rect::new(0, 0, GUTTER, CELL_H), Num::<0, _, _>(rec((r + 1) as f32), Kc::<0x7a808c>)),
+                    Fill(theme.map(chrome)),
+                    Num::<0, _, _>(rec(r as i32 + 1), Kc::<0x7a808c>),
                     std::array::from_fn::<_, COLS, _>(|c| {
-                        let at = Rect::new(GUTTER + c as i32 * CELL_W, 0, CELL_W, CELL_H);
-                        (
-                            At(at, Fill((theme, un::<Hover>(), rec(c as u32 | ((r as u32 & 1) << 8))).map(fill))),
-                            At(at, Num::<2, _, _>(rec(vals[c]), theme.map(ink))),
-                        )
+                        (Fill((theme, un::<Hover>(), rec(c as u32 | ((r as u32 & 1) << 8))).map(fill)), Num::<2, _, _>(rec(cents(vals[c])), theme.map(ink)))
                     }),
                 )
             });
-            s.emit(Rect::new(GUTTER, 0, CELL_W, CELL_H), Outline::<4, _, _>(Kc::<0x2f6bff>, un::<Sel>().map(sel_at)));
+            s.row(|| ([Rect::new(GUTTER, 0, CELL_W, CELL_H)], Outline::<4, _, _>(Kc::<0x2f6bff>, un::<Sel>().map(sel_at))));
         });
         // footer: the totals are words of the block, formatted while shading
-        s.emit(Rect::new(0, H - CELL_H, W, CELL_H), Fill(theme.map(chrome)));
-        s.emit(Rect::new(0, H - CELL_H, GUTTER, CELL_H), Label(Txt::new("Σ"), theme.map(ink)));
-        for c in 0..COLS {
-            s.emit(Rect::new(GUTTER + c as i32 * CELL_W, H - CELL_H, CELL_W, CELL_H), Num::<2, _, _>(un_at::<Sum>(c), theme.map(ink)));
-        }
+        s.row(|| {
+            let mut rects = [Rect::new(0, H - CELL_H, W, CELL_H); 2 + COLS];
+            rects[1] = Rect::new(0, H - CELL_H, GUTTER, CELL_H);
+            for c in 0..COLS {
+                rects[2 + c] = total(c);
+            }
+            (rects, (Fill(theme.map(chrome)), Label(Txt::new("Σ"), theme.map(ink)), std::array::from_fn::<_, COLS, _>(|c| Num::<2, _, _>(un_at::<Sum>(c), theme.map(ink)))))
+        });
     }
 }

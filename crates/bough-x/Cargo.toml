@@ -6,6 +6,7 @@ license.workspace = true
 description = "Round 8: a UI as a typed dataflow. Expressions as types with the stage inferred, finite-difference damage over exposed pages, archetype columns in 64-record pages, description by continuation"
 
 [dependencies]
+bough-expr = { path = "../bough-expr" }
 
 [dev-dependencies]
 bough-mem = { path = "../bough-mem" }
