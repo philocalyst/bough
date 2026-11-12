@@ -73,6 +73,7 @@ pub trait Scene: bough::app::View + Sized + 'static {
 pub const SCENES: [&str; 5] = ["sheet", "ide", "dash", "canvas", "chat"];
 
 /// Run the named scene's phases (`harness::run` with the scene's type).
+#[allow(unused_variables, unreachable_code)] // with no scene feature on, nothing matches
 pub fn run_scene(name: &str, cfg: &harness::RunCfg) -> bool {
     match name {
         #[cfg(feature = "sheet")]
