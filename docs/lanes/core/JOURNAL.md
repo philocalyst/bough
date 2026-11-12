@@ -580,3 +580,97 @@ transition belongs to the `Scope` that mounted its element (`Scope::trans`), is 
 is reused; the frame clock takes a transition out of its slot while its applier runs, so an applier that
 unmounts elements can release the very transition being stepped. This is also the shape a kernel-evaluated
 transition needs: the record owns it. Tests: `tests/transition_owner.rs`.
+
+## B3. Rigid moves, wire segments, the projection's two shortcuts; the standing scenes
+
+Rebased onto `round6` `8acb08b722`; `r7/bench` merged in for the five scenes (`comparisons/bough-workloads`).
+Baseline for every number below: `8acb08b722` with `r7/bench` merged and nothing of this lane, built in a
+second worktree; release profile, `RENDER=0`, `SCENE_SCALE=1`, `REPS=16`, `MODE=once`, p50 instructions per
+step on the calling thread, M3 Pro under load, one run (`data/r7/workloads-release-render0-*.txt`).
+
+### Rigid moves (the platform lane's case: one row removed from a 1,000-row table re-rasters 883 tiles)
+
+A splice, like a scroll, is a translation of pixels that are already right. Three parts:
+
+* **Core** (`damage::Moves`, `Bough::{move_begin, move_end, move_abort, moves, run_bounds}`): an epoch holds a
+  list of rigid moves (up to 8), not one scroll record. Moves over disjoint clips are independent copies (a
+  copy reads the previous frame inside its own clip only); two that meet poison the epoch, as a second scroll
+  always did. A move can be *written record by record*: between `move_begin` and `move_end` the caller moves a
+  run's records through the ordinary writers and the marks those writes make are dropped (the ring's current
+  plane is a scratch plane meanwhile); `move_end` gives the run a move's damage: the exposed strip, the static
+  content's edge bands, this epoch's earlier marks shifted. `scroll_run_copy` is now that plus the translation.
+  Tests (`bough-core/tests/scroll_copy.rs`, pixel model, also on ilo-prod): two disjoint moves per epoch leave
+  every wrong pixel in a marked tile; overlapping ones poison; a written move equals the core's own.
+* **Layout write-back** (`Rt::wb_rigid`): the engine reports every node whose box changed. A node whose box
+  only went elsewhere (same size, a whole number of device px, nothing below it changed, no placement hook
+  below it) was displaced; a run of such siblings with one delta, whose records are one run, is written back
+  inside one `move_begin` / `move_end` with the clip `old bounds ∪ new bounds`.
+* **Frame**: one move per epoch is the copy every presenter already takes. An epoch with several is repaired
+  whole for now (`App::copy_plan`); the executors need a list of copies to do better (the compute lane's).
+
+Measured (`tests/rigid_move.rs`): one row removed from 25 marks 35 tiles; repainting the 20 rows below it is
+200. Presented == full redraw over 40 random inserts and removes at rings 1, 2 and 4 (GPU mode), with more
+than 20 of them served by a move. Not measured yet: the platform lane's 22.2 M-instruction case on their CPU
+executor.
+
+### Wire segments (fan-out without an API change)
+
+A write ran every wire of its cell: about 77 instructions per wire whose value does not change (bench lane,
+E5). The wires of one cell whose appliers commute (`Apply::COMMUTES`: a colour, a text colour: they read
+nothing another wire writes) are now kept per kind of operand in a **segment** once a cell has two of a kind
+(a cell's only wire of a kind stays a plain wire: the colour cell of `signal_cost` is 452 against 431 before
+segments existed and 606 on the base). A segment runs as one monomorphised loop; a projection that captures
+nothing (`|l| ink(*l)`) is one evaluation for the whole segment, cached, and when the value did not change
+none of its members run. Order between kinds is not preserved, which is why only commuting appliers qualify.
+
+### The projection's two shortcuts
+
+A theme switch marked 200,000 records and projected each (136 instructions each, most of them rows far below
+the window on far pages). Now a page whose directory ink does not meet the window costs its records one
+compare each, and once every tile of the window is marked the rest of the plane is only cleared
+(`bough-core/tests/dirty.rs`: both equal the one-by-one marks).
+
+### The scenes, base -> head (instructions per step, p50)
+
+| scene | hover | theme | idle |
+|---|---|---|---|
+| sheet (100,000 cells) | 18.44 M -> 6.47 M | 52.9 M -> 21.1 M | 295 -> 133 |
+| ide | 781 K -> 430 K | 6.36 M -> 2.93 M | 295 -> 133 |
+| dash | 638 K -> 346 K | 1.14 M -> 575 K | 295 -> 133 |
+| canvas | 228 K -> 132 K | 493 K -> 256 K | 295 -> 133 |
+| chat | 125 K -> 53 K | 3.03 M -> 1.26 M | 305 -> 143 |
+
+Mount and resize did not move (sheet mount 1.97 G -> 2.09 G is inside the run-to-run spread, see below; resize
+123 M -> 122 M). The sheet's steady p50 went 2,465 -> 8,898 and is not a regression: the phase cycles three
+kinds of step and the median fell on another kind; step by step the edits are cheaper (14.9 K / 7.3 K / 7.3 K
+/ 6.3 K -> 12.8 K / 7.3 K / 2.5 K / 3.9 K) and the selection moves are 581 against 659, except the first one
+(4,959 against 664: the transition's first retarget).
+
+What is left in the sheet's fan-out, by attribution spans: hover 6.5 M is the fill segment evaluating
+`fill(look, col, row)` for 100,000 members (55 each) because each captures its own (col, row); only an index
+from value to dependents (an `is(key)` operand, an API addition) removes that. Theme 21 M is 18 M of applies
+(200,000 at ~91: the closure, the instance store, the paint log and the dirty bit) and under 1 M of
+projection; a lane operation over the instance colours would need the members' ids to be a strided run.
+
+### The sheet's mount taken apart (before predicting anything about templates)
+
+`BOUGH_ATTR_MOUNT=1` (feature `attr`; instrumented: two counter reads per span, subtracted), sheet at
+`SCENE_SCALE=0.1` (10,000 cells, 11,023 labels, 13,032 boxes, 24,055 records), two runs within 1 %:
+
+| part | instructions | per cell |
+|---|---:|---:|
+| layout compute (cephal, cold) | 113.0 M | 11,300 |
+| labels built (shaping, glyph slots) | 27.4 M | 2,490 per label |
+| the rest of the mount walk (description, element storage, records, the fill wire, attach) | ~24 M | ~2,200 |
+| layout write-back and hooks | ~20 M | ~1,800 |
+| text operands lowered (two wires, the number formatted) | 6.8 M | 620 per label |
+| layout nodes added (style interned): text leaf / box | 4.9 M / 4.2 M | 441 / 322 each |
+| records inserted | 3.3 M | 137 per record |
+| total | ~210 M | ~21,000 |
+
+At full scale the total is 2.0 G to 3.0 G between runs (20 K to 30 K per cell) while the layout compute stays
+at 11.3 K per cell: the instruction counter includes the kernel's work on this thread, and mounting 100,000
+cells touches about 210 MiB for the first time (zero-fill faults). So the mount has three cost centres, in
+this order: **layout (about half), memory touched (a fifth to a third at scale, and the source of the
+run-to-run spread), labels (an eighth)**. Element storage, records and wires, which is what a template and a
+shared page image address, are about a seventh.
