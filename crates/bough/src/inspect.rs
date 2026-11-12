@@ -52,6 +52,12 @@ impl<V: View> App<V> {
         RecordView { pos, depth: r.depth, kind: r.kind, ink: r.ink, handle: r.handle, clip: r.clip, layout, transformed: self.rt.bough.xform_at(pos).is_some() }
     }
 
+    /// The dynamic parts of the root owner and how each is mounted: by exposure (dormant runs, the realised
+    /// item ranges) or eagerly (every item: a source without an index, a container a run cannot stand in).
+    pub fn dynamic_parts(&self) -> Vec<crate::dormant::PartView> {
+        self.rt.parts()
+    }
+
     /// The topmost pickable record at window point (x, y) (points), as hit testing answers it.
     pub fn pick_record(&self, x: f32, y: f32) -> Option<usize> {
         let s = self.rt.scale;

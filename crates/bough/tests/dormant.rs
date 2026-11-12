@@ -180,6 +180,95 @@ fn exposure_never_changes_a_pixel() {
     run_sequence(1..=4).unwrap();
 }
 
+/// Random scrolls (steps, jumps, the wheel under a pointer that hovers), edits, splices and resizes: after
+/// each, the four-way comparison.
+#[test]
+fn random_sequences_equal_fresh_and_eager_mounts() {
+    if mutant() != Mutant::None {
+        return;
+    }
+    for seed in 1..=3u64 {
+        let mut r = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        let mut state = Doc::new(300 + r.below(500) as u32);
+        let ring = 1 + r.below(4);
+        let mut app = App::new(state.snap(), config(&state, ring, false), true);
+        app.frame();
+        let mut next_id = 100_000;
+        for step in 0..70 {
+            let n = state.rows.len();
+            let max = (n as f32 * (20.0 + state.gap) + 30.0 - state.port_h).max(0.0);
+            let what = r.below(12);
+            let ctx = format!("seed {seed} ring {ring} step {step} op {what}");
+            let op: Box<dyn Fn(&mut Doc)> = match what {
+                0 | 1 => {
+                    let y = (*state.y + r.below(90) as f32 - 30.0).clamp(0.0, max);
+                    Box::new(move |d| drop(d.y.set(y)))
+                }
+                2 => {
+                    let y = (r.below(max as usize + 1) as f32 + 0.5 * r.below(2) as f32).min(max);
+                    Box::new(move |d| drop(d.y.set(y)))
+                }
+                3 if n > 0 => {
+                    let k = r.below(n);
+                    Box::new(move |d| d.rows[k].1 = format!("Edited {k}"))
+                }
+                4 if n > 0 => {
+                    let k = r.below(n);
+                    Box::new(move |d| drop(d.rows.remove(k)))
+                }
+                5 => {
+                    let (k, id) = (r.below(n + 1), next_id);
+                    next_id += 1;
+                    Box::new(move |d| d.rows.insert(k, (id, format!("New {id}"))))
+                }
+                6 if n > 0 => {
+                    let id = state.rows[r.below(n)].0;
+                    Box::new(move |d| d.selected = id)
+                }
+                7 if n > 3 => {
+                    // near what is on screen
+                    let k = ((*state.y / 20.0) as usize + r.below(12)).min(n - 2);
+                    Box::new(move |d| drop(d.rows.remove(k)))
+                }
+                8 => {
+                    let (k, id) = (((*state.y / 20.0) as usize + r.below(12)).min(n), next_id);
+                    next_id += 1;
+                    Box::new(move |d| d.rows.insert(k, (id, format!("Near {id}"))))
+                }
+                9 => {
+                    let h = 120.0 + r.below(140) as f32;
+                    Box::new(move |d| d.port_h = h)
+                }
+                10 => {
+                    let m = r.below(n + 40);
+                    Box::new(move |d| {
+                        let have = d.rows.len();
+                        if m < have {
+                            d.rows.truncate(m)
+                        } else {
+                            d.rows.extend((have..m).map(|i| (200_000 + i as u32, format!("Tail {i}"))))
+                        }
+                    })
+                }
+                _ => {
+                    // the wheel, the pointer over the port (it hovers a row; the offset is the app's)
+                    let dy = r.below(70) as f32 - 20.0;
+                    app.wheel_points(100.0, 100.0, dy);
+                    let y = *app.owner.y;
+                    Box::new(move |d| drop(d.y.set(y)))
+                }
+            };
+            op(&mut state);
+            if what < 11 {
+                app.turn(|d| op(d));
+            }
+            // the fresh mounts have no pointer: take it away before comparing
+            app.pointer_leave();
+            gate(&mut app, &state, &ctx).unwrap();
+        }
+    }
+}
+
 /// A window resize exposes rows (the port grows with nothing else changing).
 #[test]
 fn a_resize_exposes_rows() {

@@ -71,6 +71,9 @@ where
         run(n);
     }
     let (lo, hi) = (run(16), run(48));
+    if std::env::var_os("STATS").is_some() {
+        eprintln!("{:?} computes {}", a.rt.dorm.stats, a.rt.lay.stats.computes);
+    }
     (hi - lo) / 32
 }
 

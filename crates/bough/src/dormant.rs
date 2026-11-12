@@ -48,9 +48,6 @@ use std::iter::TrustedRandomAccessNoCoerce;
 pub const SEED: u32 = 8;
 /// Exposure passes an unexposed item stays realised.
 pub const HOLD: u32 = 3;
-/// Beyond this distance from the visible rect (device px) an item is released at once, held or not: its
-/// records' inks are absolute `i16` (bough-core `NRect`), so they must stay inside the domain.
-pub const FAR: f32 = f32::INFINITY;
 /// Bound of the scan / walk / layout fixed point of one `App::expose`.
 pub const MAX_PASSES: u32 = 12;
 
@@ -162,7 +159,7 @@ pub struct Dorm {
     pub runs: u32,
     /// Run extents or the estimate changed: the leaves are re-sized at the end of the walk.
     pub(crate) resize: bool,
-    cand: Vec<(u32, u32, f32, bool)>,
+    cand: Vec<(u32, u32, f32)>,
 }
 
 /// Counters of the exposure machinery (tests and the inspector).
@@ -231,8 +228,6 @@ pub struct Dorms {
     pub tick: u32,
     /// Elements being mounted that a re-description steps over (`describe::mount_opaque`).
     pub(crate) opaque: u32,
-    /// A held item must go (beyond `FAR`): the app blurs first.
-    pub(crate) blur: bool,
     pub stats: DormStats,
     pub mutant: Mutant,
     pub(crate) fix: Vec<(u32, i32)>,
@@ -248,7 +243,7 @@ impl Dorms {
             Ok("noanchor") => Mutant::NoAnchor,
             _ => Mutant::None,
         });
-        Dorms { live: Vec::new(), lclip: Vec::new(), lspace: Vec::new(), lkey: Vec::new(), dead: 0, off: false, over: 64.0 * scale, keep: 256.0 * scale, tick: 0, opaque: 0, blur: false, stats: DormStats::default(), mutant, fix: Vec::new(), held: Vec::new() }
+        Dorms { live: Vec::new(), lclip: Vec::new(), lspace: Vec::new(), lkey: Vec::new(), dead: 0, off: false, over: 64.0 * scale, keep: 256.0 * scale, tick: 0, opaque: 0, stats: DormStats::default(), mutant, fix: Vec::new(), held: Vec::new() }
     }
 }
 
@@ -538,6 +533,20 @@ impl Rt {
         Some(r)
     }
 
+    /// Did any part's exposure key change since its last scan? The whole per-turn cost of parts whose
+    /// exposure did not change: per part one clip rect ∩ the window, one space origin, three compares.
+    #[inline(always)]
+    pub(crate) fn dorm_stale(&self) -> bool {
+        let d = &self.dorm;
+        let lay = self.lay.stats.computes;
+        let mut stale = d.dead != 0;
+        for i in 0..d.live.len() {
+            let key = ScanKey { vis: self.visible_of(d.lclip[i]), org: self.glyphs.spaces[d.lspace[i] as usize], lay };
+            stale |= key != d.lkey[i];
+        }
+        stale
+    }
+
     /// Scan every dormant-capable part (see the module docs). Returns whether a walk is needed: some part
     /// has items to realise or to release. Layout may be pending afterwards too (an estimate moved).
     pub(crate) fn dorm_scan(&mut self) -> bool {
@@ -681,7 +690,6 @@ impl Rt {
             Some(v) if v[0] < ci.ax + ci.aw && v[2] > ci.ax => (v[1] - ci.ay, v[3] - ci.ay),
             _ => (f32::INFINITY, f32::NEG_INFINITY),
         };
-        let seen_any = v0 < v1;
         let (lo_d, hi_d, lo_k, hi_k) = (v0 - over, v1 + over, v0 - keep, v1 + keep);
         let mut anchor: Option<(u32, f32)> = None;
         let mut waiting = false;
@@ -745,9 +753,8 @@ impl Rt {
                     old[j].seen = tick;
                     p.unseen += 1;
                 }
-                let far = seen_any && (bot < v0 - FAR || top > v1 + FAR);
-                if far || tick.wrapping_sub(p.since[j]) >= HOLD {
-                    p.cand.push((i, j as u32, bot - top, far));
+                if tick.wrapping_sub(p.since[j]) >= HOLD {
+                    p.cand.push((i, j as u32, bot - top));
                 } else {
                     waiting = true;
                 }
@@ -785,29 +792,22 @@ impl Rt {
             p.anchor_tick = tick;
             p.anchor = anchor.map(|(ai, top)| (ai, key.org[1] as f32 + ci.ay + top));
         }
-        // releases: not what holds focus, hover or a press, unless it left the ink domain
+        // releases: not what holds focus, hover or a press (a held item stays realised however far it is
+        // scrolled: its inks are exact at any distance, bough-core's wide rects)
         if !p.cand.is_empty() && mutant != Mutant::NoRelease {
             let mut held = std::mem::take(&mut self.dorm.held);
             held.clear();
-            let focus = self.input.focus.and_then(|h| self.bough.pos_of(h));
+            held.extend(self.input.focus.and_then(|h| self.bough.pos_of(h)));
             self.input.held_positions(&self.bough, &mut held);
-            let mut blur = false;
-            let b = &self.bough;
-            p.cand.retain(|&(_, k, _, far)| {
-                let e = &old[k as usize];
-                let Some(p0) = b.pos_of(b.handle_gen(e.head)) else { return true };
-                let inside = |q: usize| q >= p0 && q < p0 + e.nrec as usize;
-                if focus.is_some_and(inside) {
-                    blur |= far;
-                    return false;
-                }
-                far || !held.iter().any(|&q| inside(q))
-            });
-            self.dorm.held = held;
-            if blur {
-                self.dorm.blur = true;
-                self.dorm.rescan(p.slot);
+            if !held.is_empty() {
+                let b = &self.bough;
+                p.cand.retain(|&(_, k, _)| {
+                    let e = &old[k as usize];
+                    let Some(p0) = b.pos_of(b.handle_gen(e.head)) else { return true };
+                    !held.iter().any(|&q| q >= p0 && q < p0 + e.nrec as usize)
+                });
             }
+            self.dorm.held = held;
             p.drop.extend(p.cand.iter().map(|c| (c.0, c.2)));
         }
         if waiting {

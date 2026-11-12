@@ -498,6 +498,12 @@ pub trait ActOp<V> {
     /// A re-description: bring what the op captured by value up to date (a route's closure, a hover
     /// colour); what it installed (wires, scrollers, the act) stays.
     fn refresh(self, m: &mut Mounter<'_, V>, act: u32);
+    /// The op's part of its element's seal (`seal.rs`): refuses unless `refresh` with an equal description
+    /// is a no-op.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.refuse()
+    }
 }
 
 /// An element with an interaction op on its first record.
@@ -520,6 +526,14 @@ impl<V, E: Element<V>, O: ActOp<V>> Element<V> for On<E, O> {
     }
     fn dyn_key(&self) -> u64 {
         self.0.dyn_key()
+    }
+    /// The element's seal and the op's: an op whose retained state its description determines (a hover
+    /// colour, focusability) seals, so rows that only carry those are stepped over; a route refuses.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x4f);
+        self.0.seal(s);
+        self.1.seal(s);
     }
 }
 
@@ -566,6 +580,11 @@ impl<V> ActOp<V> for HoverBg {
         act.base = base;
         act.bordered = bordered;
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x48);
+        s.paint(self.0 .0);
+    }
     /// A new hover colour: stored; shown at once if the pointer is over the element.
     fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
         let act = m.rt.input.acts[a as usize];
@@ -593,6 +612,10 @@ impl<V> ActOp<V> for Focusable {
     const FLAGS: u8 = KF_FOCUS;
     fn install(self, _: &mut Mounter<'_, V>, _: u32) {}
     fn refresh(self, _: &mut Mounter<'_, V>, _: u32) {}
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x46);
+    }
 }
 pub struct OnKey<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
 impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for OnKey<R, F> {

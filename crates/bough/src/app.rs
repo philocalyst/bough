@@ -394,7 +394,8 @@ impl<V: View> App<V> {
     /// (`dormant.rs`). Nothing when no such part exists, and one compare per part whose exposure is unchanged.
     #[inline]
     pub(crate) fn expose(&mut self) {
-        if self.rt.dorm.any() {
+        // inline: the keys of the parts against what they last scanned (no call, no part state loaded)
+        if self.rt.dorm.any() && self.rt.dorm_stale() {
             self.expose_parts();
         }
     }
@@ -405,11 +406,6 @@ impl<V: View> App<V> {
         let mut pass = 0;
         loop {
             let walk = self.rt.dorm_scan();
-            if std::mem::take(&mut self.rt.dorm.blur) {
-                // a focused item left the ink domain: it is released by the next scan, unfocused
-                self.set_focus(None, false);
-                continue;
-            }
             if walk {
                 self.rt.dorm.stats.walks += 1;
                 self.redescribe();

@@ -958,7 +958,11 @@ impl Rt {
                     let p = unsafe { (*l).slot_ptr(slot) } as *const u8;
                     unsafe { self.settle_cls(p, cls) };
                     // its plain fields: the row describes itself again (`lists_redescribe`)
-                    if self.lists.regs[reg].update.is_some() && !self.lists.redesc.contains(&(reg as u32, slot)) {
+                    // (only a mounted row has anything to re-describe: an edit of an unmounted item queues
+                    // nothing, so the queue is bounded by the window, not by the edits: 100,000 edits of a
+                    // 1,000,000-row list were 35 G instructions in this search)
+                    let r = &self.lists.regs[reg];
+                    if r.update.is_some() && r.rows.iter().any(|x| x.mounted && x.slot == slot) && !self.lists.redesc.contains(&(reg as u32, slot)) {
                         self.lists.redesc.push((reg as u32, slot));
                     }
                 }
