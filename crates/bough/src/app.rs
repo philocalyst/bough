@@ -300,8 +300,13 @@ impl<V: View> App<V> {
         // presenter wraps the whole region in one buffer and keeps the configured capacities
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
         let caps = if gpu { cfg.caps.reserve() } else { cfg.caps };
-        #[cfg(not(all(target_os = "macos", not(feature = "wgpu"))))]
+        // the wgpu-hal presenter wraps the region in one buffer of the configured size
+        #[cfg(all(target_os = "macos", feature = "wgpu"))]
         let caps = cfg.caps;
+        // no GPU presenter: the CPU executor reads the region in place, which is lazily backed memory, so it
+        // reserves the record format's limits as address space too (only what is written becomes resident)
+        #[cfg(not(target_os = "macos"))]
+        let caps = cfg.caps.reserve();
         let bytes = caps.region_bytes(win_w as u32, win_h as u32);
         // wgpu (`--features wgpu`): the device boots on another thread (the OS's driver load, ~22 ms cold) while this
         // thread mounts, lays out and shapes into region memory the presenter then adopts without a copy (bough-gpu

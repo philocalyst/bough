@@ -71,7 +71,12 @@ pub struct CpuStats {
 pub struct CpuRaster {
     pos: Vec<u32>,
     ents: Vec<Ent>,
-    tile_ents: Vec<u32>,
+    /// Per tile of the window (`ty * tiles_x + tx`): the damaged tile's bin slot + 1, 0 = not damaged.
+    tile_slot: Vec<u32>,
+    /// The bins: per damaged tile, the staged entries touching it in paint order, in one array
+    /// (`bin_at[slot]..bin_at[slot + 1]`), built by a count and a fill over each entry's damaged tiles.
+    bin_at: Vec<u32>,
+    bins: Vec<u32>,
     plane: Box<Plane>,
     /// One tile's accumulators: 32 x 32 pixels x RGBA halves.
     acc: Box<[f16; 32 * 32 * 4]>,
@@ -83,6 +88,8 @@ pub struct CpuRaster {
     /// Model every kind and transformed spaces (see the module docs): set where no GPU executor shares the
     /// surfaces. Off, those refuse the frame (the GPU draws it).
     pub all_kinds: bool,
+    /// Never take the x86-64-v3 tile loop (`BOUGH_CPU_SCALAR`: its twin must write the same bytes; tests).
+    pub scalar: bool,
 }
 
 impl Default for CpuRaster {
@@ -128,13 +135,16 @@ impl CpuRaster {
         CpuRaster {
             pos: Vec::new(),
             ents: Vec::new(),
-            tile_ents: Vec::new(),
+            tile_slot: Vec::new(),
+            bin_at: Vec::new(),
+            bins: Vec::new(),
             plane: Box::new(Plane::EMPTY),
             acc: Box::new([0.0; 32 * 32 * 4]),
             cov,
             stats: CpuStats::default(),
             two_roundings: cfg!(feature = "sabotage_blend"),
             all_kinds: false,
+            scalar: std::env::var_os("BOUGH_CPU_SCALAR").is_some(),
         }
     }
 
@@ -340,62 +350,135 @@ impl CpuRaster {
             self.stats.refused += 1;
             return None;
         }
+        self.bin(w);
         // x86-64: the tile loop compiled a second time for AVX2 + FMA + F16C, chosen at run time (the half
-        // arithmetic is otherwise a library call per conversion); the arithmetic is the same either way
+        // arithmetic is otherwise a library call per conversion, and the solid spans and the store are 8-lane
+        // vectors there); the arithmetic is the same either way, bit for bit
         #[cfg(target_arch = "x86_64")]
         // SAFETY: the caller's contract; the features are present (checked).
-        let tiles = if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") && std::arch::is_x86_feature_detected!("f16c") {
+        let tiles = if !self.scalar && std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") && std::arch::is_x86_feature_detected!("f16c") {
             unsafe { self.tiles_v3(rt, w, h, dst, bpr) }
         } else {
-            unsafe { self.tiles(rt, w, h, dst, bpr) }
+            unsafe { self.tiles::<false>(rt, w, h, dst, bpr) }
         };
         #[cfg(not(target_arch = "x86_64"))]
         // SAFETY: the caller's contract.
-        let tiles = unsafe { self.tiles(rt, w, h, dst, bpr) };
+        let tiles = unsafe { self.tiles::<false>(rt, w, h, dst, bpr) };
         self.stats.frames += 1;
         self.stats.tiles += tiles as u64;
         Some(tiles)
     }
 
-    /// Every staged tile (see `repair`).
+    /// Bin the staged entries by damaged tile (paint order kept): `tile_slot` numbers the damaged tiles, a count
+    /// pass and a fill pass over each entry's damaged tiles give every tile its entries, in O(entries x tiles
+    /// each covers) instead of a scan of every entry per tile.
+    fn bin(&mut self, w: i32) {
+        let tx_n = (w as usize).div_ceil(32).max(1);
+        let ty_n = self.plane.n as usize;
+        self.tile_slot.clear();
+        self.tile_slot.resize(tx_n * ty_n, 0);
+        let mut n = 0u32;
+        for ty in self.plane.y0 as usize..self.plane.y1 as usize {
+            let mut bits = self.plane.rows[ty];
+            while bits != 0 {
+                let tx = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                if tx < tx_n {
+                    n += 1;
+                    self.tile_slot[ty * tx_n + tx] = n;
+                }
+            }
+        }
+        self.bin_at.clear();
+        self.bin_at.resize(n as usize + 1, 0);
+        let span = |e: &Ent| {
+            let (x0, x1) = ((e.px[0].max(0) as usize) >> 5, ((e.px[2].max(1) - 1) as usize >> 5).min(tx_n - 1));
+            let (y0, y1) = ((e.px[1].max(0) as usize) >> 5, ((e.px[3].max(1) - 1) as usize >> 5).min(ty_n.max(1) - 1));
+            (x0, x1, y0, y1)
+        };
+        for e in &self.ents {
+            let (x0, x1, y0, y1) = span(e);
+            for ty in y0..=y1 {
+                for tx in x0..=x1 {
+                    let sl = self.tile_slot[ty * tx_n + tx];
+                    if sl != 0 {
+                        self.bin_at[sl as usize] += 1;
+                    }
+                }
+            }
+        }
+        // running sum: tile `sl` (1-based) owns `bins[bin_at[sl - 1]..bin_at[sl]]`
+        for j in 1..self.bin_at.len() {
+            self.bin_at[j] += self.bin_at[j - 1];
+        }
+        self.bins.clear();
+        self.bins.resize(self.bin_at[n as usize] as usize, 0);
+        let mut fill = self.bin_at.clone();
+        for (k, e) in self.ents.iter().enumerate() {
+            let (x0, x1, y0, y1) = span(e);
+            for ty in y0..=y1 {
+                for tx in x0..=x1 {
+                    let sl = self.tile_slot[ty * tx_n + tx] as usize;
+                    if sl != 0 {
+                        self.bins[fill[sl - 1] as usize] = k as u32;
+                        fill[sl - 1] += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every staged tile (see `repair`). `V3`: the AVX2 + F16C span and store (x86-64, `tiles_v3` only).
     #[inline(always)]
-    unsafe fn tiles(&mut self, rt: &Rt, w: i32, h: i32, dst: *mut u8, bpr: usize) -> u32 {
+    unsafe fn tiles<const V3: bool>(&mut self, rt: &Rt, w: i32, h: i32, dst: *mut u8, bpr: usize) -> u32 {
         let mut tiles = 0u32;
+        let tx_n = (w as usize).div_ceil(32).max(1);
         for ty in self.plane.y0..self.plane.y1 {
             let mut bits = self.plane.rows[ty as usize];
             while bits != 0 {
                 let tx = bits.trailing_zeros();
                 bits &= bits - 1;
+                let sl = self.tile_slot.get(ty as usize * tx_n + tx as usize).copied().unwrap_or(0) as usize;
+                if sl == 0 {
+                    continue;
+                }
                 // SAFETY: the caller's contract.
-                unsafe { self.tile(rt, [tx as i32 * 32, ty as i32 * 32], w, h, dst, bpr) };
+                unsafe { self.tile::<V3>(rt, [tx as i32 * 32, ty as i32 * 32], sl, w, h, dst, bpr) };
                 tiles += 1;
             }
         }
         tiles
     }
 
-    /// `tiles` with x86-64-v3's half conversions and FMA.
+    /// `tiles` with x86-64-v3's half conversions, FMA and 8-lane spans and store.
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2,fma,f16c")]
     unsafe fn tiles_v3(&mut self, rt: &Rt, w: i32, h: i32, dst: *mut u8, bpr: usize) -> u32 {
         // SAFETY: the caller's contract.
-        unsafe { self.tiles(rt, w, h, dst, bpr) }
+        unsafe { self.tiles::<true>(rt, w, h, dst, bpr) }
     }
 
-    /// One tile: the entries that touch it, in paint order, over zeroed accumulators; then the store.
+    /// One tile: the entries that touch it (its bin), in paint order, over zeroed accumulators from the last
+    /// opaque cover on (the GPU kernel's floor: an opaque solid over the whole tile sets every accumulator to its
+    /// colour, `acc * 0 + cv`, so what is under it cannot matter); then the store.
     #[inline(always)]
-    unsafe fn tile(&mut self, rt: &Rt, o: [i32; 2], w: i32, h: i32, dst: *mut u8, bpr: usize) {
-        self.tile_ents.clear();
-        for (k, e) in self.ents.iter().enumerate() {
-            if e.px[0] < o[0] + 32 && e.px[2] > o[0] && e.px[1] < o[1] + 32 && e.px[3] > o[1] {
-                self.tile_ents.push(k as u32);
+    unsafe fn tile<const V3: bool>(&mut self, rt: &Rt, o: [i32; 2], slot: usize, w: i32, h: i32, dst: *mut u8, bpr: usize) {
+        let (b0, b1) = (self.bin_at[slot - 1] as usize, self.bin_at[slot] as usize);
+        // the tile's pixels inside the window: a cover must hold them all
+        let (tw, th) = ((w - o[0]).min(32), (h - o[1]).min(32));
+        let mut first = b0;
+        for i in (b0..b1).rev() {
+            let e = &self.ents[self.bins[i] as usize];
+            if e.kind == 0 && e.xs == 0.0 && e.cv[3] == 1.0 && e.px[0] <= o[0] && e.px[1] <= o[1] && e.px[2] >= o[0] + tw && e.px[3] >= o[1] + th {
+                first = i;
+                break;
             }
         }
-        self.stats.entries += self.tile_ents.len() as u64;
+        self.stats.entries += (b1 - first) as u64;
         self.acc.fill(0.0);
         let atlas = &rt.text.cache.atlas;
-        for &k in &self.tile_ents {
-            let e = self.ents[k as usize];
+        for bi in first..b1 {
+            let e = self.ents[self.bins[bi] as usize];
             let (y0, y1) = ((e.px[1] - o[1]).max(0), (e.px[3] - o[1]).min(32));
             let (x0, x1) = ((e.px[0] - o[0]).max(0), (e.px[2] - o[0]).min(32));
             for y in y0..y1 {
@@ -411,7 +494,7 @@ impl CpuRaster {
                     continue;
                 }
                 match e.kind {
-                    0 => blend_span(row, x0, x1, e.cv, self.two_roundings),
+                    0 => blend_span::<V3>(row, x0, x1, e.cv, self.two_roundings),
                     3 => {
                         let ty = cy - e.b[1];
                         if !(ty >= 0.0 && ty < e.b[3] - e.b[1]) {
@@ -464,7 +547,7 @@ impl CpuRaster {
             let xn = (w - o[0]).min(32);
             // SAFETY: row gy < h, pixels [o.x, o.x + xn) < w: inside the caller's surface.
             let out = unsafe { dst.add(gy as usize * bpr + o[0] as usize * 4) };
-            store_row(&self.acc[(y * 32 * 4) as usize..(y * 32 * 4 + xn * 4) as usize], out);
+            store_row::<V3>(&self.acc[(y * 32 * 4) as usize..(y * 32 * 4 + xn * 4) as usize], out);
         }
     }
 }
@@ -489,7 +572,13 @@ fn fma16(a: f16, b: f16, c: f16) -> f16 {
 
 /// `acc = sh + acc * (1 - sh.a)` over pixels `[x0, x1)` of a row, `sh` constant (a solid run).
 #[inline(always)]
-fn blend_span(row: &mut [f16], x0: i32, x1: i32, sh: [f16; 4], two: bool) {
+fn blend_span<const V3: bool>(row: &mut [f16], x0: i32, x1: i32, sh: [f16; 4], two: bool) {
+    #[cfg(target_arch = "x86_64")]
+    if V3 && !two {
+        // SAFETY: `V3` is only instantiated inside `tiles_v3` (AVX2, FMA, F16C present); the span lies in `row`.
+        unsafe { x86::blend_span(row, x0, x1, sh) };
+        return;
+    }
     #[cfg(target_arch = "aarch64")]
     let k: f16 = 1.0 - sh[3];
     #[cfg(target_arch = "aarch64")]
@@ -523,7 +612,13 @@ fn blend_px(px: &mut [f16], sh: [f16; 4], two: bool) {
 
 /// One row of accumulators to BGRA8 (`v * 255` in f32, nearest even).
 #[inline(always)]
-fn store_row(acc: &[f16], out: *mut u8) {
+fn store_row<const V3: bool>(acc: &[f16], out: *mut u8) {
+    #[cfg(target_arch = "x86_64")]
+    if V3 {
+        // SAFETY: as in `blend_span`; `out` holds `acc.len() / 4` pixels (the caller's contract).
+        unsafe { x86::store_row(acc, out) };
+        return;
+    }
     let u = |v: f16| -> u8 { ((v as f32).clamp(0.0, 1.0) * 255.0).round_ties_even() as u8 };
     for (i, px) in acc.chunks_exact(4).enumerate() {
         // SAFETY: the caller sized `out` for `acc.len() / 4` pixels.
@@ -687,6 +782,73 @@ fn shade_x(e: &Ent, c: [f32; 2], atlas: &bough_text::atlas::Atlas, img: &[u8]) -
         _ => {
             let v = shadow(p, hs, e.bw.max(1e-3), e.radius).clamp(0.0, 1.0) as f16;
             e.pm.map(|c| c * v)
+        }
+    }
+}
+
+/// The AVX2 + F16C twins of the solid-span blend and the store, the same arithmetic as the scalar code bit for
+/// bit: a half FMA here is the f32 FMA rounded to half (`fma16` off aarch64), the store `v * 255` clamped and
+/// rounded to nearest even in f32. Only reachable from `tiles_v3`.
+#[cfg(target_arch = "x86_64")]
+mod x86 {
+    use core::arch::x86_64::*;
+
+    /// `blend_span` over 2 pixels (8 halves) per step.
+    #[inline(always)]
+    pub(super) unsafe fn blend_span(row: &mut [f16], x0: i32, x1: i32, sh: [f16; 4]) {
+        let k = 1.0f32 - sh[3] as f32;
+        let k = (k as f16) as f32; // `1 - a` is a half in the scalar code
+        let shf = [sh[0] as f32, sh[1] as f32, sh[2] as f32, sh[3] as f32];
+        let (mut x, x1) = (x0 as usize, x1 as usize);
+        let p = row.as_mut_ptr() as *mut u16;
+        // SAFETY: the caller's contract (features present; pixels [x0, x1) are inside `row`).
+        unsafe {
+            let s8 = _mm256_setr_ps(shf[0], shf[1], shf[2], shf[3], shf[0], shf[1], shf[2], shf[3]);
+            let k8 = _mm256_set1_ps(k);
+            while x + 2 <= x1 {
+                let a = p.add(x * 4) as *mut __m128i;
+                let v = _mm256_cvtph_ps(_mm_loadu_si128(a));
+                _mm_storeu_si128(a, _mm256_cvtps_ph::<_MM_FROUND_TO_NEAREST_INT>(_mm256_fmadd_ps(v, k8, s8)));
+                x += 2;
+            }
+            if x < x1 {
+                let a = p.add(x * 4) as *mut i64;
+                let v = _mm_cvtph_ps(_mm_loadl_epi64(a as *const __m128i));
+                let r = _mm_cvtps_ph::<_MM_FROUND_TO_NEAREST_INT>(_mm_fmadd_ps(v, _mm256_castps256_ps128(k8), _mm256_castps256_ps128(s8)));
+                _mm_storel_epi64(a as *mut __m128i, r);
+            }
+        }
+    }
+
+    /// `store_row` over 4 pixels (16 halves) per step.
+    #[inline(always)]
+    pub(super) unsafe fn store_row(acc: &[f16], out: *mut u8) {
+        let n = acc.len() / 4;
+        let p = acc.as_ptr() as *const u16;
+        let mut i = 0;
+        // SAFETY: the caller's contract (`out` holds `n` pixels; features present).
+        unsafe {
+            let (zero, one, s255) = (_mm256_setzero_ps(), _mm256_set1_ps(1.0), _mm256_set1_ps(255.0));
+            let bgra = _mm_setr_epi8(2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
+            let cvt = |h: __m128i| -> __m256i {
+                let v = _mm256_min_ps(_mm256_max_ps(_mm256_cvtph_ps(h), zero), one);
+                _mm256_cvtps_epi32(_mm256_round_ps::<{ _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC }>(_mm256_mul_ps(v, s255)))
+            };
+            while i + 4 <= n {
+                let a = cvt(_mm_loadu_si128(p.add(i * 4) as *const __m128i));
+                let b = cvt(_mm_loadu_si128(p.add(i * 4 + 8) as *const __m128i));
+                let ab = _mm_packs_epi32(_mm256_castsi256_si128(a), _mm256_extracti128_si256::<1>(a));
+                let cd = _mm_packs_epi32(_mm256_castsi256_si128(b), _mm256_extracti128_si256::<1>(b));
+                _mm_storeu_si128(out.add(i * 4) as *mut __m128i, _mm_shuffle_epi8(_mm_packus_epi16(ab, cd), bgra));
+                i += 4;
+            }
+        }
+        let u = |v: f16| -> u8 { ((v as f32).clamp(0.0, 1.0) * 255.0).round_ties_even() as u8 };
+        while i < n {
+            let px = &acc[i * 4..i * 4 + 4];
+            // SAFETY: as above.
+            unsafe { (out.add(i * 4) as *mut [u8; 4]).write_unaligned([u(px[2]), u(px[1]), u(px[0]), u(px[3])]) };
+            i += 1;
         }
     }
 }
