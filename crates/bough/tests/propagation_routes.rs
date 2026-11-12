@@ -20,7 +20,7 @@ fn config(ring: usize) -> Config {
     c.ring = ring;
     c
 }
-fn compare(a: &[u8], b: &[u8], context: &str) {
+pub(crate) fn compare(a: &[u8], b: &[u8], context: &str) {
     assert_eq!(a.len(), b.len(), "{context}: dimensions");
     let n = a.chunks(4).zip(b.chunks(4)).filter(|(a, b)| a != b).count();
     if n != 0 {
@@ -621,5 +621,122 @@ mod entities {
         a.frame();
         let retained = a.reference_pixels();
         super::compare(&a.presented_pixels(), &retained, "presented/full");
+    }
+}
+
+// =============================================================================== what a turn re-describes
+
+mod grain {
+    use super::{click, compare, config, ROW, W};
+    use bough::app::App;
+    use bough::prelude::*;
+    use std::cell::Cell;
+
+    struct Item {
+        c: u32,
+        views: Cell<u32>,
+    }
+    impl View for Item {
+        fn view(&self) -> impl Element<Self> + '_ {
+            self.views.set(self.views.get() + 1);
+            row((block(60.0, ROW).bg(rgb(self.c)).on_click(|i: &mut Item| i.c ^= 0xffffff), block(60.0, ROW).bg(rgb(0x333333)).hover_bg(rgb(0x999999))))
+        }
+    }
+    struct Page {
+        items: List<Item>,
+        plain: Vec<u32>,
+        y: Signal<f32>,
+        hits: u32,
+        views: Cell<u32>,
+    }
+    impl Page {
+        fn new(y: f32) -> Page {
+            Page { items: List::from_iter_in((0..4).map(|i| Item { c: 0x102030 * (i + 1), views: Cell::new(0) })), plain: (0..12).map(|i| 0x201000 + i * 0x0a0a0a).collect(), y: Signal::new(y), hits: 0, views: Cell::new(0) }
+        }
+    }
+    impl View for Page {
+        fn view(&self) -> impl Element<Self> + '_ {
+            self.views.set(self.views.get() + 1);
+            column((
+                list(sig!(self.items)).w(200.0),
+                block(100.0 + self.hits as f32, ROW).bg(rgb(0x004400)).on_click(|p: &mut Page| p.hits += 1),
+                each(self.plain.iter().map(|&c| row((block(80.0, ROW).bg(rgb(c)), block(80.0, ROW).bg(rgb(c ^ 0x00ff00)).hover_bg(rgb(0xffffff)))))),
+            ))
+            .w(220.0)
+            .h(160.0)
+            .scroll(sig!(self.y))
+        }
+    }
+
+    /// Only the owner a handler ran on describes itself again: a hover colour, a wheel and a glide re-describe
+    /// nothing; a row's handler re-describes that row; a root handler the root (and no row).
+    #[test]
+    fn a_turn_redescribes_the_owners_it_handled() {
+        let mut a = App::new(Page::new(0.0), config(2), true);
+        a.frame();
+        let counts = |a: &App<Page>| (a.owner.views.get(), a.owner.items.iter().map(|i| i.views.get()).collect::<Vec<_>>());
+        let base = counts(&a);
+        // hover crossings of two hover colours (a row's and a plain item's), a wheel, a glide to its end
+        a.pointer_move(90.0, 10.0);
+        a.pointer_move(120.0, 5.0 * ROW + 10.0);
+        a.pointer_move(120.0, 6.0 * ROW + 10.0);
+        a.wheel_points(120.0, 6.0 * ROW + 10.0, 7.0);
+        a.wheel(120.0, 6.0 * ROW + 10.0, 0.0, 1.0);
+        while a.animating() {
+            a.tick(1.0 / 60.0);
+            a.frame();
+        }
+        a.wheel_points(120.0, 100.0, -1000.0);
+        a.pointer_leave();
+        assert_eq!(counts(&a), base, "hover colours and scrolling re-describe nothing");
+        // a row's handler: that row
+        click(&mut a, 30.0, 2.0 * ROW + 10.0);
+        assert_eq!(counts(&a), (base.0, vec![base.1[0], base.1[1], base.1[2] + 1, base.1[3]]), "a row handler re-describes its row");
+        // the root's handler: the root
+        click(&mut a, 50.0, 4.0 * ROW + 10.0);
+        assert_eq!(a.owner.hits, 1);
+        assert_eq!(counts(&a), (base.0 + 1, vec![base.1[0], base.1[1], base.1[2] + 1, base.1[3]]), "a root handler re-describes the root");
+        a.frame();
+        let retained = a.reference_pixels();
+        compare(&a.presented_pixels(), &retained, "presented/full");
+    }
+
+    /// Hover follows the tree under a resting pointer: after a scroll (by the wheel, by a glide, by a handler)
+    /// the element now under the pointer is the hovered one. The fresh mount is given the same pointer.
+    #[test]
+    fn hover_follows_a_scroll() {
+        for ring in 1..=4 {
+            let mut a = App::new(Page::new(0.0), config(ring), true);
+            a.frame();
+            let (x, y) = (120.0, 5.0 * ROW + 10.0);
+            let check = |a: &mut App<Page>, what: &str| {
+                a.frame();
+                let retained = a.reference_pixels();
+                compare(&a.presented_pixels(), &retained, &format!("ring {ring} {what}: presented/full"));
+                let mut fresh = App::new(Page::new(*a.owner.y), config(ring), true);
+                fresh.pointer_move(x, y);
+                fresh.frame();
+                compare(&retained, &fresh.reference_pixels(), &format!("ring {ring} {what}: retained/fresh with the pointer there"));
+                // the hovered element shows its hover colour under the pointer
+                let i = (y as usize * W + x as usize) * 4;
+                assert_eq!((retained[i + 2], retained[i + 1], retained[i]), (0xff, 0xff, 0xff), "ring {ring} {what}: the hover colour is under the pointer");
+            };
+            a.pointer_move(x, y);
+            check(&mut a, "hovered");
+            a.wheel_points(x, y, 20.0);
+            check(&mut a, "precise scroll by one row");
+            a.wheel_points(x, y, 13.0);
+            check(&mut a, "precise scroll by part of a row");
+            a.wheel(x, y, 0.0, 1.0);
+            while a.animating() {
+                a.tick(1.0 / 60.0);
+                a.frame();
+            }
+            check(&mut a, "after a glide");
+            a.turn(|p| {
+                p.y.set(3.0);
+            });
+            check(&mut a, "scrolled by a handler");
+        }
     }
 }

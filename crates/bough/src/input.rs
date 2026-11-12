@@ -490,6 +490,23 @@ pub trait ActOp<V> {
     /// A re-description: bring what the op captured by value up to date (a route's closure, a hover
     /// colour); what it installed (wires, scrollers, the act) stays.
     fn refresh(self, m: &mut Mounter<'_, V>, act: u32);
+    /// The op's part of its element's seal (`seal.rs`): what `refresh` would write. An op with state of its
+    /// own that a description does not determine (a scroller, a wire) refuses, the default.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.refuse()
+    }
+}
+
+/// A route's seal: which route it is and its closure's bytes. The trampoline and the receiver are fixed by
+/// the description's type and place (a seal is only ever compared with one of the same item type at the same
+/// place in the owner tree), so equal bytes are the same handler with the same captures; different bytes are
+/// refreshed by the ordinary update. (Padding inside the captures has no defined value: it can only make two
+/// equal closures look different, which costs a refresh.)
+#[inline(always)]
+fn seal_route<S: crate::seal::Sealer, F: Copy>(s: &mut S, which: u32, f: F) {
+    s.word(0x0100 | which);
+    s.bytes(&recipe(f)[..size_of::<F>()]);
 }
 
 /// An element with an interaction op on its first record.
@@ -513,6 +530,12 @@ impl<V, E: Element<V>, O: ActOp<V>> Element<V> for On<E, O> {
     fn dyn_key(&self) -> u64 {
         self.0.dyn_key()
     }
+    /// The element's operands, then the op's: an unchanged closure on an unchanged element is stepped over.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        self.0.seal(s);
+        self.1.seal(s);
+    }
 }
 
 pub struct Click<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
@@ -529,6 +552,10 @@ impl<V: 'static, R: 'static, F: Fn(&mut R) + Copy + 'static> ActOp<V> for Click<
     fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
         refresh_route(&mut m.rt.input.acts[a as usize].click, self.0);
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        seal_route(s, 1, self.0);
+    }
 }
 pub struct Press<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
 impl<R, F> Press<R, F> {
@@ -543,6 +570,10 @@ impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for P
     }
     fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
         refresh_route(&mut m.rt.input.acts[a as usize].press, self.0);
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        seal_route(s, 2, self.0);
     }
 }
 pub struct Hover<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
@@ -559,6 +590,10 @@ impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for H
     fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
         refresh_route(&mut m.rt.input.acts[a as usize].hover, self.0);
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        seal_route(s, 3, self.0);
+    }
 }
 pub struct HoverBg(pub Color);
 impl<V> ActOp<V> for HoverBg {
@@ -572,6 +607,12 @@ impl<V> ActOp<V> for HoverBg {
         act.hover_bg = Some(self.0 .0);
         act.base = base;
         act.bordered = bordered;
+    }
+    /// The hover colour is a paint operand (it never changes a shape).
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x0107);
+        s.paint(self.0 .0);
     }
     /// A new hover colour: stored; shown at once if the pointer is over the element.
     fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
@@ -600,6 +641,10 @@ impl<V> ActOp<V> for Focusable {
     const FLAGS: u8 = KF_FOCUS;
     fn install(self, _: &mut Mounter<'_, V>, _: u32) {}
     fn refresh(self, _: &mut Mounter<'_, V>, _: u32) {}
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x0104);
+    }
 }
 pub struct OnKey<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
 impl<R, F> OnKey<R, F> {
@@ -616,6 +661,10 @@ impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for O
     fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
         refresh_route(&mut m.rt.input.acts[a as usize].key, self.0);
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        seal_route(s, 5, self.0);
+    }
 }
 pub struct Drag<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
 impl<R, F> Drag<R, F> {
@@ -630,6 +679,10 @@ impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for D
     }
     fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
         refresh_route(&mut m.rt.input.acts[a as usize].drag, self.0);
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        seal_route(s, 6, self.0);
     }
 }
 /// The element scrolls the owner's `Signal<f32>` (points, `0..=max`) with wheel glides.
@@ -782,6 +835,10 @@ impl<V, E: Element<V>> Element<V> for NoHit<E> {
     }
     fn update(self, m: &mut Mounter<'_, V>) {
         self.0.update(m);
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        self.0.seal(s);
     }
 }
 
@@ -1153,6 +1210,9 @@ impl<V: View> App<V> {
             }
         };
         self.rt.input.stats.routes += 1;
+        // the handler's receiver describes itself again: the root here; a row through its list's edit log; an
+        // entity's views with the owner that shows them (`Rt::owner_mut` marked those)
+        self.rt.redesc_root |= r.own.is_root();
         // SAFETY: `o` is the live owner `r.own` names, whose type the route's receiver was matched against when
         // it was lowered (`receiver`), uniquely borrowed (derived from the root's unique borrow).
         unsafe { r.call(o, e) };
@@ -1171,17 +1231,48 @@ impl<V: View> App<V> {
         pa
     }
 
-    /// Settle what routes queued and lay out what changed (the end of an input turn).
+    /// Settle what routes queued and lay out what changed (the end of an input turn). Hover is a function
+    /// of the pointer and of the tree: what the turn moved under a resting pointer (a scroll, a list edit, a
+    /// re-description) is entered and left now, not at the next pointer event.
     fn settle_input(&mut self) {
+        self.settle_pass();
+        if self.rehover() {
+            self.settle_pass();
+        }
+        self.sync_ring();
+    }
+
+    /// Settle, run the `changed` waves, re-describe the owners a handler ran on, lay out.
+    fn settle_pass(&mut self) {
         let owner = &mut *self.owner as *mut V as *const u8;
         // SAFETY: the owner is the mounted view (uniquely borrowed: list patches write their cell); every
         // wire was installed from a `sig!` proof for it.
         unsafe { self.rt.settle(owner) };
-        // an arbitrary handler: `changed` waves, then a re-describing owner describes again (API.md)
         self.effects();
-        self.redescribe();
+        // Only owners a handler (a route, a `changed`) ran on describe again: the root if one ran on it, the
+        // rows the turn edited. A turn of wires alone (a hover colour, a wheel, a glide's tick, a keystroke in
+        // a field) changed no plain state, so it re-describes nothing.
+        if std::mem::take(&mut self.rt.redesc_root) {
+            self.redescribe();
+        } else {
+            self.redescribe_rows();
+        }
         self.rt.lay_flush();
-        self.sync_ring();
+    }
+
+    /// Bring the hover chain up to date with the tree under a resting pointer (no pointer, or a drag's
+    /// capture: nothing). Returns whether a hover route ran (the caller settles again).
+    pub(crate) fn rehover(&mut self) -> bool {
+        let Some((px, py)) = self.rt.input.pointer else { return false };
+        if self.rt.input.pressed != 0 && self.rt.input.dragging {
+            return false;
+        }
+        let inp = &self.rt.input;
+        if inp.cell_ok && inp.cell.contains_point(px, py) && self.rt.bough.cell_valid(inp.cell, inp.cell_epoch) {
+            return false;
+        }
+        let s = self.rt.scale;
+        self.update_hover(px, py, px as f32 / s, py as f32 / s)
     }
 
     #[inline]
@@ -1212,8 +1303,8 @@ impl<V: View> App<V> {
         }
     }
 
-    /// Recompute the hover chain at (px, py) unless the hit cell still answers. Returns whether routes or
-    /// styles ran.
+    /// Recompute the hover chain at (px, py) unless the hit cell still answers. Returns whether a hover
+    /// route ran (hover colours and tooltips are paint writes: nothing to settle, nothing to re-describe).
     fn update_hover(&mut self, px: i32, py: i32, x: f32, y: f32) -> bool {
         let inp = &self.rt.input;
         if inp.cell_ok && inp.cell.contains_point(px, py) && self.rt.bough.cell_valid(inp.cell, inp.cell_epoch) {
@@ -1260,7 +1351,8 @@ impl<V: View> App<V> {
         ran
     }
 
-    /// Hover on/off for one record: its hover background (a paint write), tooltip clip and route.
+    /// Hover on/off for one record: its hover background (a paint write), tooltip clip and route. Returns
+    /// whether a route ran.
     fn hover_set(&mut self, h: Handle, on: bool, x: f32, y: f32) -> bool {
         let a = self.rt.input.act_of(h);
         if a == 0 {
@@ -1294,7 +1386,6 @@ impl<V: View> App<V> {
             if old != now {
                 self.rt.paint_write(h, old, now);
             }
-            ran = true;
         }
         if act.tip != NONE {
             let k = act.tip as usize;
@@ -1310,7 +1401,6 @@ impl<V: View> App<V> {
                 self.rt.input.tips[k].fading = false;
                 tip_alpha(&mut self.rt, k, if on { 1.0 } else { 0.0 });
             }
-            ran = true;
         }
         if let Some(r) = act.hover {
             let e = Ev { on, ..Ev::at(x, y) };
@@ -1406,10 +1496,13 @@ impl<V: View> App<V> {
         self.rt.input.pointer = None;
         self.rt.input.cell_ok = false;
         let old = std::mem::take(&mut self.rt.input.hover);
+        let mut ran = false;
         for h in old {
-            self.hover_set(h, false, -1.0, -1.0);
+            ran |= self.hover_set(h, false, -1.0, -1.0);
         }
-        self.settle_input();
+        if ran {
+            self.settle_input();
+        }
     }
 
     /// A wheel turned at (x, y) by (dx, dy) lines: the nearest scroller of the chain aims its glide

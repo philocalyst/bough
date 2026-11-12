@@ -500,6 +500,9 @@ pub struct Rt {
     /// The mounted owner (boxed by `App`, never moves): what a layout placement hook needs to mount the rows
     /// of a list whose port it moved.
     pub(crate) owner: *const u8,
+    /// A handler ran on the root owner (or on an owner whose views the root's walk re-describes: an entity)
+    /// since the last re-description: an input turn re-describes the root only then (`input.rs`).
+    pub(crate) redesc_root: bool,
     /// The app re-describes (no `Config::mount_once`): owners mounted later (list rows) record tapes too.
     pub(crate) describes: bool,
     /// The root owner's type (a route's receiver is resolved along the owner chain at mount, `input.rs`).
@@ -612,6 +615,7 @@ impl Rt {
             transitions: Default::default(),
             images: Default::default(),
             owner: std::ptr::null(),
+            redesc_root: false,
             describes: false,
             root_ty: std::any::TypeId::of::<()>(),
             _region: region,

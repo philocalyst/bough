@@ -32,7 +32,9 @@ pub trait View: Sized + 'static {
     fn view(&self) -> impl Element<Self> + '_;
     /// The one effect site: what crossed the owner's boundaries this turn (`changed.rs`). It may write
     /// state; the writes settle in another wave of the same turn.
-    fn changed(&mut self, _d: crate::changed::Changed<'_, Self>) {}
+    fn changed(&mut self, d: crate::changed::Changed<'_, Self>) {
+        d.unhandled()
+    }
 }
 
 pub struct Config {
@@ -436,10 +438,28 @@ impl<V: View> App<V> {
         // SAFETY: the owner is the mounted view; every wire was installed from a `sig!` proof for it.
         unsafe { self.rt.settle(owner) };
         self.effects();
+        // an arbitrary handler on the root: it describes itself again
+        self.rt.redesc_root = false;
         self.redescribe();
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
         self.prof.mark(PH_TEXT);
+        self.after_turn();
+    }
+
+    /// What the turn moved under a resting pointer is entered and left (`rehover`); a hover route that ran
+    /// is a handler of its own: settled and re-described like one.
+    #[inline]
+    fn after_turn(&mut self) {
+        if self.rt.input.pointer.is_some() && self.rehover() {
+            let owner = &mut *self.owner as *mut V as *const u8;
+            // SAFETY: as in `turn`.
+            unsafe { self.rt.settle(owner) };
+            self.effects();
+            self.rt.redesc_root = false;
+            self.redescribe();
+            self.rt.lay_flush();
+        }
     }
 
     /// The tile rows the last drawn frame repaired (bitmask of tile columns per row; inspect.rs).
@@ -464,8 +484,10 @@ impl<V: View> App<V> {
         // SAFETY: as in `turn`.
         unsafe { self.rt.settle(owner) };
         self.effects();
+        self.rt.redesc_root = false;
         self.redescribe();
         self.rt.lay_flush();
+        self.after_turn();
     }
 
     /// A turn with no handler: admit async completions (a committed cohort's wires run in this turn).
@@ -485,19 +507,27 @@ impl<V: View> App<V> {
                 return;
             }
             let d = crate::changed::Changed { pubs: &self.rt.pubs, readers: &self.rt.asy.committed, _v: std::marker::PhantomData };
+            self.rt.pubs.unhandled.set(false);
             self.owner.changed(d);
+            // a `changed` that is not the default is a handler on its owner: the root describes itself again
+            // (also for an owner below it: an entity's views are reached by the root's walk; a row was edited to
+            // get here, so its list logged it)
+            let mut handled = !self.rt.pubs.unhandled.get();
             // other owners (list rows, entities, row-owned readers) whose own boundaries published
             let owners = std::mem::take(&mut self.rt.pubs.owners);
             for &(o, cls) in &owners {
                 if let Some(f) = self.rt.class_changed[cls as usize] {
                     // SAFETY: `o` is the live owner the publishing wire ran for (a row in its list's slab, an
                     // entity in its slab), of the class's type; settled right after with its own class.
+                    self.rt.pubs.unhandled.set(false);
                     unsafe {
                         f(o as *mut u8, &self.rt.pubs, &self.rt.asy.committed);
                         self.rt.settle_cls(o as *const u8, cls);
                     }
+                    handled |= !self.rt.pubs.unhandled.get();
                 }
             }
+            self.rt.redesc_root |= handled;
             self.rt.pubs.clear();
             self.rt.asy.committed.clear();
             let owner = &mut *self.owner as *mut V as *const u8;
@@ -505,6 +535,13 @@ impl<V: View> App<V> {
             unsafe { self.rt.settle(owner) };
         }
         panic!("View::changed did not settle in 8 waves (a cycle between changed and its own boundaries)");
+    }
+
+    /// Re-describe the rows edited this turn alone (`Rt::lists_redescribe`): the root was not handled.
+    pub(crate) fn redescribe_rows(&mut self) {
+        if !self.once && !self.rt.lists.redesc.is_empty() {
+            self.rt.lists_redescribe();
+        }
     }
 
     /// Describe the view again and patch the retained records (`describe.rs`); not when mounted once.

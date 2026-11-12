@@ -561,6 +561,8 @@ impl Rt {
                 let v = &self.eviews[(o.k & !OwnerRef::ENT) as usize];
                 (v.own, v.off, v.edit)
             };
+            // an entity's views are re-described by the walk of the owner that shows them
+            self.redesc_root = true;
             // SAFETY: the function contract.
             let p = unsafe { self.owner_mut(root, own) }?;
             // SAFETY: `p` is the live owner whose description mounted the entity view (path `own`), and `off` the
