@@ -85,7 +85,7 @@ fn main() {
     world.mount(&sheet);
     let d = pmu::sample().since(&a);
     let mount_us = t.elapsed().as_secs_f64() * 1e6;
-    let (records, pages, bytes) = world.stats();
+    let (records, pages, bytes) = world.root.stats();
     println!("# model built in {build_ms:.2} ms ({} instructions): the data, not the UI", build.v[0]);
     println!("# mounted: {records} records in {pages} pages, {bytes} bytes of columns, {mount_us:.1} us wall");
     println!("sheet_x\tmount\t1\t{}\t{}\t{}\t{}", d.v[0] - m.bracket[0], d.v[0] - m.bracket[0], d.v[1].saturating_sub(m.bracket[1]), world.tiles.count());
@@ -133,7 +133,7 @@ fn main() {
     m.phase("part_delta_total", reps, &mut world, &mut sheet, |w, s, k| {
         let mut u2 = s.u;
         u2.set_at::<Sum>(k % COLS, k as i32 + 77);
-        bough_x::store::delta(w.ar, &s.u, &u2, 1 << (4 + k % COLS), &mut w.tiles);
+        w.root.delta(&s.u, &u2, 1 << (4 + k % COLS), &mut w.tiles);
     });
     m.phase("part_diff_only", reps, &mut world, &mut sheet, |w, s, k| {
         let mut u2 = s.u;
@@ -197,6 +197,6 @@ fn main() {
         s.edit_opaque((top + (k * 7) % 30).min(rows - 1), (k * 3) % COLS, (k * 37 % 9973) as f32 / 100.0);
         w.redescribe(s);
     });
-    let (records, pages, bytes) = world.stats();
+    let (records, pages, bytes) = world.root.stats();
     println!("# at the end: {records} records in {pages} pages, {bytes} bytes of columns");
 }

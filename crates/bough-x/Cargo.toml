@@ -21,7 +21,9 @@ mutant_journal = []
 mutant_moves = []
 # a frame with records in motion damages nothing
 mutant_sweep = []
-# a reader of the published half does not check the epoch after reading
+# reflection takes a list record's ring slot for its row (tests/reflect.rs must fail)
+mutant_reflect = []
+# a reader of the published half does not check the epoch after reading (tests/publish.rs must fail)
 mutant_torn = []
-# publish forgets every other column page: the published half goes stale
+# publish forgets every other column page: the published half goes stale (tests/sheet.rs must fail)
 mutant_publish = []

@@ -18,8 +18,16 @@ pub const U_PTR_Y: usize = 60;
 pub const U_PTR_X: usize = 61;
 pub const U_PICK: usize = 62;
 pub const U_TIME: usize = 63;
-/// The words an application may write.
-pub const APP_WORDS: usize = 60;
+/// Words the surface lane owns (focus, press, environment, where the press began): written by the platform and
+/// the world, compared in a turn like the application's.
+pub const U_FOCUS: usize = 56;
+pub const U_PRESS: usize = 57;
+pub const U_ENV: usize = 58;
+pub const U_PRESS_AT: usize = 59;
+/// The words below this are the application's (growing up from 0) and the core's (growing down from here).
+pub const APP_WORDS: usize = 56;
+/// The words a turn compares: everything but the hot ones.
+pub const TURN_WORDS: usize = 60;
 
 /// The uniform block. The application writes it as plain data; nothing observes a write.
 #[repr(C, align(64))]
@@ -433,6 +441,9 @@ pub trait Expr: Words {
     /// If the value is a colour, its alpha is provably full.
     const OPAQUE: bool = false;
     const CODE: &'static Code;
+    /// Whether [`Expr::until`] can be anything but "never": false for an expression that reads `Time` and gives
+    /// no bound, so a column of them is known to be in motion without asking a single record.
+    const RESTS: bool = Self::READS >> U_TIME & 1 == 0;
     fn eval(&self, cx: &Cx) -> Self::Out;
 
     /// The bound of this expression in `Time`: the value of `Time` from which on the expression no longer
@@ -615,6 +626,7 @@ where
     type Out = O;
     type Stage = <A::Stage as Stage>::OnCpu;
     const READS: u64 = A::READS;
+    const RESTS: bool = A::RESTS;
     const CODE: &'static Code = &Code::Cpu(&[A::CODE]);
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> O {
@@ -638,6 +650,7 @@ where
     type Out = (A::Out, B::Out);
     type Stage = <(A::Stage, B::Stage) as JoinAll>::Out;
     const READS: u64 = A::READS | B::READS;
+    const RESTS: bool = A::RESTS & B::RESTS;
     const CODE: &'static Code = &Code::Cpu(&[A::CODE, B::CODE]);
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> Self::Out {
@@ -655,6 +668,7 @@ where
     type Out = (A::Out, B::Out, C::Out);
     type Stage = <(A::Stage, B::Stage, C::Stage) as JoinAll>::Out;
     const READS: u64 = A::READS | B::READS | C::READS;
+    const RESTS: bool = A::RESTS & B::RESTS & C::RESTS;
     const CODE: &'static Code = &Code::Cpu(&[A::CODE, B::CODE, C::CODE]);
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> Self::Out {

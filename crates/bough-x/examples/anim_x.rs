@@ -18,7 +18,7 @@ fn main() {
     world.tick(1000);
     world.mount(&a);
     world.tiles.clear();
-    let (records, pages, _) = world.stats();
+    let (records, pages, _) = world.root.stats();
     println!("# H={h}: {records} records in {pages} pages; sweeps {}", world.tiles.sweeps.len());
     println!("scene\tphase\tsteps\tinstr_p50\tcycles_p50\ttiles_p50");
     let mut b: Vec<[u64; pmu::MAX]> = (0..64)
