@@ -10,8 +10,10 @@
 //!   per line. This is what the layout lane's `Measure::block` is answered from, with no glyphs.
 //! * [`flow`]: a text that grows: an append costs the appended glyphs and the last line.
 //! * [`doc`]: a document as blocks of lines; an edit touches one block.
-//! * [`digits`]: a number as a glyph source: the k-th glyph is arithmetic on the value.
+//! * [`digits`]: a number as a glyph source: the k-th glyph is arithmetic on the value (`bough_face::num`).
+//! * [`bake`]: the build step: a face at a size as a `bough_face` image the first frame reads in place.
 //! * [`line`]: the line record's glyph words and a reference kernel over them.
+pub mod bake;
 pub mod brk;
 pub mod digits;
 pub mod doc;

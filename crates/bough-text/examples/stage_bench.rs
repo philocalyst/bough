@@ -13,7 +13,7 @@
 //! append that restarts at the appended bytes): each must stop the run at a gate.
 use bough_text::atlas::GlyphCache;
 use bough_text::stage::brk::{self, Block, Brk};
-use bough_text::stage::digits::{self, Cell};
+use bough_text::stage::digits::{self, cell_of};
 use bough_text::stage::doc::Doc;
 use bough_text::stage::flow::{Flow, Set};
 use bough_text::stage::line::{self, GlyphW, Strike};
@@ -359,12 +359,12 @@ fn t3(m: &Meter, sh: &Shaper) {
     ] {
         let Ok(b) = std::fs::read(p) else { continue };
         let note = match SimpleScript::build(&b, 0) {
-            Some(sc) => format!("{:?}", Cell::of(&sc)),
+            Some(sc) => format!("{:?}", cell_of(&sc)),
             None => "no simple-script table".into(),
         };
         m.fact("t3.cell", "", 0.0, &format!("{p}: {note}"));
     }
-    let Ok(cell) = Cell::of(&sh.script) else {
+    let Ok(cell) = cell_of(&sh.script) else {
         m.fact("t3.skipped", "", 0.0, "the bench font's digits are not a cell");
         return;
     };
@@ -381,22 +381,23 @@ fn t3(m: &Meter, sh: &Shaper) {
             _ => (r >> 3) as i32,
         };
         for d in [0u32, 2, 3] {
-            digits::format(v, d, &mut s);
+            digits::format(v, d, 0, &mut s);
+            let num = digits::Num::new(v, d, 0);
             assert!(sh.shape_into(&s, 1.0, &mut run));
-            let n = digits::count(v, d);
+            let n = num.count();
             assert_eq!(n as usize, run.len());
             let mut pen = 0i32;
             let mut off = false;
             for (g, &c) in s.as_bytes().iter().enumerate() {
                 let k = n - 1 - g as u32;
-                assert_eq!(digits::glyph(v, d, k), c);
+                assert_eq!(num.glyph(k), c);
                 assert_eq!(sh.script.gid[c as usize], run.gid[g], "{s} k={k}");
-                assert_eq!(digits::pen(&cell, v, d, k), pen, "{s} k={k}");
+                assert_eq!(num.pen(&cell, k), pen, "{s} k={k}");
                 off |= run.x[g] != pen;
                 worst = worst.max((run.x[g] - pen).abs());
                 pen += sh.script.adv[c as usize] as i32;
             }
-            assert_eq!(digits::width(&cell, v, d), pen, "{s}");
+            assert_eq!(num.width(&cell), pen, "{s}");
             assert!(cell.kern != 0 || !off, "a face with no digit kerning: the shaper's pens are the cell's");
             differ += off as u64;
             checked += 1;
@@ -408,7 +409,7 @@ fn t3(m: &Meter, sh: &Shaper) {
     let mut acc = 0i64;
     m.cell("t3.glyph_and_pen", "instr/glyph", 200, 256.0 * 8.0, "7 digits and a point, d = 2; prediction at most 25", || {
         for &v in &vals {
-            let num = digits::Num::new(black_box(v), 2);
+            let num = digits::Num::new(black_box(v), 2, 0);
             for k in 0..num.count() {
                 acc += num.glyph(k) as i64 + num.pen(&cell, k) as i64;
             }

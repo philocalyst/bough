@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 bough-mem = { path = "../bough-mem" }
+# The prepared-face image this crate bakes (stage::bake) and the number arithmetic it shares with the kernels.
+bough-face = { path = "../bough-face" }
 ttf-parser = { version = "0.25", default-features = false, features = ["std", "opentype-layout", "variable-fonts"] }
 swash = "0.2"
 # Vendored parley (vendor/README.md): bough's text path; the grafts live in vendor/parley/src/bough/. Without
