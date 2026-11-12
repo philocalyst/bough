@@ -224,7 +224,9 @@ accessibility child, so VoiceOver descends into the web view at the right place 
 ### 1.6 Cost, invariant, tests
 
 * **Unused:** `Rt::foreign.live != 0` is tested once per `frame` and once per pointer event. The kernel has one
-  more compare where a record is staged and one select per staged record per tile. Slope cells: `REPORT.md`.
+  more compare where a record is staged and one compare per staged record in the tile loop (the hole is a
+  branch that is uniform across the threadgroup; the other kinds' blend is untouched). Slope cells and what
+  was not measured (GPU time): `REPORT.md`.
 * **Invariant:** after `frame()`, for every live foreign element, `slot.last` equals the placement computed
   from the record, and the host has been given every distinct placement in order. For an `Under` element the
   surface's alpha is zero on `(box rounded by radius) ∩ clip` minus the ink of later records.
@@ -342,6 +344,15 @@ to one add.
 
 This is the contained-child rung of the storage ladder (D8). The only signatures a component author writes are
 `fn view(&self) -> impl Element<Self> + '_` and `&mut self` methods.
+
+* **Unused:** `Mounter::wire` adds `base` (zero) to an offset at mount, never per frame; `Route::call` adds
+  `base` (zero) to the owner pointer per dispatched route. Nothing is added to `settle`.
+* **Invariant:** every wire installed through an embedded mounter has `cell = root owner + class offset`, the
+  offset a sum of `offset_of!` values of struct field paths (so it holds for the owner's life); a route's
+  receiver is `root owner + base`, of the type its trampoline was monomorphised for.
+* **Tests:** `an_embedded_view_keeps_its_own_state_routes_and_wires` (two instances of one component: each
+  route writes its own instance; wires patch; a guard on one instance only; retained == full redraw == fresh
+  mount), `reflection_reaches_every_embedded_owner`, the `embed!` doctests (one compile-fail: through a `Box`).
 
 Limits of the prototype: inside an embedded view, lists, readers, entities, virtual lists, scroll boxes and
 text fields are refused at mount (their patches are handed the class's owner and read it as the mounting
