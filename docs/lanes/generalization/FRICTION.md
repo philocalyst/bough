@@ -32,3 +32,13 @@ cost against the stronger structural ideal instead of attributing that entire co
 Timer FFI safety follows existing host.rs: AppKit main-thread registration, a block owning an Rc of the live app,
 run-loop-owned timer, no cross-thread mutation. Bounded real-window timer smoke asserts at least one callback;
 that is the independent lifetime/main-thread integration check for this adapter.
+
+## Round-6 completion stage
+
+| ID | desired expression / behaviour | obstruction | what the suite does |
+|---|---|---|---|
+| G12 | a view tuple of nine or more children | `Element` is implemented for tuples up to arity 8 | nest tuples |
+| G13 | `div().scroll(..).child(list(..))` as the whole window | no rows are mounted when the port is at the window origin (OVERFIT finding 7) | an 8 pt block above the port in the adversarial list views; the gui-bench table has its header there already |
+| G14 | `each(rows.iter().map(row)).key(|r| r.id)` | `each` items have no key; `Element::dyn_key` is not reachable from the prelude | positional re-description, measured as such |
+| G15 | a description of dynamic depth (`Box<dyn Element>` or a recursive element) | no type-erased element; a recursive tree is only expressible as `List` rows owning lists | static nesting by macro (`--features deep`) and the list form |
+| G16 | `app.reclaim()` or reclamation inside input turns | `Rt::reclaim` runs only in `App::turn` and idle frames | none in measured cells; `GUIBENCH_IDLE` as a labelled diagnostic |

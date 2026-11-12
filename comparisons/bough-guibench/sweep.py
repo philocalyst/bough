@@ -100,6 +100,8 @@ def rest_cells(sizes):
         cells.append(dict(scenario='typing', rows=n, op='typing'))
         cells.append(dict(scenario='search', rows=n, op='filter'))
         cells.append(dict(scenario='search', rows=n, op='filter-nochange'))
+        cells.append(dict(scenario='search', rows=n, op='filter', extra=['--plain']))
+        cells.append(dict(scenario='search', rows=n, op='filter-nochange', extra=['--plain']))
         cells.append(dict(scenario='resize', rows=n, op='resize'))
     for n in [0] + sizes:
         cells.append(dict(scenario='spinner', rows=n, op='spinner'))
@@ -153,7 +155,8 @@ def main():
             f['ideal'] = ideal
             f['flag'] = f['global_exp'] > ideal + 0.2 or f['last_exp'] > ideal + 0.2
             fits['|'.join(k) + '|' + ph] = f
-    (out / f'{a.batch}.json').write_text(json.dumps(dict(cells=results, fits=fits), indent=1) + '\n')
+    name = a.batch + ('-' + re.sub(r'\W+', '_', a.only) if a.only else '')
+    (out / f'{name}.json').write_text(json.dumps(dict(cells=results, fits=fits), indent=1) + '\n')
     for r in results:
         g = r.get('gates', {})
         print(r['scenario'], r.get('variant', ''), r['rows'], r['op'], ' '.join(r.get('extra', [])),

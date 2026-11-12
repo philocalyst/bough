@@ -845,6 +845,48 @@ fn listbox_of<R: View + From<u32>>(a: &Args, name: &str) {
     });
 }
 
+// ------------------------------------------------------------------ interaction inside list rows
+struct RRow {
+    on: Signal<bool>,
+    route: bool,
+}
+impl View for RRow {
+    fn view(&self) -> impl Element<Self> + '_ {
+        (
+            self.route.then(|| block(0.0, 20.0).w_pct(1.0).shrink(0.0).bg(sig!(self.on).map(|o| rgb(if *o { WF } else { DL }))).on_click(|v: &mut Self| {
+                let x = !*v.on;
+                v.on.set(x);
+            })),
+            (!self.route).then(|| block(0.0, 20.0).w_pct(1.0).shrink(0.0).bg(rgb(DL)).hover_bg(rgb(WH))),
+        )
+    }
+}
+struct RList {
+    rows: List<RRow>,
+}
+impl View for RList {
+    fn view(&self) -> impl Element<Self> + '_ {
+        column((block(0.0, 8.0).w_pct(1.0).shrink(0.0).bg(rgb(0xeeeeee)), list(sig!(self.rows)).w_pct(1.0))).w_pct(1.0).h_pct(1.0).bg(rgb(0xffffff))
+    }
+}
+fn row_interact(a: &Args, route: bool) {
+    stage(if route { "row-route" } else { "row-hover" }, || {
+        let mut app = App::new(RList { rows: List::from_iter_in((0..10).map(|_| RRow { on: Signal::new(false), route })) }, cfg(a), true);
+        app.frame();
+        let w = app.rt.win_w as usize;
+        let before = px(&app.presented_pixels(), w, 640, 8 + 30);
+        if route {
+            app.pointer_down(640.0, 38.0, bough::raw::Button::Primary);
+            app.pointer_up(640.0, 38.0, bough::raw::Button::Primary);
+        } else {
+            app.pointer_move(640.0, 38.0);
+        }
+        app.frame();
+        let after = px(&app.presented_pixels(), w, 640, 8 + 30);
+        format!("records={} row 1 pixel before={before:06x} after={after:06x} want {:06x}", app.record_count(), if route { WF } else { WH })
+    });
+}
+
 // ------------------------------------------------------------------ structure churn
 struct CRow {
     label: Signal<String>,
@@ -1051,6 +1093,10 @@ fn main() {
             listbox_of::<RowD>(&a, "D auto height +bg");
             listbox_of::<RowE>(&a, "E block+bg");
             listbox_of::<RowF>(&a, "F block");
+        }
+        "row-interact" => {
+            row_interact(&a, false);
+            row_interact(&a, true);
         }
         "scripts" => scripts(&a),
         _ => panic!("unknown case"),

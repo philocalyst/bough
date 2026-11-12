@@ -1,35 +1,25 @@
 # bough gui-bench, round 6
 
-Partial eight-scenario port on the normal application update path; see `docs/lanes/generalization/HANDOFF.md`. Default capacities are unchanged.
-`src/spec.rs` and `src/cli.rs` are verbatim from zortax/gui-bench commit
-`13f3cb61687c25f80ea46625680d8e0804f6fbed`, shared with its zgui reference port (Apache-2.0 package).
-The suite does not compare text rasterization against zgui. It checks gui-bench's fixed RGB layout points,
-retained repair against full redraw, and fresh mount against retained state.
-
-This directory is its own workspace. Use the repository's pinned toolchain, an isolated target and four jobs:
+The eight gui-bench scenarios on `bough::prelude` (raw escapes listed in `docs/lanes/generalization/FRICTION.md`), a
+headless driver, and an adversarial matrix. Results and findings: `docs/lanes/generalization/OVERFIT.md`.
+`src/spec.rs` and `src/cli.rs` are verbatim from zortax/gui-bench 13f3cb61687c25f80ea46625680d8e0804f6fbed.
+This directory is its own workspace (its own `Cargo.lock`); use the repository's pinned toolchain.
 
 ```sh
-cargo build --release --locked --manifest-path comparisons/bough-guibench/Cargo.toml --bins
-cargo test --release --locked --manifest-path comparisons/bough-guibench/Cargo.toml
-"$CARGO_TARGET_DIR/release/bough-bench" --scenario rows --rows 100
-"$CARGO_TARGET_DIR/release/bough-bench" --scenario table --rows 100 --variant fine
-"$CARGO_TARGET_DIR/release/headless" --scenario table --rows 100 --variant coarse --op select --gate --repeats 4
+cargo build --release --manifest-path comparisons/bough-guibench/Cargo.toml --bins   # --features deep: static 200-level tree (minutes)
+cargo test  --release --manifest-path comparisons/bough-guibench/Cargo.toml
 ```
 
-`GUIBENCH_SECONDS=3` bounds a window smoke run. `BOUGH_FONT` selects the same face in both drivers;
-otherwise `ZGX_FONT_FILE`, then system Arial. Table F1–F8 use the host's private-use Unicode Key::Char
-representation. The root starts focused without a ring. Native no-focus window shortcuts and row-owner
-routes are missing; see the exact escapes in `docs/lanes/generalization/FRICTION.md`.
+* `bough-bench --scenario NAME --rows N [--variant fine|coarse]`: the real window (`GUIBENCH_SECONDS=3` bounds a run).
+* `headless --scenario NAME --rows N --op OP [--variant ..] [--plain] [--mounted] [--scale S]` plus one of
+  `--repeats 0` (mount only), `--gate --ring R --repeats 4` (pixel and model gates; its counters are not costs),
+  `--repeats 8 --blocks 3 [--render]` (instructions per operation: R0, or R1 with `--render`).
+  Ops: mount, hover, scroll, jump, select, update10, swap, remove, insert, replace, append, truncate, clear,
+  replace-select, ticker, spinner, typing, filter, filter-nochange, resize. `--mutant` is the negative control.
+* `adversarial --case NAME --op OP --n N [--w --h --scale --k --flag --once]`: one adversarial cell (see `adv.py`).
+* `sweep.py` (gui-bench cells), `adv.py` (adversarial matrix, predictions inside), `report.py` (the tables).
+  `matrix.py`, `run.py`, `report_matrix.py` are the previous stage's runners, kept for its recorded data.
 
-Headless `--render` includes the Metal frame; without it, the same input and frame path ends at GPU input.
-`--gate` draws, compares pixels and validates the model; its reported timings are **not performance data**.
-`--ring 1..4` controls the headless surface ring; `--mutant` adds a deliberately linear selection scan.
-`--op` accepts mount, hover, scroll, select, update10, swap, remove, insert, replace, append, truncate, clear.
-One repeat is operation plus undo; replace and remove/insert allocate fresh IDs exactly as the shared spec does.
-
-`run.py` isolates cells with 120-second timeouts and preserves all process exits. A measured batch needs
-`--lock "$BOUGH_MEASURE_LOCK"` pointing at the round's shared lock, and an otherwise idle machine.
-Only the lock acquired by this invocation is removed. Gate-only runs are correctness evidence, not timings.
-All eight scenario names dispatch. Only the table matrix is implemented; the remaining six have initial smoke evidence.
-Use `matrix.py` for per-thread instruction slopes under load, without a measurement lock. Wall/resource timing
-still needs the round lock. No Linux or fakeland run is claimed.
+Environment: `GUIBENCH_CAPS` = `default` | `raised-spaces` | `name=value,..` (never implicit; default is
+`ui.rs::APP_CAPS`); `GUIBENCH_REHOVER=same|jitter` and `GUIBENCH_IDLE=k` are diagnostics (re-deliver the pointer after
+a scroll; k idle frames after each operation); `BOUGH_FONT` selects the face (default system Arial).
