@@ -85,10 +85,9 @@ fn image_is_the_shaper_and_the_rasteriser() {
                 let sl = face.slot(t as u16);
                 assert_eq!((sl.left, sl.top, sl.w, sl.h), (e.geo[0] as i32, e.geo[1] as i32, e.uv[2] as u32, e.uv[3] as u32));
                 let aw = cache.atlas.width as usize;
-                let cov = face.coverage(sl);
-                for r in 0..sl.h as usize {
-                    let a = (e.uv[1] as usize + r) * aw + e.uv[0] as usize;
-                    assert_eq!(&cov[r * sl.w as usize..(r + 1) * sl.w as usize], &cache.atlas.pixels[a..a + sl.w as usize]);
+                for r in 0..sl.h {
+                    let a = (e.uv[1] as usize + r as usize) * aw + e.uv[0] as usize;
+                    assert_eq!(face.row(sl, r), &cache.atlas.pixels[a..a + sl.w as usize]);
                 }
             }
         }
@@ -146,12 +145,12 @@ fn lines_are_stable_and_spans_cover_what_the_glyphs_cover() {
     let mut reference = vec![0u8; (w * h) as usize];
     for (&t, &pen) in slot.iter().zip(x) {
         let s = face.slot(t);
-        let cov = face.coverage(s);
         for r in 0..s.h as i32 {
+            let cov = face.row(s, r as u32);
             for c in 0..s.w as i32 {
                 let (px, py) = (org.0 + face.px(pen) + s.left + c, org.1 + s.top + r);
                 if (0..w).contains(&px) && (0..h).contains(&py) {
-                    reference[(py * w + px) as usize] = cov[(r * s.w as i32 + c) as usize];
+                    reference[(py * w + px) as usize] = cov[c as usize];
                 }
             }
         }
@@ -159,4 +158,23 @@ fn lines_are_stable_and_spans_cover_what_the_glyphs_cover() {
     assert!(reference.iter().any(|&c| c == 255) && reference.iter().filter(|&&c| c != 0).count() > 300);
     assert_eq!(whole, reference);
     assert_eq!(tiled, reference);
+    // the expansion into one box per glyph (what a glyph-record executor draws: texels read from the atlas by
+    // index and stride) inks exactly what the line inks, cut to a box smaller than the line included
+    for cut in [[0, 0, w, h], [10, 6, 150, 17], [0, 0, 1, 1]] {
+        let mut by_line = vec![0u8; (w * h) as usize];
+        face.spans(slot, x, 0, org, cut, |px, py, c| by_line[(py * w + px) as usize..][..c.len()].copy_from_slice(c));
+        let mut by_glyph = vec![0u8; (w * h) as usize];
+        let (atlas, stride) = (face.atlas(), face.stride());
+        let mut boxes = 0;
+        face.expand(slot, x, 0, org, cut, |b, texel| {
+            boxes += 1;
+            for py in b[1]..b[3] {
+                for px in b[0]..b[2] {
+                    by_glyph[(py * w + px) as usize] = atlas[texel as usize + (py - b[1]) as usize * stride + (px - b[0]) as usize];
+                }
+            }
+        });
+        assert_eq!(by_glyph, by_line, "cut {cut:?}");
+        assert!(boxes <= slot.len());
+    }
 }
