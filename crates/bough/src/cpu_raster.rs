@@ -236,6 +236,10 @@ impl CpuRaster {
             return false;
         }
         let r = rt.bough.record(pos);
+        // anything out of range refuses (the GPU masks it into its column and draws garbage, bounded)
+        if r.clip as usize >= rt.bough.gpu_extent().1 {
+            return false;
+        }
         let [cx0, cy0, cx1, cy1] = rt.bough.clip_rect(r.clip).to_xyxy();
         let cl = [cx0 as f32, cy0 as f32, cx1 as f32, cy1 as f32];
         let p = r.payload;

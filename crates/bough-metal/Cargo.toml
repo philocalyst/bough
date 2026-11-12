@@ -24,6 +24,13 @@ dispatch2 = "0.3"
 # Gate sabotage (lane memory, round 6): column views never grow past their first size; the capacity test
 # (crates/bough/tests/capacity.rs) must fail with it.
 sabotage_views = []
+# Gate mutants of the row certificates (shader.metal `FCert`): each must make a scroll pixel gate fail.
+# The scroll copy skips a certified row without consulting the destination's own certificate.
+mutant_cert_skip = []
+# A row the copy moved keeps the certificate of what the destination held before.
+mutant_cert_stale = []
+# The tile pass certifies a band from one of its pixels.
+mutant_cert_tile = []
 
 [[example]]
 # not "bench": bough-text has an example of that name (cargo output collision in one target dir)
@@ -53,3 +60,5 @@ name = "runs_check"
 name = "wake"
 [[example]]
 name = "fprobe"
+[[example]]
+name = "iosurf_alias"

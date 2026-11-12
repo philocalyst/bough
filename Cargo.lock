@@ -76,6 +76,7 @@ dependencies = [
  "bough-core",
  "bough-frame",
  "bough-gpu",
+ "bough-kernel",
  "bough-mem",
  "bough-metal",
  "bough-sys",
@@ -170,6 +171,17 @@ dependencies = [
  "bough-metal",
  "libc",
  "zgx-workload",
+]
+
+[[package]]
+name = "bough-kernel"
+version = "0.0.0"
+dependencies = [
+ "naga",
+ "objc2",
+ "objc2-foundation",
+ "objc2-metal",
+ "wgsl-rs",
 ]
 
 [[package]]
