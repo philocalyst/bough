@@ -5,47 +5,11 @@
 //! through a typed pointer; every pass over a column (damage, hit testing, paint) is one function monomorphised
 //! for the column's archetype, reached once per column through its [`Desc`].
 use crate::expr::{StageId, U, U_TIME, Words};
+use core::sync::atomic::{AtomicU32, Ordering};
 use core::any::TypeId;
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 
-/// Device pixels, half open.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct Rect {
-    pub x0: i32,
-    pub y0: i32,
-    pub x1: i32,
-    pub y1: i32,
-}
-impl Rect {
-    #[inline(always)]
-    pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Rect {
-        Rect { x0: x, y0: y, x1: x + w, y1: y + h }
-    }
-    #[inline(always)]
-    pub fn shift(self, d: (i32, i32)) -> Rect {
-        Rect { x0: self.x0 + d.0, y0: self.y0 + d.1, x1: self.x1 + d.0, y1: self.y1 + d.1 }
-    }
-    #[inline(always)]
-    pub fn and(self, o: Rect) -> Rect {
-        Rect { x0: self.x0.max(o.x0), y0: self.y0.max(o.y0), x1: self.x1.min(o.x1), y1: self.y1.min(o.y1) }
-    }
-    #[inline(always)]
-    pub fn or(self, o: Rect) -> Rect {
-        Rect { x0: self.x0.min(o.x0), y0: self.y0.min(o.y0), x1: self.x1.max(o.x1), y1: self.y1.max(o.y1) }
-    }
-    #[inline(always)]
-    pub fn empty(self) -> bool {
-        self.x0 >= self.x1 || self.y0 >= self.y1
-    }
-    #[inline(always)]
-    pub fn hits(self, o: Rect) -> bool {
-        self.x0 < o.x1 && o.x0 < self.x1 && self.y0 < o.y1 && o.y0 < self.y1
-    }
-    #[inline(always)]
-    pub fn area(self) -> i64 {
-        (self.x1 - self.x0) as i64 * (self.y1 - self.y0) as i64
-    }
-}
+pub use crate::expr::Rect;
 
 pub const TILE_SHIFT: u32 = 5;
 pub const TILE: i32 = 1 << TILE_SHIFT;
@@ -60,13 +24,54 @@ pub struct Tiles {
     /// The tile rows that may hold a mark: `lo..hi`. Reading and clearing the damage touch only these.
     pub lo: usize,
     pub hi: usize,
+    /// Damage that is still to come: the boxes records in motion stay inside, and until when. A frame marks
+    /// them; nothing is evaluated. At most one entry per column that has a record in motion.
+    pub sweeps: Vec<Sweep>,
+}
+
+/// Records of one column are in motion until `until` (a value of `Time`; `u32::MAX`: endlessly) and stay inside
+/// `rect` (in the column's space) until then.
+#[derive(Clone, Copy, Debug)]
+pub struct Sweep {
+    pub col: u32,
+    pub until: u32,
+    pub rect: Rect,
+    pub space: Space,
 }
 impl Tiles {
+    /// Replace column `col`'s entry: `until == 0` means none of its records is in motion.
+    #[inline]
+    pub fn set_sweep(&mut self, col: u32, space: Space, (until, rect): (u32, Rect)) {
+        match self.sweeps.iter().position(|s| s.col == col) {
+            Some(i) if until == 0 => {
+                self.sweeps.swap_remove(i);
+            }
+            Some(i) => self.sweeps[i] = Sweep { col, until, rect, space },
+            None if until != 0 => self.sweeps.push(Sweep { col, until, rect, space }),
+            None => {}
+        }
+    }
+    /// A frame at time `now` under block `u`: damage where records in motion may be. The frame in which a
+    /// motion comes to rest is its last.
+    #[inline(never)]
+    pub fn tick(&mut self, now: u32, u: &U) {
+        let mut i = 0;
+        while i < self.sweeps.len() {
+            let s = self.sweeps[i];
+            #[cfg(not(feature = "mutant_sweep"))]
+            self.mark(s.rect.shift(s.space.origin(u)).and(s.space.clip));
+            if now >= s.until {
+                self.sweeps.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
     pub fn new(w: i32, h: i32) -> Tiles {
         let cols = ((w + TILE - 1) >> TILE_SHIFT) as usize;
         let rows = ((h + TILE - 1) >> TILE_SHIFT) as usize;
         let stride = cols.div_ceil(64).max(1);
-        Tiles { w, h, stride, rows, bits: vec![0; stride * rows], lo: usize::MAX, hi: 0 }
+        Tiles { w, h, stride, rows, bits: vec![0; stride * rows], lo: usize::MAX, hi: 0, sweeps: Vec::new() }
     }
     /// Mark the tiles a screen rectangle touches.
     #[inline]
@@ -215,11 +220,16 @@ pub trait Arch: Words {
     const STAGE: StageId;
     /// The record's paint reads `Time`: it can change with no turn.
     const TIMED: bool = false;
-    /// The time at which this record comes to rest under `u` (0: it is at rest; `u32::MAX`: never). Between now
-    /// and then it stays inside the box of where it is now and where it will rest (motion along a segment).
+    /// The value of `Time` from which this record shows the same thing whatever the time, under the other
+    /// words of `u` (0: it is at rest now; `u32::MAX`: never).
     #[inline(always)]
     fn until(&self, _u: &U) -> u32 {
         0
+    }
+    /// The box (in the store's space) the record's ink stays inside from now until it rests, given its rect.
+    #[inline(always)]
+    fn sweep(&self, r: Rect, _u: &U) -> Rect {
+        r
     }
     /// The derivative: does this record show something else under `new` than under `old`?
     fn changed(&self, old: &U, new: &U) -> bool;
@@ -292,7 +302,8 @@ pub struct StoreView<'a> {
     pub live: Live<'a>,
 }
 
-pub type DeltaFn = unsafe fn(&mut RawCol, &StoreView, &U, &U, &mut Tiles);
+pub type DeltaFn = unsafe fn(&RawCol, &StoreView, &U, &U, &mut Tiles);
+pub type ActiveFn = unsafe fn(&RawCol, &StoreView, &U) -> (u32, Rect);
 pub type HoverFn = unsafe fn(*mut (), *const u8, bool);
 pub type HitFn = unsafe fn(&RawCol, &StoreView, &U, i32, i32) -> u32;
 /// A column that hears the pointer: its handler and the hit kernel of its archetype (instantiated only for
@@ -312,7 +323,10 @@ pub struct Desc {
     pub page: Layout,
     pub reads: u64,
     pub moves: bool,
+    /// Its records read `Time`.
+    pub timed: bool,
     delta: DeltaFn,
+    active: ActiveFn,
     paint: unsafe fn(&RawCol, &StoreView, &U, *mut ()),
 }
 
@@ -326,7 +340,9 @@ impl<A: Arch, B: Backend> Holder<A, B> {
         page: Layout::new::<Page<A>>(),
         reads: A::READS,
         moves: A::MOVES,
+        timed: A::TIMED,
         delta: delta_col::<A>,
+        active: if A::TIMED { active_col::<A> } else { active_none },
         paint: paint_col::<A, B>,
     };
 }
@@ -347,12 +363,12 @@ pub struct RawCol {
     /// The archetype's delta kernel, beside `reads` and the pages it runs over: a block write reaches a page
     /// through this header alone (block, header, page).
     delta: DeltaFn,
-    /// A column whose records read `Time`: until when some record is in motion (0: none), and the box, in the
-    /// store's space, that the moving records stay inside until then. Written by the delta when a motion
-    /// starts; while it holds, each frame damages the box and evaluates nothing.
-    pub until: u32,
-    pub sweep: Rect,
+    /// The column's name in the list of sweeps (unique in the process).
+    pub id: u32,
     pub key: TypeId,
+    /// The archetype (the record type, without its handler): what a generated kernel or GPU function is keyed
+    /// on. Columns are per store and site; archetypes are per program.
+    pub arch: TypeId,
     pub desc: &'static Desc,
     /// How many child stores were described before this column's first site: its place in paint order.
     pub seg: u32,
@@ -495,12 +511,17 @@ pub struct Store {
     pub geo: (i32, i32, i32),
     /// Scratch: the rows a list pass visits (row index; top bit set: write without comparing).
     pub plan: Vec<u32>,
+    /// The block words some column here reads, and whether some column reads `Time`.
+    pub reads: u64,
+    pub timed: bool,
 }
+
+static COL_ID: AtomicU32 = AtomicU32::new(1);
 
 impl Store {
     pub fn new(cap: u32, space: Space) -> Store {
         assert!(cap == 1 || (cap >= 64 && cap.is_power_of_two()));
-        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new() }
+        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false }
     }
     #[inline(always)]
     pub fn view(&self) -> StoreView<'_> {
@@ -514,7 +535,7 @@ impl Store {
     /// a later column, overlaps the new one.
     #[cold]
     #[inline(never)]
-    pub fn discover(&mut self, d: &'static Desc, rect: Rect, key: TypeId, hover: Option<Hov>) {
+    pub fn discover(&mut self, d: &'static Desc, rect: Rect, key: TypeId, arch: TypeId, hover: Option<Hov>) {
         let seg = self.subs.len() as u32;
         let mut pick = None;
         for (j, c) in self.cols.iter().enumerate() {
@@ -524,10 +545,12 @@ impl Store {
             }
         }
         let j = pick.unwrap_or_else(|| {
-            self.cols.push(RawCol { pages: core::ptr::null_mut(), npages: 0, nrec: 0, k: 0, reads: d.reads, delta: d.delta, until: 0, sweep: Rect::default(), key, desc: d, seg, hover });
+            self.cols.push(RawCol { pages: core::ptr::null_mut(), npages: 0, nrec: 0, k: 0, reads: d.reads, delta: d.delta, id: COL_ID.fetch_add(1, Ordering::Relaxed), key, arch, desc: d, seg, hover });
             self.order.push(Pass::Col(self.cols.len() as u32 - 1));
             self.cols.len() - 1
         });
+        self.reads |= d.reads;
+        self.timed |= d.timed;
         let c = &mut self.cols[j];
         let base = c.k * self.cap;
         c.k += 1;
@@ -548,51 +571,51 @@ impl Store {
     }
 
     /// The damage of a change of the block from `old` to `new` (`ch` = the changed words), for this store and
-    /// the stores under it. One indirect call per column that reads a changed word. Returns whether a column
-    /// is now in motion.
-    pub fn delta(&mut self, old: &U, new: &U, ch: u64, tiles: &mut Tiles) -> bool {
-        let mut moving = false;
+    /// the stores under it. One indirect call per column that reads a changed word. A column whose records
+    /// read `Time` also says, once, until when and where they will be in motion.
+    pub fn delta(&self, old: &U, new: &U, ch: u64, tiles: &mut Tiles) {
         if self.space.reads() & ch != 0 {
             // the space moved: everything it shows is somewhere else
             tiles.mark(self.space.clip);
-        } else {
+            if self.timed & (self.reads & ch != 0) {
+                self.resweep(new, tiles);
+            }
+        } else if self.reads & ch != 0 {
             let live = Live { cap: self.cap, rows: &self.row_live, nrec: 0 };
-            for c in &mut self.cols {
+            for c in &self.cols {
                 if c.reads & ch != 0 {
                     let sv = StoreView { space: &self.space, live: Live { nrec: c.nrec, ..live } };
-                    // SAFETY: `delta` was instantiated for the archetype `c` was created with.
-                    unsafe { (c.delta)(c, &sv, old, new, tiles) }
-                    moving |= c.until != 0;
+                    // SAFETY: `delta` and `active` were instantiated for the archetype `c` was created with.
+                    unsafe {
+                        (c.delta)(c, &sv, old, new, tiles);
+                        if c.desc.timed {
+                            tiles.set_sweep(c.id, self.space, (c.desc.active)(c, &sv, new));
+                        }
+                    }
                 }
             }
         }
-        for s in &mut self.subs {
-            moving |= s.delta(old, new, ch, tiles);
+        for s in &self.subs {
+            s.delta(old, new, ch, tiles);
         }
-        moving
     }
 
-    /// A frame at time `now` with no turn: damage where records in motion may be. Nothing is evaluated: a
-    /// column in motion is one compare and one mark. Returns whether anything is still moving.
-    pub fn tick(&mut self, u: &U, now: u32, tiles: &mut Tiles) -> bool {
-        let mut moving = false;
-        let org = self.space.origin(u);
-        for c in &mut self.cols {
-            if c.until != 0 {
-                #[cfg(not(feature = "mutant_sweep"))]
-                tiles.mark(c.sweep.shift(org).and(self.space.clip));
-                if now >= c.until {
-                    // this frame shows it at rest; nothing after it
-                    (c.until, c.sweep) = (0, Rect::default());
-                } else {
-                    moving = true;
-                }
+    /// Records of this store were written: say again which of its timed columns are in motion. Cold unless
+    /// the store has such a column.
+    #[inline(never)]
+    pub fn resweep(&self, u: &U, tiles: &mut Tiles) {
+        for c in &self.cols {
+            if c.desc.timed {
+                let sv = StoreView { space: &self.space, live: Live { cap: self.cap, rows: &self.row_live, nrec: c.nrec } };
+                // SAFETY: `active` was instantiated for the archetype `c` was created with.
+                tiles.set_sweep(c.id, self.space, unsafe { (c.desc.active)(c, &sv, u) });
             }
         }
-        for s in &mut self.subs {
-            moving |= s.tick(u, now, tiles);
-        }
-        moving
+    }
+
+    /// The block words read by some column of this store or of the stores under it.
+    pub fn reads_all(&self) -> u64 {
+        self.subs.iter().fold(self.reads, |m, s| m | s.reads_all())
     }
 
     /// Paint everything, in the order the view described it.
@@ -700,12 +723,11 @@ pub fn changed_sparse<A: Arch>(pg: &Page<A>, mut live: u64, old: &U, new: &U) ->
     m
 }
 
-unsafe fn delta_col<A: Arch>(col: &mut RawCol, sv: &StoreView, old: &U, new: &U, tiles: &mut Tiles) {
+unsafe fn delta_col<A: Arch>(col: &RawCol, sv: &StoreView, old: &U, new: &U, tiles: &mut Tiles) {
     // SAFETY: the caller instantiated this for the column's archetype.
     let pages = unsafe { col.all::<A>() };
     let org = sv.space.origin(new);
     let clip = sv.space.clip;
-    let (mut until, mut sweep) = (col.until, col.sweep);
     for (pi, pg) in pages.iter().enumerate() {
         let live = sv.live.page(pi);
         if live == 0 {
@@ -717,29 +739,33 @@ unsafe fn delta_col<A: Arch>(col: &mut RawCol, sv: &StoreView, old: &U, new: &U,
         if m != 0 {
             mark_page(pg, m, org, clip, old, new, tiles);
         }
-        if A::TIMED {
-            // Records in motion under the new block: until when, and inside which box. Every live record is
-            // asked, not only those `m` names: a motion that starts now shows, at this instant, exactly what
-            // was shown before it started.
-            let mut k = live;
-            while k != 0 {
-                let i = k.trailing_zeros() as usize;
-                k &= k - 1;
-                let t = pg.rec[i].until(new);
-                if t > new.w[U_TIME] {
-                    let mut end = *new;
-                    end.w[U_TIME] = t;
-                    let r = pg.rect(i);
-                    let b = r.shift(pg.rec[i].offset(new)).or(r.shift(pg.rec[i].offset(&end)));
-                    #[cfg(feature = "mutant_moves")]
-                    let b = r.shift(pg.rec[i].offset(&end));
-                    sweep = if until == 0 { b } else { sweep.or(b) };
-                    until = until.max(t);
-                }
+    }
+}
+
+/// The column's bound in `Time` under `u`: until when some live record is in motion, and the box they stay
+/// inside until then. Every live record is asked, not the ones a difference names: a motion that starts now
+/// shows, at this instant, exactly what was shown before it started. Runs in a turn, never in a frame.
+unsafe fn active_col<A: Arch>(col: &RawCol, sv: &StoreView, u: &U) -> (u32, Rect) {
+    // SAFETY: the caller instantiated this for the column's archetype.
+    let pages = unsafe { col.all::<A>() };
+    let now = u.w[U_TIME];
+    let (mut until, mut sweep) = (0u32, Rect { x0: i32::MAX, y0: i32::MAX, x1: i32::MIN, y1: i32::MIN });
+    for (pi, pg) in pages.iter().enumerate() {
+        let mut k = sv.live.page(pi);
+        while k != 0 {
+            let i = k.trailing_zeros() as usize;
+            k &= k - 1;
+            let t = pg.rec[i].until(u);
+            if t > now {
+                sweep = sweep.or(pg.rec[i].sweep(pg.rect(i), u));
+                until = until.max(t);
             }
         }
     }
-    (col.until, col.sweep) = (until, sweep);
+    (until, sweep)
+}
+unsafe fn active_none(_: &RawCol, _: &StoreView, _: &U) -> (u32, Rect) {
+    (0, Rect::default())
 }
 
 /// Damage the records of a page named by `m`.

@@ -281,3 +281,40 @@ are not comparable yet.
 5. Columns reserved and never moved (SEAM 6.1), the kernel pointer in the column header (P13), the dictionary
    form of the delta (hover's eight wasted pages), nested lists (a row that holds a list), a relation whose
    storage is not a `Vec`.
+
+## 9. Takeover (2026-11-12, afternoon): the WIP made green, and the hot uniforms
+
+The lane changed hands at `9469bf18f1` (the previous agent's uncommitted work, saved unbuilt). It built; its
+gates failed 3 of 4. Cause: a motion was registered only for records the finite difference named, but a glide
+that starts now shows exactly what was shown before, so the difference is empty. Fixed at `0e0ec02e9e` (every
+live record of a timed column is asked; the fresh-mount oracle mounts at the same instant; `mutant_moves`, which
+had silently stopped failing because nothing jumps any more, also drops the current position from a sweep).
+What the WIP contained and is kept: the kernel pointer in the column header (`RawCol.delta`; the chain is now
+block, column header, page: three lines, as P13 predicted), `Glide`, `World::tick`, `mutant_sweep`. The layout
+seam had not been started in code.
+
+Baseline for this section, `0e0ec02e9e`, M3 Pro, `dist`, 10,000 rows, load 6.3 (whole table in
+`bench/results/r8/expr/sheet_x-rows10000-0e0ec02e9e.tsv`): idle 55, hover 7,104, theme 31,203, select 773,
+frame while the outline glides 631 (a walk of the store tree and one mark of a sweep of 2,520 tiles), frame at
+rest 6.
+
+### 9.1 Predictions for the hot uniforms (written before the code)
+
+The question: `Time` changes every frame and the pointer words on every pointer event. Under the plain rule
+(a column that reads a changed word differentiates its exposed pages) every record that reads one of them is
+evaluated twice per frame. The reformulation: **a hot word is never differentiated; its readers declare bounds
+in the word's own domain.** For `Time` the bound is an interval and a window: `until` (after which the record is
+at rest) and the box it stays inside until then, both functions of the other words and the record's constants,
+so they change only in a turn. A turn that touches a timed column recomputes that column's entry in a short
+list kept with the damage (`Tiles::sweeps`); a frame marks the entries and evaluates nothing. `Time` is not
+part of the block compare at all.
+
+| # | cell | prediction (instructions) | kill |
+|---|---|---|---|
+| H1 | frame, nothing in motion | at most 10, the same at any size and with any number of records that read `Time` | above 30 |
+| H2 | frame, k entries in motion | at most 40 + 60 k plus the tile rows of the marks; no record evaluated, no store or column touched (disassembly) | any per-record work, or a walk of the stores |
+| H3 | the turn that starts a motion (select) | at most 1,100 (773 today) | above 1,500 |
+| H4 | a frame of an endless animation (a scene of g exposed records whose colour is an opaque function of `Time`) | at most 100 plus the mark, the same for g = 64 and g = 4,096 | grows with g |
+| H5 | the same scene scrolled: rows in endless motion enter and leave | the retained == full == immediate == fresh gates hold; `mutant_sweep` fails them | any pixel |
+| H6 | pointer move over a scene where no record reads the pointer words | hit test plus at most 15 | above 60 |
+| H7 | pointer move, n exposed records read the pointer words (a proximity glow) | n differentiated per move at no more than 14 instructions each; this is the cell with no bound yet, and the number says whether a pointer bound (an influence box per record, tested like a hit) is needed | above 30 per record |

@@ -1,5 +1,5 @@
 //! The driver: one store tree, the block the raster last saw, the damage.
-use crate::expr::{APP_WORDS, U, U_TIME};
+use crate::expr::{APP_WORDS, HOT, U, U_PTR_X, U_PTR_Y, U_TIME};
 use crate::sink::{Cx, Patch, REL_EPOCH, View, Write};
 use core::sync::atomic::Ordering;
 use crate::store::{Backend, Path, Space, Store, Tiles};
@@ -23,15 +23,15 @@ pub struct World<B> {
     /// pass: the two things besides the block that can make the view worth driving.
     lists: u64,
     epoch: u32,
-    /// Some column is in motion: frames damage without turns until it rests.
-    moving: bool,
+    /// The block words some column reads: a pointer event that no record reads costs nothing.
+    reads: u64,
     hot: Option<Hot>,
     _b: PhantomData<B>,
 }
 
 impl<B: Backend> World<B> {
     pub fn new(w: i32, h: i32, nwords: usize) -> World<B> {
-        World { root: Store::new(1, Space::root(w, h)), shown: U::default(), tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, moving: false, hot: None, _b: PhantomData }
+        World { root: Store::new(1, Space::root(w, h)), shown: U::default(), tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, reads: 0, hot: None, _b: PhantomData }
     }
 
     /// The application's block with the words the raster owns (time, pointer, pick) as the world has them.
@@ -56,16 +56,31 @@ impl<B: Backend> World<B> {
         let mut cx = Cx { tiles: &mut self.tiles, u: &self.shown, all: true, lists: 0 };
         v.view(&mut Write::<V, B>::new(&mut self.root, &mut cx, true));
         self.lists = cx.lists;
+        self.root.resweep(&self.shown, &mut self.tiles);
+        self.reads = self.root.reads_all();
     }
 
-    /// A frame at time `now`. Time advancing is not a turn: nothing is compared or evaluated. If some record
-    /// is in motion, the box it moves in is damaged (one mark per column in motion).
+    /// A frame at time `now`. Time advancing is not a turn: nothing is compared, no record is evaluated and no
+    /// store is visited. Each sweep (a column with records in motion) is one mark.
     #[inline]
     pub fn tick(&mut self, now: u32) {
         self.shown.w[U_TIME] = now;
-        if self.moving {
-            self.moving = self.root.tick(&self.shown, now, &mut self.tiles);
+        if !self.tiles.sweeps.is_empty() {
+            self.tiles.tick(now, &self.shown);
         }
+    }
+
+    /// The pointer is at (x, y), for the records whose paint reads the pointer words. If none does (the
+    /// usual case: hover goes through the pick and a handler) this is two stores.
+    #[inline]
+    pub fn pointer_words(&mut self, x: i32, y: i32) {
+        let ch = ((self.shown.w[U_PTR_X] != x as u32) as u64) << U_PTR_X | ((self.shown.w[U_PTR_Y] != y as u32) as u64) << U_PTR_Y;
+        if ch & self.reads != 0 {
+            let mut u = self.shown;
+            (u.w[U_PTR_X], u.w[U_PTR_Y]) = (x as u32, y as u32);
+            self.root.delta(&self.shown, &u, ch, &mut self.tiles);
+        }
+        (self.shown.w[U_PTR_X], self.shown.w[U_PTR_Y]) = (x as u32, y as u32);
     }
 
     /// After handlers ran: find what they changed and damage it.
@@ -76,7 +91,7 @@ impl<B: Backend> World<B> {
     /// edited or a word that scrolls a list changed.
     #[inline]
     pub fn settle<V: View>(&mut self, v: &V) {
-        let ch = self.shown.diff(v.block(), self.nwords);
+        let ch = self.shown.diff(v.block(), self.nwords) & !HOT;
         let epoch = REL_EPOCH.load(Ordering::Relaxed);
         if (ch == 0) & (epoch == self.epoch) {
             return;
@@ -87,13 +102,14 @@ impl<B: Backend> World<B> {
     fn changed<V: View>(&mut self, v: &V, ch: u64, epoch: u32) {
         let u = &self.block(v);
         if ch != 0 {
-            self.moving |= self.root.delta(&self.shown, u, ch, &mut self.tiles);
+            self.root.delta(&self.shown, u, ch, &mut self.tiles);
         }
         if (epoch != self.epoch) | (ch & self.lists != 0) {
             self.epoch = epoch;
             let mut cx = Cx { tiles: &mut self.tiles, u, all: false, lists: 0 };
             v.view(&mut Patch::<V, B> { st: &mut self.root, cx: &mut cx, sub: 0, _p: PhantomData });
             self.lists |= cx.lists;
+            self.reads = self.root.reads_all();
         }
         if ch != 0 {
             self.shown = *u;
@@ -104,14 +120,18 @@ impl<B: Backend> World<B> {
     /// with the columns as it goes. The same `view` code as mount.
     pub fn redescribe<V: View>(&mut self, v: &V) {
         let u = &self.block(v);
-        let ch = self.shown.diff(u, self.nwords);
+        let ch = self.shown.diff(u, self.nwords) & !HOT;
         if ch != 0 {
-            self.moving |= self.root.delta(&self.shown, u, ch, &mut self.tiles);
+            self.root.delta(&self.shown, u, ch, &mut self.tiles);
         }
         self.epoch = REL_EPOCH.load(Ordering::Relaxed);
         let mut cx = Cx { tiles: &mut self.tiles, u, all: true, lists: 0 };
         v.view(&mut Write::<V, B>::new(&mut self.root, &mut cx, false));
         self.lists |= cx.lists;
+        if self.root.timed {
+            self.root.resweep(u, &mut self.tiles);
+        }
+        self.reads = self.root.reads_all();
         if ch != 0 {
             self.shown = *u;
         }

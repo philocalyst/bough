@@ -19,8 +19,8 @@ pub mod store;
 pub mod world;
 
 pub mod prelude {
-    pub use crate::expr::{Color, Cx, Expr, K, Kc, Lens, LensArr, U, U_TIME, Words, lens, rec, un, un_at};
-    pub use crate::kinds::{Fill, Glide, Label, Num, Outline, Txt};
+    pub use crate::expr::{Color, Cx, Expr, K, Kc, Lens, LensArr, Pick, PtrX, PtrY, Time, U, U_TIME, Words, lens, rec, un, un_at};
+    pub use crate::kinds::{Fill, Glide, Label, Num, Outline, Tween, Txt};
     pub use crate::sink::{FIXED, Journal, List, Rel, Row, Sink, View, hover};
     pub use crate::store::{NO_WORD, Rect, Space};
     pub use crate::world::World;
