@@ -377,6 +377,8 @@ struct PubShared {
     in_flight: std::sync::atomic::AtomicUsize,
     last: std::sync::atomic::AtomicUsize,
     queued: std::sync::atomic::AtomicUsize,
+    /// The surface of `PubState::prev`.
+    queued_prev: std::sync::atomic::AtomicUsize,
     commits: AtomicU64,
     held_back: AtomicU64,
     /// Host-clock seconds (f64 bits) when the last commit ended (a pacer sizes its latch's lead from it).
@@ -438,6 +440,9 @@ fn time_constraint(period: f64, computation: f64, constraint: f64) {
 }
 struct PubState {
     job: Option<PubJob>,
+    /// Paced commits only: the job `job` superseded, kept as the fallback a deadline commits when the GPU has
+    /// not finished `job` yet (a mailbox: the newest finished frame is committed at the deadline).
+    prev: Option<PubJob>,
     quit: bool,
 }
 
@@ -463,12 +468,13 @@ impl Publisher {
     fn spawn(kern: Arc<Kern>, layer: Retained<CALayer>) -> Publisher {
         use std::sync::atomic::AtomicUsize;
         let sh = Arc::new(PubShared {
-            m: std::sync::Mutex::new(PubState { job: None, quit: false }),
+            m: std::sync::Mutex::new(PubState { job: None, prev: None, quit: false }),
             cv: std::sync::Condvar::new(),
             idle: std::sync::Condvar::new(),
             in_flight: AtomicUsize::new(NONE_SURF),
             last: AtomicUsize::new(NONE_SURF),
             queued: AtomicUsize::new(NONE_SURF),
+            queued_prev: AtomicUsize::new(NONE_SURF),
             commits: AtomicU64::new(0),
             held_back: AtomicU64::new(0),
             last_commit: AtomicU64::new(0),
@@ -525,6 +531,18 @@ impl Publisher {
                         }
                         // the main thread may have reclaimed the queued surface meanwhile (ring exhausted)
                         let Some(j) = g.job.take() else { continue };
+                        let prev = g.prev.take();
+                        sh.queued_prev.store(NONE_SURF, Relaxed);
+                        // the mailbox: the newest frame if the GPU has finished it, else the one it superseded
+                        // (finished first: the GPU runs frames in order), the newest waiting for the next deadline
+                        let done = |x: &PubJob| x.wait == 0 || o.kern.ev.signaledValue() >= x.wait;
+                        if aimed.is_some() && !done(&j) {
+                            if let Some(p) = prev {
+                                g.job = Some(j);
+                                sh.in_flight.store(p.surf, Relaxed);
+                                break p;
+                            }
+                        }
                         sh.in_flight.store(j.surf, Relaxed);
                         sh.queued.store(NONE_SURF, Relaxed);
                         break j;
@@ -588,6 +606,17 @@ impl Publisher {
         if let Some(old) = &g.job {
             fl::note(fl::N_SUPERSEDED, old.seq, job.seq);
         }
+        // paced: the superseded job stays as the deadline's fallback (its predecessor, if any, is dropped)
+        let old = g.job.take();
+        if self.sh.deadline(now()).is_some() {
+            if let Some(o) = old {
+                self.sh.queued_prev.store(o.surf, Relaxed);
+                g.prev = Some(o);
+            }
+        } else {
+            g.prev = None;
+            self.sh.queued_prev.store(NONE_SURF, Relaxed);
+        }
         self.sh.queued.store(job.surf, Relaxed);
         g.job = Some(job);
         self.sh.cv.notify_one();
@@ -595,7 +624,7 @@ impl Publisher {
 
     /// Queued, being committed, or the last commit: the publisher (or a lagging compositor flag) holds it.
     fn holds(&self, i: usize) -> bool {
-        self.sh.in_flight.load(Relaxed) == i || self.sh.last.load(Relaxed) == i || self.sh.queued.load(Relaxed) == i
+        self.sh.in_flight.load(Relaxed) == i || self.sh.last.load(Relaxed) == i || self.sh.queued.load(Relaxed) == i || self.sh.queued_prev.load(Relaxed) == i
     }
 }
 
@@ -1430,6 +1459,11 @@ impl Fused {
     pub fn reclaim_queued(&mut self) -> Option<usize> {
         let p = self.publisher.as_ref()?;
         let mut g = p.sh.m.lock().unwrap();
+        if let Some(j) = g.prev.take() {
+            p.sh.queued_prev.store(NONE_SURF, Relaxed);
+            fl::note(fl::N_SUPERSEDED, 0, j.surf as u64);
+            return Some(j.surf);
+        }
         let j = g.job.take()?;
         p.sh.queued.store(NONE_SURF, Relaxed);
         p.sh.idle.notify_all();
