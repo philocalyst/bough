@@ -86,7 +86,8 @@ impl View for MountRows {
 // ================================================================== teardown (zgx teardown_bench)
 
 /// zgx's `teardown_bench` rows (no rounding, default text sizes), mounted under an `Option` so a
-/// re-description removes them (zgx: `mounted.unmount()`).
+/// re-description removes them (zgx: `mounted.unmount()`). Its configs are not `Config::once()`: with no
+/// re-description, writing `show` changes nothing.
 pub struct Teardown {
     pub n: usize,
     pub show: bool,
@@ -898,9 +899,10 @@ pub fn lb_unmount(a: &mut App<LayoutHost>) {
     }
 }
 
-/// The label-heavy screen's configuration at `w` points wide, scale 2.
+/// The label-heavy screen's configuration at `w` points wide, scale 2. Not mounted once: `LayoutHost`'s
+/// handlers change its plain fields (`salt`, `show`), and only a re-description mounts and unmounts the screen.
 pub fn lb_config(w: f32) -> Config {
-    Config::new(w, LB_H, 2.0, font()).once()
+    Config::new(w, LB_H, 2.0, font())
 }
 
 /// zgx's resize step `k`: 1400 - (k % 20) * 25 points.

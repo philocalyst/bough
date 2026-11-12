@@ -3,11 +3,14 @@
 //! removal frame's instructions (this thread, zgx's `thread_selfcounts`) and time, the least of `REPEAT`
 //! runs (5), then the frames after it until the released resources are back on the free lists (zgx's
 //! `Ui::reclaiming`): their count, the slowest, and their instructions in all.
+use bough::raw::{App, Config};
 use bough_suite::*;
 use std::time::Instant;
 
 fn run(n: usize) -> (f64, u64, usize, usize, f64, u64) {
-    let mut a = app_sized(Teardown { n, show: true }, 1200.0, 900.0, false, n, 3, 32);
+    // `app_sized`'s columns, not mounted once: the removal is a re-description (the `Option` dropped)
+    let cfg = Config { mount_once: false, ..config_sized(1200.0, 900.0, n, 3, 32) };
+    let mut a = App::new(Teardown { n, show: true }, cfg, false);
     a.frame();
     let nodes = a.rt.bough.len();
     let (i0, t0) = (thread_instructions(), Instant::now());
