@@ -19,7 +19,7 @@
 //! The list's own head (first field, `#[repr(C)]`) is a wire head like a `Signal`'s: every op sets
 //! `QUEUED` when the list is displayed, and the root's settle scan runs the region's wire.
 use crate::signal::WireHead;
-use crate::signal::{Headed, QUEUED};
+use crate::signal::Headed;
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
@@ -210,8 +210,7 @@ impl<T> List<T> {
     fn note(&mut self, op: Op) {
         if self.displayed() {
             self.log.push(op);
-            let h = self.head.get();
-            self.head.set(h | QUEUED);
+            crate::signal::queue(&self.head);
         }
     }
 

@@ -167,12 +167,58 @@ impl<T> Deref for Signal<T> {
 }
 
 impl<T> DerefMut for Signal<T> {
-    /// Sets QUEUED (one OR) if the signal has wires.
+    /// Queues the signal's wires if it has any (see [`queue`]).
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
-        let h = self.head.0.get();
-        self.head.0.set(h | (((h != 0) as u32) << 31));
+        queue(&self.head.0);
         &mut self.value
+    }
+}
+
+/// Entries of a thread's write log.
+pub(crate) const LOG_CAP: usize = 32;
+
+/// The write log of a thread: the addresses of the heads queued since they were last taken, so that settling
+/// costs what was written instead of a scan of every wired cell of the owner. QUEUED on the head stays the
+/// truth; the log only says where to look. When it is full its `epoch` advances instead, and every runtime
+/// that has not scanned since then scans its whole owner once (`Rt::settle`).
+pub(crate) struct WriteLog {
+    pub n: Cell<u32>,
+    pub epoch: Cell<u32>,
+    /// Runtimes alive on this thread: with one, an address that is not its root owner's can be dropped.
+    pub live: Cell<u32>,
+    pub at: [Cell<usize>; LOG_CAP],
+}
+
+thread_local! {
+    pub(crate) static LOG: WriteLog = const {
+        WriteLog { n: Cell::new(0), epoch: Cell::new(0), live: Cell::new(0), at: [const { Cell::new(0) }; LOG_CAP] }
+    };
+}
+
+#[cold]
+#[inline(never)]
+fn log(addr: usize) {
+    LOG.with(|l| {
+        let n = l.n.get() as usize;
+        if n == LOG_CAP {
+            l.epoch.set(l.epoch.get().wrapping_add(1));
+            l.n.set(0);
+        } else {
+            l.at[n].set(addr);
+            l.n.set(n as u32 + 1);
+        }
+    })
+}
+
+/// Queue a head's wires: nothing for a head without wires or one already queued (two instructions and a
+/// predicted branch on the path every later write of the turn takes).
+#[inline(always)]
+pub(crate) fn queue(head: &Cell<u32>) {
+    let h = head.get();
+    if h != 0 && h & QUEUED == 0 {
+        head.set(h | QUEUED);
+        log(head as *const _ as usize);
     }
 }
 

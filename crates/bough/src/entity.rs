@@ -11,7 +11,7 @@
 use crate::signal::WireHead;
 use crate::elem::{Element, Mounter};
 use crate::rt::*;
-use crate::signal::{Headed, QUEUED};
+use crate::signal::Headed;
 use bough_core::RecordInit;
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
@@ -180,7 +180,7 @@ impl<T> Entities<T> {
         if m & EDITED == 0 && h != 0 {
             self.meta[e.idx as usize] = m | EDITED;
             self.edits.push(e.idx);
-            self.head.set(h | QUEUED);
+            crate::signal::queue(&self.head);
         }
         // SAFETY: live; `&mut self` is the only borrow.
         Some(unsafe { &mut *self.ptr(e.idx) })

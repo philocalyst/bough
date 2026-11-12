@@ -296,6 +296,20 @@ fn recipe_of<F: Copy>(f: F) -> [u8; 16] {
     r
 }
 
+
+/// A wired operand's part of a seal (`seal.rs`): the wire's identity, i.e. the offset of the signal it reads in
+/// the owner and the bytes its patch function captured. The signal's *value* is not part of a description:
+/// it reaches the record through the wire. Equal identity means the installed wire is the one this
+/// description would install, so the element may be stepped over.
+#[inline(always)]
+fn seal_wire<S: crate::seal::Sealer>(s: &mut S, tag: u32, off: u32, recipe: [u8; 16]) {
+    s.word(tag);
+    s.word(off);
+    for w in recipe.chunks_exact(4) {
+        s.word(u32::from_ne_bytes([w[0], w[1], w[2], w[3]]));
+    }
+}
+
 impl<'a, T: Clone + 'static, V> IntoProp<T, V> for Wired<'a, T, V> {
     fn lower<K: Apply<P = T>>(self, m: &mut Mounter<'_, V>, node: u32) -> T {
         m.wire(&self, patch_sig::<K, T>, node, [0; 16]);
@@ -304,11 +318,9 @@ impl<'a, T: Clone + 'static, V> IntoProp<T, V> for Wired<'a, T, V> {
     fn value(self) -> T {
         self.get().clone()
     }
-    /// A wired operand is its wire: which field (its values travel through the wire, not the description).
     #[inline(always)]
     fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
-        s.word(0x0201);
-        s.word(self.off);
+        seal_wire(s, 0x5749_5245, self.off, [0; 16])
     }
 }
 
@@ -324,12 +336,9 @@ where
     fn value(self) -> P {
         (self.f)(self.w.get())
     }
-    /// The wire's field and its mapping (the closure's bytes).
     #[inline(always)]
     fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
-        s.word(0x0202);
-        s.word(self.w.off);
-        crate::seal::closure(s, &self.f);
+        seal_wire(s, 0x574d_4150, self.w.off, recipe_of(self.f))
     }
 }
 
@@ -775,8 +784,7 @@ impl<'a, V> TextSrc<V> for Wired<'a, String, V> {
     }
     #[inline(always)]
     fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
-        s.word(0x0211);
-        s.word(self.off);
+        seal_wire(s, 0x5754_5854, self.off, [0; 16])
     }
 }
 impl<'a, T: 'static, V, F: Fn(&T) -> String + Copy + 'static> TextSrc<V> for WMap<'a, T, V, F> {
@@ -790,9 +798,7 @@ impl<'a, T: 'static, V, F: Fn(&T) -> String + Copy + 'static> TextSrc<V> for WMa
     }
     #[inline(always)]
     fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
-        s.word(0x0212);
-        s.word(self.w.off);
-        crate::seal::closure(s, &self.f);
+        seal_wire(s, 0x5754_4d50, self.w.off, recipe_of(self.f))
     }
 }
 impl<'a, T: 'static, V, F: Fn(&T) -> f32 + Copy + 'static> TextSrc<V> for Num<'a, T, V, F> {
@@ -812,16 +818,10 @@ impl<'a, T: 'static, V, F: Fn(&T) -> f32 + Copy + 'static> TextSrc<V> for Num<'a
         let n = render_num(&self.fmt, v, &mut buf, &mut slow);
         if n == usize::MAX { slow } else { bough_text::numeric::as_str(&buf, n).to_owned() }
     }
-    /// The wire's field, the mapping and the format (prefix, suffix, decimals).
     #[inline(always)]
     fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
-        s.word(0x0213);
-        s.word(self.w.off);
-        crate::seal::closure(s, &self.f);
-        let (p, x) = self.fmt.affixes();
-        s.bytes(p.as_bytes());
-        s.bytes(x.as_bytes());
-        s.word(self.fmt.decimals.map_or(u32::MAX, |d| d as u32));
+        seal_wire(s, 0x574e_554d, self.w.off, recipe_of(self.f));
+        s.bytes(&self.fmt.identity());
     }
 }
 

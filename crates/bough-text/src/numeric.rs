@@ -25,6 +25,20 @@ pub struct NumFmt {
 const POW10: [f64; 7] = [1.0, 10.0, 100.0, 1e3, 1e4, 1e5, 1e6];
 
 impl NumFmt {
+    /// The format as bytes (prefix, suffix, their lengths, the decimals): its identity for a description seal.
+    #[inline]
+    pub fn identity(&self) -> [u8; 20] {
+        let mut b = [0u8; 20];
+        b[..8].copy_from_slice(&self.prefix);
+        b[8..16].copy_from_slice(&self.suffix);
+        b[16] = self.plen;
+        b[17] = self.slen;
+        (b[18], b[19]) = match self.decimals {
+            Some(d) => (1, d),
+            None => (0, 0),
+        };
+        b
+    }
     pub const fn new(prefix: &str, decimals: Option<u8>, suffix: &str) -> Self {
         let (pb, sb) = (prefix.as_bytes(), suffix.as_bytes());
         assert!(pb.len() <= 8 && sb.len() <= 8);
