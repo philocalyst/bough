@@ -146,9 +146,10 @@ pub use bough_gpu::fused as presenter;
 #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
 pub use bough_metal::fused as presenter;
 
-/// Which backend may repair a frame (`BOUGH_REPAIR`: `gpu`, `cpu`, or the cost model, the default). Every backend
-/// writes the same pixels (cpu_raster.rs); `Cpu` takes the CPU whenever the frame's records are all modelled
-/// (tests force it to hold the CPU path to the GPU's reference).
+/// Which backend may repair a frame (`BOUGH_REPAIR`: `gpu`, the default for now; `auto`, the cost model; `cpu`,
+/// whenever the frame's records are all modelled, which tests use to hold the CPU path to the GPU's reference).
+/// Every backend writes the same pixels (cpu_raster.rs); `Auto` also requires the device's self-check
+/// (`repair::cpu_exact`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Repair {
     Auto,
@@ -159,9 +160,9 @@ pub enum Repair {
 impl Repair {
     pub fn from_env() -> Repair {
         match std::env::var("BOUGH_REPAIR").as_deref() {
-            Ok("gpu") => Repair::Gpu,
+            Ok("auto") => Repair::Auto,
             Ok("cpu") => Repair::Cpu,
-            _ => Repair::Auto,
+            _ => Repair::Gpu,
         }
     }
 }
@@ -840,6 +841,11 @@ impl<V: View> App<V> {
         let mut purged = false;
         // a CPU-repairable frame must not make the surface resident (a first residency drains the pre-armed
         // frames: GPU work); its volatility is handled by `write_begin` / `prepare_target`, whichever runs
+        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+        if self.repair == Repair::Auto && !crate::repair::cpu_exact(self.rt.text.font_bytes()) {
+            // this device, OS build or shader draws differently from the CPU model: the GPU repairs everything
+            self.repair = Repair::Gpu;
+        }
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
         let cpu_able = self.repair != Repair::Gpu;
         #[cfg(not(all(target_os = "macos", not(feature = "wgpu"))))]

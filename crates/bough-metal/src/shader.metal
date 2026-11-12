@@ -1266,9 +1266,10 @@ struct FRec {
 static float f_sd(float2 c, float4 b, float r) {
     float2 q = max(c - b.zw, b.xy - c) + r;
     float2 m = max(q, 0.0);
-    // the length with every operation specified (round 6, lane memory): the dot as one fma and a correctly rounded
-    // square root. `length` under fast math is x * rsqrt(x) with a hardware rsqrt that is not correctly rounded
-    // (4 % of inputs, examples/mathprobe.rs), which no CPU can reproduce; the CPU repair backend computes this.
+    // the length with every operation specified (round 6, lane memory), so the CPU repair backend can compute the
+    // same bits: `length` under fast math is x * rsqrt(x) with a hardware rsqrt that is not correctly rounded (4 % of
+    // inputs, examples/mathprobe.rs). A correctly rounded square root of the dot as one fma costs nothing measurable
+    // (kernel_bench, lab: 0.2784 vs 0.2787 ms full redraw); a branch around it (edges skipping the root) cost 4.6 %.
     return precise::sqrt(fma(m.y, m.y, m.x * m.x)) + min(max(q.x, q.y), 0.0) - r;
 }
 

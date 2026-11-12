@@ -108,6 +108,8 @@ pub const FACE_MONO: u8 = 2;
 pub const FACE_OBLIQUE: u8 = 3;
 
 pub struct TextSys {
+    /// The regular face's bytes (kept for the process, shared with the shaper's face).
+    font: &'static [u8],
     /// The current face's shaping tables (face 0 between operations; [`TextSys::select`]): immutable, built
     /// once per font per process and shared by every window (`font_tables`), as a renderer's font system is.
     pub shaper: std::sync::Arc<Shaper>,
@@ -176,6 +178,11 @@ pub fn fonts_ledger(l: &mut bough_mem::Ledger) {
 }
 
 impl TextSys {
+    /// The regular face's bytes (process-lifetime).
+    pub fn font_bytes(&self) -> &'static [u8] {
+        self.font
+    }
+
     /// This window's text memory (the glyph cache and the shaper's scratch), as ledger lines.
     pub fn ledger(&self, l: &mut bough_mem::Ledger) {
         use bough_mem::Scales::{Content, Fixed};
@@ -198,6 +205,7 @@ impl TextSys {
         let tf = ttf_parser::Face::parse(leaked, 0).expect("font");
         let (ascent, descent, upem) = (tf.ascender() as f32, -(tf.descender() as f32), tf.units_per_em() as f32);
         TextSys {
+            font: leaked,
             shaper,
             cache: GlyphCache::with_tok_column(font, toks),
             scratch: Vec::with_capacity(1024),

@@ -25,6 +25,7 @@ pub mod ltemplate;
 pub mod mlist;
 pub mod reader;
 pub mod reflect;
+pub mod repair;
 pub mod rt;
 pub mod select;
 pub mod signal;

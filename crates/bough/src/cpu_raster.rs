@@ -83,8 +83,8 @@ fn premul(c: u32) -> [f16; 4] {
     [c1[0] * c1[3], c1[1] * c1[3], c1[2] * c1[3], c1[3]]
 }
 
-/// `f_sd`: signed distance from `c` to the rounded box `b` of radius `r`, as shader.metal writes it: the dot as
-/// `fma(y, y, x * x)` and `precise::sqrt` (IEEE). (The kernel's former `length` was x * a hardware rsqrt that is not
+/// `f_sd`: signed distance from `c` to the rounded box `b` of radius `r`, as shader.metal writes it: `precise::sqrt`
+/// (IEEE) of the dot as `fma(y, y, x * x)`. (The kernel's former `length` was x * a hardware rsqrt that is not
 /// correctly rounded: the one operation the CPU could not reproduce; examples/mathprobe.rs.)
 #[inline(always)]
 fn sd(c: [f32; 2], b: [f32; 4], r: f32) -> f32 {
