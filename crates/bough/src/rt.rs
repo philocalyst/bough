@@ -322,6 +322,9 @@ pub struct Wire {
     /// Next wire of the same signal (0 = end).
     pub next: u32,
     pub dead: bool,
+    /// Not in any chain: the handle a scope keeps for a wire that became a lane member when its cell's
+    /// segment was made (`add_seg_wire`); `node` is the lane, `recipe[..4]` the slot.
+    pub stub: bool,
     /// Runs while its source is held by a pending cohort (`latest(..)` operands, reader pending wires).
     pub latest: bool,
     pub node: u32,
@@ -334,6 +337,30 @@ pub struct Wire {
     pub patch: PatchFn,
     pub recipe: [u8; 16],
 }
+
+/// The members of a segment (`add_seg_wire`), as lanes: what a member is (its node, the bytes its projection
+/// captured, the value it last applied) lies in columns, one slot per member, and the segment's runner is one
+/// loop over them (`elem::run_seg_map`): no wire and no call per member.
+#[derive(Default)]
+pub(crate) struct SegLane {
+    /// The member's node; `LANE_DEAD` for a released slot (on `free`).
+    pub nodes: Vec<u32>,
+    /// `cw` words per member: the captured bytes of its projection.
+    pub caps: Vec<u64>,
+    /// One word per member when `has_last`: the value it last applied (at most 8 bytes, no drop glue).
+    pub last: Vec<u64>,
+    pub free: Vec<u32>,
+    pub live: u32,
+    /// The segment's wire in the cell's chain.
+    pub seg: u32,
+    pub cw: u8,
+    pub has_last: bool,
+    /// The next run applies every member whatever `last` says (a member arrived without one).
+    pub force: bool,
+}
+pub(crate) const LANE_DEAD: u32 = u32::MAX;
+/// A scope's wire entry with this bit is a lane member: `TAG | lane`, followed by an entry holding the slot.
+pub(crate) const LANE_TAG: u32 = 1 << 31;
 
 impl Drop for Rt {
     fn drop(&mut self) {
@@ -524,6 +551,10 @@ pub struct Rt {
     pub(crate) segs: std::collections::HashMap<(usize, usize), u32, crate::layout::FxBuild>,
     seg_cache: [(usize, usize, u32); 4],
     seg_next: u8,
+    pub(crate) lanes: Vec<SegLane>,
+    lane_free: Vec<u32>,
+    /// Wires are installed plain while set (`latest(..)` operands address their wire).
+    pub(crate) seg_off: bool,
     /// Per owner class: the offsets of its wired cells (class 0 is the app's root owner; every list
     /// region adds one class shared by all its rows, `list.rs`).
     pub(crate) classes: Vec<Vec<u32>>,
@@ -687,7 +718,7 @@ impl Rt {
         let mut cold: Col<Node> = store.carve("element cold", sc.ids);
         cold.push(Node::blank());
         let mut wires: Col<Wire> = store.carve("wires", sc.wires);
-        wires.push(Wire { next: 0, dead: true, latest: false, node: 0, head: 0, cls: 0, patch: nop, recipe: [0; 16] });
+        wires.push(Wire { next: 0, dead: true, stub: false, latest: false, node: 0, head: 0, cls: 0, patch: nop, recipe: [0; 16] });
         let texts = store.carve("texts", sc.texts);
         let spans = crate::store::Spans::new(store.carve("spans", sc.spans));
         let lay = crate::layout::Lay::new(scale, &mut store, &sc);
@@ -721,6 +752,9 @@ impl Rt {
             segs: Default::default(),
             seg_cache: [(0, 0, 0); 4],
             seg_next: 0,
+            lanes: Vec::new(),
+            lane_free: Vec::new(),
+            seg_off: false,
             classes: vec![Vec::new()],
             class_rank: vec![Vec::new()],
             log_home: crate::signal::LOG.with(|l| {
@@ -1302,7 +1336,7 @@ impl Rt {
             after = p;
             p = self.wires[p as usize].next;
         }
-        let w = Wire { next: if after == 0 { first } else { p }, dead: false, latest: false, node, head: addr, cls, patch, recipe };
+        let w = Wire { next: if after == 0 { first } else { p }, dead: false, stub: false, latest: false, node, head: addr, cls, patch, recipe };
         let idx = if let Some(i) = self.wire_free.pop() {
             self.wires[i as usize] = w;
             i
@@ -1321,11 +1355,14 @@ impl Rt {
 
     /// Install `node` as a member of the segment of cell `head` for `runner` (`Mounter::wire_seg`): the
     /// segment wire is found (a four-entry cache, then a map) or made and linked into the cell's chain like
-    /// any wire; the member is a wire outside that chain, linked from the segment wire's `node` field.
+    /// any wire; the member is a slot of the segment's lanes (`SegLane`). Returns the scope's entry: a plain
+    /// wire's index and `NONE`, or `LANE_TAG | lane` and the slot. `cw`: words of `recipe` the runner reads
+    /// per member; `init`: the value the member shows now, when the property's type can be kept (8 bytes).
     ///
     /// # Safety
-    /// As `add_wire`; `runner` reads members' recipes as written here.
-    pub(crate) unsafe fn add_seg_wire(&mut self, head: &std::cell::Cell<u32>, off: u32, cls: u32, runner: PatchFn, plain: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
+    /// As `add_wire`; `runner` reads members' captures as written here.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn add_seg_wire(&mut self, head: &std::cell::Cell<u32>, off: u32, cls: u32, runner: PatchFn, plain: PatchFn, node: u32, recipe: [u8; 16], cw: u8, init: Option<u64>) -> (u32, u32) {
         let key = (head as *const _ as usize, runner as usize);
         let valid = |rt: &Rt, i: u32| rt.wires.get(i as usize).is_some_and(|w| !w.dead && w.head == key.0 && w.patch as usize == key.1);
         let mut seg = 0u32;
@@ -1346,7 +1383,7 @@ impl Rt {
                     let (mut prev, mut p, mut found) = (0u32, h & HEAD_IDX, 0u32);
                     for _ in 0..4 {
                         let Some(w) = self.wires.get(p as usize).filter(|w| p != 0 && w.head == key.0) else { break };
-                        if !w.dead && w.patch as usize == plain as usize {
+                        if !w.dead && !w.latest && w.patch as usize == plain as usize {
                             found = p;
                             break;
                         }
@@ -1355,7 +1392,7 @@ impl Rt {
                     }
                     if found == 0 {
                         // SAFETY: this fn's contract is `add_wire`'s; `plain` reads the recipe as `runner` does.
-                        return unsafe { self.add_wire(head, off, cls, plain, node, recipe) };
+                        return (unsafe { self.add_wire(head, off, cls, plain, node, recipe) }, NONE);
                     }
                     let next = self.wires[found as usize].next;
                     if prev == 0 {
@@ -1363,34 +1400,117 @@ impl Rt {
                     } else {
                         self.wires[prev as usize].next = next;
                     }
+                    let lane = self.lane_free.pop().unwrap_or_else(|| {
+                        self.lanes.push(SegLane::default());
+                        (self.lanes.len() - 1) as u32
+                    });
                     // SAFETY: this fn's contract is `add_wire`'s.
-                    let i = unsafe { self.add_wire(head, off, cls, runner, 0, [0; 16]) };
+                    let i = unsafe { self.add_wire(head, off, cls, runner, lane, [0; 16]) };
                     self.wires[i as usize].recipe[..4].copy_from_slice(&i.to_ne_bytes());
                     self.segs.insert(key, i);
+                    {
+                        let l = &mut self.lanes[lane as usize];
+                        debug_assert!(l.live == 0 && l.nodes.is_empty());
+                        l.seg = i;
+                        l.cw = cw;
+                        l.has_last = cw != 0 && init.is_some();
+                        // the first member's last value is not known here: the next run applies everything
+                        l.force = l.has_last;
+                    }
+                    // the plain wire leaves the chain and stays as its scope's handle on member 0
+                    let (fnode, frecipe) = (self.wires[found as usize].node, self.wires[found as usize].recipe);
+                    let slot = self.lane_push(lane, fnode, frecipe, 0);
                     let f = &mut self.wires[found as usize];
                     f.next = 0;
-                    f.patch = runner;
-                    self.wires[i as usize].node = found;
+                    f.stub = true;
+                    f.node = lane;
+                    f.recipe[..4].copy_from_slice(&slot.to_ne_bytes());
                     i
                 }
             };
             self.seg_cache[self.seg_next as usize & 3] = (key.0, key.1, seg);
             self.seg_next = self.seg_next.wrapping_add(1);
         }
-        // the member: the newest first, as in a cell's chain
-        let w = Wire { next: self.wires[seg as usize].node, dead: false, latest: false, node, head: key.0, cls, patch: runner, recipe };
-        let idx = if let Some(i) = self.wire_free.pop() {
-            self.wires[i as usize] = w;
-            i
-        } else {
-            self.wires.push(w);
-            (self.wires.len() - 1) as u32
+        let lane = self.wires[seg as usize].node;
+        debug_assert_eq!(self.lanes[lane as usize].cw, cw);
+        let slot = self.lane_push(lane, node, recipe, init.unwrap_or(0));
+        // A projection that captures nothing keeps one value for the segment (`recipe[4]`, `recipe[8..]`). With
+        // no run pending every member shows the value of the signal as it is, which is the new member's.
+        if cw == 0 && self.wires[seg as usize].recipe[4] == 0 && head.get() & (crate::signal::QUEUED | crate::signal::HELD) == 0 {
+            if let Some(v) = init {
+                let r = &mut self.wires[seg as usize].recipe;
+                r[4] = 1;
+                r[8..16].copy_from_slice(&v.to_ne_bytes());
+            }
+        }
+        (LANE_TAG | lane, slot)
+    }
+
+    fn lane_push(&mut self, lane: u32, node: u32, recipe: [u8; 16], last: u64) -> u32 {
+        let l = &mut self.lanes[lane as usize];
+        let slot = match l.free.pop() {
+            Some(s) => s,
+            None => {
+                l.nodes.push(LANE_DEAD);
+                l.caps.resize(l.caps.len() + l.cw as usize, 0);
+                if l.has_last {
+                    l.last.push(0);
+                }
+                (l.nodes.len() - 1) as u32
+            }
         };
-        assert!(idx <= HEAD_IDX, "wire arena full");
-        self.wires[seg as usize].node = idx;
-        // a new member has not seen the cached value of a captureless projection: the next run applies
-        self.wires[seg as usize].recipe[4] = 0;
-        idx
+        let k = slot as usize;
+        l.nodes[k] = node;
+        for j in 0..l.cw as usize {
+            l.caps[k * l.cw as usize + j] = u64::from_ne_bytes(recipe[j * 8..j * 8 + 8].try_into().unwrap());
+        }
+        if l.has_last {
+            l.last[k] = last;
+        }
+        l.live += 1;
+        slot
+    }
+
+    /// A lane member's scope is cut: its slot is free. The segment's last member takes the segment with it:
+    /// its wire is dead (the chain drops it at its next run) and returned.
+    pub(crate) fn lane_release(&mut self, lane: u32, slot: u32) -> Option<u32> {
+        let l = &mut self.lanes[lane as usize];
+        debug_assert!(l.nodes[slot as usize] != LANE_DEAD);
+        l.nodes[slot as usize] = LANE_DEAD;
+        l.free.push(slot);
+        l.live -= 1;
+        if l.live != 0 {
+            return None;
+        }
+        let seg = l.seg;
+        l.nodes.clear();
+        l.caps.clear();
+        l.last.clear();
+        l.free.clear();
+        l.force = false;
+        self.lane_free.push(lane);
+        self.wires[seg as usize].dead = true;
+        Some(seg)
+    }
+
+    /// Cut one entry pair of a scope's wires (`w`, and the following entry through `next` for a lane member).
+    /// Returns the segment wire that died with its last member, if one did.
+    #[inline]
+    pub(crate) fn cut_wire(&mut self, w: u32, next: impl FnOnce() -> u32) -> Option<u32> {
+        if w & LANE_TAG != 0 {
+            return self.lane_release(w & !LANE_TAG, next());
+        }
+        let wr = &mut self.wires[w as usize];
+        if wr.stub {
+            let (lane, slot) = (wr.node, u32::from_ne_bytes(wr.recipe[..4].try_into().unwrap()));
+            wr.stub = false;
+            wr.dead = true;
+            wr.head = 0;
+            self.wire_free.push(w);
+            return self.lane_release(lane, slot);
+        }
+        wr.dead = true;
+        None
     }
 
     /// A new owner class (list rows, entities): its wired offsets start empty.
@@ -1720,9 +1840,13 @@ impl Rt {
     }
 
     fn cut_scope(&mut self, s: &mut Scope) {
-        for w in s.wires.drain(..) {
-            self.wires[w as usize].dead = true;
+        let mut ws = std::mem::take(&mut s.wires);
+        let mut it = ws.drain(..);
+        while let Some(w) = it.next() {
+            self.cut_wire(w, || it.next().unwrap());
         }
+        drop(it);
+        s.wires = ws;
         for r in s.lroots.drain(..) {
             self.lay_remove_root(r);
         }

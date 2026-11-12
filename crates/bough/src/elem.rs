@@ -98,12 +98,19 @@ impl<V> Mounter<'_, V> {
     /// Install a wire whose applier commutes (`Apply::COMMUTES`) as a member of the cell's segment for
     /// `runner` (the monomorphised loop for this kind of operand): the cell's chain holds one segment wire
     /// per kind, and the members hang off it. A cell's first wire of a kind stays a plain wire (`plain`).
-    pub(crate) fn wire_seg<T>(&mut self, w: &Wired<'_, T, V>, runner: PatchFn, plain: PatchFn, node: u32, recipe: [u8; 16]) {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn wire_seg<T>(&mut self, w: &Wired<'_, T, V>, runner: PatchFn, plain: PatchFn, node: u32, recipe: [u8; 16], cw: u8, init: Option<u64>) {
+        if self.rt.seg_off {
+            return self.wire(w, plain, node, recipe);
+        }
         debug_assert_eq!(w.sig as *const Signal<T> as usize, self.owner as usize + w.off as usize, "sig! operand is not a field of the mounted owner");
         // SAFETY: as `wire`: the offset is proven for `V`, and `runner` is monomorphised for the signal's `T`
-        // and reads the recipes its members are given here.
-        let i = unsafe { self.rt.add_seg_wire(w.sig.head(), w.off, self.cls, runner, plain, node, recipe) };
+        // and reads the captures its members are given here (`cw` words of the recipe).
+        let (i, slot) = unsafe { self.rt.add_seg_wire(w.sig.head(), w.off, self.cls, runner, plain, node, recipe, cw, init) };
         self.scope.wires.push(i);
+        if slot != NONE {
+            self.scope.wires.push(slot);
+        }
     }
     /// Install a wire on any headed cell of this owner (lists, readers): `head` at `owner + off`.
     ///
@@ -228,36 +235,31 @@ const SEG_SELF: usize = 0;
 const SEG_HAS: usize = 4;
 const SEG_LAST: usize = 8;
 
-/// Run a segment: every live member of segment wire `seg` gets `value(member recipe)` through `K::apply`;
-/// dead members (their scope unmounted) are unlinked and freed on the way.
+/// The bits of a value that can be kept in a lane word (`seg_cacheable`).
 #[inline(always)]
-fn seg_members<K: Apply>(rt: &mut Rt, seg: u32, mut value: impl FnMut(&[u8; 16]) -> K::P) {
-    let (mut prev, mut i) = (0u32, rt.wires[seg as usize].node);
-    while i != 0 {
-        let (next, dead, node, recipe) = {
-            let w = &rt.wires[i as usize];
-            (w.next, w.dead, w.node, w.recipe)
-        };
-        if dead {
-            if prev == 0 {
-                rt.wires[seg as usize].node = next;
-            } else {
-                rt.wires[prev as usize].next = next;
-            }
-            rt.wires[i as usize].head = 0;
-            rt.wire_free.push(i);
-        } else {
-            let v = value(&recipe);
-            K::apply(rt, node, &v);
-            prev = i;
-        }
-        i = next;
-    }
+fn word_of<P: 'static>(v: &P) -> u64 {
+    debug_assert!(seg_cacheable::<P>());
+    let mut w = 0u64;
+    // SAFETY: `P` is at most 8 bytes (`seg_cacheable`): its bytes are copied into the word.
+    unsafe { std::ptr::copy_nonoverlapping(v as *const P as *const u8, &mut w as *mut u64 as *mut u8, size_of::<P>()) };
+    w
+}
+
+/// Take the segment's lanes out for a run (the appliers get the runtime; commuting appliers mount nothing).
+#[inline(always)]
+fn lane_take(rt: &mut Rt, w: &Wire) -> (usize, crate::rt::SegLane) {
+    let id = w.node as usize;
+    (id, std::mem::take(&mut rt.lanes[id]))
+}
+#[inline(always)]
+fn lane_put(rt: &mut Rt, id: usize, lane: crate::rt::SegLane) {
+    debug_assert!(rt.lanes[id].nodes.is_empty(), "a segment's lanes changed while it ran");
+    rt.lanes[id] = lane;
 }
 
 /// # Safety
 /// The wire contract (`PatchFn`): `sig` is a `Signal<T>`; `w` is a segment wire made by `wire_seg` for this
-/// `K`, `T`, `F` (its members' recipes hold an `F`).
+/// `K`, `T`, `F` (its lanes hold an `F` per member, and a `K::P` when that can be kept).
 unsafe fn run_seg_map<K: Apply, T: 'static, F: Fn(&T) -> K::P + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8)
 where
     K::P: PartialEq,
@@ -272,32 +274,76 @@ where
         let v = f(s);
         if seg_cacheable::<K::P>() {
             // SAFETY: a cacheable `P` has no drop glue and fits the 8 bytes at `SEG_LAST`; the bytes there
-            // were written from a `P` by this function when `SEG_HAS` is set.
-            let last: Option<K::P> = (w.recipe[SEG_HAS] != 0).then(|| unsafe { std::ptr::read_unaligned(w.recipe.as_ptr().add(SEG_LAST) as *const K::P) });
-            if last.as_ref() == Some(&v) {
+            // were written from a `P` (here, or by `add_seg_wire` from a member's initial value) when
+            // `SEG_HAS` is set.
+            let last: Option<std::mem::ManuallyDrop<K::P>> = (w.recipe[SEG_HAS] != 0).then(|| unsafe { std::ptr::read_unaligned(w.recipe.as_ptr().add(SEG_LAST) as *const std::mem::ManuallyDrop<K::P>) });
+            if last.as_deref() == Some(&v) {
                 // every member already shows this value
-                std::mem::forget(last);
                 return;
             }
-            std::mem::forget(last);
             let r = &mut rt.wires[seg as usize].recipe;
             r[SEG_HAS] = 1;
-            // SAFETY: as above (8 bytes, no drop glue): a bitwise copy of `v` is kept.
-            unsafe { std::ptr::copy_nonoverlapping(&v as *const K::P as *const u8, r.as_mut_ptr().add(SEG_LAST), size_of::<K::P>()) };
+            r[SEG_LAST..SEG_LAST + 8].copy_from_slice(&word_of(&v).to_ne_bytes());
         }
-        seg_members::<K>(rt, seg, |_| {
-            // SAFETY: as above (`F` is zero-sized).
-            let f: F = unsafe { std::mem::MaybeUninit::<F>::uninit().assume_init() };
-            f(s)
-        });
-        let _ = v;
-    } else {
-        seg_members::<K>(rt, seg, |recipe| {
-            // SAFETY: a member's recipe holds the `F` its `wire_seg` wrote (at most 16 bytes, `Copy`).
-            let f: F = unsafe { std::ptr::read_unaligned(recipe.as_ptr() as *const F) };
-            f(s)
-        });
+        let (id, lane) = lane_take(rt, w);
+        for &node in &lane.nodes {
+            if node != crate::rt::LANE_DEAD {
+                K::apply(rt, node, &v);
+            }
+        }
+        lane_put(rt, id, lane);
+        return;
     }
+    const { assert!(align_of::<F>() <= 8, "map closure: captures aligned to at most 8") };
+    let (id, mut lane) = lane_take(rt, w);
+    let n = lane.nodes.len();
+    let cw = size_of::<F>().div_ceil(8);
+    debug_assert!(lane.cw as usize == cw && lane.caps.len() == n * cw);
+    let caps = lane.caps.as_ptr();
+    // SAFETY (the reads below): member `i`'s captures are the `cw` words at `i * cw`, written from an `F` by
+    // `add_seg_wire` (a released slot keeps its last `F`: `F` is `Copy`, so it is still one).
+    let cap = |i: usize| -> F { unsafe { std::ptr::read(caps.add(i * cw) as *const F) } };
+    if lane.has_last {
+        // Stage 1 over 64 members: evaluate, compare with what the member last applied, keep the new value;
+        // stage 2 applies the members whose value changed.
+        debug_assert!(lane.last.len() == n && seg_cacheable::<K::P>());
+        let force = std::mem::take(&mut lane.force);
+        let last = lane.last.as_mut_ptr();
+        let mut c = 0usize;
+        while c < n {
+            let e = (c + 64).min(n);
+            let mut m = if force { u64::MAX >> (64 - (e - c)) } else { 0u64 };
+            for i in c..e {
+                let v = cap(i);
+                let v = v(s);
+                // SAFETY: `last[i]` holds the `K::P` (8 bytes at most, no drop glue) this member applied last.
+                let old = unsafe { &*(last.add(i) as *const K::P) };
+                m |= ((*old != v) as u64) << (i - c);
+                // SAFETY: as above; the word is overwritten with the new value's bytes.
+                unsafe { *last.add(i) = word_of(&v) };
+                std::mem::forget(v);
+            }
+            while m != 0 {
+                let i = c + m.trailing_zeros() as usize;
+                m &= m - 1;
+                let node = lane.nodes[i];
+                if node != crate::rt::LANE_DEAD {
+                    // SAFETY: as above.
+                    K::apply(rt, node, unsafe { &*(last.add(i) as *const K::P) });
+                }
+            }
+            c = e;
+        }
+    } else {
+        for i in 0..n {
+            let node = lane.nodes[i];
+            if node != crate::rt::LANE_DEAD {
+                let v = cap(i)(s);
+                K::apply(rt, node, &v);
+            }
+        }
+    }
+    lane_put(rt, id, lane);
 }
 
 /// # Safety
@@ -305,8 +351,13 @@ where
 unsafe fn run_seg_sig<K: Apply<P = T>, T: Clone + 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
     let s = unsafe { &*(sig as *const Signal<T>) };
-    let seg = u32::from_ne_bytes(w.recipe[SEG_SELF..SEG_SELF + 4].try_into().unwrap());
-    seg_members::<K>(rt, seg, |_| (**s).clone());
+    let (id, lane) = lane_take(rt, w);
+    for &node in &lane.nodes {
+        if node != crate::rt::LANE_DEAD {
+            K::apply(rt, node, s);
+        }
+    }
+    lane_put(rt, id, lane);
 }
 
 /// An operand of property type `P` for owner `V`: a constant, or a wired signal (`sig!`) / projection.
@@ -402,7 +453,7 @@ fn seal_wire<S: crate::seal::Sealer>(s: &mut S, tag: u32, off: u32, recipe: [u8;
 impl<'a, T: Clone + 'static, V> IntoProp<T, V> for Wired<'a, T, V> {
     fn lower<K: Apply<P = T>>(self, m: &mut Mounter<'_, V>, node: u32) -> T {
         if K::COMMUTES {
-            m.wire_seg(&self, run_seg_sig::<K, T>, patch_sig::<K, T>, node, [0; 16]);
+            m.wire_seg(&self, run_seg_sig::<K, T>, patch_sig::<K, T>, node, [0; 16], 0, None);
         } else {
             m.wire(&self, patch_sig::<K, T>, node, [0; 16]);
         }
@@ -424,7 +475,8 @@ where
     fn lower<K: Apply<P = P>>(self, m: &mut Mounter<'_, V>, node: u32) -> P {
         let init = (self.f)(self.w.get());
         if K::COMMUTES {
-            m.wire_seg(&self.w, run_seg_map::<K, T, F>, patch_map::<K, T, F>, node, recipe_of(self.f));
+            let last = seg_cacheable::<P>().then(|| word_of(&init));
+            m.wire_seg(&self.w, run_seg_map::<K, T, F>, patch_map::<K, T, F>, node, recipe_of(self.f), size_of::<F>().div_ceil(8) as u8, last);
         } else {
             m.wire(&self.w, patch_map::<K, T, F>, node, recipe_of(self.f));
         }

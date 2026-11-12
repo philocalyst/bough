@@ -235,7 +235,9 @@ where
     Wired<'a, T, V>: IntoProp<P, V>,
 {
     fn lower<K: Apply<P = P>>(self, m: &mut Mounter<'_, V>, node: u32) -> P {
+        let off = std::mem::replace(&mut m.rt.seg_off, true);
         let v = self.0.lower::<K>(m, node);
+        m.rt.seg_off = off;
         let w = *m.scope.wires.last().unwrap();
         m.rt.make_latest(w);
         v

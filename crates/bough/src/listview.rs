@@ -480,14 +480,18 @@ impl Rt {
         }
         self.free_space(row.space);
         let mut scope = self.lists.take_scope(row.scope);
-        for &w in &scope.wires {
-            let wr = &mut self.wires[w as usize];
-            if wr.head >= lo && wr.head < hi {
-                wr.dead = true;
-                wr.head = 0;
-                self.wire_free.push(w);
-            } else {
-                wr.dead = true;
+        // wires on the row's own cells are freed now (their heads were just cleared: no chain will)
+        let mut it = scope.wires.iter().copied();
+        while let Some(w) = it.next() {
+            let plain = w & crate::rt::LANE_TAG == 0 && !self.wires[w as usize].stub;
+            let i = if plain { Some(w) } else { None };
+            let seg = self.cut_wire(w, || it.next().unwrap());
+            for d in [i, seg].into_iter().flatten() {
+                let wr = &mut self.wires[d as usize];
+                if wr.head >= lo && wr.head < hi {
+                    wr.head = 0;
+                    self.wire_free.push(d);
+                }
             }
         }
         scope.wires.clear();
