@@ -21,3 +21,5 @@ mutant_journal = []
 mutant_moves = []
 # a frame with records in motion damages nothing
 mutant_sweep = []
+# reflection takes a list record's ring slot for its row (tests/reflect.rs must fail)
+mutant_reflect = []
