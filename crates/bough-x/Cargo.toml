@@ -17,5 +17,7 @@ bough-mem = { path = "../bough-mem" }
 mutant_delta = []
 # a list ignores the relation's journal
 mutant_journal = []
-# a moved record damages only where it is now
+# a moved record damages only where it is now; a record in motion only where it will rest
 mutant_moves = []
+# a frame with records in motion damages nothing
+mutant_sweep = []

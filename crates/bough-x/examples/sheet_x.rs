@@ -154,8 +154,20 @@ fn main() {
     });
     m.phase("select", reps, &mut world, &mut sheet, |w, s, k| {
         let top = (s.u.get::<Scroll>() / CELL_H) as u32;
-        s.select((top + (k as u32 * 5) % 30) * COLS as u32 + (k as u32 * 3) % COLS as u32);
+        s.select((top + (k as u32 * 5) % 30) * COLS as u32 + (k as u32 * 3) % COLS as u32, w.now());
         w.settle(s);
+    });
+    // the outline is now gliding: frames with no turn
+    let mut t = world.now();
+    m.phase("frame_in_motion", 8, &mut world, &mut sheet, |w, _, _| {
+        t += 16;
+        w.tick(t);
+    });
+    world.tick(t + 1000);
+    world.tiles.clear();
+    m.phase("frame_at_rest", reps, &mut world, &mut sheet, |w, _, _| {
+        t += 16;
+        w.tick(t);
     });
     m.phase("scroll_3_rows", reps, &mut world, &mut sheet, |w, s, k| {
         s.scroll_by(if (k / 4) % 2 == 0 { 3 * CELL_H } else { -3 * CELL_H });

@@ -4,7 +4,7 @@
 //! not generic. A column is created by the first record described at a position of the shape and is written
 //! through a typed pointer; every pass over a column (damage, hit testing, paint) is one function monomorphised
 //! for the column's archetype, reached once per column through its [`Desc`].
-use crate::expr::{StageId, U, Words};
+use crate::expr::{StageId, U, U_TIME, Words};
 use core::any::TypeId;
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 
@@ -194,6 +194,14 @@ pub trait Arch: Words {
     const NAME: &'static str;
     /// The latest stage among its expressions.
     const STAGE: StageId;
+    /// The record's paint reads `Time`: it can change with no turn.
+    const TIMED: bool = false;
+    /// The time at which this record comes to rest under `u` (0: it is at rest; `u32::MAX`: never). Between now
+    /// and then it stays inside the box of where it is now and where it will rest (motion along a segment).
+    #[inline(always)]
+    fn until(&self, _u: &U) -> u32 {
+        0
+    }
     /// The derivative: does this record show something else under `new` than under `old`?
     fn changed(&self, old: &U, new: &U) -> bool;
     #[inline(always)]
@@ -259,6 +267,7 @@ pub struct StoreView<'a> {
     pub live: Live<'a>,
 }
 
+pub type DeltaFn = unsafe fn(&mut RawCol, &StoreView, &U, &U, &mut Tiles);
 pub type HoverFn = unsafe fn(*mut (), *const u8, bool);
 pub type HitFn = unsafe fn(&RawCol, &StoreView, &U, i32, i32) -> u32;
 /// A column that hears the pointer: its handler and the hit kernel of its archetype (instantiated only for
@@ -278,7 +287,7 @@ pub struct Desc {
     pub page: Layout,
     pub reads: u64,
     pub moves: bool,
-    delta: unsafe fn(&RawCol, &StoreView, &U, &U, &mut Tiles),
+    delta: DeltaFn,
     paint: unsafe fn(&RawCol, &StoreView, &U, *mut ()),
 }
 
@@ -310,6 +319,14 @@ pub struct RawCol {
     /// Sites (positions of the shape) that share this column.
     pub k: u32,
     pub reads: u64,
+    /// The archetype's delta kernel, beside `reads` and the pages it runs over: a block write reaches a page
+    /// through this header alone (block, header, page).
+    delta: DeltaFn,
+    /// A column whose records read `Time`: until when some record is in motion (0: none), and the box, in the
+    /// store's space, that the moving records stay inside until then. Written by the delta when a motion
+    /// starts; while it holds, each frame damages the box and evaluates nothing.
+    pub until: u32,
+    pub sweep: Rect,
     pub key: TypeId,
     pub desc: &'static Desc,
     /// How many child stores were described before this column's first site: its place in paint order.
@@ -475,7 +492,7 @@ impl Store {
             }
         }
         let j = pick.unwrap_or_else(|| {
-            self.cols.push(RawCol { pages: core::ptr::null_mut(), npages: 0, nrec: 0, k: 0, reads: d.reads, key, desc: d, seg, hover });
+            self.cols.push(RawCol { pages: core::ptr::null_mut(), npages: 0, nrec: 0, k: 0, reads: d.reads, delta: d.delta, until: 0, sweep: Rect::default(), key, desc: d, seg, hover });
             self.order.push(Pass::Col(self.cols.len() as u32 - 1));
             self.cols.len() - 1
         });
@@ -499,24 +516,51 @@ impl Store {
     }
 
     /// The damage of a change of the block from `old` to `new` (`ch` = the changed words), for this store and
-    /// the stores under it. One indirect call per column that reads a changed word.
-    pub fn delta(&self, old: &U, new: &U, ch: u64, tiles: &mut Tiles) {
+    /// the stores under it. One indirect call per column that reads a changed word. Returns whether a column
+    /// is now in motion.
+    pub fn delta(&mut self, old: &U, new: &U, ch: u64, tiles: &mut Tiles) -> bool {
+        let mut moving = false;
         if self.space.reads() & ch != 0 {
             // the space moved: everything it shows is somewhere else
             tiles.mark(self.space.clip);
         } else {
             let live = Live { cap: self.cap, rows: &self.row_live, nrec: 0 };
-            for c in &self.cols {
+            for c in &mut self.cols {
                 if c.reads & ch != 0 {
                     let sv = StoreView { space: &self.space, live: Live { nrec: c.nrec, ..live } };
                     // SAFETY: `delta` was instantiated for the archetype `c` was created with.
-                    unsafe { (c.desc.delta)(c, &sv, old, new, tiles) }
+                    unsafe { (c.delta)(c, &sv, old, new, tiles) }
+                    moving |= c.until != 0;
                 }
             }
         }
-        for s in &self.subs {
-            s.delta(old, new, ch, tiles);
+        for s in &mut self.subs {
+            moving |= s.delta(old, new, ch, tiles);
         }
+        moving
+    }
+
+    /// A frame at time `now` with no turn: damage where records in motion may be. Nothing is evaluated: a
+    /// column in motion is one compare and one mark. Returns whether anything is still moving.
+    pub fn tick(&mut self, u: &U, now: u32, tiles: &mut Tiles) -> bool {
+        let mut moving = false;
+        let org = self.space.origin(u);
+        for c in &mut self.cols {
+            if c.until != 0 {
+                #[cfg(not(feature = "mutant_sweep"))]
+                tiles.mark(c.sweep.shift(org).and(self.space.clip));
+                if now >= c.until {
+                    // this frame shows it at rest; nothing after it
+                    (c.until, c.sweep) = (0, Rect::default());
+                } else {
+                    moving = true;
+                }
+            }
+        }
+        for s in &mut self.subs {
+            moving |= s.tick(u, now, tiles);
+        }
+        moving
     }
 
     /// Paint everything, in the order the view described it.
@@ -624,11 +668,12 @@ pub fn changed_sparse<A: Arch>(pg: &Page<A>, mut live: u64, old: &U, new: &U) ->
     m
 }
 
-unsafe fn delta_col<A: Arch>(col: &RawCol, sv: &StoreView, old: &U, new: &U, tiles: &mut Tiles) {
+unsafe fn delta_col<A: Arch>(col: &mut RawCol, sv: &StoreView, old: &U, new: &U, tiles: &mut Tiles) {
     // SAFETY: the caller instantiated this for the column's archetype.
     let pages = unsafe { col.all::<A>() };
     let org = sv.space.origin(new);
     let clip = sv.space.clip;
+    let (mut until, mut sweep) = (col.until, col.sweep);
     for (pi, pg) in pages.iter().enumerate() {
         let live = sv.live.page(pi);
         if live == 0 {
@@ -640,7 +685,29 @@ unsafe fn delta_col<A: Arch>(col: &RawCol, sv: &StoreView, old: &U, new: &U, til
         if m != 0 {
             mark_page(pg, m, org, clip, old, new, tiles);
         }
+        if A::TIMED {
+            // Records in motion under the new block: until when, and inside which box. Every live record is
+            // asked, not only those `m` names: a motion that starts now shows, at this instant, exactly what
+            // was shown before it started.
+            let mut k = live;
+            while k != 0 {
+                let i = k.trailing_zeros() as usize;
+                k &= k - 1;
+                let t = pg.rec[i].until(new);
+                if t > new.w[U_TIME] {
+                    let mut end = *new;
+                    end.w[U_TIME] = t;
+                    let r = pg.rect(i);
+                    let b = r.shift(pg.rec[i].offset(new)).or(r.shift(pg.rec[i].offset(&end)));
+                    #[cfg(feature = "mutant_moves")]
+                    let b = r.shift(pg.rec[i].offset(&end));
+                    sweep = if until == 0 { b } else { sweep.or(b) };
+                    until = until.max(t);
+                }
+            }
+        }
     }
+    (col.until, col.sweep) = (until, sweep);
 }
 
 /// Damage the records of a page named by `m`.

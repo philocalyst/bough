@@ -24,7 +24,13 @@ lens!(pub Sel: u32 = 2);
 lens!(pub Scroll: i32 = 3);
 // the column totals, in hundredths
 lens!(pub Sum[COLS]: i32 = 4);
-pub const NWORDS: usize = 4 + COLS;
+// the selection outline's glide: where it started from and when
+lens!(pub SelFromX: i32 = 14);
+lens!(pub SelFromY: i32 = 15);
+lens!(pub SelT0: u32 = 16);
+pub const NWORDS: usize = 7 + COLS;
+/// The glide's length in ticks of `Time` (milliseconds).
+pub const SEL_MS: u32 = 180;
 
 pub struct Sheet {
     pub u: U,
@@ -58,6 +64,10 @@ fn chrome(dark: u32) -> Color {
 }
 fn head((dark, hot, col): (u32, u32, u32)) -> Color {
     if hot == col { Color(0x9db8f0) } else { chrome(dark) }
+}
+/// Where the outline is: a glide from where it was to the selected cell. No turn runs while it moves.
+fn sel_glide() -> impl bough_x::kinds::Motion {
+    Glide::<SEL_MS, _, _, _>((un::<SelFromX>(), un::<SelFromY>()), un::<Sel>().map(sel_at), un::<SelT0>())
 }
 fn sel_at(i: u32) -> (i32, i32) {
     ((i % COLS as u32) as i32 * CELL_W, (i / COLS as u32) as i32 * CELL_H)
@@ -104,7 +114,14 @@ impl Sheet {
         let s = self.u.at::<Sum>(c) + d;
         self.u.set_at::<Sum>(c, s);
     }
-    pub fn select(&mut self, i: u32) {
+    /// Select a cell at time `now`: the outline glides there from wherever it is.
+    pub fn select(&mut self, i: u32, now: u32) {
+        let mut u = self.u;
+        u.w[U_TIME] = now;
+        let (x, y) = sel_glide().eval(&Cx::of(&u));
+        self.u.set::<SelFromX>(x);
+        self.u.set::<SelFromY>(y);
+        self.u.set::<SelT0>(now);
         self.u.set::<Sel>(i);
     }
     pub fn scroll_by(&mut self, dy: i32) {
@@ -190,7 +207,7 @@ impl View for Sheet {
                     }),
                 )
             });
-            s.row(|| ([Rect::new(GUTTER, 0, CELL_W, CELL_H)], Outline::<4, _, _>(Kc::<0x2f6bff>, un::<Sel>().map(sel_at))));
+            s.row(|| ([Rect::new(GUTTER, 0, CELL_W, CELL_H)], Outline::<4, _, _>(Kc::<0x2f6bff>, sel_glide())));
         });
         // footer: the totals are words of the block, formatted while shading
         s.row(|| {
