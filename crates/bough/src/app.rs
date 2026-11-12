@@ -1280,6 +1280,12 @@ impl<V: View> App<V> {
 
     /// A from-scratch full redraw of the current retained state (every tile, the same kernels).
     pub fn reference_pixels(&mut self) -> Vec<u8> {
+        // the kernel backend's frames are judged by the kernel's own definition (`cpu::reference`)
+        if self.target.is_some() && self.repair == Repair::Kernel {
+            if let Some(px) = self.kernel.get_or_insert_with(Default::default).reference(&self.rt) {
+                return px;
+            }
+        }
         if self.target.is_some() {
             let (w, h) = (self.rt.win_w as usize, self.rt.win_h as usize);
             let mut v = vec![0u8; w * 4 * h];
