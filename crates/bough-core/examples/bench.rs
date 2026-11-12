@@ -1,6 +1,7 @@
 //! Bough vs ArenaTree (zgx scene model): retired instructions and ns per operation.
 //!
-//! macOS only for instruction counts: `proc_pid_rusage(getpid(), RUSAGE_INFO_V4)` -> ri_instructions.
+//! Instruction counts: macOS `proc_pid_rusage(getpid(), RUSAGE_INFO_V4)` -> ri_instructions (the task); elsewhere
+//! the calling thread's counters (`bough_mem::pmu`, user mode).
 //! Single-threaded. Run: `cargo run --release --example bench` (or `--profile dist`).
 //! Env: BENCH_FILTER=substring to select ops, BENCH_QUICK=1 for short runs.
 
@@ -18,15 +19,24 @@ mod cost_r6;
 
 // ------------------------------------------------------------------------------------ counters
 
+// Linux (round 7, bench lane): the calling thread's counters (bough_mem::pmu, user mode), so this runs on ilo-prod.
+#[cfg(not(target_os = "macos"))]
+fn counters() -> (u64, u64) {
+    bough_mem::pmu::instructions_cycles()
+}
+
+#[cfg(target_os = "macos")]
 #[repr(C)]
 struct RusageInfoV4 {
     uuid: [u8; 16],
     f: [u64; 35],
 }
+#[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut RusageInfoV4) -> i32;
     fn getpid() -> i32;
 }
+#[cfg(target_os = "macos")]
 fn counters() -> (u64, u64) {
     let mut r = RusageInfoV4 { uuid: [0; 16], f: [0; 35] };
     let rc = unsafe { proc_pid_rusage(getpid(), 4, &mut r) };

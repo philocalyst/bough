@@ -38,6 +38,10 @@ pub mod ui;
 
 pub use bough_text::numeric::NumFmt;
 
+/// hotpath (feature `hotpath`), for binaries outside this crate that start its guard (`bough-workloads`).
+#[cfg(feature = "hotpath")]
+pub use hotpath;
+
 /// The application surface (`designs/reactivity/final`): views, state, elements in flow (laid out by cephal),
 /// routes, and `Application::run`. No coordinates: `use bough::raw::*;`.
 pub mod prelude {

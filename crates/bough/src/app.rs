@@ -281,6 +281,7 @@ const CPU_TILES_COLD: u32 = 4096;
 impl<V: View> App<V> {
     /// Mount `view`. `gpu`: create the fused presenter (its shared buffer is the region); otherwise the
     /// region is heap memory and `frame` stops after the tile list (the RENDER=0 shape).
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn new(view: V, cfg: Config, gpu: bool) -> App<V> {
         let t_mount = std::time::Instant::now();
         #[cfg(target_os = "macos")]
@@ -486,6 +487,7 @@ impl<V: View> App<V> {
 
     /// One turn: run the handler, settle the wires it queued (text patches and marks happen inside the
     /// wires), lay out what changed.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn turn(&mut self, f: impl FnOnce(&mut V)) {
         self.sync();
         if self.reclaiming() {
@@ -544,6 +546,7 @@ impl<V: View> App<V> {
 
     /// `View::changed` waves: while something crossed a boundary, show it to the owner and settle what it
     /// wrote (at most 8 waves; a ninth is a cycle).
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub(crate) fn effects(&mut self) {
         for _ in 0..8 {
             if self.rt.pubs.is_empty() && self.rt.asy.committed.is_empty() {
@@ -573,6 +576,7 @@ impl<V: View> App<V> {
     }
 
     /// Describe the view again and patch the retained records (`describe.rs`); not when mounted once.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub(crate) fn redescribe(&mut self) {
         if !self.once {
             // SAFETY: the tape was recorded by this owner's mount at the start of the Bough.
@@ -801,6 +805,7 @@ impl<V: View> App<V> {
     }
 
     /// The publication policy is chosen by the turn's source at compile time (`PACED`), never per frame.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn frame_as<const PACED: bool>(&mut self) -> bool {
         let core = !self.rt.bough.plane(0).is_clear();
         let paint = !self.rt.paint.plane(0).is_clear();
@@ -842,6 +847,7 @@ impl<V: View> App<V> {
         true
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn draw<const PACED: bool>(&mut self, i: usize, epoch: u32) {
         let mut purged = false;
         // a CPU-repairable frame must not make the surface resident (a first residency drains the pre-armed

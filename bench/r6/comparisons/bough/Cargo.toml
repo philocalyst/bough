@@ -1,0 +1,26 @@
+[package]
+name = "cmp-bough"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+bough = { path = "../../../../../lead/crates/bough" }
+bough-metal = { path = "../../../../../lead/crates/bough-metal" }
+cmpkit = { path = "../cmpkit" }
+
+[profile.release]
+debug = 1
+lto = "thin"
+
+[patch.crates-io]
+wgpu-hal = { path = "../../../../../lead/vendor/wgpu-hal" }
+wgpu-types = { path = "../../../../../lead/vendor/wgpu-types" }
+naga = { path = "../../../../../lead/vendor/naga" }
+
+[patch."https://github.com/schell/wgsl-rs"]
+wgsl-rs = { path = "../../../../../lead/vendor/wgsl-rs/crates/wgsl-rs" }
+wgsl-rs-macros = { path = "../../../../../lead/vendor/wgsl-rs/crates/wgsl-rs-macros" }
+wgsl-rs-ir = { path = "../../../../../lead/vendor/wgsl-rs/crates/wgsl-rs-ir" }

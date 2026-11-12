@@ -1,0 +1,40 @@
+# host=mileswirht os=Darwin 24.6.0 arch=arm64
+# cpu=Apple M3 Pro cores=11 mem=36GiB
+# load=17.50 23.49 26.49
+# commit=6deab7e4e7 dirty date=2026-11-12T10:05:42Z rustc=1.101.0-nightly_5d8fec066_2026-10-16
+# binary=workload profile=dist sha256=01e6f3cc7d0cdb9d bytes=6255760
+## sheet
+  Wall Time    666.4 ms  ±   200.2 ms     519.4 ms  …  1133.9 ms
+  Memory       340.5 MiB ±     3.4 MiB    336.6 MiB …   345.8 MiB
+        0.53 real         0.31 user         0.08 sys
+           359579648  maximum resident set size
+          3973115225  instructions retired
+           390089600  peak memory footprint
+## ide
+  Wall Time    116.7 ms  ±    13.3 ms      94.9 ms  …   138.4 ms
+  Memory        75.0 MiB ±     3.1 MiB     71.0 MiB …    82.2 MiB
+        0.12 real         0.04 user         0.02 sys
+            84049920  maximum resident set size
+           504260373  instructions retired
+           154355904  peak memory footprint
+## dash
+  Wall Time     93.5 ms  ±    14.9 ms      68.7 ms  …   117.7 ms
+  Memory        31.1 MiB ±     0.7 MiB     30.4 MiB …    32.3 MiB
+        0.12 real         0.01 user         0.01 sys
+            32702464  maximum resident set size
+           200621075  instructions retired
+           122325184  peak memory footprint
+## canvas
+  Wall Time    127.8 ms  ±     9.4 ms     110.9 ms  …   140.0 ms
+  Memory        38.1 MiB ±     1.5 MiB     34.7 MiB …    40.1 MiB
+        0.14 real         0.02 user         0.02 sys
+            42467328  maximum resident set size
+           204314621  instructions retired
+           137087232  peak memory footprint
+## chat
+  Wall Time    218.4 ms  ±    17.6 ms     195.1 ms  …   242.3 ms
+  Memory        88.0 MiB ±     2.8 MiB     84.1 MiB …    91.8 MiB
+        0.24 real         0.13 user         0.03 sys
+            93995008  maximum resident set size
+          1216333054  instructions retired
+           173787456  peak memory footprint

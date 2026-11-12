@@ -1,0 +1,18 @@
+# host=mileswirht os=Darwin 24.6.0 arch=arm64
+# cpu=Apple M3 Pro cores=11 mem=36GiB
+# load=2.83 3.11 3.59
+# commit=13253be95f date=2026-11-12T11:32:01Z rustc=1.101.0-nightly_5d8fec066_2026-10-16
+# binary=workload profile=dist sha256=7ff39d188a09f130 bytes=6255840
+# env MODE=redescribe RENDER=1 REPS=32 SCENE_SCALE=1
+scene	phase	steps	instr_p50	instr_p95	cycles_p50	wall_us_p50	wall_us_p95	wall_us_max	allocs_per_step	footprint_mib	peak_mib
+# scene=sheet model="10000 rows x 10 columns = 100000 cells" fanout=10000 scene_scale=1 mode=redescribe render=1 device_scale=2 window=1280x800 reps=32
+# records=240055 since_exec_ms=346.6 build_ms=0.3
+sheet	mount	1	3825100310	3825100310	988165160	323872.4	323872.4	323872.4	-	413.7	374.0
+sheet	first_frame	1	11208863	11208863	10815239	13014.8	13014.8	13014.8	-	413.7	374.0
+sheet	steady	32	22649	3012778	32651	15.4	4534.5	4990.8	-	461.0	374.5
+sheet	hover	32	15620544	16193046	13156573	6723.5	7724.3	8904.7	-	467.6	380.5
+sheet	theme	32	57559616	57893598	10451533	6036.2	6385.0	6497.1	-	467.6	380.5
+sheet	resize	32	125900080	2123950217	76469814	30908.8	136590.2	152817.2	-	435.4	383.8
+sheet	resize_anim	32	78670793	2123205733	45914003	18239.9	117412.8	129948.5	-	434.8	383.8
+sheet	anim	32	29844	2869305	29465	244.6	4246.2	4312.5	-	482.4	383.8
+sheet	idle	32	12062	12062	2494	1.0	1.1	5.6	-	482.4	383.8

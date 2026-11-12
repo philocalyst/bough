@@ -1,0 +1,248 @@
+# host=ilo-prod os=Linux 6.18.54 arch=x86_64
+# cpu=AMD Ryzen 7 3700X 8-Core Processor threads=16 mem=62GiB
+# governor=powersave boost=1 nmi_watchdog=1 perf_event_paranoid=2
+# load=20.79 17.79 18.82
+# commit=2931c0fe50 dirty date=2026-11-12T09:31:38Z rustc=1.101.0-nightly_5d8fec066_2026-10-16
+# binary=pmu_cells profile=dist sha256=3b0da83ea61fafcb bytes=565688
+# pmu_cells sizes 1 64 256 4096 100000 1000000; three event sets; each row a median of five slopes (64 vs 320 ops); taskset -c 2; user mode
+# BOUGH_PMU=
+n       shape   op      instructions    cycles  complete
+1       flat    set_ink 6.00    2.09    true
+1       flat    damage_rect     128.46  57.10   true
+1       flat    translate_all   274.00  90.63   true
+1       flat    repair  380.86  191.78  true
+1       chains  set_ink 6.00    2.15    true
+1       chains  damage_rect     128.46  54.54   true
+1       chains  translate_all   274.00  84.62   true
+1       chains  repair  380.86  179.78  true
+64      flat    set_ink 678.54  252.58  true
+64      flat    damage_rect     128.46  54.89   true
+64      flat    front_insert    2514.00 1067.79 true
+64      flat    translate_all   1460.00 692.94  true
+64      flat    repair  380.86  184.43  true
+64      chains  set_ink 678.54  242.96  true
+64      chains  damage_rect     128.46  55.41   true
+64      chains  front_insert    2514.00 1100.10 true
+64      chains  translate_all   1460.00 629.52  true
+64      chains  repair  380.86  174.49  true
+256     flat    set_ink 725.58  294.26  true
+256     flat    damage_rect     128.46  55.26   true
+256     flat    front_insert    2586.00 1037.20 true
+256     flat    translate_all   1901.00 832.63  true
+256     flat    repair  380.86  181.04  true
+256     chains  set_ink 725.58  309.30  true
+256     chains  damage_rect     128.46  55.37   true
+256     chains  front_insert    2586.00 1114.89 true
+256     chains  translate_all   1901.00 839.96  true
+256     chains  repair  380.86  181.92  true
+4096    flat    set_ink 827.45  515.18  true
+4096    flat    damage_rect     128.46  55.05   true
+4096    flat    front_insert    2797.00 1242.52 true
+4096    flat    translate_all   10351.00        4006.48 true
+4096    flat    repair  380.86  168.32  true
+4096    chains  set_ink 827.45  471.95  true
+4096    chains  damage_rect     128.46  54.48   true
+4096    chains  front_insert    2797.00 1180.64 true
+4096    chains  translate_all   10351.00        4056.69 true
+4096    chains  repair  380.86  189.80  true
+100000  flat    set_ink 908.60  1074.27 true
+100000  flat    damage_rect     128.46  55.63   true
+100000  flat    front_insert    2983.00 1237.16 true
+100000  flat    translate_all   220951.02       81099.30        true
+100000  flat    repair  380.86  185.08  true
+100000  chains  set_ink 908.59  947.23  true
+100000  chains  damage_rect     128.46  55.66   true
+100000  chains  front_insert    2983.00 1226.55 true
+100000  chains  translate_all   220951.02       82013.22        true
+100000  chains  repair  380.86  174.55  true
+1000000 flat    set_ink 968.98  2316.02 true
+1000000 flat    damage_rect     128.46  54.71   true
+1000000 flat    front_insert    4030.00 1788.82 true
+1000000 flat    translate_all   2196044.33      1560376.07      true
+1000000 flat    repair  380.86  210.38  true
+1000000 chains  set_ink 968.98  2095.64 true
+1000000 chains  damage_rect     128.46  65.39   true
+1000000 chains  front_insert    4030.00 1164.85 true
+1000000 chains  translate_all   2196044.35      1420858.70      true
+1000000 chains  repair  380.86  224.23  true
+# BOUGH_PMU=l1d-misses,cache-misses,dc-fill-dram
+n       shape   op      instructions    cycles  l1d-misses      cache-misses   dc-fill-dram     complete
+1       flat    set_ink 6.00    1.91    0.00    0.00    0.00    true
+1       flat    damage_rect     128.46  52.22   -0.02   0.00    0.00    true
+1       flat    translate_all   274.00  72.30   0.00    0.00    0.00    true
+1       flat    repair  380.86  173.53  0.11    0.00    0.00    true
+1       chains  set_ink 6.00    1.93    0.00    0.00    0.00    true
+1       chains  damage_rect     128.46  48.68   -0.00   0.00    0.00    true
+1       chains  translate_all   274.00  70.02   -0.01   0.00    0.00    true
+1       chains  repair  380.86  168.57  0.08    0.00    0.00    true
+64      flat    set_ink 678.54  220.07  -0.02   0.00    0.00    true
+64      flat    damage_rect     128.46  46.23   -0.02   0.00    0.00    true
+64      flat    front_insert    2514.00 786.77  0.03    0.05    0.00    true
+64      flat    translate_all   1460.00 499.80  0.00    0.00    0.00    true
+64      flat    repair  380.86  143.06  0.00    0.00    0.00    true
+64      chains  set_ink 678.54  188.65  0.00    0.00    0.00    true
+64      chains  damage_rect     128.46  45.82   0.00    0.00    0.00    true
+64      chains  front_insert    2514.00 761.13  0.00    0.00    0.00    true
+64      chains  translate_all   1460.00 501.33  0.00    0.00    0.00    true
+64      chains  repair  380.86  142.35  0.00    0.00    0.00    true
+256     flat    set_ink 725.58  234.20  0.00    0.00    0.00    true
+256     flat    damage_rect     128.46  44.23   0.00    0.00    0.00    true
+256     flat    front_insert    2586.00 796.27  0.00    0.00    0.00    true
+256     flat    translate_all   1901.00 611.03  0.00    0.00    0.00    true
+256     flat    repair  380.86  142.72  0.00    0.00    0.00    true
+256     chains  set_ink 725.58  232.50  0.00    0.00    0.00    true
+256     chains  damage_rect     128.46  43.56   0.00    0.00    0.00    true
+256     chains  front_insert    2586.00 803.79  0.00    0.00    0.00    true
+256     chains  translate_all   1901.00 612.50  0.00    0.00    0.00    true
+256     chains  repair  380.86  142.73  0.00    0.00    0.00    true
+4096    flat    set_ink 827.45  395.57  7.03    0.01    0.00    true
+4096    flat    damage_rect     128.46  48.10   0.00    0.00    0.00    true
+4096    flat    front_insert    2797.00 859.32  0.00    0.00    0.00    true
+4096    flat    translate_all   10351.00        2933.93 4.97    0.00    0.00   true
+4096    flat    repair  380.86  143.48  0.00    0.00    0.00    true
+4096    chains  set_ink 827.45  386.37  6.26    0.02    0.00    true
+4096    chains  damage_rect     128.46  48.71   0.00    0.00    0.00    true
+4096    chains  front_insert    2797.00 862.48  0.00    0.00    0.00    true
+4096    chains  translate_all   10351.00        2930.27 -0.00   0.00    0.00   true
+4096    chains  repair  380.86  143.79  0.00    0.00    0.00    true
+100000  flat    set_ink 908.60  602.32  8.56    3.86    0.04    true
+100000  flat    damage_rect     128.46  52.71   -0.02   0.00    0.00    true
+100000  flat    front_insert    2983.00 1259.07 0.14    0.21    0.00    true
+100000  flat    translate_all   220951.02       64794.73        2070.00 285.23 0.02     true
+100000  flat    repair  380.86  181.14  0.11    0.02    0.00    true
+100000  chains  set_ink 908.60  821.12  11.72   7.00    0.13    true
+100000  chains  damage_rect     128.46  58.08   -0.02   -0.00   0.00    true
+100000  chains  front_insert    2983.00 1222.83 0.26    0.64    0.00    true
+100000  chains  translate_all   220951.02       81442.77        2381.25 749.38 0.03     true
+100000  chains  repair  380.86  178.71  0.10    0.03    0.00    true
+1000000 flat    set_ink 968.98  2145.35 18.18   17.19   3.36    true
+1000000 flat    damage_rect     128.46  49.56   0.00    0.00    0.00    true
+1000000 flat    front_insert    4030.00 1238.47 0.00    0.00    0.00    true
+1000000 flat    translate_all   2196044.20      784345.60       22943.08       11120.75 16.56   true
+1000000 flat    repair  380.86  148.06  0.00    0.00    0.00    true
+1000000 chains  set_ink 968.98  1860.44 20.33   17.70   2.43    true
+1000000 chains  damage_rect     128.46  54.47   -0.02   0.00    0.00    true
+1000000 chains  front_insert    4030.00 1155.74 -0.01   0.00    0.00    true
+1000000 chains  translate_all   2196044.20      799364.66       22971.18       11284.25 24.54   true
+1000000 chains  repair  380.86  195.43  0.16    0.05    0.00    true
+# BOUGH_PMU=l1d-loads,dtlb-misses,dc-fill-ccx
+n       shape   op      instructions    cycles  l1d-loads       dtlb-misses    dc-fill-ccx      complete
+1       flat    set_ink 6.00    2.41    2.02    0.00    0.00    true
+1       flat    damage_rect     128.46  57.36   18.49   0.00    0.00    true
+1       flat    translate_all   274.00  94.08   87.00   0.00    0.00    true
+1       flat    repair  380.87  196.34  80.05   0.00    0.01    true
+1       chains  set_ink 6.00    2.23    2.01    0.00    0.00    true
+1       chains  damage_rect     128.46  55.64   18.52   0.00    0.01    true
+1       chains  translate_all   274.00  95.68   86.97   0.00    0.00    true
+1       chains  repair  380.86  196.46  79.37   0.00    0.01    true
+64      flat    set_ink 678.54  286.26  155.45  0.00    0.01    true
+64      flat    damage_rect     128.46  59.40   18.48   0.00    0.00    true
+64      flat    front_insert    2514.00 1242.73 752.11  0.00    0.17    true
+64      flat    translate_all   1460.00 717.97  514.34  0.00    0.03    true
+64      flat    repair  380.86  189.27  79.67   0.00    0.01    true
+64      chains  set_ink 678.54  265.83  155.53  0.00    0.02    true
+64      chains  damage_rect     128.46  54.37   18.36   0.00    0.00    true
+64      chains  front_insert    2514.00 1280.61 752.98  0.00    0.14    true
+64      chains  translate_all   1460.00 721.61  514.32  0.00    0.08    true
+64      chains  repair  380.86  196.04  79.72   0.00    0.02    true
+256     flat    set_ink 725.58  333.79  165.33  0.00    0.04    true
+256     flat    damage_rect     128.46  57.96   18.33   0.00    0.00    true
+256     flat    front_insert    2586.00 1259.49 767.51  0.00    0.20    true
+256     flat    translate_all   1901.00 911.32  606.21  0.00    0.21    true
+256     flat    repair  380.86  178.27  80.13   0.00    0.02    true
+256     chains  set_ink 725.58  308.36  166.12  0.00    0.05    true
+256     chains  damage_rect     128.46  56.57   18.69   0.00    0.00    true
+256     chains  front_insert    2586.00 1317.18 767.45  0.00    0.31    true
+256     chains  translate_all   1901.00 880.64  606.36  0.00    0.10    true
+256     chains  repair  380.86  190.19  79.30   0.00    0.09    true
+4096    flat    set_ink 827.46  525.14  180.08  0.00    0.54    true
+4096    flat    damage_rect     128.46  56.36   18.45   0.00    0.01    true
+4096    flat    front_insert    2797.00 1440.64 817.14  0.00    0.20    true
+4096    flat    translate_all   10351.00        4208.62 2414.16 0.22    0.40   true
+4096    flat    repair  380.86  200.61  80.03   0.00    0.03    true
+4096    chains  set_ink 827.46  497.30  182.77  0.00    0.34    true
+4096    chains  damage_rect     128.46  56.57   18.56   0.00    0.01    true
+4096    chains  front_insert    2797.00 1320.98 816.81  0.00    0.11    true
+4096    chains  translate_all   10351.00        4270.14 2417.80 0.78    0.39   true
+4096    chains  repair  380.86  204.62  80.18   0.00    0.02    true
+100000  flat    set_ink 908.60  1377.29 195.54  0.36    2.08    true
+100000  flat    damage_rect     128.46  55.93   18.48   0.00    0.00    true
+100000  flat    front_insert    2983.00 1395.79 881.56  0.00    0.08    true
+100000  flat    translate_all   220951.02       85426.66        47530.51       7.12     74.83   true
+100000  flat    repair  380.86  190.64  80.48   0.00    0.01    true
+100000  chains  set_ink 908.60  931.25  194.29  0.10    3.29    true
+100000  chains  damage_rect     128.46  59.54   18.54   0.00    0.00    true
+100000  chains  front_insert    2983.00 1399.55 881.66  0.00    0.21    true
+100000  chains  translate_all   220951.02       87365.83        47532.26       6.99     87.84   true
+100000  chains  repair  380.86  204.46  80.75   0.00    0.05    true
+1000000 flat    set_ink 968.98  1870.08 203.85  1.18    2.63    true
+1000000 flat    damage_rect     128.46  56.46   18.36   0.00    0.00    true
+1000000 flat    front_insert    4030.00 1778.62 1448.53 0.00    0.25    true
+1000000 flat    translate_all   2196044.25      1029800.59      477174.68      5807.46  475.00  true
+1000000 flat    repair  380.86  204.22  78.88   0.00    0.00    true
+1000000 chains  set_ink 968.98  2071.99 206.08  1.07    3.24    true
+1000000 chains  damage_rect     128.46  56.21   18.32   0.00    0.00    true
+1000000 chains  front_insert    4030.00 1815.81 1444.59 0.00    0.22    true
+1000000 chains  translate_all   2196044.16      635239.45       477002.66      5958.93  215.14  true
+1000000 chains  repair  380.86  192.57  80.50   0.00    0.07    true
+# BOUGH_PMU=branch-misses,dc-fill-l2,cache-refs
+n       shape   op      instructions    cycles  branch-misses   dc-fill-l2     cache-refs       complete
+1       flat    set_ink 6.00    2.50    0.00    0.00    -0.01   true
+1       flat    damage_rect     128.46  57.65   0.46    -0.02   0.05    true
+1       flat    translate_all   274.00  84.46   0.00    -0.01   0.01    true
+1       flat    repair  380.86  194.09  0.57    0.03    0.07    true
+1       chains  set_ink 6.00    2.21    0.00    0.00    -0.03   true
+1       chains  damage_rect     128.46  57.88   0.42    -0.02   -0.02   true
+1       chains  translate_all   274.00  84.05   0.00    0.00    0.07    true
+1       chains  repair  380.86  202.38  0.55    0.07    0.20    true
+64      flat    set_ink 678.54  276.41  0.04    0.00    0.06    true
+64      flat    damage_rect     128.46  58.47   0.41    -0.00   0.05    true
+64      flat    front_insert    2514.00 1283.30 0.04    -0.02   5.14    true
+64      flat    translate_all   1460.00 731.50  2.01    -0.01   0.11    true
+64      flat    repair  380.86  198.77  0.57    0.07    0.16    true
+64      chains  set_ink 678.54  269.80  0.04    -0.03   -0.01   true
+64      chains  damage_rect     128.46  56.20   0.42    -0.02   -0.01   true
+64      chains  front_insert    2514.00 1293.91 0.05    -0.01   6.56    true
+64      chains  translate_all   1460.00 759.95  2.01    -0.00   0.67    true
+64      chains  repair  380.86  181.60  0.46    0.07    0.23    true
+256     flat    set_ink 725.58  331.27  1.23    0.12    0.56    true
+256     flat    damage_rect     128.46  59.67   0.44    -0.01   0.05    true
+256     flat    front_insert    2586.00 1273.50 0.02    0.01    3.11    true
+256     flat    translate_all   1901.00 910.66  2.01    -0.01   0.35    true
+256     flat    repair  380.86  201.23  0.54    0.07    0.24    true
+256     chains  set_ink 725.58  346.08  1.12    0.14    0.56    true
+256     chains  damage_rect     128.46  62.56   0.43    -0.02   -0.04   true
+256     chains  front_insert    2586.00 1202.19 0.03    -0.02   2.09    true
+256     chains  translate_all   1901.00 855.75  2.01    -0.02   0.27    true
+256     chains  repair  380.86  192.30  0.48    0.10    0.27    true
+4096    flat    set_ink 827.45  517.01  5.58    3.05    7.18    true
+4096    flat    damage_rect     128.46  60.10   0.43    -0.01   -0.00   true
+4096    flat    front_insert    2797.00 1269.26 0.00    -0.01   3.69    true
+4096    flat    translate_all   10351.00        4185.29 2.16    11.28   70.41  true
+4096    flat    repair  380.86  186.29  0.52    0.08    0.26    true
+4096    chains  set_ink 827.45  532.20  5.54    2.34    10.26   true
+4096    chains  damage_rect     128.46  57.09   0.43    0.00    0.05    true
+4096    chains  front_insert    2797.00 1435.95 0.02    -0.02   6.89    true
+4096    chains  translate_all   10351.00        4199.89 2.16    17.13   84.20  true
+4096    chains  repair  380.86  195.26  0.48    0.10    0.14    true
+100000  flat    set_ink 908.60  859.16  12.25   3.09    20.55   true
+100000  flat    damage_rect     128.46  60.88   0.45    -0.01   0.01    true
+100000  flat    front_insert    2983.00 1309.51 0.00    0.00    0.69    true
+100000  flat    translate_all   220951.02       60489.91        5.12    60.83  3781.75  true
+100000  flat    repair  380.86  195.16  0.49    0.04    0.24    true
+100000  chains  set_ink 908.60  850.82  11.80   3.67    17.11   true
+100000  chains  damage_rect     128.46  58.17   0.41    -0.01   -0.00   true
+100000  chains  front_insert    2983.00 892.99  0.00    0.00    -0.02   true
+100000  chains  translate_all   220951.02       77476.66        5.74    92.46  4325.79  true
+100000  chains  repair  380.86  171.61  0.54    0.08    0.13    true
+1000000 flat    set_ink 968.98  1985.78 16.97   3.03    29.42   true
+1000000 flat    damage_rect     128.46  49.32   0.38    0.00    -0.01   true
+1000000 flat    front_insert    4030.00 1923.90 0.07    0.38    4.79    true
+1000000 flat    translate_all   2196044.16      653900.09       6.11    198.69 49785.41 true
+1000000 flat    repair  380.86  194.71  0.54    0.08    0.14    true
+1000000 chains  set_ink 968.98  2493.53 16.33   2.41    25.27   true
+1000000 chains  damage_rect     128.46  55.39   0.42    -0.00   0.01    true
+1000000 chains  front_insert    4030.00 1948.85 0.11    0.05    20.39   true
+1000000 chains  translate_all   2196044.41      1623766.19      9.11    773.21 50380.42 true
+1000000 chains  repair  380.86  183.75  0.54    0.08    0.13    true
+
