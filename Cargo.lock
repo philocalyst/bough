@@ -238,6 +238,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-paint"
+version = "0.0.0"
+dependencies = [
+ "bough-expr",
+ "bough-kernel",
+ "bough-mem",
+ "naga",
+ "objc2",
+ "objc2-foundation",
+ "objc2-metal",
+ "wgsl-rs",
+]
+
+[[package]]
 name = "bough-scenes"
 version = "0.0.0"
 dependencies = [
@@ -331,6 +345,18 @@ dependencies = [
  "bough-core",
  "bough-metal",
  "bough-text",
+ "zgx-workload",
+]
+
+[[package]]
+name = "bough-workloads"
+version = "0.0.0"
+dependencies = [
+ "bough",
+ "bough-mem",
+ "bough-metal",
+ "libc",
+ "png",
  "zgx-workload",
 ]
 

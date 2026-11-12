@@ -2413,7 +2413,17 @@ impl Bough {
     ///   move, but the copy moves its pixels. For a box (`band(kind, payload) >= 0`) its pixels depend on its
     ///   edges only within `band` of them, so only the edges perpendicular to `d` see a difference: exactly
     ///   [`Bough::damage_edges`] of its visible ink and that ink moved by `d`. Anything else (`band < 0`: text,
-    ///   images, gradients) marks its visible ink and its moved copy.
+    ///   images, gradients; and every record of a transformed page, whose ink is a cover, not its edges)
+    ///   marks its visible ink and its moved copy.
+    /// * the **transformed content of the run**: a copy is exact for a moved record only if the executor's
+    ///   pixels of it are a function of the pixel's offset from the record, which an untransformed record's
+    ///   are (integral move, geometry on the 1/256 grid) and a transformed one's are not (the kernels map a
+    ///   pixel through the space's affine in absolute coordinates, so the rounding depends on where the
+    ///   record is: 1-level differences in a turned label). A page of the run carrying a transform (`F_XF`)
+    ///   marks its cover at the old place and the new. Untransformed pages cost nothing here.
+    ///
+    /// The interaction flags of a record's kind (`KF_MASK`) play no part: they route input, they do not
+    /// change pixels (a hover look is a paint write, marked where it happens).
     ///
     /// The epoch keeps a [`ScrollRec`] (`scroll_rec`). A second scroll in the same epoch that is not the same
     /// clip and delta cannot share the one copy: both clips are marked whole and the record is dropped (a
@@ -2457,12 +2467,22 @@ impl Bough {
             let l = self.d_len[d] as usize;
             let (p0, p1) = (pos0, pos0 + l);
             pos0 = p1;
-            if (p0 >= start && p1 <= start + len) || !th.matches(self.d_ink[d]) {
+            if !th.matches(self.d_ink[d]) {
                 continue;
             }
             // SAFETY: directory pointers are live pages of the pool, which nothing below writes (the marks go
             // to the damage ring, a separate allocation).
             let p: &Page = unsafe { &*self.d_ptr[d] };
+            let xf = p.flags & F_XF != 0;
+            if xf && p0 < start + len && p1 > start {
+                // transformed records moving with the run: repainted where they were and where they land
+                let u = self.d_ink[d];
+                self.ring.add(u.intersect(c));
+                self.ring.add(u.translate(dx, dy).intersect(c));
+            }
+            if p0 >= start && p1 <= start + len {
+                continue;
+            }
             for s in 0..l {
                 let pos = p0 + s;
                 if pos >= start && pos < start + len {
@@ -2476,7 +2496,7 @@ impl Bough {
                 if v.is_empty() {
                     continue;
                 }
-                let b = band(p.kind[s], p.payload[s]);
+                let b = if xf { -1 } else { band(p.kind[s], p.payload[s]) };
                 let [x0, y0, x1, y1] = v.to_xyxy();
                 if b < 0 {
                     self.ring.add(v);
