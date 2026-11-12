@@ -1170,6 +1170,7 @@ impl Rt {
         self.lay.prof.mark(LP_WRITE);
     }
 
+    #[inline(always)]
     pub fn lay_flush(&mut self) {
         if self.lay.pending.is_empty() && self.lay.ready.is_empty() && !self.lists.regs.iter().any(|r| r.dirty && !r.dead) {
             if !self.lay.dirty.is_empty() {
@@ -1178,6 +1179,10 @@ impl Rt {
             }
             return;
         }
+        self.lay_flush_queued()
+    }
+    #[inline(never)]
+    fn lay_flush_queued(&mut self) {
         // list regions place their rows between a compute pass and the write-back; a placement may queue
         // more layout (a container's height, rows at a new width): bounded passes
         for _ in 0..8 {

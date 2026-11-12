@@ -1,0 +1,236 @@
+== sse2-pinned
+cell,params,per,instructions,cycles,cache_misses,branch_misses,ns
+write,n=64,write,16.01,9.24,0.0061,0.0011,2.32
+write,n=256,write,16.01,4.81,0.0029,0.0011,1.21
+write,n=4096,write,16.01,4.26,0.0015,0.0011,1.07
+write,n=100000,write,16.01,4.52,0.0004,0.0011,1.13
+write,n=1000000,write,16.01,5.73,0.0066,0.0011,1.44
+classify-scan,n=64 dirty=0,frame,81.81,31.89,0.0200,0.0800,6.95
+classify-sum,n=64 dirty=0,frame,40.81,19.00,0.0500,0.0800,3.95
+classify-scan,n=64 dirty=1,frame,95.81,32.31,0.0450,0.0450,7.40
+classify-sum,n=64 dirty=1,frame,56.81,22.73,0.0400,0.0500,5.15
+classify-scan,n=256 dirty=0,frame,123.81,39.80,0.0400,0.0450,9.15
+classify-sum,n=256 dirty=0,frame,40.81,17.83,0.0300,0.0450,3.85
+classify-scan,n=256 dirty=1,frame,137.81,46.77,0.0300,0.0450,11.15
+classify-sum,n=256 dirty=1,frame,56.81,24.44,0.0500,0.0450,5.45
+classify-scan,n=4096 dirty=0,frame,651.81,216.93,0.1400,0.0700,53.76
+classify-sum,n=4096 dirty=0,frame,40.81,19.41,0.0500,0.0500,4.15
+classify-scan,n=4096 dirty=1,frame,666.81,231.29,0.0900,0.0500,57.50
+classify-sum,n=4096 dirty=1,frame,56.81,21.43,0.0450,0.0550,4.75
+classify-scan,n=100000 dirty=0,frame,14434.81,5200.91,1.4050,1.1350,1333.78
+classify-sum,n=100000 dirty=0,frame,208.81,118.49,0.0800,0.0700,28.80
+classify-scan,n=100000 dirty=1,frame,14449.81,5067.98,1.4050,2.1050,1309.68
+classify-sum,n=100000 dirty=1,frame,224.81,96.25,0.0450,0.0700,23.45
+classify-scan,n=1000000 dirty=0,frame,143410.83,52112.17,112.7800,1.2900,13235.11
+classify-sum,n=1000000 dirty=0,frame,1748.81,851.21,0.2250,1.0800,213.16
+classify-scan,n=1000000 dirty=1,frame,143425.83,50030.58,111.8950,2.2850,12641.90
+classify-sum,n=1000000 dirty=1,frame,1764.81,789.15,0.1100,2.0900,197.50
+scroll-translate,n=256,page,18.64,9.66,0.0300,0.0750,1.70
+scroll-cull,n=256,page,280.14,90.58,0.0850,0.0800,21.90
+scroll-translate,n=4096,page,5.09,2.29,0.0019,0.0037,0.53
+scroll-cull,n=4096,page,266.88,88.80,0.0262,0.0050,22.29
+scroll-translate,n=100000,page,4.04,1.90,0.0006,0.0008,0.48
+scroll-cull,n=100000,page,266.04,95.85,1.2170,0.0010,24.35
+scroll-translate,n=1000000,page,4.00,1.89,0.0006,0.0001,0.47
+scroll-cull,n=1000000,page,266.00,119.66,1.4000,0.0002,30.49
+insert-remove-shift,fill=16,pair,513.71,225.13,0.0004,1.2476,57.24
+walk-shift,fill=16,record,7.07,1.83,0.0003,0.0006,0.46
+walk-sel-identity,fill=16,record,7.32,1.88,0.0001,0.0005,0.47
+insert-remove-sel,fill=16,pair,160.14,61.03,0.0000,0.2790,15.41
+walk-sel-permuted,fill=16,record,13.57,2.53,0.0002,0.0005,0.63
+insert-remove-shift,fill=32,pair,667.63,268.07,0.0006,1.6503,67.88
+walk-shift,fill=32,record,6.41,2.12,0.0000,0.0002,0.53
+walk-sel-identity,fill=32,record,6.54,2.12,0.0000,0.0002,0.53
+insert-remove-sel,fill=32,pair,157.56,54.16,0.0000,0.1316,13.69
+walk-sel-permuted,fill=32,record,13.04,2.57,0.0001,0.0002,0.64
+insert-remove-shift,fill=56,pair,940.62,349.37,0.0014,2.3435,88.63
+walk-shift,fill=56,record,6.13,2.64,0.0005,0.0001,0.83
+walk-sel-identity,fill=56,record,6.20,2.80,0.0002,0.0002,0.78
+insert-remove-sel,fill=56,pair,156.80,58.18,0.0001,0.0718,14.69
+walk-sel-permuted,fill=56,record,12.81,2.70,0.0001,0.0002,0.68
+mount-per-record,rows=1 k=3,row,1380.19,435.03,0.0000,0.0045,109.45
+mount-stamp-copy,rows=1 k=3,row,2536.19,918.32,0.0045,0.0090,232.58
+mount-stamp-shared,rows=1 k=3,row,1725.23,526.53,0.0040,0.0075,132.40
+mount-per-record,rows=64 k=3,row,256.47,99.90,0.0001,0.0392,25.26
+mount-stamp-copy,rows=64 k=3,row,46.50,16.60,0.0000,0.0001,4.21
+mount-stamp-shared,rows=64 k=3,row,28.30,8.46,0.0000,0.0002,2.13
+mount-per-record,rows=256 k=3,row,214.12,88.63,0.0002,0.0705,22.42
+mount-stamp-copy,rows=256 k=3,row,31.28,11.12,0.0001,0.0020,2.81
+mount-stamp-shared,rows=256 k=3,row,7.09,2.18,0.0000,0.0000,0.55
+mount-per-record,rows=100000 k=3,row,196.34,109.69,0.6056,0.0607,27.80
+mount-stamp-copy,rows=100000 k=3,row,10.50,3.39,0.0745,0.0004,0.85
+mount-stamp-shared,rows=100000 k=3,row,2.04,0.89,0.0000,0.0000,0.22
+redescribe-operands-idle,rows=1,row,303.23,84.38,0.0040,0.0075,21.16
+redescribe-operands-idle,rows=64,row,18.52,4.02,0.0000,0.0001,1.01
+redescribe-operands-idle,rows=256,row,17.87,4.19,0.0000,0.0156,1.05
+redescribe-operands-idle,rows=1000,row,17.80,4.17,0.0000,0.0150,1.05
+redescribe-operands-idle,rows=100000,row,17.66,4.16,0.0025,0.0156,1.06
+== sse2-project
+cell,params,per,instructions,cycles,cache_misses,branch_misses,ns
+project-list,n=64 dirty=1 dense_at=0,record,643.18,172.41,0.0050,0.0100,43.31
+project-list,n=64 dirty=1 dense_at=65,record,231.18,65.41,0.0050,0.0075,16.39
+project-list,n=64 dirty=8 dense_at=0,record,123.27,31.17,0.0000,0.0008,7.83
+project-list,n=64 dirty=8 dense_at=65,record,110.27,32.05,0.0000,0.0006,8.06
+project-list,n=64 dirty=25 dense_at=0,record,72.77,18.53,0.0000,0.0002,4.66
+project-list,n=64 dirty=25 dense_at=65,record,98.53,28.83,0.0002,0.0003,7.26
+project-list,n=256 dirty=1 dense_at=0,record,643.18,168.28,0.0000,0.0050,42.28
+project-list,n=256 dirty=1 dense_at=65,record,231.18,65.59,0.0000,0.0045,16.45
+project-list,n=256 dirty=8 dense_at=0,record,123.27,31.83,0.0000,0.0007,8.05
+project-list,n=256 dirty=8 dense_at=65,record,110.27,32.07,0.0000,0.0008,8.06
+project-list,n=256 dirty=25 dense_at=0,record,72.77,18.10,0.0000,0.0002,4.55
+project-list,n=256 dirty=25 dense_at=65,record,98.53,28.87,0.0000,0.0002,7.26
+project-list,n=100000 dirty=1 dense_at=0,record,643.18,166.30,0.0030,0.0050,41.78
+project-list,n=100000 dirty=1 dense_at=65,record,231.18,65.28,0.0000,0.0055,16.37
+project-list,n=100000 dirty=8 dense_at=0,record,123.27,32.04,0.0003,0.0008,8.05
+project-list,n=100000 dirty=8 dense_at=65,record,110.27,32.06,0.0003,0.0007,8.08
+project-list,n=100000 dirty=25 dense_at=0,record,72.77,18.56,0.0002,0.0003,4.71
+project-list,n=100000 dirty=25 dense_at=65,record,98.53,28.85,0.0000,0.0003,7.25
+project-column,n=100000 dirty=10000 dense_at=0,record,94.57,24.30,0.0625,0.0092,6.18
+project-column,n=100000 dirty=10000 dense_at=4,record,94.54,24.22,0.0726,0.0092,6.13
+project-column,n=100000 dirty=10000 dense_at=16,record,68.61,21.02,0.0492,0.0004,5.32
+project-column,n=100000 dirty=10000 dense_at=65,record,68.61,21.62,0.0482,0.0004,5.47
+project-par-column,n=100000 dirty=10000 threads=1,record,94.54,24.09,0.0573,0.0092,6.09
+project-par-column,n=100000 dirty=10000 threads=2,record,96.57,29.16,0.4138,0.0216,10.90
+project-par-column,n=100000 dirty=10000 threads=4,record,98.53,32.75,0.6051,0.0392,14.13
+project-par-column,n=100000 dirty=10000 threads=8,record,102.45,40.94,0.9192,0.0668,21.08
+project-par-column,n=100000 dirty=10000 threads=16,record,110.58,55.58,1.6009,0.1349,37.48
+project-theme,n=100000 dirty=100000 dense_at=0,record,22.50,5.54,0.0081,0.0045,1.41
+project-theme,n=100000 dirty=100000 dense_at=4,record,22.50,5.53,0.0067,0.0045,1.41
+project-theme,n=100000 dirty=100000 dense_at=16,record,22.50,5.54,0.0070,0.0045,1.40
+project-theme,n=100000 dirty=100000 dense_at=65,record,60.79,19.31,0.0050,0.0046,4.89
+project-par-theme,n=100000 dirty=100000 threads=1,record,22.50,5.54,0.0075,0.0045,1.41
+project-par-theme,n=100000 dirty=100000 threads=2,record,22.71,6.02,0.0371,0.0059,1.80
+project-par-theme,n=100000 dirty=100000 threads=4,record,22.90,6.35,0.0603,0.0074,1.57
+project-par-theme,n=100000 dirty=100000 threads=8,record,23.30,7.45,0.1100,0.0117,2.29
+project-par-theme,n=100000 dirty=100000 threads=16,record,24.11,8.75,0.1554,0.0157,3.73
+project-theme-1e6,n=1000000 dirty=1000000 dense_at=0,record,58.26,14.47,0.0059,0.0186,3.67
+project-theme-1e6,n=1000000 dirty=1000000 dense_at=4,record,58.26,14.52,0.0060,0.0186,3.68
+project-theme-1e6,n=1000000 dirty=1000000 dense_at=16,record,58.26,14.70,0.0066,0.0186,3.75
+project-theme-1e6,n=1000000 dirty=1000000 dense_at=65,record,95.13,28.51,0.0075,0.0186,6.94
+project-par-theme-1e6,n=1000000 dirty=1000000 threads=1,record,58.26,14.44,0.0061,0.0186,4.20
+project-par-theme-1e6,n=1000000 dirty=1000000 threads=2,record,58.28,14.50,0.0101,0.0190,1.94
+project-par-theme-1e6,n=1000000 dirty=1000000 threads=4,record,58.30,14.60,0.0137,0.0193,1.16
+project-par-theme-1e6,n=1000000 dirty=1000000 threads=8,record,58.34,19.48,0.0291,0.0205,1.10
+project-par-theme-1e6,n=1000000 dirty=1000000 threads=16,record,58.42,20.39,0.0459,0.0224,0.89
+par-overhead,threads=2 (64 pages, nothing dirty),call,21671.33,33870.93,1326.7050,129.4750,77675.17
+par-overhead,threads=4 (64 pages, nothing dirty),call,40004.99,61662.96,2479.5500,262.8000,127661.68
+par-overhead,threads=8 (64 pages, nothing dirty),call,76652.49,123784.93,4966.3700,504.0450,213779.46
+par-overhead,threads=16 (64 pages, nothing dirty),call,153138.25,219809.32,8995.3700,1004.9350,384254.95
+== avx2-pinned
+cell,params,per,instructions,cycles,cache_misses,branch_misses,ns
+write,n=64,write,16.01,9.14,0.0036,0.0011,2.28
+write,n=256,write,16.01,4.80,0.0011,0.0011,1.20
+write,n=4096,write,16.01,4.46,0.0021,0.0011,1.11
+write,n=100000,write,16.01,4.40,0.0015,0.0011,1.09
+write,n=1000000,write,16.01,5.79,0.0017,0.0011,1.44
+classify-scan,n=64 dirty=0,frame,78.81,38.26,0.0550,0.0800,8.65
+classify-sum,n=64 dirty=0,frame,40.81,18.14,0.0450,0.0800,3.65
+classify-scan,n=64 dirty=1,frame,91.81,41.06,0.0650,0.0500,9.50
+classify-sum,n=64 dirty=1,frame,55.81,23.39,0.0500,0.0500,5.20
+classify-scan,n=256 dirty=0,frame,108.81,49.05,0.0350,0.0500,11.30
+classify-sum,n=256 dirty=0,frame,40.81,18.84,0.0250,0.0500,3.95
+classify-scan,n=256 dirty=1,frame,121.81,50.97,0.0550,0.0500,12.00
+classify-sum,n=256 dirty=1,frame,55.81,23.37,0.0450,0.0450,5.10
+classify-scan,n=4096 dirty=0,frame,254.81,99.58,0.0450,0.0450,24.15
+classify-sum,n=4096 dirty=0,frame,40.81,17.45,0.0500,0.0450,3.65
+classify-scan,n=4096 dirty=1,frame,267.81,105.06,0.0450,0.0450,25.45
+classify-sum,n=4096 dirty=1,frame,55.81,20.59,0.0350,0.0450,4.45
+classify-scan,n=100000 dirty=0,frame,4769.81,2232.36,0.6150,0.0950,553.51
+classify-sum,n=100000 dirty=0,frame,208.81,85.39,0.0500,0.0950,20.35
+classify-scan,n=100000 dirty=1,frame,4782.81,2195.09,0.2950,0.0900,544.66
+classify-sum,n=100000 dirty=1,frame,223.81,110.17,0.0500,0.0800,26.70
+classify-scan,n=1000000 dirty=0,frame,46731.82,24011.19,253.5400,1.0950,5955.84
+classify-sum,n=1000000 dirty=0,frame,1748.81,818.50,0.1850,1.0850,201.10
+classify-scan,n=1000000 dirty=1,frame,46744.82,23871.82,262.5150,2.1100,5917.59
+classify-sum,n=1000000 dirty=1,frame,1763.81,873.17,0.3050,2.0800,211.96
+scroll-translate,n=256,page,18.89,10.93,0.0450,0.0800,1.80
+scroll-cull,n=256,page,146.64,63.62,0.0500,0.0850,14.75
+scroll-translate,n=4096,page,3.35,2.31,0.0025,0.0031,0.53
+scroll-cull,n=4096,page,134.79,57.54,0.0169,0.0037,14.08
+scroll-translate,n=100000,page,1.75,1.91,0.0007,0.0008,0.47
+scroll-cull,n=100000,page,134.03,60.88,2.0995,0.0009,15.01
+scroll-translate,n=1000000,page,1.69,1.86,0.0003,0.0001,0.46
+scroll-cull,n=1000000,page,134.00,79.64,1.9472,0.0002,19.66
+insert-remove-shift,fill=16,pair,493.71,300.67,0.1693,1.1938,73.88
+walk-shift,fill=16,record,8.89,2.72,0.0008,0.0006,0.66
+walk-sel-identity,fill=16,record,9.20,2.62,0.0003,0.0005,0.63
+insert-remove-sel,fill=16,pair,156.14,83.35,0.0277,0.3359,20.54
+walk-sel-permuted,fill=16,record,14.01,3.75,0.0009,0.0007,0.91
+insert-remove-shift,fill=32,pair,647.63,266.23,0.0001,1.6459,65.18
+walk-shift,fill=32,record,8.44,2.23,0.0001,0.0004,0.54
+walk-sel-identity,fill=32,record,8.60,2.23,0.0001,0.0003,0.54
+insert-remove-sel,fill=32,pair,153.56,70.12,0.0114,0.2645,17.05
+walk-sel-permuted,fill=32,record,13.51,3.37,0.0009,0.0004,0.81
+insert-remove-shift,fill=56,pair,920.62,520.15,0.2228,2.7674,127.75
+walk-shift,fill=56,record,8.25,2.82,0.0003,0.0002,0.68
+walk-sel-identity,fill=56,record,8.34,2.91,0.0006,0.0002,0.71
+insert-remove-sel,fill=56,pair,152.80,89.17,0.0147,0.1872,21.93
+walk-sel-permuted,fill=56,record,13.29,3.13,0.0005,0.0002,0.76
+mount-per-record,rows=1 k=3,row,1380.19,721.75,0.2085,0.0145,177.00
+mount-stamp-copy,rows=1 k=3,row,2537.19,1244.48,0.1950,0.0385,310.22
+mount-stamp-shared,rows=1 k=3,row,1724.23,787.57,0.1885,0.0130,196.18
+mount-per-record,rows=64 k=3,row,256.47,142.70,0.0765,0.0512,34.88
+mount-stamp-copy,rows=64 k=3,row,46.42,22.79,0.0081,0.0006,5.57
+mount-stamp-shared,rows=64 k=3,row,28.25,12.56,0.0036,0.0002,3.07
+mount-per-record,rows=256 k=3,row,214.12,86.00,0.0002,0.0705,21.01
+mount-stamp-copy,rows=256 k=3,row,31.25,10.03,0.0000,0.0040,2.44
+mount-stamp-shared,rows=256 k=3,row,7.05,2.02,0.0000,0.0000,0.49
+mount-per-record,rows=100000 k=3,row,196.34,103.16,0.6925,0.0600,25.18
+mount-stamp-copy,rows=100000 k=3,row,10.45,3.33,0.0513,0.0004,0.81
+mount-stamp-shared,rows=100000 k=3,row,1.99,0.90,0.0000,0.0000,0.22
+redescribe-operands-idle,rows=1,row,232.23,83.33,0.0030,0.0075,20.26
+redescribe-operands-idle,rows=64,row,8.14,1.90,0.0000,0.0001,0.46
+redescribe-operands-idle,rows=256,row,7.41,1.67,0.0000,0.0000,0.41
+redescribe-operands-idle,rows=1000,row,7.32,1.64,0.0000,0.0010,0.40
+redescribe-operands-idle,rows=100000,row,7.17,1.61,0.0042,0.0000,0.40
+== avx2-project
+cell,params,per,instructions,cycles,cache_misses,branch_misses,ns
+project-list,n=64 dirty=1 dense_at=0,record,366.18,159.80,0.0060,0.0080,48.64
+project-list,n=64 dirty=1 dense_at=65,record,214.18,62.63,0.0000,0.0050,19.03
+project-list,n=64 dirty=8 dense_at=0,record,86.90,29.35,0.0000,0.0006,8.94
+project-list,n=64 dirty=8 dense_at=65,record,108.15,29.93,0.0000,0.0008,9.32
+project-list,n=64 dirty=25 dense_at=0,record,59.77,16.48,0.0000,0.0003,5.02
+project-list,n=64 dirty=25 dense_at=65,record,97.85,27.05,0.0000,0.0003,8.32
+project-list,n=256 dirty=1 dense_at=0,record,366.18,161.25,0.0000,0.0050,49.10
+project-list,n=256 dirty=1 dense_at=65,record,214.18,62.50,0.0000,0.0050,19.00
+project-list,n=256 dirty=8 dense_at=0,record,86.90,29.35,0.0000,0.0006,8.94
+project-list,n=256 dirty=8 dense_at=65,record,108.15,31.25,0.0007,0.0011,9.58
+project-list,n=256 dirty=25 dense_at=0,record,59.77,16.53,0.0001,0.0003,5.18
+project-list,n=256 dirty=25 dense_at=65,record,97.85,27.52,0.0000,0.0003,8.46
+project-list,n=100000 dirty=1 dense_at=0,record,366.18,160.75,0.0040,0.0050,48.95
+project-list,n=100000 dirty=1 dense_at=65,record,214.18,62.62,0.0000,0.0045,19.03
+project-list,n=100000 dirty=8 dense_at=0,record,86.90,29.30,0.0010,0.0006,8.92
+project-list,n=100000 dirty=8 dense_at=65,record,108.15,30.60,0.0000,0.0006,9.32
+project-list,n=100000 dirty=25 dense_at=0,record,59.77,16.65,0.0001,0.0002,5.07
+project-list,n=100000 dirty=25 dense_at=65,record,97.85,27.70,0.0001,0.0003,8.44
+project-column,n=100000 dirty=10000 dense_at=0,record,50.70,16.48,0.2307,0.0004,5.05
+project-column,n=100000 dirty=10000 dense_at=4,record,50.69,16.47,0.2324,0.0004,5.05
+project-column,n=100000 dirty=10000 dense_at=16,record,67.07,19.93,0.0540,0.0004,6.10
+project-column,n=100000 dirty=10000 dense_at=65,record,67.07,19.92,0.0552,0.0005,6.12
+project-par-column,n=100000 dirty=10000 threads=1,record,50.70,16.46,0.2297,0.0005,4.06
+project-par-column,n=100000 dirty=10000 threads=2,record,52.63,18.91,0.4337,0.0121,8.82
+project-par-column,n=100000 dirty=10000 threads=4,record,54.49,22.81,0.7087,0.0398,14.25
+project-par-column,n=100000 dirty=10000 threads=8,record,58.21,34.43,1.1922,0.0840,27.79
+project-par-column,n=100000 dirty=10000 threads=16,record,65.96,47.14,1.9649,0.1495,47.34
+project-theme,n=100000 dirty=100000 dense_at=0,record,17.60,4.64,0.0243,0.0045,1.44
+project-theme,n=100000 dirty=100000 dense_at=4,record,17.60,4.64,0.0240,0.0045,1.33
+project-theme,n=100000 dirty=100000 dense_at=16,record,17.60,4.64,0.0245,0.0045,1.14
+project-theme,n=100000 dirty=100000 dense_at=65,record,61.92,16.75,0.0072,0.0046,4.14
+project-par-theme,n=100000 dirty=100000 threads=1,record,17.60,4.63,0.0215,0.0046,1.43
+project-par-theme,n=100000 dirty=100000 threads=2,record,17.79,5.07,0.0559,0.0065,2.14
+project-par-theme,n=100000 dirty=100000 threads=4,record,17.98,5.59,0.0769,0.0086,1.84
+project-par-theme,n=100000 dirty=100000 threads=8,record,18.35,6.41,0.1276,0.0134,2.50
+project-par-theme,n=100000 dirty=100000 threads=16,record,19.13,7.25,0.1732,0.0184,4.40
+project-theme-1e6,n=1000000 dirty=1000000 dense_at=0,record,51.93,13.43,0.0292,0.0186,3.50
+project-theme-1e6,n=1000000 dirty=1000000 dense_at=4,record,51.93,13.74,0.0274,0.0186,3.41
+project-theme-1e6,n=1000000 dirty=1000000 dense_at=16,record,51.93,13.78,0.0283,0.0186,3.45
+project-theme-1e6,n=1000000 dirty=1000000 dense_at=65,record,94.84,27.63,0.0139,0.0186,6.90
+project-par-theme-1e6,n=1000000 dirty=1000000 threads=1,record,51.93,14.36,0.0290,0.0186,3.53
+project-par-theme-1e6,n=1000000 dirty=1000000 threads=2,record,51.94,13.57,0.0260,0.0190,2.10
+project-par-theme-1e6,n=1000000 dirty=1000000 threads=4,record,51.96,15.48,0.0310,0.0196,1.48
+project-par-theme-1e6,n=1000000 dirty=1000000 threads=8,record,52.00,19.26,0.0402,0.0204,1.06
+project-par-theme-1e6,n=1000000 dirty=1000000 threads=16,record,52.08,19.49,0.0535,0.0223,1.14
+par-overhead,threads=2 (64 pages, nothing dirty),call,20154.88,23722.64,1284.1800,134.3000,86174.37
+par-overhead,threads=4 (64 pages, nothing dirty),call,38327.89,41776.82,2457.6050,271.1150,110810.20
+par-overhead,threads=8 (64 pages, nothing dirty),call,74472.35,80937.70,4543.7100,490.8000,192445.56
+par-overhead,threads=16 (64 pages, nothing dirty),call,150743.38,186097.60,8795.3000,1076.8550,372380.88

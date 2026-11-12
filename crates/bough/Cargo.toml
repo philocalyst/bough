@@ -33,6 +33,8 @@ block2 = "0.6"
 dispatch2 = "0.3"
 
 [features]
+# Attribution spans (src/attr.rs): instrumented builds only, never a reported number.
+attr = []
 # The presenter on the vendored wgpu-hal with wgsl-rs kernels (crates/bough-gpu) instead of direct Metal.
 wgpu = ["dep:bough-gpu"]
 # Gate sabotage (RESULTS §15): the scroll copy reads one pixel off; every scroll pixel gate must fail with it.

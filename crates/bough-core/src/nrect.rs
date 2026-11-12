@@ -89,6 +89,7 @@ impl Thresh {
         let (a, b) = (r.0, self.0);
         (a[0] < b[0]) & (a[1] < b[1]) & (a[2] < b[2]) & (a[3] < b[3])
     }
+    #[cfg(target_arch = "aarch64")]
     #[inline(always)]
     fn bits(self) -> u64 {
         u64::from_ne_bytes(unsafe { core::mem::transmute::<[i16; 4], [u8; 8]>(self.0) })

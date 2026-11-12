@@ -22,6 +22,7 @@ mod macros {
 pub mod arena;
 pub mod bough;
 pub mod damage;
+pub mod dirty;
 pub mod emit;
 pub mod nrect;
 pub mod oracle;

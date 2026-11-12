@@ -99,6 +99,8 @@ pub struct Bough {
     c_ink: Vec<NRect>,
     htab: Vec<HEntry>,
     hfree: Vec<u32>,
+    /// Record-space damage of the current epoch, by handle index (`dirty.rs`).
+    dirty: crate::dirty::Dirty,
     ring: DamageRing,
     total: usize,
     scratch: Vec<RecordInit>,
@@ -241,6 +243,7 @@ impl Bough {
             c_ink: Vec::new(),
             htab: vec![HEntry { page: core::ptr::null_mut(), slot: 0, generation: 0, live: false }],
             hfree: Vec::new(),
+            dirty: { let mut d = crate::dirty::Dirty::default(); d.reserve(1); d },
             ring: DamageRing::new(window_w, window_h),
             total: 0,
             scratch: Vec::new(),
@@ -394,6 +397,7 @@ impl Bough {
     /// (the common case) never reach it, and inlining it into the cull loop costs registers.
     #[inline(never)]
     fn group_visible(&self, p: &Page, g: usize) -> [NRect; GROUP] {
+        #[cfg(target_arch = "aarch64")]
         let ids = &p.clip[g * GROUP..g * GROUP + GROUP];
         #[cfg(target_arch = "aarch64")]
         if ids.iter().all(|&c| c == ids[0]) {
@@ -1356,6 +1360,7 @@ impl Bough {
         } else {
             let idx = self.htab.len() as u32;
             self.htab.push(HEntry { page: core::ptr::null_mut(), slot: 0, generation: 0, live: true });
+            self.dirty.reserve(self.htab.len());
             Handle { idx, generation: 0 }
         }
     }
@@ -2850,6 +2855,54 @@ impl Bough {
         Some(self.visible_in(unsafe { &*p }, s))
     }
 
+    /// A paint-only change of the record of handle index `idx` (colour, glyph alphas): one bit in the
+    /// epoch's record-space paint plane. Nothing is projected here (`project_paint`).
+    #[inline(always)]
+    pub fn mark_paint(&mut self, idx: u32) {
+        self.dirty.mark(crate::dirty::PAINT, idx);
+    }
+    /// Is any record marked paint-dirty (not yet projected)?
+    #[inline(always)]
+    pub fn paint_pending(&self) -> bool {
+        self.dirty.any(crate::dirty::PAINT)
+    }
+    /// Project the record-space paint plane onto `out`'s current tile plane and clear it: for every marked
+    /// record that is still bound, its visible ink (ink ∩ clip ∩ window) at the place it has now. A record
+    /// released since its mark is skipped (its removal damaged its ink); an index reissued since marks the new
+    /// record (which its mount damaged anyway).
+    pub fn project_paint(&mut self, out: &mut DamageRing) {
+        let (htab, clips, win) = (&self.htab, &self.clips, self.ring.window);
+        self.dirty.drain(crate::dirty::PAINT, |base, mut m| {
+            while m != 0 {
+                let idx = base + m.trailing_zeros();
+                m &= m - 1;
+                // SAFETY: a marked index was a handle index (`mark_paint`'s callers pass handles of this
+                // Bough), so it is below `htab.len()`.
+                let e = unsafe { htab.get_unchecked(idx as usize) };
+                if e.page.is_null() {
+                    continue;
+                }
+                // SAFETY: a bound entry points at a live page; its slot is below CAP.
+                let p = unsafe { &*e.page };
+                let s = e.slot as usize & (CAP - 1);
+                let r = p.ink[s];
+                if r.0[0] == crate::nrect::MAXC {
+                    continue;
+                }
+                let c = p.clip[s] as usize;
+                // SAFETY: clip ids are below `clips.len()` (assigned by `new_clip`).
+                let cl = if c == 0 { win } else { unsafe { *clips.get_unchecked(c) } };
+                let v = if p.flags != 0 { visible_framed(p, r, cl, win) } else { visible_plain(r, p.offl, cl, win) };
+                let [x0, y0, nx1, ny1] = v.0;
+                if (x0 as i32 + nx1 as i32 >= 0) | (y0 as i32 + ny1 as i32 >= 0) {
+                    continue;
+                }
+                let (tx0, ty0, tx1, ty1) = crate::damage::tile_span(v);
+                out.cur_mut().mark_span(tx0, ty0, tx1, ty1);
+            }
+        });
+    }
+
     /// Mark the record's ink damaged (a paint-only write: colour, glyph content, image).
     #[inline]
     pub fn touch(&mut self, pos: usize) {
@@ -3789,4 +3842,32 @@ fn quad_cover(q: &[[f32; 2]; 4], mut f: impl FnMut(NRect)) {
         }
         ty += 1;
     }
+}
+
+/// `(r + off) ∩ a ∩ b` for a non-empty stored rect of a plain page: one lane add and two lane maxima.
+#[inline(always)]
+fn visible_plain(r: NRect, off: [i16; 4], a: NRect, b: NRect) -> NRect {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: four i16 lanes loaded from and stored to four-lane arrays.
+    unsafe {
+        use core::arch::aarch64::*;
+        let v = vadd_s16(vld1_s16(r.0.as_ptr()), vld1_s16(off.as_ptr()));
+        let v = vmax_s16(vmax_s16(v, vld1_s16(a.0.as_ptr())), vld1_s16(b.0.as_ptr()));
+        NRect(core::mem::transmute::<int16x4_t, [i16; 4]>(v))
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let mut o = [0i16; 4];
+        for i in 0..4 {
+            o[i] = r.0[i].wrapping_add(off[i]).max(a.0[i]).max(b.0[i]);
+        }
+        NRect(o)
+    }
+}
+
+/// `visible_plain` for a page that is not in the plain frame (transformed, far or wide): the exact path.
+#[cold]
+#[inline(never)]
+fn visible_framed(p: &Page, r: NRect, a: NRect, b: NRect) -> NRect {
+    p.abs(r).intersect(a).intersect(b)
 }

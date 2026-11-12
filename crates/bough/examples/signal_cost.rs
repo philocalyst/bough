@@ -63,7 +63,7 @@ fn slope(mut run: impl FnMut(u32) -> u64) -> u64 {
     (hi - lo) / 128
 }
 
-fn cells(n: usize, once: bool) -> [u64; 4] {
+fn cells(n: usize, once: bool) -> [u64; 6] {
     let mut a = app(n, once);
     let mut k = 0u32;
     let mut cell = |a: &mut App<Rows>, which: u8| {
@@ -76,16 +76,62 @@ fn cells(n: usize, once: bool) -> [u64; 4] {
                     0 => a.turn(|r| drop(r.tint[i].set(Color(0xff00_0000 | (k & 0xff_ffff))))),
                     1 => a.turn(|r| drop(r.count[i].set(k % 1000))),
                     2 => a.turn(|r| drop(r.name[i].set(k % 1000))),
-                    _ => a.turn(|_| {}),
+                    3 => a.turn(|_| {}),
+                    // round 7: the same turns with their frame (headless: up to the tile list), so that work
+                    // moved from the write to the frame is counted
+                    4 => {
+                        a.turn(|r| drop(r.tint[i].set(Color(0xff00_0000 | (k & 0xff_ffff)))));
+                        a.frame();
+                    }
+                    _ => {
+                        a.turn(|_| {});
+                        a.frame();
+                    }
                 }
             }
             tinstr() - t0
         })
     };
-    [cell(&mut a, 0), cell(&mut a, 1), cell(&mut a, 2), cell(&mut a, 3)]
+    // the frame cells last: a frame advances the epoch, the cells above measure turns without one
+    let c = [cell(&mut a, 0), cell(&mut a, 1), cell(&mut a, 2), cell(&mut a, 3)];
+    a.frame();
+    [c[0], c[1], c[2], c[3], cell(&mut a, 4), cell(&mut a, 5)]
+}
+
+/// Feature `attr`: where the instructions of a colour-write turn and its frame go (instrumented build).
+#[cfg(feature = "attr")]
+fn attribute() {
+    let ovh = bough_metal::perf::tinstr_overhead();
+    let names = ["handler (the write)", "settle (all)", "run_head", "patch (applier)", "", "paint_resolve", "(empty span: calibration)"];
+    for n in [1usize, 256] {
+        let mut a = app(n, true);
+        let reps = 400u64;
+        for with_frame in [false, true] {
+            bough::attr::on::take();
+            for k in 0..reps as u32 {
+                let i = (k as usize * 7) % n;
+                a.turn(|r| drop(r.tint[i].set(Color(0xff00_0000 | (k & 0xff_ffff)))));
+                if with_frame {
+                    a.frame();
+                }
+            }
+            let t = bough::attr::on::take();
+            println!("rows {n}, frame {with_frame}:");
+            for (i, name) in names.iter().enumerate() {
+                if t[i].1 != 0 {
+                    println!("  {name:24} {:6} per turn ({} spans)", (t[i].0.saturating_sub(t[i].1 * ovh)) / reps, t[i].1 / reps);
+                }
+            }
+            a.frame();
+        }
+    }
 }
 
 fn main() {
+    #[cfg(feature = "attr")]
+    if std::env::var_os("ATTR").is_some() {
+        return attribute();
+    }
     if let Some(reps) = std::env::var("SPIN").ok().and_then(|v| v.parse::<u32>().ok()) {
         // profiling: idle turns of a re-describing owner, nothing else
         let mut a = app(MAX, false);
@@ -96,12 +142,12 @@ fn main() {
     }
     let sizes: Vec<usize> = std::env::args().skip(1).filter_map(|s| s.parse().ok()).collect();
     let sizes = if sizes.is_empty() { vec![16, 64, 256] } else { sizes };
-    println!("rows,mode,colour,number,string,idle");
+    println!("rows,mode,colour,number,string,idle,colour+frame,idle+frame");
     for n in sizes {
         assert!(n <= MAX && n > 0);
         for (name, once) in [("once", true), ("redescribe", false)] {
             let c = cells(n, once);
-            println!("{n},{name},{},{},{},{}", c[0], c[1], c[2], c[3]);
+            println!("{n},{name},{},{},{},{},{},{}", c[0], c[1], c[2], c[3], c[4], c[5]);
         }
     }
 }

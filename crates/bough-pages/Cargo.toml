@@ -1,0 +1,20 @@
+[package]
+name = "bough-pages"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "bough round 7, lane core: the page pipeline as a model (record-space planes, stage 1 / stage 2 passes over 64-record pages, selection-vector pages, template-instanced pages). No dependencies; builds alone on any host."
+
+# A workspace of its own: the model is measured on hosts that do not have the rest of bough.
+[workspace]
+
+[dependencies]
+
+[profile.release]
+debug = 1
+lto = "fat"
+codegen-units = 1
+
+[[bin]]
+name = "pages_bench"
+path = "src/bin/pages_bench.rs"

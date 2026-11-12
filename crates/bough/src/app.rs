@@ -456,6 +456,7 @@ impl<V: View> App<V> {
     }
 
     #[cfg(target_os = "macos")]
+    #[inline(always)]
     fn sync(&mut self) {
         if let Some(g) = self.gpu.as_mut() {
             g.sync();
@@ -494,11 +495,17 @@ impl<V: View> App<V> {
         self.prof.reset();
         self.rt.pubs.clear();
         self.rt.admit();
-        f(&mut self.owner);
-        let owner = &mut *self.owner as *mut V as *const u8;
-        // SAFETY: the owner is the mounted view; every wire was installed from a `sig!` proof for it.
-        unsafe { self.rt.settle(owner) };
-        self.effects();
+        crate::span!(0, f(&mut self.owner));
+        // The turn is its journal (round 7): every stage below is guarded by "did anything reach it", tested
+        // inline; a turn in which nothing was written runs none of them.
+        if !self.rt.settled() {
+            let owner = &mut *self.owner as *mut V as *const u8;
+            // SAFETY: the owner is the mounted view; every wire was installed from a `sig!` proof for it.
+            crate::span!(1, unsafe { self.rt.settle(owner) });
+        }
+        if !(self.rt.pubs.is_empty() && self.rt.asy.committed.is_empty()) {
+            self.effects();
+        }
         self.redescribe();
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
@@ -800,6 +807,8 @@ impl<V: View> App<V> {
 
     /// The publication policy is chosen by the turn's source at compile time (`PACED`), never per frame.
     pub fn frame_as<const PACED: bool>(&mut self) -> bool {
+        crate::span!(6, ());
+        crate::span!(5, self.rt.paint_resolve());
         let core = !self.rt.bough.plane(0).is_clear();
         let paint = !self.rt.paint.plane(0).is_clear();
         if !core && !paint {

@@ -1300,6 +1300,17 @@ impl Rt {
         (self.classes.len() - 1) as u32
     }
 
+    /// Has `settle` nothing to do? True iff the thread's write log is this runtime's, is empty and has not
+    /// overflowed since the last settle, no producer asked for another scan and no list waits for its end of
+    /// turn: exactly the state in which `settle` runs its loop once over nothing. (The audit always settles.)
+    #[inline(always)]
+    pub(crate) fn settled(&self) -> bool {
+        !self.settle_audit
+            && !self.asy.rescan
+            && self.lists.ends.is_empty()
+            && crate::signal::LOG.with(|l| l as *const _ as usize == self.log_home && l.n.get() == 0 && l.epoch.get() == self.log_epoch)
+    }
+
     /// Run every queued cell's wires of the root owner. Dead wires are unlinked as they are met.
     ///
     /// # Safety
@@ -1312,6 +1323,10 @@ impl Rt {
             // SAFETY: this fn's contract (`owner` is the live root owner).
             let more = unsafe { self.settle_logged(owner) };
             if !std::mem::take(&mut self.asy.rescan) && !more {
+                break;
+            }
+            // the wave ran wires: another only if they queued something (the log says so)
+            if !self.settle_audit && self.lists.ends.is_empty() && self.settled() {
                 break;
             }
         }
@@ -1333,7 +1348,8 @@ impl Rt {
     /// As `settle`.
     unsafe fn settle_logged(&mut self, owner: *const u8) -> bool {
         use crate::signal::{LOG, LOG_CAP};
-        let mut run = [(0u32, 0u32); LOG_CAP];
+        // (rank, offset) of the logged cells that are this owner's; only `run[..n]` is ever read
+        let mut run = [const { std::mem::MaybeUninit::<(u32, u32)>::uninit() }; LOG_CAP];
         let mut n = 0;
         let rank = &self.class_rank[0];
         let mut away = false;
@@ -1351,7 +1367,7 @@ impl Rt {
                 // a wired cell of this owner (an address is only ever dereferenced through this test)
                 let r = if off % 4 == 0 { rank.get(off / 4).copied().unwrap_or(0) } else { 0 };
                 if r != 0 {
-                    run[n] = (r, off as u32);
+                    run[n].write((r, off as u32));
                     n += 1;
                 } else if l.live.get() > 1 {
                     // another runtime's on this thread: its to take
@@ -1367,6 +1383,8 @@ impl Rt {
             // what the scan's wires queued is in the log (not when away: the next turn's scan finds it)
             return !away;
         }
+        // SAFETY: the first `n` entries were written above.
+        let run = unsafe { &mut *(&mut run[..n] as *mut [std::mem::MaybeUninit<(u32, u32)>] as *mut [(u32, u32)]) };
         // scan order (insertion sort: a handful of entries)
         for i in 1..n {
             let mut j = i;
@@ -1375,11 +1393,11 @@ impl Rt {
                 j -= 1;
             }
         }
-        for &(_, off) in &run[..n] {
+        for &(_, off) in run.iter() {
             let sig = unsafe { owner.add(off as usize) };
             let head = unsafe { &*(sig as *const std::cell::Cell<u32>) };
             if head.get() & crate::signal::QUEUED != 0 {
-                unsafe { self.run_head(head, sig, owner) };
+                crate::span!(2 + crate::attr::NEST, unsafe { self.run_head(head, sig, owner) });
             }
         }
         n != 0
@@ -1443,7 +1461,7 @@ impl Rt {
                 if head.get() & crate::signal::HELD == 0 || w.latest {
                     self.ctr.wires_run += 1;
                     // SAFETY: the wire was installed for this cell's type and the owner's type.
-                    unsafe { (w.patch)(self, &w, sig, owner) };
+                    crate::span!(3 + crate::attr::NEST, unsafe { (w.patch)(self, &w, sig, owner) });
                 }
                 prev = i;
             }
@@ -1515,20 +1533,29 @@ impl Rt {
 
     /// A paint-only write to `h`'s record (colour, glyph alphas) from state hash `old` to `new`: its visible
     /// ink goes to the paint ring and the write to the epoch's paint log.
-    #[inline]
+    ///
+    /// Round 7: damage is record-space first. The write appends to the epoch's paint log (content
+    /// addressing) and sets the record's bit in the core's paint plane; nothing is projected to tiles here.
+    /// The tile marks are derived once, before a frame reads the paint ring (`paint_resolve`), at the place
+    /// each record has then.
+    #[inline(always)]
     pub fn paint_write(&mut self, h: Handle, old: u64, new: u64) {
-        let Some(ink) = self.bough.visible_ink_handle(h) else { return };
-        let ink = ink.intersect(self.bough.window()).canon();
-        if ink.is_empty() {
-            return;
-        }
-        self.paint.add_inside(ink);
         let l = &mut self.paint_log[self.paint.epoch as usize % bough_core::damage::RING];
         if (l.n as usize) < PAINT_LOG {
             l.e[l.n as usize] = ((h.idx as u64) << 32 | h.generation as u64, old, new);
             l.n += 1;
         } else {
             l.overflow = true;
+        }
+        self.bough.mark_paint(h.idx);
+    }
+
+    /// Project the epoch's record-space paint plane onto the paint ring's tile plane (`Bough::project_paint`).
+    /// Called before anything reads the paint ring (`App::frame_as`).
+    #[inline(always)]
+    pub fn paint_resolve(&mut self) {
+        if self.bough.paint_pending() {
+            self.bough.project_paint(&mut self.paint);
         }
     }
 

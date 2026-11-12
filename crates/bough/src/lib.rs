@@ -4,6 +4,7 @@
 //! cephal (layout) and bough-metal's fused presenter. One region holds everything the GPU reads
 //! (`rt.rs`); a frame's CPU work ends at the tile list (`app.rs`).
 pub mod app;
+pub mod attr;
 pub mod backend;
 pub mod boxops;
 pub mod changed;

@@ -240,6 +240,41 @@ fn appliers() {
     println!("digit tick (lay_text_changed on a label),{number}");
 }
 
+/// Round 7: what building the row descriptions alone costs (no walk, no seal, nothing retained): the floor of
+/// any re-description that calls the row closure, whatever it then compares. Instructions per row.
+fn build_floor(n: usize) -> [u64; 2] {
+    let rows: Vec<(u32, String)> = (0..n as u32).map(|i| (i, format!("Row label {i}"))).collect();
+    let t = Table::<0> { rows, selected: u32::MAX };
+    let slope = |f: &dyn Fn()| {
+        let run = |reps: u32| {
+            let t0 = tinstr();
+            for _ in 0..reps {
+                f();
+            }
+            tinstr() - t0
+        };
+        run(4);
+        (run(48) - run(16)) / 32 / n as u64
+    };
+    // the application row: a box with a tint, an integer label and a borrowed string label
+    let full = slope(&|| {
+        for i in 0..n {
+            let (id, label) = &t.rows[i];
+            let e = row((text(*id).w(64.0), text(label.as_str()))).w(960.0).h(32.0).bg(tint(&t, i));
+            std::hint::black_box(&e);
+        }
+    });
+    // what varies between rows and turns: the operands alone
+    let ops = slope(&|| {
+        for i in 0..n {
+            let (id, label) = &t.rows[i];
+            let e = (*id, label.as_str(), tint(&t, i));
+            std::hint::black_box(&e);
+        }
+    });
+    [full, ops]
+}
+
 fn main() {
     if std::env::var_os("APPLIERS").is_some() {
         return appliers();
@@ -247,6 +282,14 @@ fn main() {
     if std::env::var_os("HEAP").is_some() {
         for n in std::env::args().skip(1).filter_map(|s| s.parse::<usize>().ok()) {
             heap(n);
+        }
+        return;
+    }
+    if std::env::var_os("BUILD").is_some() {
+        println!("rows,description_build_per_row,operands_only_per_row");
+        for n in std::env::args().skip(1).filter_map(|s| s.parse::<usize>().ok()) {
+            let b = build_floor(n);
+            println!("{n},{},{}", b[0], b[1]);
         }
         return;
     }
