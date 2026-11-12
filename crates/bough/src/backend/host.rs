@@ -387,8 +387,12 @@ struct Pacer {
     at_tick: bool,
     /// Deadline commits (card 2026-11-11-deadline-commit): frames are drawn as soon as input is drained and
     /// the presenter commits at most once per refresh, at the deadline, on the phase this pacer gives it.
-    /// Otherwise (X4) frames wait for the latch. Frame-log builds choose with `BOUGH_PACE=deadline|latch`.
+    /// Otherwise (X4) frames wait for the latch. Frame-log builds choose with `BOUGH_PACE=deadline|latch|
+    /// deadline-tick`.
     deadline: bool,
+    /// Deadline mode: input animations are stepped and drawn at the latch (sampled for their vsync), not at
+    /// the link callback (`deadline-tick`).
+    anim_at_latch: bool,
     /// The caret-blink timer: armed only while a field is focused (otherwise it would wake an idle window
     /// twice a second), and whether it is armed.
     blink: RefCell<Option<objc2::rc::Retained<NSTimer>>>,
@@ -418,7 +422,9 @@ impl Pacer {
             }
             at_tick = std::env::var("BOUGH_LATCH").is_ok_and(|v| v == "tick");
         }
-        let deadline = fl::ON && std::env::var("BOUGH_PACE").is_ok_and(|v| v == "deadline");
+        let pace = if fl::ON { std::env::var("BOUGH_PACE").unwrap_or_default() } else { String::new() };
+        let deadline = pace != "latch";
+        let anim_at_latch = pace != "deadline-tick";
         Pacer {
             q: RefCell::new(pace::InputQueue::new()),
             pending: Cell::new(false),
@@ -439,6 +445,7 @@ impl Pacer {
             noframe: std::env::var_os("BOUGH_NOFRAME").is_some(),
             at_tick,
             deadline,
+            anim_at_latch,
             blink: RefCell::new(None),
             blink_on: Cell::new(false),
             blink_half: Cell::new(0.0),
@@ -566,6 +573,9 @@ impl Pacer {
             }
             if a.animating() {
                 self.start_link(link);
+                if self.anim_at_latch {
+                    self.arm(now);
+                }
             }
             return;
         }
@@ -612,10 +622,14 @@ impl Pacer {
             let now = objc2_quartz_core::CACurrentMediaTime();
             let mut busy = now - self.last_present.get() < 2.0 * self.period.get();
             if a.animating() {
-                fl::turn_begin(fl::K_TICK, 0);
-                self.animate(&mut a, t);
-                fl::turn_end();
                 busy = true;
+                if self.anim_at_latch {
+                    self.arm(now);
+                } else {
+                    fl::turn_begin(fl::K_TICK, 0);
+                    self.animate(&mut a, t);
+                    fl::turn_end();
+                }
             }
             if a.has_damage() {
                 self.present(app, &mut a, trim);
