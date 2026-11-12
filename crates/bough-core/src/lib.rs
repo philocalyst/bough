@@ -107,6 +107,10 @@ pub mod probe {
     use crate::{Bough, NRect, Plane, bough::Handle};
     use crate::nrect::{Thresh, lt_mask, union_all};
     #[inline(never)]
+    pub fn prefix_invalidate_from(p: &mut crate::prefix::BlockedPrefix, d: usize, lens: &[u32]) {
+        p.invalidate_from(d, lens)
+    }
+    #[inline(never)]
     pub fn lt_mask_64(p: &[NRect; 64], t: Thresh) -> u64 {
         unsafe { lt_mask(p.as_ptr(), 64, t) }
     }

@@ -79,11 +79,15 @@ def table(tag):
     return '\n'.join(L)
 
 def compare(base, new):
-    L = [f'# `{new}` against `{base}`', '', 'new / base per cell (medians as in the matrix). **bold**: above 1.02x. Cells under 200 instructions',
+    L = [f'# `{new}` against `{base}`', '', "new / base per cell (values as in the matrix). **bold**: above 1.02x; `~`: above 1.02x but inside the cell's own scatter. Cells under 200 instructions",
          'are counter-dominated: `+k` is the absolute difference in instructions.', '']
-    worst = []
+    worst, noisy = [], []
+    spread_of = lambda v: (max(v) - min(v)) / med(v) if med(v) else 0
     for kind, title in (('fresh-core', 'Structure, fresh tree'), ('warm-core', 'Structure, warm columns'), ('spatial', 'Spatial')):
-        b, _ = load(base, kind); n_, _ = load(new, kind)
+        b, _ = load(base, kind); noise_b = {k: NOISE[k] / med(b[k[:2]][k[2]]) - 1 for k in NOISE if k[:2] in b}
+        NOISE.clear()
+        n_, _ = load(new, kind); noise_n = {k: NOISE[k] / med(n_[k[:2]][k[2]]) - 1 for k in NOISE if k[:2] in n_}
+        NOISE.clear()
         if not b or not n_: continue
         L += [f'## {title}', '', '| shape / operation | 1e3 base | 1e3 new | 1e3 | 1e4 | 1e5 | 1e6 base | 1e6 new | 1e6 |', '|---|---:|---:|---:|---:|---:|---:|---:|---:|']
         for key in b:
@@ -95,7 +99,12 @@ def compare(base, new):
                 t = f'{q:.3f}'
                 if x < 200 and abs(y - x) >= 0.5: t += f' ({y - x:+.0f})'
                 if q > 1.02:
-                    t = f'**{t}**'; worst.append((q, kind, key, n, x, y))
+                    # a cell whose own samples scatter more than the excess is not evidence of a regression
+                    sp = max(spread_of(b[key][n]), spread_of(n_[key][n]), noise_b.get((key[0], key[1], n), 0), noise_n.get((key[0], key[1], n), 0))
+                    if sp > q - 1:
+                        t = f'{t}~'; noisy.append((q, kind, key, n, x, y, sp))
+                    else:
+                        t = f'**{t}**'; worst.append((q, kind, key, n, x, y))
                 r[n] = (x, y, t)
             L.append(f'| {key[0]} / {key[1]} | {r[1000][0]:,.0f} | {r[1000][1]:,.0f} | {r[1000][2]} | {r[10000][2]} | {r[100000][2]} | {r[1000000][0]:,.0f} | {r[1000000][1]:,.0f} | {r[1000000][2]} |')
         L.append('')
@@ -103,6 +112,11 @@ def compare(base, new):
     if not worst: L.append('None.')
     for q, kind, key, n, x, y in sorted(worst, reverse=True):
         L.append(f'* {kind} {key[0]} / {key[1]} N={n:,}: {x:,.0f} -> {y:,.0f} ({q:.3f}x)')
+    L += ['', "## Above 1.02x but inside the cell's own scatter (`~`)", '',
+          "The larger of the two tags' run-to-run spread and sample noise exceeds the excess: not a measured regression.", '']
+    if not noisy: L.append('None.')
+    for q, kind, key, n, x, y, sp in sorted(noisy, reverse=True):
+        L.append(f'* {kind} {key[0]} / {key[1]} N={n:,}: {x:,.0f} -> {y:,.0f} ({q:.3f}x; scatter {sp*100:.0f}%)')
     return '\n'.join(L) + '\n'
 
 if __name__ == '__main__':

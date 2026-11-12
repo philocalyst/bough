@@ -72,6 +72,32 @@ fn main() {
         let v = edit(n, reps, |t| t.remove_run(black_box(n / 2), 8));
         println!("remove8-middle,{n},{v:.1}");
 
+        // the prefix rebuild alone, through the non-inlined probe (also what `objdump` shows): a
+        // directory of n / 64 pages rebuilt from page 0 and from its last page
+        let pages = n.div_ceil(64);
+        let lens = vec![64u32; pages];
+        let mut p = bough_core::prefix::BlockedPrefix::new();
+        for _ in 0..pages {
+            p.grow();
+        }
+        for from in [0, pages - 1] {
+            bough_core::probe::prefix_invalidate_from(&mut p, from, &lens);
+            let a = counters().0;
+            for _ in 0..64 {
+                bough_core::probe::prefix_invalidate_from(
+                    black_box(&mut p),
+                    black_box(from),
+                    black_box(&lens),
+                );
+            }
+            let z = counters().0;
+            println!(
+                "prefix-rebuild-from-{},{n},{:.1}",
+                if from == 0 { "front" } else { "end" },
+                (z - a) as f64 / 64.0
+            );
+        }
+
         let b = tree(n);
         const Q: usize = 1 << 16;
         let a = counters().0;
