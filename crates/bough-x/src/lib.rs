@@ -2,6 +2,8 @@
 //!
 //! * [`expr`] (the `bough-expr` crate): expressions as types; the stage joined from the operands' stages; the
 //!   uniform block.
+//! * [`arena`]: the scene's memory: a working half and a published half of one layout, addressed by offsets;
+//!   the plan (one line per column, in paint order) that every pass reads.
 //! * [`store`]: archetype columns in 64-record pages; the finite-difference derivative; tile damage.
 //! * [`kinds`]: the paint kinds, generic over their operands' expressions.
 //! * [`sink`]: `view` drives a sink; rows of a list are plain tuples; relations carry their own journal.
@@ -10,6 +12,7 @@
 //!
 //! Nothing here depends on the façade's runtime.
 pub use bough_expr as expr;
+pub mod arena;
 pub mod kinds;
 pub mod sink;
 pub mod soft;

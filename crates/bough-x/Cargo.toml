@@ -21,3 +21,7 @@ mutant_journal = []
 mutant_moves = []
 # a frame with records in motion damages nothing
 mutant_sweep = []
+# a reader of the published half does not check the epoch after reading
+mutant_torn = []
+# publish copies nothing: the published half goes stale
+mutant_publish = []

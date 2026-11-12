@@ -219,6 +219,7 @@ unsafe fn replace<A: Arch>(site: &Site, slot: u32, p: *mut A, a: A, mk: &Mk, cx:
             cx.tiles.mark(r.and(mk.clip));
         }
         *p = a;
+        cx.ar.dirty(site.rid + (slot >> 6));
     }
 }
 
@@ -334,6 +335,8 @@ row_tuple!(A B C D E F G H I J K L);
 /// What a pass carries: the damage, the block, whether every exposed row is to be compared, and (out) the
 /// block words that move some list's exposure.
 pub struct Cx<'c> {
+    /// The scene's memory: a record written is noted there, so the next publish copies its page.
+    pub ar: crate::arena::Ar,
     pub tiles: &'c mut Tiles,
     pub u: &'c U,
     pub all: bool,
@@ -369,6 +372,7 @@ fn row_sites<V, R: Row<V>, B: Backend>(st: &mut Store, k: usize, rects: &[Rect],
 fn row_new<V, R: Row<V>, B: Backend>(st: &mut Store, rects: &[Rect], row: &R) -> u32 {
     let p0 = st.sites.len() as u32;
     row.visit(&mut Discover::<B> { st, rects, k: 0, _b: PhantomData });
+    st.seal();
     st.rows.push((TypeId::of::<R>(), p0));
     p0
 }
@@ -386,7 +390,7 @@ pub struct Write<'w, 'c, V, B> {
 
 impl<'w, 'c, V, B: Backend> Write<'w, 'c, V, B> {
     pub(crate) fn new(st: &'w mut Store, cx: &'w mut Cx<'c>, fresh: bool) -> Self {
-        let mk = Mk { org: st.space.origin(cx.u), clip: st.space.clip };
+        let mk = Mk { org: st.space().origin(cx.u), clip: st.space().clip };
         Write { st, cx, rowc: 0, sub: 0, fresh, mk, _p: PhantomData }
     }
 }
@@ -407,6 +411,7 @@ impl<'w, 'c, V, B: Backend> Sink<V> for Write<'w, 'c, V, B> {
             for (s, r) in sites.iter().zip(rects) {
                 // SAFETY: slot 0 of a site of this store (capacity 1).
                 unsafe { s.set_rect(0, *r) }
+                self.cx.ar.dirty(s.rid);
             }
             // SAFETY: the sites were discovered from a row of type `R` (`row_sites`).
             unsafe { row.write(sites.as_ptr(), 0) }
@@ -420,6 +425,7 @@ impl<'w, 'c, V, B: Backend> Sink<V> for Write<'w, 'c, V, B> {
                         // move it further, which this untyped path cannot see, so the whole space is damaged.
                         self.cx.tiles.mark(self.mk.clip);
                         s.set_rect(0, *r);
+                        self.cx.ar.dirty(s.rid);
                     }
                 }
             }
@@ -432,19 +438,19 @@ impl<'w, 'c, V, B: Backend> Sink<V> for Write<'w, 'c, V, B> {
         self.sub += 1;
         let mut fresh = self.fresh;
         if q == self.st.subs.len() {
-            self.st.subs.push(Store::new(1, space));
+            self.st.subs.push(Store::new(self.st.ar, 1, space));
             self.st.order.push(Pass::Sub(q as u32));
             fresh = true;
         }
         let st = &mut self.st.subs[q];
-        if st.space != space {
+        if st.space() != space {
             if !fresh {
-                self.cx.tiles.mark(st.space.clip);
+                self.cx.tiles.mark(st.space().clip);
                 self.cx.tiles.mark(space.clip);
             }
-            st.space = space;
+            st.set_space(space);
         }
-        st.row_live[0] = 1;
+        st.live_one();
         let mut sub = Write::<V, B>::new(st, self.cx, fresh);
         f(&mut sub);
     }
@@ -505,7 +511,7 @@ pub fn exposed(l: &List<'_>, org: (i32, i32), clip: Rect) -> (u32, u32) {
 /// every list in a program.
 #[inline]
 pub fn list_sync<V, R: Row<V>, F: FnMut(usize) -> R, B: Backend>(parent: &mut Store, q: usize, cx: &mut Cx<'_>, l: &List<'_>, mut f: F) {
-    let space = parent.space;
+    let space = parent.space();
     cx.lists |= space.reads();
     if q == parent.subs.len() {
         list_new(parent, l);
@@ -541,9 +547,9 @@ pub fn list_sync<V, R: Row<V>, F: FnMut(usize) -> R, B: Backend>(parent: &mut St
 #[cold]
 #[inline(never)]
 fn list_new(parent: &mut Store, l: &List<'_>) {
-    let space = parent.space;
+    let space = parent.space();
     let rows = (space.clip.y1 - space.clip.y0) / l.row_h + 2;
-    let mut st = Store::new((rows as u32).next_power_of_two().max(64), space);
+    let mut st = Store::new(parent.ar, (rows as u32).next_power_of_two().max(64), space);
     st.seen = l.edits.ver;
     parent.order.push(Pass::Sub(parent.subs.len() as u32));
     parent.subs.push(st);
@@ -560,7 +566,7 @@ fn list_plan(st: &mut Store, cx: &mut Cx<'_>, l: &List<'_>, (lo, hi): (u32, u32)
     #[cfg(feature = "mutant_journal")]
     let (from, nupd) = (u32::MAX, 0 * nupd);
     st.seen = l.edits.ver;
-    st.space = space;
+    st.set_space(space);
     st.plan.clear();
     let mk = Mk { org, clip: space.clip };
     assert!(hi - lo <= st.cap, "the window outgrew the list's capacity");
@@ -603,6 +609,8 @@ fn list_plan(st: &mut Store, cx: &mut Cx<'_>, l: &List<'_>, (lo, hi): (u32, u32)
         }
     }
     let mask = st.cap - 1;
+    // the slot pages (64 row slots each) that get a row written whole: every column's page there is dirty
+    let mut wrote = 0u64;
     for r in lo..hi {
         let fresh = (r < olo) | (r >= ohi);
         if fresh | (r >= from) {
@@ -617,16 +625,36 @@ fn list_plan(st: &mut Store, cx: &mut Cx<'_>, l: &List<'_>, (lo, hi): (u32, u32)
             }
             cx.tiles.mark(row_rect(r));
             st.plan.push(r | 1 << 31);
+            wrote |= 1 << (((r & mask) >> 6) & 63);
         } else if cx.all | upd[..nupd].contains(&r) {
             st.plan.push(r);
         }
     }
-    st.lo = lo;
-    st.hi = hi;
-    st.row_live.fill(0);
-    for r in lo..hi {
-        let s = r & mask;
-        st.row_live[s as usize >> 6] |= 1 << (s & 63);
+    if wrote != 0 {
+        let pages = st.cap / 64;
+        for s in &st.sites[..leaves] {
+            if pages > 64 {
+                // more slot pages than the mask names: all of the site's
+                (0..pages).for_each(|p| cx.ar.dirty(s.rid + p));
+            } else {
+                let mut m = wrote;
+                while m != 0 {
+                    cx.ar.dirty(s.rid + m.trailing_zeros());
+                    m &= m - 1;
+                }
+            }
+        }
+    }
+    if (st.lo, st.hi) != (lo, hi) {
+        st.lo = lo;
+        st.hi = hi;
+        let live = st.live_mut();
+        live.fill(0);
+        for r in lo..hi {
+            let s = r & mask;
+            live[s as usize >> 6] |= 1 << (s & 63);
+        }
+        st.live_dirty();
     }
     mk
 }

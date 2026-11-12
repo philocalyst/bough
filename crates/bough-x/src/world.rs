@@ -2,7 +2,8 @@
 use crate::expr::{APP_WORDS, U, U_TIME};
 use crate::sink::{Cx, Patch, REL_EPOCH, View, Write};
 use core::sync::atomic::Ordering;
-use crate::store::{Backend, Path, Space, Store, Tiles};
+use crate::arena::{Ar, Arena};
+use crate::store::{self, Backend, Path, Space, Store, Tiles};
 use core::marker::PhantomData;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -13,6 +14,10 @@ struct Hot {
 }
 
 pub struct World<B> {
+    /// The scene's memory. Declared before `root` only for reading order: `root` holds handles into it and
+    /// neither's drop touches the other.
+    _arena: Arena,
+    pub ar: Ar,
     pub root: Store,
     /// The block as of the last settle: what the pixels on screen were shaded with.
     pub shown: U,
@@ -29,9 +34,14 @@ pub struct World<B> {
     _b: PhantomData<B>,
 }
 
+/// Address space reserved for each half of a scene. Memory is committed as pages are touched.
+pub const RESERVE: usize = 64 << 20;
+
 impl<B: Backend> World<B> {
     pub fn new(w: i32, h: i32, nwords: usize) -> World<B> {
-        World { root: Store::new(1, Space::root(w, h)), shown: U::default(), tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, moving: false, hot: None, _b: PhantomData }
+        let arena = Arena::new(RESERVE);
+        let ar = arena.ar();
+        World { _arena: arena, ar, root: Store::new(ar, 1, Space::root(w, h)), shown: U::default(), tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, moving: false, hot: None, _b: PhantomData }
     }
 
     /// The application's block with the words the raster owns (time, pointer, pick) as the world has them.
@@ -51,11 +61,12 @@ impl<B: Backend> World<B> {
     pub fn mount<V: View>(&mut self, v: &V) {
         self.shown = self.block(v);
         self.tiles.mark_all();
-        self.root.row_live[0] = 1;
+        self.root.live_one();
         self.epoch = REL_EPOCH.load(Ordering::Relaxed);
-        let mut cx = Cx { tiles: &mut self.tiles, u: &self.shown, all: true, lists: 0 };
+        let mut cx = Cx { ar: self.ar, tiles: &mut self.tiles, u: &self.shown, all: true, lists: 0 };
         v.view(&mut Write::<V, B>::new(&mut self.root, &mut cx, true));
         self.lists = cx.lists;
+        self.ordered();
     }
 
     /// A frame at time `now`. Time advancing is not a turn: nothing is compared or evaluated. If some record
@@ -64,7 +75,7 @@ impl<B: Backend> World<B> {
     pub fn tick(&mut self, now: u32) {
         self.shown.w[U_TIME] = now;
         if self.moving {
-            self.moving = self.root.tick(&self.shown, now, &mut self.tiles);
+            self.moving = store::tick(self.ar, &self.shown, now, &mut self.tiles);
         }
     }
 
@@ -87,13 +98,14 @@ impl<B: Backend> World<B> {
     fn changed<V: View>(&mut self, v: &V, ch: u64, epoch: u32) {
         let u = &self.block(v);
         if ch != 0 {
-            self.moving |= self.root.delta(&self.shown, u, ch, &mut self.tiles);
+            self.moving |= store::delta(self.ar, &self.shown, u, ch, &mut self.tiles);
         }
         if (epoch != self.epoch) | (ch & self.lists != 0) {
             self.epoch = epoch;
-            let mut cx = Cx { tiles: &mut self.tiles, u, all: false, lists: 0 };
+            let mut cx = Cx { ar: self.ar, tiles: &mut self.tiles, u, all: false, lists: 0 };
             v.view(&mut Patch::<V, B> { st: &mut self.root, cx: &mut cx, sub: 0, _p: PhantomData });
             self.lists |= cx.lists;
+            self.ordered();
         }
         if ch != 0 {
             self.shown = *u;
@@ -106,12 +118,13 @@ impl<B: Backend> World<B> {
         let u = &self.block(v);
         let ch = self.shown.diff(u, self.nwords);
         if ch != 0 {
-            self.moving |= self.root.delta(&self.shown, u, ch, &mut self.tiles);
+            self.moving |= store::delta(self.ar, &self.shown, u, ch, &mut self.tiles);
         }
         self.epoch = REL_EPOCH.load(Ordering::Relaxed);
-        let mut cx = Cx { tiles: &mut self.tiles, u, all: true, lists: 0 };
+        let mut cx = Cx { ar: self.ar, tiles: &mut self.tiles, u, all: true, lists: 0 };
         v.view(&mut Write::<V, B>::new(&mut self.root, &mut cx, false));
         self.lists |= cx.lists;
+        self.ordered();
         if ch != 0 {
             self.shown = *u;
         }
@@ -131,15 +144,44 @@ impl<B: Backend> World<B> {
             if let Some((f, _)) = c.hover {
                 // SAFETY: `f` was registered by `emit_hover::<A, F>` on this column for the view type `V` this
                 // world is driven with; `rec_ptr` is a record of that column.
-                unsafe { f(v as *mut V as *mut (), c.rec_ptr(h.rec), on) }
+                unsafe { f(v as *mut V as *mut (), c.rec_ptr(self.ar, h.rec), on) }
             }
         }
         self.hot = now;
         true
     }
 
-    /// Paint everything through the backend with the block as last settled.
+    /// Keep the plan in paint order: a pass that created a column leaves it appended.
+    #[inline(always)]
+    fn ordered(&mut self) {
+        if self.ar.head().unordered != 0 {
+            self.root.reorder();
+        }
+    }
+
+    /// Paint everything through the backend with the block as last settled, from the working half: what the
+    /// turn thread itself sees.
     pub fn paint(&self, b: &mut B) {
-        self.root.paint(&self.shown, b);
+        // SAFETY: every column of this world was described with backend type `B` (`World<B>`'s sinks are the
+        // only ones that seal entries); the turn thread reads its own half.
+        unsafe { store::paint(self.ar.work(), self.ar.head().ncols as usize, &self.shown, b) }
+    }
+
+    /// Publish the turn thread's writes: the published half becomes what the working half is. Call between
+    /// frames (no frame is reading the published half). Returns the lines copied.
+    pub fn publish(&mut self) -> u32 {
+        self.ar.publish()
+    }
+
+    /// Paint from the published half with block `u`: what a frame does. `u` is the block that was current at
+    /// the publish.
+    pub fn paint_front(&self, u: &crate::expr::U, b: &mut B) {
+        // SAFETY: as `paint`; the published half is written only by `publish`, which takes `&mut self`.
+        unsafe { store::paint(self.ar.front(), self.ar.head().ncols as usize, u, b) }
+    }
+
+    /// Records, pages and bytes of columns.
+    pub fn stats(&self) -> (usize, usize, usize) {
+        store::stats(self.ar)
     }
 }
