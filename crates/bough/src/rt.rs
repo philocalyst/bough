@@ -904,6 +904,25 @@ impl Rt {
         idx
     }
 
+    /// Move wire `w` to the front of the chain of `head` (a producer runs before its source's other wires).
+    pub(crate) fn wire_to_front(&mut self, head: &std::cell::Cell<u32>, w: u32) {
+        let h = head.get();
+        let first = h & HEAD_IDX;
+        if first == w {
+            return;
+        }
+        let mut p = first;
+        while p != 0 && self.wires[p as usize].next != w {
+            p = self.wires[p as usize].next;
+        }
+        if p == 0 {
+            return;
+        }
+        self.wires[p as usize].next = self.wires[w as usize].next;
+        self.wires[w as usize].next = first;
+        head.set(w | (h & !HEAD_IDX));
+    }
+
     /// A new owner class (list rows, entities): its wired offsets start empty.
     pub(crate) fn new_class(&mut self) -> u32 {
         self.classes.push(Vec::new());
@@ -920,9 +939,11 @@ impl Rt {
     pub unsafe fn settle(&mut self, owner: *const u8) {
         loop {
             unsafe { self.settle_cls(owner, 0) };
-            if !std::mem::take(&mut self.asy.rescan) {
+            if !self.asy.rescan {
                 break;
             }
+            // SAFETY: as this function.
+            unsafe { self.settle_async() };
         }
         self.lists_end_turn();
     }

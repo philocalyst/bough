@@ -44,7 +44,7 @@ pub mod prelude {
     pub use crate::entity::{Entities, Entity};
     pub use crate::list::{List, Slot};
     pub use crate::listview::list;
-    pub use crate::reader::{boundary, Reader, Request};
+    pub use crate::reader::{boundary, is_pending, latest, Closed, Executor, Failure, FailureKind, Inlet, Reader, Request, Settled};
     pub use crate::input::{text_field, tooltip, Interact, Key, Mods};
     pub use crate::layout::{block, column, para, row, Align, Justify, Styled};
     pub use crate::sig;
@@ -69,7 +69,7 @@ pub mod raw {
     pub use crate::lanes::{lanes, Lane};
     pub use crate::list::{List, Slot};
     pub use crate::listview::{index_list, list, list_with};
-    pub use crate::reader::{boundary, latest, produce, Reader, Request};
+    pub use crate::reader::{boundary, is_pending, latest, produce, Closed, Executor, Failure, FailureKind, Inlet, Reader, Request, RequestStamp, Settled};
     pub use crate::rt::Caps;
     pub use crate::sig;
     pub use crate::signal::{Signal, Wired};

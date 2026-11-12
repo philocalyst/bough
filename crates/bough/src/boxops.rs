@@ -157,7 +157,7 @@ impl<V, P: IntoProp<f32, V>> BoxOps<V> for Opacity<P> {
         ApplyOpacity::apply(m.rt, node, &v);
     }
     fn refresh(self, rt: &mut Rt, _lid: u32, node: u32) {
-        ApplyOpacity::apply(rt, node, &self.0.value());
+        ApplyOpacity::apply(rt, node, &self.0.shown(rt));
     }
 }
 impl<V, P: IntoProp<(f32, f32), V>> BoxOps<V> for Translate<P> {
@@ -170,7 +170,7 @@ impl<V, P: IntoProp<(f32, f32), V>> BoxOps<V> for Translate<P> {
         (n.tx, n.ty) = (v.0 * s, v.1 * s);
     }
     fn refresh(self, rt: &mut Rt, _lid: u32, node: u32) {
-        ApplyTranslate::apply(rt, node, &self.0.value());
+        ApplyTranslate::apply(rt, node, &self.0.shown(rt));
     }
 }
 impl<V, P: IntoProp<f32, V>> BoxOps<V> for WidthOp<P> {
@@ -180,7 +180,7 @@ impl<V, P: IntoProp<f32, V>> BoxOps<V> for WidthOp<P> {
         spec.w = Dim::Pt(self.0.lower::<ApplyBoxW>(m, lid));
     }
     fn refresh(self, rt: &mut Rt, lid: u32, _node: u32) {
-        ApplyBoxW::apply(rt, lid, &self.0.value());
+        ApplyBoxW::apply(rt, lid, &self.0.shown(rt));
     }
 }
 impl<V, P: IntoProp<f32, V>> BoxOps<V> for HeightOp<P> {
@@ -190,7 +190,7 @@ impl<V, P: IntoProp<f32, V>> BoxOps<V> for HeightOp<P> {
         spec.h = Dim::Pt(self.0.lower::<ApplyBoxH>(m, lid));
     }
     fn refresh(self, rt: &mut Rt, lid: u32, _node: u32) {
-        ApplyBoxH::apply(rt, lid, &self.0.value());
+        ApplyBoxH::apply(rt, lid, &self.0.shown(rt));
     }
 }
 

@@ -37,6 +37,9 @@ dispatch2 = "0.3"
 wgpu = ["dep:bough-gpu"]
 # Gate sabotage (RESULTS §15): the scroll copy reads one pixel off; every scroll pixel gate must fail with it.
 sabotage_copy = []
+# Gate sabotage (lane async-entities): completions are admitted by input value equality instead of by stamp; the
+# alias test (tests/publication.rs) must fail with it.
+sabotage_alias = []
 
 [dev-dependencies]
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }

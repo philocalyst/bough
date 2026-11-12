@@ -318,7 +318,7 @@ fn apply_fn<K: Apply>(rt: &mut Rt, node: u32, v: &K::P) {
 
 impl<'a, T: Lerp, V> IntoProp<T, V> for Transit<Wired<'a, T, V>> {
     fn lower<K: Apply<P = T>>(self, m: &mut Mounter<'_, V>, node: u32) -> T {
-        let init = *self.w.get();
+        let init = *self.w.shown_ref(m.rt);
         let id = m.rt.transitions.add::<T>(node, Box::new(apply_fn::<K> as fn(&mut Rt, u32, &T)), init, self.curve);
         let mut recipe = [0u8; 16];
         recipe[..4].copy_from_slice(&id.to_le_bytes());
@@ -329,6 +329,10 @@ impl<'a, T: Lerp, V> IntoProp<T, V> for Transit<Wired<'a, T, V>> {
     fn value(self) -> T {
         *self.w.get()
     }
+    #[inline(always)]
+    fn shown(self, rt: &Rt) -> T {
+        *self.w.shown_ref(rt)
+    }
 }
 
 impl<'a, T: 'static, V, F, P: Lerp> IntoProp<P, V> for Transit<WMap<'a, T, V, F>>
@@ -337,7 +341,7 @@ where
 {
     fn lower<K: Apply<P = P>>(self, m: &mut Mounter<'_, V>, node: u32) -> P {
         assert!(size_of::<F>() <= 12, "a transition's projection must capture at most 12 bytes");
-        let init = (self.w.f)(self.w.w.get());
+        let init = (self.w.f)(self.w.w.shown_ref(m.rt));
         let id = m.rt.transitions.add::<P>(node, Box::new(apply_fn::<K> as fn(&mut Rt, u32, &P)), init, self.curve);
         let mut recipe = [0u8; 16];
         recipe[..4].copy_from_slice(&id.to_le_bytes());
@@ -348,5 +352,9 @@ where
     }
     fn value(self) -> P {
         (self.w.f)(self.w.w.get())
+    }
+    #[inline(always)]
+    fn shown(self, rt: &Rt) -> P {
+        (self.w.f)(self.w.w.shown_ref(rt))
     }
 }

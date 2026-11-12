@@ -205,6 +205,12 @@ pub trait IntoProp<P: 'static, V>: Sized {
     /// The current value, at a re-description (a wired operand keeps its wire; applying its current value
     /// is a no-op through the property's equality cut-off).
     fn value(self) -> P;
+    /// The value this operand's sink shows, at a re-description: `value`, except for an operand wired to a
+    /// signal a staged publication holds (`reader.rs`), which keeps its value of the last publication.
+    #[inline(always)]
+    fn shown(self, _rt: &Rt) -> P {
+        self.value()
+    }
     /// The operand's part of its element's seal (`seal.rs`); refuses by default.
     #[inline(always)]
     fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
@@ -250,7 +256,7 @@ impl<T: Clone + 'static, V> IntoProp<T, V> for &Signal<T> {
 
 /// # Safety
 /// The wire contract (`PatchFn`): `sig` is a `Signal<T>`.
-unsafe fn patch_sig<K: Apply<P = T>, T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+pub(crate) unsafe fn patch_sig<K: Apply<P = T>, T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
     let s = unsafe { &*(sig as *const Signal<T>) };
     K::apply(rt, w.node, s);
@@ -258,7 +264,7 @@ unsafe fn patch_sig<K: Apply<P = T>, T: 'static>(rt: &mut Rt, w: &Wire, sig: *co
 
 /// # Safety
 /// As `patch_sig`; the recipe holds an `F` written by `lower`.
-unsafe fn patch_map<K: Apply, T: 'static, F: Fn(&T) -> K::P + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+pub(crate) unsafe fn patch_map<K: Apply, T: 'static, F: Fn(&T) -> K::P + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract; F is Copy and was written unaligned into the 16-byte recipe.
     let s = unsafe { &*(sig as *const Signal<T>) };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
@@ -266,7 +272,7 @@ unsafe fn patch_map<K: Apply, T: 'static, F: Fn(&T) -> K::P + Copy>(rt: &mut Rt,
     K::apply(rt, w.node, &v);
 }
 
-fn recipe_of<F: Copy>(f: F) -> [u8; 16] {
+pub(crate) fn recipe_of<F: Copy>(f: F) -> [u8; 16] {
     const { assert!(size_of::<F>() <= 16, "map closure: at most 16 bytes of captures") };
     let mut r = [0u8; 16];
     // SAFETY: size_of::<F>() <= 16 (checked at compile time); unaligned write into a byte array.
@@ -277,10 +283,14 @@ fn recipe_of<F: Copy>(f: F) -> [u8; 16] {
 impl<'a, T: Clone + 'static, V> IntoProp<T, V> for Wired<'a, T, V> {
     fn lower<K: Apply<P = T>>(self, m: &mut Mounter<'_, V>, node: u32) -> T {
         m.wire(&self, patch_sig::<K, T>, node, [0; 16]);
-        self.get().clone()
+        self.shown_ref(m.rt).clone()
     }
     fn value(self) -> T {
         self.get().clone()
+    }
+    #[inline(always)]
+    fn shown(self, rt: &Rt) -> T {
+        Wired::shown_ref(&self, rt).clone()
     }
 }
 
@@ -289,12 +299,16 @@ where
     F: Fn(&T) -> P + Copy + 'static,
 {
     fn lower<K: Apply<P = P>>(self, m: &mut Mounter<'_, V>, node: u32) -> P {
-        let init = (self.f)(self.w.get());
+        let init = (self.f)(self.w.shown_ref(m.rt));
         m.wire(&self.w, patch_map::<K, T, F>, node, recipe_of(self.f));
         init
     }
     fn value(self) -> P {
         (self.f)(self.w.get())
+    }
+    #[inline(always)]
+    fn shown(self, rt: &Rt) -> P {
+        (self.f)(self.w.shown_ref(rt))
     }
 }
 
@@ -478,9 +492,9 @@ where
 
     fn update(self, m: &mut Mounter<'_, V>) {
         let node = m.tape_next();
-        let bg = self.bg.value();
-        let w = self.wd.value();
-        let (y, h) = self.sp.value();
+        let bg = self.bg.shown(m.rt);
+        let w = self.wd.shown(m.rt);
+        let (y, h) = self.sp.shown(m.rt);
         let s = m.rt.scale;
         let (x_px, y0_px) = ((m.ox + self.x) * s, m.oy * s);
         let (y_px, h_px, w_px) = (y0_px + y * s, h * s, w * s);
@@ -542,6 +556,16 @@ pub trait TextSrc<V>: Sized {
     fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String;
     /// The current text, at a re-description.
     fn value(self) -> String;
+    /// The text this source's sink shows, at a re-description (see `IntoProp::shown`).
+    #[inline(always)]
+    fn shown(self, _rt: &Rt) -> String {
+        self.value()
+    }
+    /// Is this source wired to a signal a staged publication holds? (Its sink then keeps its text.)
+    #[inline(always)]
+    fn held(&self) -> bool {
+        false
+    }
     /// `value` lent to `f` without building a `String` where the source already is one.
     #[inline]
     fn with_str<R>(self, f: impl FnOnce(&str) -> R) -> R {
@@ -665,7 +689,7 @@ unsafe fn patch_text(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
 
 /// # Safety
 /// Wire contract: `sig` is a `Signal<T>`; the recipe holds an `F`.
-unsafe fn patch_text_map<T: 'static, F: Fn(&T) -> String + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+pub(crate) unsafe fn patch_text_map<T: 'static, F: Fn(&T) -> String + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
     let s = unsafe { &*(sig as *const Signal<T>) };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
@@ -714,25 +738,41 @@ unsafe fn patch_text_num<T: 'static, F: Fn(&T) -> f32 + Copy>(rt: &mut Rt, w: &W
 impl<'a, V> TextSrc<V> for Wired<'a, String, V> {
     fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String {
         m.wire(&self, patch_text, node, [0; 16]);
-        self.get().clone()
+        Wired::shown_ref(&self, m.rt).clone()
     }
     fn value(self) -> String {
         self.get().clone()
     }
+    #[inline(always)]
+    fn shown(self, rt: &Rt) -> String {
+        Wired::shown_ref(&self, rt).clone()
+    }
+    #[inline(always)]
+    fn held(&self) -> bool {
+        self.is_held()
+    }
 }
 impl<'a, T: 'static, V, F: Fn(&T) -> String + Copy + 'static> TextSrc<V> for WMap<'a, T, V, F> {
     fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String {
-        let init = (self.f)(self.w.get());
+        let init = (self.f)(self.w.shown_ref(m.rt));
         m.wire(&self.w, patch_text_map::<T, F>, node, recipe_of(self.f));
         init
     }
     fn value(self) -> String {
         (self.f)(self.w.get())
     }
+    #[inline(always)]
+    fn shown(self, rt: &Rt) -> String {
+        (self.f)(self.w.shown_ref(rt))
+    }
+    #[inline(always)]
+    fn held(&self) -> bool {
+        self.w.is_held()
+    }
 }
 impl<'a, T: 'static, V, F: Fn(&T) -> f32 + Copy + 'static> TextSrc<V> for Num<'a, T, V, F> {
     fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String {
-        let v = (self.f)(self.w.get());
+        let v = (self.f)(self.w.shown_ref(m.rt));
         m.wire(&self.w, patch_text_num::<T, F>, node, recipe_of(self.f));
         m.pending_num = Some(self.fmt);
         let mut buf = [0u8; 16];
@@ -746,6 +786,21 @@ impl<'a, T: 'static, V, F: Fn(&T) -> f32 + Copy + 'static> TextSrc<V> for Num<'a
         let mut slow = String::new();
         let n = render_num(&self.fmt, v, &mut buf, &mut slow);
         if n == usize::MAX { slow } else { bough_text::numeric::as_str(&buf, n).to_owned() }
+    }
+    #[inline(always)]
+    fn shown(self, rt: &Rt) -> String {
+        if self.w.is_held() {
+            let v = (self.f)(self.w.shown_ref(rt));
+            let mut buf = [0u8; 16];
+            let mut slow = String::new();
+            let n = render_num(&self.fmt, v, &mut buf, &mut slow);
+            return if n == usize::MAX { slow } else { bough_text::numeric::as_str(&buf, n).to_owned() };
+        }
+        self.value()
+    }
+    #[inline(always)]
+    fn held(&self) -> bool {
+        self.w.is_held()
     }
 }
 
@@ -852,6 +907,9 @@ impl<'a, V: 'static, T: 'static> GlyphOp<V> for GlyphAlpha<'a, T, V> {
         m.wire(&self.sig, patch_galpha::<T>, node, recipe_of(self.f));
     }
     fn refresh(self, m: &mut Mounter<'_, V>, node: u32) {
+        if self.sig.is_held() {
+            return; // a staged publication holds the signal: the glyphs keep its last published value
+        }
         let hsh = set_glyph_alpha(m.rt, node, self.f, self.sig.get());
         m.rt.nodes[node as usize].series_key = hsh;
     }
@@ -913,7 +971,7 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
 
     fn update(self, m: &mut Mounter<'_, V>) {
         let node = m.tape_next();
-        let text = self.s.value();
+        let text = self.s.shown(m.rt);
         let s = m.rt.scale;
         let size_px = self.size * s;
         let lh_px = self.lh * s;

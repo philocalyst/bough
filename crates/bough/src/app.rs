@@ -50,15 +50,22 @@ pub struct Config {
     /// benchmarks set it to measure the wire path alone; `Application::run` never does, so every
     /// application view re-describes after its handlers (`designs/reactivity/final/01-state.md` §2).
     pub mount_once: bool,
+    /// Where producers' work runs (`reader::Executor`); `None`: the installed one, else the manual one.
+    pub executor: Option<crate::reader::Executor>,
 }
 
 impl Config {
     pub fn new(width_pt: f32, height_pt: f32, scale: f32, font: Vec<u8>) -> Config {
-        Config { width_pt, height_pt, scale, font, ring: 0, caps: Caps::DEFAULT, faces: Vec::new(), mount_once: false }
+        Config { width_pt, height_pt, scale, font, ring: 0, caps: Caps::DEFAULT, faces: Vec::new(), mount_once: false, executor: None }
     }
     /// Surfaces of the ring.
     pub fn surfaces(&self) -> usize {
         if self.ring == 0 { 4 } else { self.ring.min(4) }
+    }
+    /// Choose the executor of this app's producers (once, here: no handle travels through application code).
+    pub fn executor(mut self, e: crate::reader::Executor) -> Config {
+        self.executor = Some(e);
+        self
     }
     /// `mount_once` set (a scene benchmark measuring the wire path alone).
     pub fn once(mut self) -> Config {
@@ -307,6 +314,9 @@ impl<V: View> App<V> {
         if let Some(m) = metal.as_mut() {
             m.set_layout(rt.layout);
         }
+        if let Some(e) = cfg.executor.clone() {
+            rt.asy.set_executor(e);
+        }
         rt.lay.mount_avail = (win_w as f32, win_h as f32);
         let owner = Box::new(view);
         let mut recs: Vec<RecordInit> = Vec::with_capacity(4096);
@@ -437,7 +447,21 @@ impl<V: View> App<V> {
         self.redescribe();
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
+        if self.rt.asy.rescan {
+            self.async_tail();
+        }
         self.prof.mark(PH_TEXT);
+    }
+
+    /// Async work that appeared after the turn's settle (a producer mounted or released by the
+    /// re-description or by layout): settle once more, so the frame that follows shows it.
+    #[cold]
+    fn async_tail(&mut self) {
+        let owner = &mut *self.owner as *mut V as *const u8;
+        // SAFETY: as in `turn`.
+        unsafe { self.rt.settle(owner) };
+        self.effects();
+        self.rt.lay_flush();
     }
 
     /// The tile rows the last drawn frame repaired (bitmask of tile columns per row; inspect.rs).
@@ -464,6 +488,9 @@ impl<V: View> App<V> {
         self.effects();
         self.redescribe();
         self.rt.lay_flush();
+        if self.rt.asy.rescan {
+            self.async_tail();
+        }
     }
 
     /// A turn with no handler: admit async completions (a committed cohort's wires run in this turn).

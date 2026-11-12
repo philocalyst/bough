@@ -1534,7 +1534,7 @@ where
         }
         if self.draw {
             let node = li.rtn;
-            let bg = self.bg.value();
+            let bg = self.bg.shown(m.rt);
             let s = m.rt.scale;
             let (ins, _kind, margin) = quad_instance(bg, self.radius * s, self.border, s, m.space);
             let inst = m.rt.runs[m.rt.nodes[node as usize].run as usize].first;
@@ -1731,12 +1731,16 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
             m.rt.lay.info[lid as usize].clip = m.clip;
         }
         // compared in place: a source that is already a string allocates nothing
-        self.s.with_str(|text| {
-            if m.rt.texts[ti as usize].text != text {
-                m.rt.lay_text_changed(node, text);
-            }
-        });
-        <crate::boxops::ApplyTextColor as crate::elem::Apply>::apply(m.rt, node, &self.color.value());
+        // a source a staged publication holds keeps its text (`reader.rs`)
+        if !self.s.held() {
+            self.s.with_str(|text| {
+                if m.rt.texts[ti as usize].text != text {
+                    m.rt.lay_text_changed(node, text);
+                }
+            });
+        }
+        let color = self.color.shown(m.rt);
+        <crate::boxops::ApplyTextColor as crate::elem::Apply>::apply(m.rt, node, &color);
         m.pos += 1;
         m.kid += 1;
     }

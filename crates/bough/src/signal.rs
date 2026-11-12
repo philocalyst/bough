@@ -195,6 +195,27 @@ impl<'a, T, V> Wired<'a, T, V> {
     pub fn get(&self) -> &'a T {
         &self.sig.value
     }
+    /// Is a staged publication holding this signal (`reader.rs`)? Its sinks then show its value in the last
+    /// publication, not the model's.
+    #[inline(always)]
+    pub fn is_held(&self) -> bool {
+        self.sig.head.0.get() & HELD != 0
+    }
+    /// The value this signal's sinks show: its own, or, while a staged publication holds it, its value in
+    /// the last publication (the cohort's retained operand). One bit test when nothing is held.
+    #[inline(always)]
+    pub(crate) fn shown_ref<'b>(&self, rt: &'b crate::rt::Rt) -> &'b T
+    where
+        'a: 'b,
+        T: 'static,
+    {
+        if self.is_held() {
+            if let Some(v) = rt.asy.retained(self.sig as *const Signal<T> as usize).and_then(|v| v.downcast_ref::<T>()) {
+                return v;
+            }
+        }
+        self.get()
+    }
     /// A projection operand: `f` (`Copy`, at most 16 bytes of captures) runs on every update.
     pub fn map<R, F: Fn(&T) -> R + Copy + 'static>(self, f: F) -> WMap<'a, T, V, F> {
         WMap { w: self, f }
