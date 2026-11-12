@@ -13,6 +13,9 @@ zgx-workload = { git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0
 # synthetic images for the chat's media (encoded once at build of the model)
 png = "0.17"
 libc = "0.2"
+# layout lane probe (`lay_probe`, feature `cephal-stats`): cephal's query counters
+cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"], optional = true }
+serde_json = { version = "1", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # phys_footprint (process counters); the only macOS-only call in the crate is in src/sys.rs
@@ -31,6 +34,10 @@ chat = []
 # release number (docs/lanes/bench/MEASUREMENT.md).
 hotpath = ["bough/hotpath"]
 hotpath-alloc = ["bough/hotpath-alloc"]
+# cephal's query counters in `lay_probe` (instrumented: attribution only)
+cephal-stats = ["bough/cephal-stats", "dep:cephal", "cephal/stats"]
+# `lay_probe` writes the scene's layout trees for cephal's replay example (`DUMP=path`)
+dump = ["dep:cephal", "cephal/serde", "dep:serde_json"]
 
 [[bin]]
 name = "workload"
@@ -40,3 +47,8 @@ path = "src/bin/workload.rs"
 # the same driver with bough_mem::count::Counting as the global allocator: allocation counts per step
 name = "workload_alloc"
 path = "src/bin/workload_alloc.rs"
+
+[[bin]]
+# layout lane: where a scene's layout instructions go (mount, resize steps)
+name = "lay_probe"
+path = "src/bin/lay_probe.rs"

@@ -290,8 +290,10 @@ dependencies = [
  "bough",
  "bough-mem",
  "bough-metal",
+ "cephal",
  "libc",
  "png",
+ "serde_json",
  "zgx-workload",
 ]
 
@@ -351,6 +353,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 [[package]]
 name = "cephal"
 version = "0.2.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "cfg-if"

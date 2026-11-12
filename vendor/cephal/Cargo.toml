@@ -47,6 +47,8 @@ taffy = { version = "0.15", optional = true, default-features = false, features 
 
 [dev-dependencies]
 cephal = { path = ".", features = ["serde", "taffy-compat"] }
+# examples/replay.rs (bough lane `layout`): the calling thread's instruction counter on Linux and macOS
+bough-mem = { path = "../../crates/bough-mem" }
 roxmltree = "0.21"
 serde_json = "1"
 proptest = "1.11"

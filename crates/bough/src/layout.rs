@@ -910,9 +910,9 @@ pub struct LayStats {
     pub text_placed: u64,
 }
 
-/// Instruction-count profiler for the layout path (proc_pid_rusage; off unless enabled): mount (builders
-/// -> engine nodes + records), insert (records into the Bough), compute (the engine), write-back
-/// (instances + ink), unmount.
+/// Instruction-count profiler for the layout path (the calling thread's counter, `bough_mem::pmu`; off unless
+/// enabled): compute (the engine), write-back (instances + ink), and sub-spans inside them (text placement,
+/// label building) that do not disturb the enclosing span (`span` / `end`).
 pub struct LProf {
     pub on: bool,
     pub acc: [u64; 8],
@@ -929,22 +929,41 @@ pub const LP_TEXT_EMIT: usize = 6;
 pub const LP_TEXT_COPY: usize = 7;
 pub const LP_NAMES: [&str; 8] = ["mount", "insert", "compute", "write-back", "unmount", "(text set_text)", "(text emit)", "(text copy+ink)"];
 impl LProf {
+    #[inline]
+    fn now() -> u64 {
+        bough_mem::pmu::instructions_cycles().0
+    }
     pub fn enable(&mut self) {
         self.on = true;
-        self.ovh = bough_metal::perf::snap_overhead();
+        let _ = Self::now();
+        let mut v: Vec<u64> = (0..64).map(|_| (Self::now(), Self::now())).map(|(a, b)| b - a).collect();
+        v.sort_unstable();
+        self.ovh = v[v.len() / 2];
     }
     #[inline]
     pub fn reset(&mut self) {
         if self.on {
-            self.last = bough_metal::perf::snap().instrs;
+            self.last = Self::now();
         }
     }
     #[inline]
     pub fn mark(&mut self, i: usize) {
         if self.on {
-            let s = bough_metal::perf::snap().instrs;
+            let s = Self::now();
             self.acc[i] += (s - self.last).saturating_sub(self.ovh);
-            self.last = bough_metal::perf::snap().instrs;
+            self.last = Self::now();
+        }
+    }
+    /// The start of a sub-span (0 when off).
+    #[inline]
+    pub fn span(&self) -> u64 {
+        if self.on { Self::now() } else { 0 }
+    }
+    /// The end of a sub-span started at `t0`, added to `acc[i]`.
+    #[inline]
+    pub fn end(&mut self, i: usize, t0: u64) {
+        if self.on {
+            self.acc[i] += (Self::now() - t0).saturating_sub(self.ovh);
         }
     }
 }
@@ -1294,7 +1313,7 @@ impl Rt {
         debug_assert_eq!(spans.len(), lines);
         let _ = n;
         let slow_text = if block.is_none() { Some(String::from_utf8_lossy(&ctx.text).into_owned()) } else { None };
-        self.lay.prof.reset();
+        let t0 = self.lay.prof.span();
         // the record's ink as it is now (a row or scroll move translates records, not this cache)
         let old_ink = self.cur_ink(hd);
         {
@@ -1358,11 +1377,12 @@ impl Rt {
                 self.bough.set_payload_handle(hd, pay_irun(first, cnt.max(1) as u32));
             }
         }
-        self.lay.prof.mark(LP_TEXT_EMIT);
+        self.lay.prof.end(LP_TEXT_EMIT, t0);
+        let t1 = self.lay.prof.span();
         let ink = self.texts[ti as usize].ink;
         self.bough.damage_rect(old_ink);
         self.bough.set_ink_handle_wide(hd, ink);
-        self.lay.prof.mark(LP_TEXT_COPY);
+        self.lay.prof.end(LP_TEXT_COPY, t1);
     }
 }
 
@@ -1726,7 +1746,7 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
             base_off: 0.0,
             paint_key: 0,
         });
-        m.rt.lay.prof.reset();
+        let t0 = m.rt.lay.prof.span();
         // One line: a retained label (`text.rs`), the representation every one-line text has: its box is
         // sized by its text, a write-back moves its origin, a new value patches it. Wrapped text, and one
         // line the label kernel does not cover, is a shaped leaf state (`LeafCtx`) the layout measures.
@@ -1752,7 +1772,7 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
                 (spec, Some(ctx), 0)
             }
         };
-        m.rt.lay.prof.mark(LP_TEXT_SET);
+        m.rt.lay.prof.end(LP_TEXT_SET, t0);
         let lid = m.rt.lay.eng.add(hd, &spec, s, ctx);
         let _parent = attach(m, lid);
         if payload != 0 {
