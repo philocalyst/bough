@@ -334,6 +334,49 @@ fn anim(b: &mut Bench, fw: u32, fh: u32, cw: u32, ch: u32) {
     }
 }
 
+/// The signal-write frame's raster in isolation: a window-sized opaque background and a ten-glyph label,
+/// two damaged tiles (the label straddles a tile row). Instructions per frame for each piece of the frame.
+fn sig(b: &mut Bench) {
+    let (fw, fh) = (1920u32, 1440u32);
+    let mut s = Scene::default();
+    s.add(stage::solid(0.0, 0.0, fw as f32, fh as f32, 0xffff_ffff, &NO_CLIP));
+    for g in 0..10 {
+        s.add(stage::glyph(17.0 + g as f32 * 15.0, 23.0, scenes::CELL_W, scenes::CELL_H, scenes::cell(g), 0xff20_2020, &NO_CLIP));
+    }
+    let atlas_px = b.atlas.clone();
+    let atlas = Atlas::new(&atlas_px, scenes::ATLAS_W);
+    let tiles = [(3u16, 0u16), (3, 1)];
+    let reps = 20_000;
+    let (_, _, bin_i) = {
+        let (bin, prog) = (&mut b.bin, &mut b.prog);
+        time(reps, || bin.bin(&s, fw, fh, fw, &atlas, 0, &Damage::Tiles(&tiles), true, prog))
+    };
+    b.out.resize((fw * fh) as usize, 0);
+    let (pool, prog, out) = (&b.pool, &b.prog, &mut b.out);
+    let (t, _, ras_i) = time(reps, || {
+        cpu::raster(&s, prog, &atlas, out, fw as usize, pool, 0, Opt::default());
+    });
+    // the same frame clipped to the one glyph that changed (12 x 18 px of the two tiles)
+    let (_, _, clip_i) = time(reps, || {
+        cpu::raster(&s, prog, &atlas, out, fw as usize, pool, 0, Opt::clipped([107, 23, 119, 41]));
+    });
+    // the same with no commands at all in the two tiles: what a tile costs before anything is drawn in it
+    let empty = Scene::default();
+    let mut p0 = Prog::default();
+    b.bin.bin(&empty, fw, fh, fw, &atlas, 0, &Damage::Tiles(&tiles), true, &mut p0);
+    let (_, _, empty_i) = time(reps, || {
+        cpu::raster(&empty, &p0, &atlas, out, fw as usize, pool, 0, Opt::default());
+    });
+    // and with no tiles: the call itself
+    let mut pz = Prog::default();
+    b.bin.bin(&empty, fw, fh, fw, &atlas, 0, &Damage::Tiles(&[]), true, &mut pz);
+    let (_, _, call_i) = time(reps, || {
+        cpu::raster(&empty, &pz, &atlas, out, fw as usize, pool, 0, Opt::default());
+    });
+    println!("# sig: background + 10 glyphs, 2 damaged tiles ({} entries); instructions per frame", prog.entries());
+    println!("bin\t{bin_i:.0}\nraster\t{ras_i:.0}\t({:.2} us)\nraster clipped to the changed glyph\t{clip_i:.0}\nraster, two empty tiles\t{empty_i:.0}\nraster, no tiles (the call)\t{call_i:.0}", t * 1e6);
+}
+
 fn hash() {
     let (atlas_px, img_px) = (scenes::atlas(), scenes::images());
     let atlas = Atlas::new(&atlas_px, scenes::ATLAS_W).with_images(&img_px, scenes::IMG_W);
@@ -366,6 +409,7 @@ fn main() {
             scene(&mut Bench::new(), &a[2], w, h, a.get(5).and_then(|s| s.parse().ok()).unwrap_or(600));
         }
         Some("hash") => hash(),
+        Some("sig") => sig(&mut Bench::new()),
         Some("anim") => anim(&mut Bench::new(), a[2].parse().unwrap(), a[3].parse().unwrap(), a[4].parse().unwrap(), a[5].parse().unwrap()),
         _ => eprintln!("usage: kbench anim <w> <h> <cell_w> <cell_h> | micro | scene <canvas|grid|gridtext|gridhot|adv> <w> <h> [nodes] | hash"),
     }

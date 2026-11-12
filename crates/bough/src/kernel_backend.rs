@@ -52,6 +52,7 @@ pub struct KernelBackend {
     force: Force,
     /// `BOUGH_KERNEL_TRACE`: one line per frame on stderr.
     pub trace: bool,
+    dry: bool,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     gpu: Option<bough_kernel::gpu::Gpu>,
     /// Per surface: the address its target buffer wraps, and the buffer.
@@ -92,6 +93,7 @@ impl KernelBackend {
             tiles: Vec::new(),
             force,
             trace: std::env::var_os("BOUGH_KERNEL_TRACE").is_some(),
+            dry: std::env::var_os("BOUGH_KERNEL_DRY").is_some(),
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             gpu: None,
             #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -151,8 +153,10 @@ impl KernelBackend {
         if y0 >= y1 {
             return true;
         }
+        kprof::lap(2);
         let bbox = pl.px_bbox(rt.bough.window());
         rt.bough.cull_tiles_pos(pl, bbox, &mut self.pos);
+        kprof::lap(3);
         let pos = std::mem::take(&mut self.pos);
         for &p in &pos {
             if !self.stage_record(rt, p as usize) {
@@ -161,6 +165,7 @@ impl KernelBackend {
         }
         self.pos = pos;
         self.stats.staged += self.scene.len() as u64;
+        kprof::lap(4);
         true
     }
 
@@ -251,7 +256,9 @@ impl KernelBackend {
         let damage = if full { Damage::All } else { Damage::Tiles(&self.tiles) };
         #[cfg(target_os = "macos")]
         let i0 = if self.trace { instrs() } else { 0 };
+        kprof::lap(5);
         self.bin.bin(&self.scene, w, h, stride as u32, &atlas, 0, &damage, true, &mut self.prog);
+        kprof::lap(6);
         #[cfg(target_os = "macos")]
         let i1 = if self.trace { instrs() } else { 0 };
         let (tiles, entries) = (self.prog.tiles() as u64, self.prog.entries() as u64);
@@ -313,7 +320,12 @@ impl KernelBackend {
             // SAFETY: the caller's contract: `h` rows of `stride` words, aligned (page-aligned base, 4 | bpr),
             // exclusively this thread's until it returns (bands are disjoint sub-slices of it).
             let out = unsafe { std::slice::from_raw_parts_mut(dst as *mut u32, stride * h as usize) };
-            cpu::raster(&self.scene, &self.prog, &atlas, out, stride, &self.pool, extra, Opt::default());
+            kprof::lap(7);
+            // (BOUGH_KERNEL_DRY: everything but the raster, to measure it by subtraction)
+            if !self.dry {
+                cpu::raster(&self.scene, &self.prog, &atlas, out, stride, &self.pool, extra, Opt::default());
+            }
+            kprof::lap(8);
             if extra > 0 {
                 self.stats.cpun += 1;
             } else {
@@ -323,6 +335,11 @@ impl KernelBackend {
         if self.trace {
             #[cfg(target_os = "macos")]
             eprintln!("kernel run: bin {} instructions, choose + execute {}", i1 - i0, instrs() - i1);
+            for i in 0..self.scene.len() as u32 {
+                let c = self.scene.load(i);
+                eprintln!("  cmd {i}: kind {} win {:?} core {:?} r {} alpha {}", c.par.x, (c.win.x, c.win.y, c.win.z, c.win.w), (c.core.x, c.core.y, c.core.z, c.core.w), c.rad.x, c.pm.w);
+            }
+            eprintln!("  tiles {:?}", self.tiles);
             eprintln!("kernel frame: {} staged commands, {tiles} tiles, {entries} entries, estimate {} ns, {exec:?}", self.scene.len(), self.bin.est_cpu_ns);
         }
         self.stats.frames += 1;
@@ -376,4 +393,107 @@ const PAGE: usize = 4096;
 /// perf_event_open on Linux).
 pub fn instrs() -> u64 {
     bough_sys::perf::snap().instrs
+}
+
+/// Where a frame's instructions go (`BOUGH_KPROF=1`): laps of the calling thread's retired-instruction
+/// counter between named points of the frame path, summed over frames and printed when the backend is
+/// dropped. A lap costs two counter reads; the cost of a read is measured at start-up and subtracted.
+pub mod kprof {
+    use std::cell::Cell;
+    use std::sync::OnceLock;
+
+    pub const NAMES: [&str; 14] = [
+        "frame: idle test, pick a surface",
+        "draw: surface state, damage rows (ring OR), copy plan",
+        "stage: reset the plane, list damaged tiles",
+        "stage: page cull",
+        "stage: records -> commands",
+        "surface: lock, scroll copy",
+        "run: bin (tile programs)",
+        "run: choose",
+        "run: raster (decode, shade, store)",
+        "run: counters",
+        "surface: certificates, unlock",
+        "present (show_held)",
+        "frame: epoch advance",
+        "(unused)",
+    ];
+    thread_local! {
+        static ACC: Cell<[u64; 14]> = const { Cell::new([0; 14]) };
+        static LAST: Cell<u64> = const { Cell::new(0) };
+        static FRAMES: Cell<u64> = const { Cell::new(0) };
+    }
+    static ON: OnceLock<(bool, u64)> = OnceLock::new();
+
+    #[cfg(target_os = "macos")]
+    fn read() -> u64 {
+        unsafe extern "C" {
+            fn thread_selfcounts(kind: i32, buf: *mut u64, nbytes: usize) -> i32;
+        }
+        let mut c = [0u64; 2];
+        // SAFETY: kind 1 writes two u64s (instructions, cycles) into the 16-byte buffer.
+        unsafe { thread_selfcounts(1, c.as_mut_ptr(), 16) };
+        c[0]
+    }
+    #[cfg(not(target_os = "macos"))]
+    fn read() -> u64 {
+        bough_sys::perf::snap().instrs
+    }
+    fn cfg() -> (bool, u64) {
+        *ON.get_or_init(|| {
+            if std::env::var_os("BOUGH_KPROF").is_none() {
+                return (false, 0);
+            }
+            // the cost of one read, as the smallest gap between consecutive reads
+            let c = (0..64).map(|_| { let a = read(); read() - a }).min().unwrap_or(0);
+            (true, c)
+        })
+    }
+    #[inline]
+    pub fn on() -> bool {
+        cfg().0
+    }
+    /// Begin a frame.
+    #[inline]
+    pub fn start() {
+        if on() {
+            FRAMES.with(|f| f.set(f.get() + 1));
+            LAST.with(|l| l.set(read()));
+        }
+    }
+    /// Charge everything since the last point to phase `k`.
+    #[inline]
+    pub fn lap(k: usize) {
+        let (on, c) = cfg();
+        if on {
+            let t = read();
+            ACC.with(|a| {
+                let mut v = a.get();
+                v[k] += (t - LAST.with(|l| l.get())).saturating_sub(c);
+                a.set(v);
+            });
+            LAST.with(|l| l.set(read()));
+        }
+    }
+    pub fn report() {
+        let (on, c) = cfg();
+        let n = FRAMES.with(|f| f.get());
+        if !on || n == 0 {
+            return;
+        }
+        let acc = ACC.with(|a| a.get());
+        eprintln!("kprof: {n} frames; instructions per frame by phase (one counter read = {c}, subtracted)");
+        for (name, v) in NAMES.iter().zip(acc) {
+            if v != 0 {
+                eprintln!("  {:>8.0}  {name}", v as f64 / n as f64);
+            }
+        }
+        eprintln!("  {:>8.0}  total inside frame()", acc.iter().sum::<u64>() as f64 / n as f64);
+    }
+}
+
+impl Drop for KernelBackend {
+    fn drop(&mut self) {
+        kprof::report();
+    }
 }

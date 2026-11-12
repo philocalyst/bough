@@ -839,6 +839,7 @@ impl<V: View> App<V> {
 
     /// The publication policy is chosen by the turn's source at compile time (`PACED`), never per frame.
     pub fn frame_as<const PACED: bool>(&mut self) -> bool {
+        crate::kernel_backend::kprof::start();
         let core = !self.rt.bough.plane(0).is_clear();
         let paint = !self.rt.paint.plane(0).is_clear();
         if !core && !paint {
@@ -852,6 +853,7 @@ impl<V: View> App<V> {
         let epoch = self.rt.bough.epoch();
         self.core_epochs[epoch as usize % RING] = core;
         let pick = self.pick(epoch, !core);
+        crate::kernel_backend::kprof::lap(0);
         self.surf_stats.frames += 1;
         match pick {
             Pick::OnScreen => {
@@ -881,6 +883,7 @@ impl<V: View> App<V> {
         self.rt.paint.advance();
         self.rt.paint_log[self.rt.paint.epoch as usize % RING].clear();
         self.frames += 1;
+        crate::kernel_backend::kprof::lap(12);
         true
     }
 
@@ -933,18 +936,10 @@ impl<V: View> App<V> {
         if self.repair == Repair::Kernel {
             if let Some(g) = self.gpu.as_mut() {
                 let kb = self.kernel.get_or_insert_with(Default::default);
-                let tr = kb.trace;
-                let mut marks = [0u64; 6];
-                let mut mark = |k: usize| {
-                    if tr {
-                        marks[k] = crate::kernel_backend::instrs();
-                    }
-                };
-                mark(0);
+                crate::kernel_backend::kprof::lap(1);
                 // staging never refuses: a record that indexes outside its columns is skipped
                 kb.stage(&self.rt, &self.rows, full);
                 {
-                    mark(1);
                     let (p, bpr, _) = g.write_begin(i);
                     let (_, _, alloc) = g.surface_mem(i);
                     if !copy.is_none() {
@@ -956,19 +951,14 @@ impl<V: View> App<V> {
                     }
                     // SAFETY: surface `i` is locked for this thread, `bpr` bytes per row, `alloc` bytes, page
                     // aligned (an IOSurface), and lives until a resize replaces it (a new address re-wraps).
-                    mark(2);
                     self.repaired_tiles = unsafe { kb.run(&self.rt, full, p, bpr, alloc, i) };
-                    mark(3);
                     // nothing is known to the presenter's kernels about what was written (the copy included)
+                    crate::kernel_backend::kprof::lap(9);
                     g.forget_tiles(i, &self.rows, full || !copy.is_none());
                     g.write_end(i);
-                    mark(4);
+                    crate::kernel_backend::kprof::lap(10);
                     g.show_held::<PACED>(i);
-                    mark(5);
-                    if tr {
-                        let d = |a: usize, b: usize| marks[b] - marks[a];
-                        eprintln!("kernel phases (instructions, each mark costs ~its own call): stage {} lock+copy {} run {} forget+unlock {} show {}", d(0, 1), d(1, 2), d(2, 3), d(3, 4), d(4, 5));
-                    }
+                    crate::kernel_backend::kprof::lap(11);
                     self.surf_stats.cpu += 1;
                     drawn = true;
                 }
