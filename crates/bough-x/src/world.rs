@@ -404,10 +404,25 @@ impl<B: Backend> World<B> {
         }
         let e = Event { kind: kind::KEY, ev: Ev { key: Some(key), mods, ..Ev::at(0.0, 0.0) }, text: "" };
         let focused = self.shown.w[U_FOCUS];
+        if focused != NONE {
+            if self.call(v, focused, &e) {
+                return Dispatch { kind: kind::KEY, place: focused, consumed: true };
+            }
+            // Enter or Space on a focused record that a click activates: its own behaviour, before any record it
+            // lies inside hears the key
+            if matches!(key, Key::Enter | Key::Char(' ')) {
+                let c = Event { kind: kind::CLICK, ..e };
+                if self.call(v, focused, &c) {
+                    return Dispatch { kind: kind::CLICK, place: focused, consumed: true };
+                }
+            }
+        }
         let (fx, fy) = self.center(focused).unwrap_or((0, 0));
         let mut chain = self.chain(fx, fy, kind::KEY);
         chain.retain(|&p| p != focused);
-        self.bubble(v, core::iter::once(focused).filter(|&p| p != NONE).chain(chain.into_iter().rev()), &e)
+        let d = self.bubble(v, chain.iter().rev().copied(), &e);
+        self.done(chain);
+        d
     }
 
     /// Text typed (an IME commit, or a printable key's text) goes to the focused record's text handler.

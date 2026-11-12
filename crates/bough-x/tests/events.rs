@@ -378,3 +378,16 @@ fn the_wheel_scrolls_the_space_under_it() {
     assert!(!d.consumed);
     assert_eq!(v.u.get::<Scroll>(), 0);
 }
+
+#[test]
+fn enter_activates_the_focused_record() {
+    let (mut v, mut w) = mounted(10);
+    w.key_down(&mut v, Key::Tab, Mods::default()); // the window
+    w.key_down(&mut v, Key::Tab, Mods::default()); // row 0
+    w.key_down(&mut v, Key::Tab, Mods::default()); // row 1
+    let d = w.key_down(&mut v, Key::Enter, Mods::default());
+    assert_eq!((d.kind, d.consumed), (kind::CLICK, true));
+    assert_eq!(v.log.last().unwrap(), "select 1");
+    let d = w.key_down(&mut v, Key::Char(' '), Mods::default());
+    assert_eq!(d.kind, kind::CLICK);
+}
