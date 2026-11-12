@@ -1552,11 +1552,18 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
                 for (uint j = 0; j < 4; j++) acc[j] = cv + acc[j] * (1.0h - cv.a);
                 continue;
             }
-            // kind 7 (a foreign record's hole) is destination-out: its shade is (0, 0, 0, coverage)
-            half keep = rr.kind == 7 ? 0.0h : 1.0h;
+            if (rr.kind == 7) {
+                // a foreign record's hole is destination-out: its shade is (0, 0, 0, coverage). The record is
+                // the same for every thread of the group, so the branch is uniform; other kinds pay one compare.
+                for (uint j = 0; j < 4; j++) {
+                    half4 sh = f_shade_x(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas, img);
+                    acc[j] = acc[j] * (1.0h - sh.a);
+                }
+                continue;
+            }
             for (uint j = 0; j < 4; j++) {
                 half4 sh = f_shade_x(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas, img);
-                acc[j] = sh * keep + acc[j] * (1.0h - sh.a);
+                acc[j] = sh + acc[j] * (1.0h - sh.a);
             }
         }
     }

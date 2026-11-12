@@ -98,8 +98,7 @@ fn main() {
                     unsafe { l.setContents(Some(&*(&*io as *const IOSurfaceRef as *const AnyObject))) };
                     l
                 })));
-                // the frame that places the layers: publishing the host is not damage, so make some
-                a.turn(|p| *p.y = 1.0);
+                // a frame places the layers (placement happens at the start of `frame`, damage or not)
                 a.frame();
             }
             // the scroll offset oscillates on a 60 Hz timer
