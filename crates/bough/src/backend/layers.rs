@@ -16,8 +16,8 @@
 //! Every change is one explicit transaction without implicit animations. (Not yet joined to the transaction
 //! in which the publisher thread swaps the surface: a moving hole and its layer may differ by one refresh.)
 use crate::foreign::{ForeignHost, Placement, Plane};
-use objc2::rc::Retained;
 use objc2::Message;
+use objc2::rc::Retained;
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::NSString;
 use objc2_quartz_core::{CALayer, CATransaction};

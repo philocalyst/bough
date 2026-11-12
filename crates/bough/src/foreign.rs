@@ -30,12 +30,12 @@
 use crate::app::{App, View};
 use crate::elem::{Element, Mounter};
 use crate::input::Ev;
-use crate::layout::{attach, Spec, Styled};
+use crate::layout::{Spec, Styled, attach};
 use crate::rt::*;
-use bough_core::{Handle, NRect, RecordInit, KF_NOHIT};
+use bough_core::{Handle, KF_NOHIT, NRect, RecordInit};
 use bough_metal::instance::Instance;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Instance kind of a foreign record's hole (the tile kernel's destination-out case, `shader.metal` kind 7).
 pub const KIND_PUNCH: u8 = 7;

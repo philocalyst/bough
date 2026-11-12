@@ -13,7 +13,7 @@ use bough::raw::Config;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_core_foundation::{CFDictionary, CFRetained};
-use objc2_foundation::{ns_string, NSDictionary, NSNumber, NSRunLoop, NSString, NSTimer};
+use objc2_foundation::{NSDictionary, NSNumber, NSRunLoop, NSString, NSTimer, ns_string};
 use objc2_io_surface::{IOSurfaceLockOptions, IOSurfaceRef};
 use objc2_quartz_core::CALayer;
 use std::ptr::NonNull;

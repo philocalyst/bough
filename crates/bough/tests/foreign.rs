@@ -283,15 +283,7 @@ struct Two {
 }
 impl View for Two {
     fn view(&self) -> impl Element<Self> + '_ {
-        div()
-            .w_pct(1.0)
-            .h_pct(1.0)
-            .bg(rgb(0x101010))
-            .p(10.0)
-            .gap(10.0)
-            .child(foreign(1).w(100.0).h(50.0).mode(Mode::Over))
-            .child(if self.show { Some(foreign(2).w(100.0).h(50.0)) } else { None })
-            .child(foreign(3).w(100.0).h(50.0))
+        div().w_pct(1.0).h_pct(1.0).bg(rgb(0x101010)).p(10.0).gap(10.0).child(foreign(1).w(100.0).h(50.0).mode(Mode::Over)).child(if self.show { Some(foreign(2).w(100.0).h(50.0)) } else { None }).child(foreign(3).w(100.0).h(50.0))
     }
 }
 

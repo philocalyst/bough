@@ -251,8 +251,16 @@ pub enum Flow {
 #[derive(Clone, Copy)]
 enum FrameKind {
     /// A style rewrite: the closure (borrowed from the `With` being mounted) and its monomorphic applier.
-    Style { f: *const (), apply: unsafe fn(*const (), *mut ()) },
-    Guard { f: GuardFn, r: [u8; 16], after: bool, base: u32 },
+    Style {
+        f: *const (),
+        apply: unsafe fn(*const (), *mut ()),
+    },
+    Guard {
+        f: GuardFn,
+        r: [u8; 16],
+        after: bool,
+        base: u32,
+    },
 }
 
 /// One wrapper's override, on the Rust stack while its element mounts or re-describes.

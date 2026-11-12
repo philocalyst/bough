@@ -37,7 +37,7 @@ mod datepicker {
         column(each((0..5u32).map(move |w| row(each((0..7u32).map(move |c| day(w * 7 + c + 1, selected)))).gap(2.0)))).gap(2.0).p(4.0).bg(rgb(0xffffff))
     }
 }
-use datepicker::{date_picker, CELL, DAY, DAY_LABEL, SELECTED};
+use datepicker::{CELL, DAY, DAY_LABEL, SELECTED, date_picker};
 
 const S: f32 = 2.0;
 const SUNDAY: Color = rgb(0xffd0d0);
@@ -289,13 +289,10 @@ mod monthpicker {
     }
     impl View for MonthPicker {
         fn view(&self) -> impl Element<Self> + '_ {
-            column((
-                row((text(sig!(self.month).map(|m| format!("month {m}"))), button(">").on_click(MonthPicker::next).part(NEXT))).gap(8.0).items(Align::Center),
-                row(each((1..=7u32).map(|d| self.day(d)))).gap(2.0),
-            ))
-            .gap(4.0)
-            .p(4.0)
-            .bg(rgb(0xffffff))
+            column((row((text(sig!(self.month).map(|m| format!("month {m}"))), button(">").on_click(MonthPicker::next).part(NEXT))).gap(8.0).items(Align::Center), row(each((1..=7u32).map(|d| self.day(d)))).gap(2.0)))
+                .gap(4.0)
+                .p(4.0)
+                .bg(rgb(0xffffff))
         }
     }
 }
