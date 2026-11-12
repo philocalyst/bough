@@ -99,6 +99,9 @@ impl View for Inbox {
     fn block(&self) -> &U {
         &self.u
     }
+    fn block_mut(&mut self) -> Option<&mut U> {
+        Some(&mut self.u)
+    }
     fn view<S: Sink<Self>>(&self, s: &mut S) {
         let theme = un::<Theme>();
         s.row(|| {
@@ -355,4 +358,23 @@ fn pixels_after_events_match_every_oracle() {
         v.view(&mut Immediate::new(&mut now, &w.shown));
         assert!(full.px == now.px, "step {step}: stores != immediate");
     }
+}
+
+#[test]
+fn the_wheel_scrolls_the_space_under_it() {
+    let (mut v, mut w) = mounted(1_000);
+    let (x, y) = row_pt(&v, 1);
+    let d = w.wheel(&mut v, x, y, 0.0, 3.0);
+    assert!(d.consumed);
+    assert_eq!(v.u.get::<Scroll>(), 3 * ROW_H, "three lines, a row each");
+    w.settle(&v);
+    // the end of the list: clamped to the extent
+    w.wheel(&mut v, x, y, 0.0, 1.0e6);
+    assert_eq!(v.u.get::<Scroll>(), 1_000 * ROW_H - (H - TOP));
+    w.wheel(&mut v, x, y, 0.0, -1.0e6);
+    assert_eq!(v.u.get::<Scroll>(), 0);
+    // outside the body: nothing scrolls
+    let d = w.wheel(&mut v, 50, 50, 0.0, 3.0);
+    assert!(!d.consumed);
+    assert_eq!(v.u.get::<Scroll>(), 0);
 }

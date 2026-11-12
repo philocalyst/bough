@@ -17,6 +17,11 @@ use core::sync::atomic::{AtomicU32, Ordering};
 pub trait View: Sized {
     /// The Frame-stage state: plain words the handlers write.
     fn block(&self) -> &U;
+    /// The same words, for the core to write the ones a space reads as its scroll offset (a wheel over a space
+    /// scrolls it with no handler). A view that does not give them out scrolls only through its own handlers.
+    fn block_mut(&mut self) -> Option<&mut U> {
+        None
+    }
     fn view<S: Sink<Self>>(&self, s: &mut S);
 }
 
@@ -539,6 +544,7 @@ fn list_plan(st: &mut Store, cx: &mut Cx<'_>, l: &List<'_>, (lo, hi): (u32, u32)
     let (from, nupd) = (u32::MAX, 0 * nupd);
     st.seen = l.edits.ver;
     st.space = space;
+    st.n = l.n;
     st.plan.clear();
     let mk = Mk { org, clip: space.clip };
     assert!(hi - lo <= st.cap, "the window outgrew the list's capacity");

@@ -418,6 +418,40 @@ impl<B: Backend> World<B> {
         Dispatch { kind: kind::TEXT, place: if consumed { focused } else { NONE }, consumed }
     }
 
+    /// The wheel turned by (dx, dy) lines at (x, y): the wheel handlers under the pointer first (topmost first,
+    /// one that returns `true` consumes it); otherwise the innermost space under the pointer whose origin reads a
+    /// scroll word moves, within its lists' extent: the space is its own scroller. One line is a row of its
+    /// first list.
+    pub fn wheel<V: View>(&mut self, v: &mut V, x: i32, y: i32, dx: f32, dy: f32) -> Dispatch {
+        self.ptr = Some((x, y));
+        let chain = self.chain(x, y, kind::WHEEL);
+        let e = Event { kind: kind::WHEEL, ev: Ev { dx, dy, ..Ev::at(x as f32, y as f32) }, text: "" };
+        let d = self.bubble(v, chain.iter().rev().copied(), &e);
+        self.done(chain);
+        if d.consumed {
+            return d;
+        }
+        fn scroller(st: &Store, x: i32, y: i32) -> Option<&Store> {
+            let c = st.space.clip;
+            if x < c.x0 || x >= c.x1 || y < c.y0 || y >= c.y1 {
+                return None;
+            }
+            let inner = st.subs.iter().find_map(|s| scroller(s, x, y));
+            // a list inherits its scope's space; the scope is the scroller
+            inner.or((st.space.scroll != crate::store::NO_WORD && st.src.is_none()).then_some(st))
+        }
+        let Some(st) = scroller(&self.root, x, y) else { return Dispatch { kind: kind::WHEEL, place: NONE, consumed: false } };
+        let word = st.space.scroll as usize;
+        let lists = st.subs.iter().filter(|s| s.src.is_some());
+        let (extent, line) = lists.fold((0i32, 0i32), |(e, l), s| (e.max(s.geo.1 + s.n as i32 * s.geo.2), if l == 0 { s.geo.2 } else { l }));
+        let max = (extent - (st.space.clip.y1 - st.space.clip.y0)).max(0);
+        let Some(u) = v.block_mut() else { return Dispatch { kind: kind::WHEEL, place: NONE, consumed: false } };
+        let at = u.w[word] as i32;
+        let to = (at + (dy * line.max(1) as f32) as i32).clamp(0, max);
+        u.w[word] = to as u32;
+        Dispatch { kind: kind::WHEEL, place: NONE, consumed: to != at }
+    }
+
     /// The centre of a place's record on screen.
     fn center(&self, place: u32) -> Option<(i32, i32)> {
         let (st, col, rec) = self.at_place(place)?;
