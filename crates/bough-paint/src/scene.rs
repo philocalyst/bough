@@ -131,6 +131,9 @@ pub struct Desc {
     /// The record as the generic kernel's commands.
     pub stage: fn(ColView, i: u32, u: &U, out: &mut bough_kernel::stage::Scene),
     pub pick: fn(ColView, i: u32, u: &U) -> u32,
+    /// One rewritten record: damage where it was and where it is now, its lanes brought up to date. Returns
+    /// whether its window or cover moved.
+    pub rewin: fn(ColView, i: u32, u: &U, win: &mut [[i16; 4]], cover: &mut [[i16; 4]], dmg: &mut Damage) -> bool,
 }
 
 fn i16s(v: Vec4i) -> [i16; 4] {
@@ -169,6 +172,20 @@ fn window_pass<P: Paint>(c: ColView, old: &U, new: &U, mask: u64, first: bool, w
             dmg.add(win[z]);
         }
     }
+    moved
+}
+fn rewin_one<P: Paint>(c: ColView, i: u32, u: &U, win: &mut [[i16; 4]], cover: &mut [[i16; 4]], dmg: &mut Damage) -> bool {
+    // SAFETY: as `window_pass`.
+    let (rect, z, p) = (c.rect(i), c.z(i) as usize, unsafe { c.rec::<P>(i) });
+    let cx = Cx { u, rect };
+    let mut ws = WinSink(EMPTY);
+    p.paint(&cx, NO_CLIP, &mut ws);
+    let w = i16s(ws.0);
+    let cv = if P::OPAQUE_CORE { i16s(p.cover(&cx, NO_CLIP)) } else { [0; 4] };
+    dmg.add(win[z]);
+    dmg.add(w);
+    let moved = w != win[z] || cv != cover[z];
+    (win[z], cover[z]) = (w, cv);
     moved
 }
 fn flat_run<P: Paint>(c: ColView, zs: &[u32], order: &[u32], u: &U, t: &mut Tile) {
@@ -222,6 +239,7 @@ impl<P: Paint> D<P> {
         spec: spec_one::<P>,
         stage: stage_one::<P>,
         pick: pick_one::<P>,
+        rewin: rewin_one::<P>,
     };
 }
 impl Desc {
@@ -386,6 +404,8 @@ pub struct Scene {
     pub cut: bool,
     pub flat: bool,
     tiles: Vec<u32>,
+    /// Keys of records rewritten since the last `update` (`set`).
+    touched: Vec<u32>,
 }
 
 /// `BOUGH_PAINT_PROF=1`: nanoseconds and tile entries per column, accumulated by `shade` (a measurement
@@ -420,6 +440,7 @@ impl Scene {
             cut: true,
             flat: true,
             tiles: Vec::new(),
+            touched: Vec::new(),
         }
     }
     /// A column for archetype `P` holding up to `cap` records.
@@ -457,6 +478,27 @@ impl Scene {
         self.first = true;
         z
     }
+    /// Rewrite record `i` of a column in place (a turn's write: a rect the layout moved, an operand a CPU
+    /// stage expression re-evaluated, a transition retargeted). Returns its key. The next `update` damages
+    /// where it was and where it is; nothing else about the frame changes.
+    pub fn set<P: Paint>(&mut self, col: ColId<P>, i: usize, rect: [i32; 4], p: P) -> u32 {
+        let c = &self.cols[col.0];
+        assert!(std::ptr::eq(c.desc, Desc::of::<P>()) || c.desc.name == Desc::of::<P>().name);
+        assert!(i < c.len);
+        let (w, base) = (c.desc.words, c.base);
+        let page = base + (i >> 6) * 64 * (LANES + w);
+        let r = i & 63;
+        let words = self.arena.words_mut();
+        for l in 0..4 {
+            words[page + l * 64 + r] = rect[l] as u32;
+        }
+        let z = words[page + 256 + r];
+        let at = page + 64 * LANES + r * w;
+        // SAFETY: as `push`.
+        unsafe { std::ptr::copy_nonoverlapping(&p as *const P as *const u32, words[at..at + w].as_mut_ptr(), w) };
+        self.touched.push(z);
+        z
+    }
     pub fn view(&self, col: usize) -> ColView {
         let c = &self.cols[col];
         // SAFETY: `base` is inside the arena (checked at `column`).
@@ -480,6 +522,17 @@ impl Scene {
             self.damage.all();
         }
         let mut moved = first;
+        let mut touched = std::mem::take(&mut self.touched);
+        if !first {
+            for &z in &touched {
+                let o = self.order[z as usize];
+                let ci = (o >> IDX_BITS) as usize;
+                let v = self.view(ci);
+                moved |= (self.cols[ci].desc.rewin)(v, o & IDX_MASK, u, &mut self.win, &mut self.cover, &mut self.damage);
+            }
+        }
+        touched.clear();
+        self.touched = touched;
         for ci in 0..self.cols.len() {
             let d = self.cols[ci].desc;
             if !first && d.reads & mask == 0 {

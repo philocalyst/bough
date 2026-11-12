@@ -202,7 +202,7 @@ kernel void k_pick(const device uint* COLS [[buffer(0)]], device uint* META [[bu
             s,
             r#"
 kernel void k_win{k}(const device uint* COLS [[buffer(0)]], const device uint* META [[buffer(1)]], device uint* WINS [[buffer(3)]],
-                    device metal::atomic_uint* DMG [[buffer(9)]], metal::uint3 gid [[thread_position_in_grid]]) {{
+                    device metal::atomic_uint* DMG [[buffer(9)]], const device uint* TOUCH [[buffer(11)]], metal::uint3 gid [[thread_position_in_grid]]) {{
     uint idx = gid.x;
     if (idx >= META[{}u]) {{ return; }}
     uint TX = META[3], TY = META[4];
@@ -226,7 +226,7 @@ kernel void k_win{k}(const device uint* COLS [[buffer(0)]], const device uint* M
         WINS[4u * z] = pack_lo(wn); WINS[4u * z + 1u] = pack_hi(wn); WINS[4u * z + 2u] = pack_lo(cv); WINS[4u * z + 3u] = pack_hi(cv);
         mark(DMG, ow, TX, TY);
         mark(DMG, wn, TX, TY);
-    }} else if (a{k}_chg(rect{w}{o}{u})) {{
+    }} else if ((((TOUCH[z >> 5u] >> (z & 31u)) & 1u) != 0u) || a{k}_chg(rect{w}{o}{u})) {{
         mark(DMG, wn, TX, TY);
     }}
 }}
@@ -298,8 +298,11 @@ pub struct Gpu {
     compact: Pso,
     win: Vec<Pso>,
     /// 0 columns (the arena, no copy), 1 meta, 2 order, 3 windows, 4 tile headers, 5 lists, 6 tile list,
-    /// 7 output, 8 atlas, 9 damage, 10 pick.
-    bufs: [Option<Buf>; 11],
+    /// 7 output, 8 atlas, 9 damage, 10 pick, 11 rewritten records (a bit per key).
+    bufs: [Option<Buf>; 12],
+    /// Keys rewritten since the last frame, and the columns they are in.
+    touched: Vec<u32>,
+    touched_cols: u64,
     nt: usize,
     tx: usize,
     cap: usize,
@@ -356,6 +359,8 @@ impl Gpu {
             nz: 0,
             first: true,
             prev: U::default(),
+            touched: Vec::new(),
+            touched_cols: 0,
             compile_s,
             source_bytes: src.len(),
         };
@@ -404,6 +409,10 @@ impl Gpu {
         self.buf(3, self.nz.max(1) * 16);
         self.words_mut(3)[..nz * 4].fill(0);
         self.buf(5, (self.nt * self.cap).max(scene.bins.list.len()).max(1) * 4);
+        self.buf(11, (self.nz / 32 + 1) * 4);
+        self.words_mut(11).fill(0);
+        self.touched.clear();
+        self.touched_cols = 0;
         self.buf(8, scene.atlas.len() + 8);
         let b = self.bufs[8].as_ref().unwrap();
         // SAFETY: the buffer holds at least `atlas.len()` bytes; no frame is in flight.
@@ -418,7 +427,7 @@ impl Gpu {
         self.first = true;
     }
     fn bind(&self, enc: &ProtocolObject<dyn MTLComputeCommandEncoder>, out: Option<&Buf>) {
-        for i in 0..11 {
+        for i in 0..12 {
             let b = if i == 7 { out.or(self.bufs[7].as_ref()) } else { self.bufs[i].as_ref() };
             // SAFETY: each buffer is alive for the frame and bound at the index the source reads.
             unsafe { enc.setBuffer_offset_atIndex(b.map(|b| &**b), 0, i) };
@@ -477,6 +486,15 @@ impl Gpu {
         u.w[U_PICK] = pick;
         self.run(&u, None, stride, false);
     }
+    /// The record with key `z` was rewritten in the arena (`Scene::set`): the next frame's window pass
+    /// damages where it was and where it is. The CPU's whole part of a record write on this side is this bit.
+    pub fn touch(&mut self, z: u32) {
+        assert!((z as usize) < self.nz);
+        let col = self.words(2)[z as usize] >> IDX_BITS;
+        self.words_mut(11)[z as usize >> 5] |= 1 << (z & 31);
+        self.touched.push(z);
+        self.touched_cols |= 1 << col;
+    }
     fn run(&mut self, u: &U, pointer: Option<(i32, i32)>, stride: usize, shade: bool) -> (GpuTime, u32) {
         let first = self.first;
         let mut new = *u;
@@ -512,10 +530,11 @@ impl Gpu {
         }
         let mut geom = first;
         for (k, pso) in self.win.iter().enumerate() {
-            if self.reads[k] & mask == 0 && !first || lens[k] == 0 {
+            let touched = self.touched_cols >> k & 1 != 0;
+            if self.reads[k] & mask == 0 && !first && !touched || lens[k] == 0 {
                 continue;
             }
-            geom |= self.geom_reads[k] & mask != 0;
+            geom |= self.geom_reads[k] & mask != 0 || touched;
             enc.setComputePipelineState(pso);
             enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: lens[k].div_ceil(64), height: 1, depth: 1 }, MTLSize { width: 64, height: 1, depth: 1 });
         }
@@ -534,6 +553,13 @@ impl Gpu {
         cmd.commit();
         cmd.waitUntilCompleted();
         let time = GpuTime { wall: t.elapsed().as_secs_f64(), gpu: cmd.GPUEndTime() - cmd.GPUStartTime() };
+        let touched = std::mem::take(&mut self.touched);
+        for &z in &touched {
+            self.words_mut(11)[z as usize >> 5] = 0;
+        }
+        self.touched = touched;
+        self.touched.clear();
+        self.touched_cols = 0;
         // the one word read back
         let pick = self.words(1)[M_UNEW + U_PICK];
         new.w[U_PICK] = pick;

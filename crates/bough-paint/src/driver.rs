@@ -37,6 +37,8 @@ pub struct Driver {
     seen: [u32; 64],
     tiles: Vec<u32>,
     pub cap: usize,
+    /// A record was rewritten since the last frame (its damage is unknown until an executor looks).
+    pending: bool,
 }
 
 impl Driver {
@@ -48,7 +50,7 @@ impl Driver {
         let gpu = if whole.gpu { Gpu::new(&scene, words, cap) } else { None };
         let own = if gpu.is_some() { Vec::new() } else { vec![0; words] };
         // unknown damage is assumed large: the first write to a word goes to the GPU when there is one
-        Driver { scene, gpu, whole, pool: Pool::new(workers), own, shown: U::default(), cpu_current: false, gpu_current: false, seen: [u32::MAX; 64], tiles: Vec::new(), cap }
+        Driver { scene, gpu, whole, pool: Pool::new(workers), own, shown: U::default(), cpu_current: false, gpu_current: false, seen: [u32::MAX; 64], tiles: Vec::new(), cap, pending: false }
     }
     pub fn pixels(&self) -> &[u32] {
         let words = (self.scene.fw * self.scene.fh) as usize;
@@ -56,6 +58,14 @@ impl Driver {
             Some(g) => g.out(words),
             None => &self.own,
         }
+    }
+    /// Rewrite a record (`Scene::set`) on both executors' books.
+    pub fn set<P: crate::paint::Paint>(&mut self, col: crate::scene::ColId<P>, i: usize, rect: [i32; 4], p: P) {
+        let z = self.scene.set(col, i, rect, p);
+        if let Some(g) = self.gpu.as_mut() {
+            g.touch(z);
+        }
+        self.pending = true;
     }
     fn cpu_catch_up(&mut self) {
         if !self.cpu_current {
