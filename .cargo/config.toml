@@ -59,3 +59,13 @@ MACOSX_DEPLOYMENT_TARGET = "10.15.7"
 # The component workspace is independently resolved, but CI runs some of its
 # checks from this repository root. Keep its unpublished GPUI CE dependencies
 # local during those checks; published component manifests still use crates.io.
+
+# ---- lane iteration (round 6): the edit -> gate loop (docs/lanes/iteration/builds.md has every lever measured).
+# `gate`: compile fast and still run the pixel gates fast. No LTO (a thin-LTO link per test binary and per binary of
+# the tested package was most of an incremental `cargo test --release`), incremental workspace crates, line tables
+# only. Use: `cargo test --profile gate -p <crate>`, `bench/gate.sh --profile gate`.
+[profile.gate]
+inherits = "release"
+lto = false
+debug = "line-tables-only"
+incremental = true

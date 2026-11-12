@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Build times, clean and incremental, for one cargo command under one configuration (bench/quick/README.md).
+"""Build times, clean and incremental, for cargo commands under several configurations, interleaved
+(bench/quick/README.md "Build times").
 
-    build_matrix.py --name NAME --cmd "cargo build --release -p bough-heavy --bin heavy_headless" \
-        [--clean] [--edits layout,core,heavy] [--reps 1] [--env K=V ...] [--target-dir DIR] [--out results.jsonl]
+    build_matrix.py --cmd "release=cargo build --release -p bough-heavy --bin heavy_headless" \
+        [--cmd "gate=cargo build --profile gate -p bough-heavy --bin heavy_headless"] \
+        [--clean] [--edits layout,core,heavy] [--reps 1] [--env K=V ...] [--out results.jsonl]
 
---clean removes the target's profile directory first (DIR/<profile dir>, or the whole DIR with --clean-all) and
-times the cold build; each edit appends a fresh comment line to its file (so its content and mtime change),
-times the rebuild, and leaves it; at the end every edited file is restored byte for byte and one unmeasured build
-settles the target. Every record carries the load average before and after and cargo's own "Finished" time.
+Each --cmd is NAME=COMMAND (the command may set its own environment with `env K=V cargo ...`). First every command
+runs once: cold after --clean (the target's profile directory removed; --clean-all removes the target), else as a
+warm no-op. Then for each rep and each edit site, for each command in turn: the site gets a fresh public function
+appended (its content, metadata and mtime change: a comment-only edit lets incremental check/dev skip everything)
+and the command is timed. Commands alternate, so a slow minute of the shared machine lands on all of them. At the
+end every edited file is restored byte for byte and each command runs once more, unmeasured, to settle its target.
+Every record carries the load average before and after, cargo's own "Finished" time and the units it compiled.
 Edit sites: layout = crates/bough/src/layout.rs, core = crates/bough-core/src/bough.rs (bough-core's root module),
 heavy = comparisons/bough-heavy/src/lib.rs (a comparison crate), bin = comparisons/bough-heavy/src/bin/heavy_headless.rs.
 """
@@ -30,50 +35,55 @@ def run(cmd, env):
     dt = time.time() - t0
     m = re.search(r"Finished .* in ((\d+)m )?([\d.]+)s", p.stderr)
     cargo_s = (int(m.group(2) or 0) * 60 + float(m.group(3))) if m else None
-    compiled = len(re.findall(r"^\s+Compiling ", p.stderr, re.M))
+    compiled = len(re.findall(r"^\s+(Compiling|Checking) ", p.stderr, re.M))
+    tests = re.findall(r"test result: (\w+)\. (\d+) passed; (\d+) failed", p.stdout)
     return dict(wall_s=round(dt, 1), cargo_s=cargo_s, rc=p.returncode, compiled=compiled, load_before=l0, load_after=load(),
-                tail=None if p.returncode == 0 else p.stderr[-1500:])
+                tests=tests or None, tail=None if p.returncode == 0 else (p.stderr + p.stdout)[-1500:])
+
+
+def profile_dir(cmd):
+    words = shlex.split(cmd)
+    prof = "release" if "--release" in words else (words[words.index("--profile") + 1] if "--profile" in words else "debug")
+    return {"dev": "debug", "test": "debug", "bench": "release"}.get(prof, prof)
+
+
+def target_of(cmd, env):
+    m = re.search(r"CARGO_TARGET_DIR=(\S+)", cmd)
+    return m.group(1) if m else env.get("CARGO_TARGET_DIR", os.path.join(ROOT, "target"))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--name", required=True)
-    ap.add_argument("--cmd", required=True)
+    ap.add_argument("--cmd", action="append", required=True)
     ap.add_argument("--clean", action="store_true")
     ap.add_argument("--clean-all", action="store_true")
     ap.add_argument("--edits", default="")
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--env", action="append", default=[])
-    ap.add_argument("--target-dir")
     ap.add_argument("--out")
     a = ap.parse_args()
     env = dict(os.environ)
     for kv in a.env:
         k, v = kv.split("=", 1)
         env[k] = v
-    if a.target_dir:
-        env["CARGO_TARGET_DIR"] = a.target_dir
-    td = env.get("CARGO_TARGET_DIR", os.path.join(ROOT, "target"))
-    recs = []
+    cmds = [c.split("=", 1) for c in a.cmd]
 
-    def rec(kind, r):
-        r.update(name=a.name, cmd=a.cmd, kind=kind, env={kv.split("=", 1)[0]: kv.split("=", 1)[1] for kv in a.env})
-        recs.append(r)
+    def rec(name, cmd, kind, r):
+        r.update(name=name, cmd=cmd, kind=kind)
         print(json.dumps(r), flush=True)
         if a.out:
             with open(a.out, "a") as f:
                 f.write(json.dumps(r) + "\n")
 
-    if a.clean or a.clean_all:
-        words = shlex.split(a.cmd)
-        prof = "release" if "--release" in words else (words[words.index("--profile") + 1] if "--profile" in words else "debug")
-        prof = {"dev": "debug", "test": "debug", "bench": "release"}.get(prof, prof)
-        victim = td if a.clean_all else os.path.join(td, prof)
-        if os.path.isdir(victim):
-            shutil.rmtree(victim)
-        rec("clean", run(a.cmd, env))
-    else:
-        rec("warm-noop", run(a.cmd, env))
+    for name, cmd in cmds:
+        if a.clean or a.clean_all:
+            td = target_of(cmd, env)
+            victim = td if a.clean_all else os.path.join(td, profile_dir(cmd))
+            if os.path.isdir(victim):
+                shutil.rmtree(victim)
+            rec(name, cmd, "clean", run(cmd, env))
+        else:
+            rec(name, cmd, "warm-noop", run(cmd, env))
     originals = {}
     try:
         for k in range(a.reps):
@@ -81,16 +91,19 @@ def main():
                 path = os.path.join(ROOT, SITES[site])
                 if path not in originals:
                     originals[path] = open(path, "rb").read()
-                with open(path, "a") as f:
-                    f.write(f"// quick-edit {time.time_ns()}\n")
-                rec(f"edit:{site}", run(a.cmd, env))
+                for name, cmd in cmds:
+                    with open(path, "a") as f:
+                        n = time.time_ns()
+                        f.write(f"#[allow(dead_code)]\n#[doc(hidden)]\npub fn quick_edit_{n}() -> u64 {{\n    std::hint::black_box({n % 1000003})\n}}\n")
+                    rec(name, cmd, f"edit:{site}", run(cmd, env))
     finally:
         for path, data in originals.items():
             with open(path, "wb") as f:
                 f.write(data)
         if originals:
-            r = run(a.cmd, env)
-            print(json.dumps(dict(name=a.name, kind="settle (unmeasured)", **r)), flush=True)
+            for name, cmd in cmds:
+                r = run(cmd, env)
+                print(json.dumps(dict(name=name, kind="settle (unmeasured)", wall_s=r["wall_s"], rc=r["rc"])), flush=True)
 
 
 if __name__ == "__main__":
