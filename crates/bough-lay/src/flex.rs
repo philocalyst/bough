@@ -117,6 +117,12 @@ pub trait Lay {
     /// Emit every rect: the element is `size` at `org` (unrounded, relative to the row's origin). `k` is the
     /// position of its first record; returns the position after its last (`k + LEAVES`).
     fn place<O: Out + ?Sized>(&self, cx: &mut Cx, size: [V; 2], org: [V; 2], out: &mut O, k: usize) -> usize;
+    /// The size the element reports for itself when laid out at `size`: a container is never narrower than its
+    /// padding across its own cross axis, whatever its parent gave it.
+    #[inline(always)]
+    fn reported(&self, _cx: &mut Cx, size: [V; 2]) -> [V; 2] {
+        size
+    }
     /// The element as a style tree: for the general solver (the oracle and the fallback). Cold.
     fn tree(&self) -> crate::tree::Node;
 }
@@ -126,6 +132,11 @@ pub trait Kids {
     const LEAVES: usize;
     const WRAPS: bool;
     fn visit<F: Visit>(&self, f: &mut F);
+    /// No children at all: the box is a leaf to the solver.
+    #[inline(always)]
+    fn empty(&self) -> bool {
+        false
+    }
     fn trees(&self, out: &mut Vec<crate::tree::Node>);
 }
 /// A pass over children: one call per child that is present, in order.
@@ -149,6 +160,11 @@ pub struct Item {
     pub shrink: f32,
     pub align: Align,
     pub abs: Option<(f32, f32)>,
+    /// The cross space for the item's border box: the container's, less the item's margins.
+    pub cav: Av,
+    /// The cross size the item's content is measured under: its own (within its minimum), or the line's when
+    /// it stretches.
+    pub kcross: Option<V>,
     pub basis: V,
     pub hyp: V,
     pub target: [V; 2],
@@ -211,9 +227,11 @@ pub fn own(sp: &Spec, cx: &mut Cx, known: [Option<V>; 2], parent: [Option<V>; 2]
     let s = cx.s;
     let mut out = known;
     for a in 0..2 {
-        if out[a].is_none() && !content {
-            let d = if a == 0 { sp.w } else { sp.h };
-            out[a] = dim(d, parent[a], s);
+        if out[a].is_none() {
+            if !content {
+                let d = if a == 0 { sp.w } else { sp.h };
+                out[a] = dim(d, parent[a], s);
+            }
             if let (Some(v), Some(m)) = (out[a], opt_min(sp.min[a], s)) {
                 out[a] = Some(vmaxk(cx, v, m));
             }
@@ -233,7 +251,6 @@ struct Gather<'c, 'a, 'b> {
     m: usize,
     inner: [Option<V>; 2],
     cross_av: Av,
-    main_min: bool,
     items: Align,
 }
 impl Visit for Gather<'_, '_, '_> {
@@ -245,38 +262,100 @@ impl Visit for Gather<'_, '_, '_> {
         let margin = [ks.margin[0] * s, ks.margin[1] * s, ks.margin[2] * s, ks.margin[3] * s];
         let pb = [(ks.pad[0] + ks.pad[2]) * s, (ks.pad[1] + ks.pad[3]) * s];
         let align = ks.self_align.unwrap_or(self.items);
-        let mut it = Item { size, min: [ks.min[0] * s, ks.min[1] * s], margin, pb, grow: ks.grow, shrink: ks.shrink, align, abs: ks.abs, basis: V::k(0.0), hyp: V::k(0.0), target: [V::k(0.0); 2], off: [V::k(0.0); 2], auto_min: 0.0, frozen: false, violation: 0.0 };
-        if ks.abs.is_none() {
-            let basis = match size[m] {
-                Some(b) => b,
-                None => {
-                    let kd = known_for_content(&it, m, self.cross_av);
-                    let mut av = [Av::Max; 2];
-                    av[m] = if self.main_min { Av::Min } else { Av::Max };
-                    av[c] = self.cross_av;
-                    l.size(cx, kd, self.inner, av, true)[m]
-                }
-            };
-            it.basis = if pb[m] > 0.0 { vmaxk(cx, basis, pb[m]) } else { basis };
-            it.hyp = if it.min[m] > 0.0 { vmaxk(cx, it.basis, it.min[m]) } else { it.basis };
-            it.target[m] = it.hyp;
-        }
+        let cav = match self.cross_av {
+            Av::Def(v) => {
+                let v = vmaxk(cx, v.subk(margin[c] + margin[c + 2]), 0.0);
+                Av::Def(if ks.min[c] > 0.0 { vmaxk(cx, v, ks.min[c] * s) } else { v })
+            }
+            o => o,
+        };
+        let it = Item { size, min: [ks.min[0] * s, ks.min[1] * s], margin, pb, grow: ks.grow, shrink: ks.shrink, align, abs: ks.abs, cav, kcross: None, basis: V::k(0.0), hyp: V::k(0.0), target: [V::k(0.0); 2], off: [V::k(0.0); 2], auto_min: 0.0, frozen: false, violation: 0.0 };
         self.buf.push(it);
+    }
+}
+
+/// A column whose own width is unknown: the width its stretched items get is the widest outer width any of its
+/// items wants under the available space (the container's fit-content width).
+struct Widest<'c, 'a, 'b> {
+    cx: &'c mut Cx<'a>,
+    items: &'b [Item],
+    i: usize,
+    inner: [Option<V>; 2],
+    widest: V,
+}
+impl Visit for Widest<'_, '_, '_> {
+    #[inline(always)]
+    fn kid<L: Lay>(&mut self, l: &L) {
+        let it = &self.items[self.i];
+        self.i += 1;
+        if it.abs.is_some() {
+            return;
+        }
+        let w = match it.size[0] {
+            Some(w) => w,
+            None => l.size(self.cx, [None, it.size[1]], [None, self.inner[1]], [it.cav, Av::Max], true)[0],
+        };
+        let w = if it.min[0] > 0.0 { vmaxk(self.cx, w, it.min[0]) } else { w };
+        let w = if it.pb[0] > 0.0 { vmaxk(self.cx, w, it.pb[0]) } else { w };
+        self.widest = self.cx.max(self.widest, w.addk(it.margin[0] + it.margin[2]));
+    }
+}
+
+/// The flex base size and hypothetical main size of every in-flow item.
+struct Basis<'c, 'a, 'b> {
+    cx: &'c mut Cx<'a>,
+    items: &'b mut [Item],
+    i: usize,
+    m: usize,
+    inner: [Option<V>; 2],
+    main_min: bool,
+    /// The line's cross size where the container's own is unknown (a column's fit-content width).
+    stretch: Option<V>,
+}
+impl Visit for Basis<'_, '_, '_> {
+    #[inline(always)]
+    fn kid<L: Lay>(&mut self, l: &L) {
+        let (cx, m) = (&mut *self.cx, self.m);
+        let c = 1 - m;
+        let it = &mut self.items[self.i];
+        self.i += 1;
+        if it.abs.is_some() {
+            return;
+        }
+        it.kcross = match it.size[c] {
+            Some(v) if it.min[c] > 0.0 => Some(vmaxk(cx, v, it.min[c])),
+            Some(v) => Some(v),
+            None if it.align == Align::Stretch => match self.stretch {
+                Some(line) => {
+                    let v = vmaxk(cx, line.subk(it.margin[c] + it.margin[c + 2]), 0.0);
+                    Some(if it.min[c] > 0.0 { vmaxk(cx, v, it.min[c]) } else { v })
+                }
+                None => it.cav.def(),
+            },
+            None => None,
+        };
+        let basis = match it.size[m] {
+            Some(b) => b,
+            None => {
+                let kd = known_for_content(it, m);
+                let mut av = [Av::Max; 2];
+                av[m] = if self.main_min { Av::Min } else { Av::Max };
+                av[c] = it.cav;
+                l.size(cx, kd, self.inner, av, true)[m]
+            }
+        };
+        it.basis = if it.pb[m] > 0.0 { vmaxk(cx, basis, it.pb[m]) } else { basis };
+        it.hyp = if it.min[m] > 0.0 { vmaxk(cx, it.basis, it.min[m]) } else { it.basis };
+        it.target[m] = it.hyp;
     }
 }
 
 /// The dimensions a child is measured under for its content sizes: its own cross size, or the line's when it
 /// stretches.
 #[inline(always)]
-fn known_for_content(it: &Item, m: usize, cross_av: Av) -> [Option<V>; 2] {
-    let c = 1 - m;
-    let mut kd = it.size;
-    kd[m] = None;
-    if it.align == Align::Stretch && kd[c].is_none() {
-        if let Av::Def(a) = cross_av {
-            kd[c] = Some(a.subk(it.margin[c] + it.margin[c + 2]));
-        }
-    }
+fn known_for_content(it: &Item, m: usize) -> [Option<V>; 2] {
+    let mut kd = [None; 2];
+    kd[1 - m] = it.kcross;
     kd
 }
 
@@ -287,7 +366,6 @@ struct Mins<'c, 'a, 'b> {
     i: usize,
     m: usize,
     inner: [Option<V>; 2],
-    cross_av: Av,
 }
 impl Visit for Mins<'_, '_, '_> {
     #[inline(always)]
@@ -300,9 +378,9 @@ impl Visit for Mins<'_, '_, '_> {
         it.auto_min = if it.min[m] > 0.0 {
             it.min[m]
         } else {
-            let kd = known_for_content(it, m, self.cross_av);
+            let kd = known_for_content(it, m);
             let mut av = [Av::Min; 2];
-            av[1 - m] = self.cross_av;
+            av[1 - m] = it.cav;
             let mc = l.size(self.cx, kd, self.inner, av, true)[m];
             // a decision on the measured size: which of the two is the minimum
             let mc = match it.size[m] {
@@ -321,10 +399,11 @@ struct Cross<'c, 'a, 'b> {
     i: usize,
     m: usize,
     inner: [Option<V>; 2],
-    /// The container's main size and the cross space available to children.
-    av: [Av; 2],
+    /// The container's outer main size.
+    main: V,
     /// The line's cross size is known: stretched items need no measure.
     line: bool,
+    stretch: Option<V>,
 }
 impl Visit for Cross<'_, '_, '_> {
     #[inline(always)]
@@ -346,37 +425,22 @@ impl Visit for Cross<'_, '_, '_> {
         it.target[c] = match own {
             Some(v) => v,
             None if self.line && it.align == Align::Stretch => V::k(0.0),
+            None if self.stretch.is_some() && it.align == Align::Stretch => {
+                let v = self.stretch.unwrap_or(V::k(0.0)).subk(it.margin[c] + it.margin[c + 2]);
+                let v = if it.min[c] > 0.0 { vmaxk(self.cx, v, it.min[c]) } else { v };
+                vmaxk(self.cx, v, it.pb[c])
+            }
             None => {
                 let mut kd = [None; 2];
                 kd[m] = Some(it.target[m]);
-                let v = l.size(self.cx, kd, self.inner, self.av, true)[c];
+                let mut av = [Av::Max; 2];
+                av[m] = Av::Def(vmaxk(self.cx, self.main.subk(it.margin[m] + it.margin[m + 2]), 0.0));
+                av[c] = it.cav;
+                let v = l.size(self.cx, kd, self.inner, av, true)[c];
                 let v = if it.min[c] > 0.0 { vmaxk(self.cx, v, it.min[c]) } else { v };
                 if it.pb[c] > 0.0 { vmaxk(self.cx, v, it.pb[c]) } else { v }
             }
         };
-    }
-}
-
-/// A min-content row: each item that sizes to content contributes its min-content size.
-struct MinRow<'c, 'a, 'b> {
-    cx: &'c mut Cx<'a>,
-    items: &'b mut [Item],
-    i: usize,
-    inner: [Option<V>; 2],
-    cross_av: Av,
-}
-impl Visit for MinRow<'_, '_, '_> {
-    #[inline(always)]
-    fn kid<L: Lay>(&mut self, l: &L) {
-        let it = &mut self.items[self.i];
-        self.i += 1;
-        if it.abs.is_some() || it.size[0].is_some() {
-            return;
-        }
-        let mc = l.size(self.cx, [None; 2], self.inner, [Av::Min, self.cross_av], false)[0];
-        let mc = if it.min[0] > 0.0 { vmaxk(self.cx, mc, it.min[0]) } else { mc };
-        it.hyp = mc;
-        it.target[0] = mc;
     }
 }
 
@@ -387,9 +451,11 @@ struct Place<'c, 'a, 'b, 'o, O: ?Sized> {
     out: &'o mut O,
     k: usize,
     org: [V; 2],
-    /// The container's inner size and outer size (for children out of flow).
-    inner: [Option<V>; 2],
+    /// The container's outer size (for children out of flow).
     outer: [V; 2],
+    m: usize,
+    /// Where the next item in flow starts on the main axis, from the container's origin.
+    run: V,
 }
 impl<O: Out + ?Sized> Visit for Place<'_, '_, '_, '_, O> {
     #[inline(always)]
@@ -398,13 +464,22 @@ impl<O: Out + ?Sized> Visit for Place<'_, '_, '_, '_, O> {
         self.i += 1;
         let k = self.k;
         self.k = match it.abs {
-            None => l.place(self.cx, it.target, [self.org[0].add(it.off[0]), self.org[1].add(it.off[1])], self.out, k),
+            None => {
+                // (the solver advances by the size the item reports, and gives it that size)
+                let m = self.m;
+                let size = l.reported(self.cx, it.target);
+                let mut off = it.off;
+                off[m] = self.run.add(it.off[m]).addk(it.margin[m]);
+                self.run = self.run.add(it.off[m].addk(it.margin[m] + it.margin[m + 2]).add(size[m]));
+                l.place(self.cx, size, [self.org[0].add(off[0]), self.org[1].add(off[1])], self.out, k)
+            }
             Some((x, y)) => {
                 // out of flow: sized by its own properties against the container's box, placed at its inset
                 let s = self.cx.s;
                 let at = [x * s + it.margin[0], y * s + it.margin[1]];
                 let av = [Av::Def(self.outer[0].subk(at[0])), Av::Def(self.outer[1].subk(at[1]))];
                 let size = l.size(self.cx, [None; 2], [Some(self.outer[0]), Some(self.outer[1])], av, false);
+                let size = l.reported(self.cx, size);
                 l.place(self.cx, size, [self.org[0].addk(at[0]), self.org[1].addk(at[1])], self.out, k)
             }
         };
@@ -418,10 +493,20 @@ impl<O: Out + ?Sized> Visit for Place<'_, '_, '_, '_, O> {
     }
 }
 
+/// The min-content width of a row container: the same container under min-content space.
+#[inline(never)]
+fn min_content_width<K: Kids>(sp: &Spec, kids: &K, cx: &mut Cx, known: [Option<V>; 2], parent: [Option<V>; 2], avail: [Av; 2], content: bool) -> V {
+    let mut buf = Buf::new();
+    solve(sp, kids, cx, [None, known[1]], parent, [Av::Min, avail[1]], content, &mut buf, false).outer[0]
+}
+
 /// What a solved container hands back.
 pub struct Solved {
     pub outer: [V; 2],
     pub inner: [Option<V>; 2],
+    /// Where the first item starts on the main axis.
+    pub start: V,
+    pub m: usize,
 }
 
 /// One flex container: sizes its items and, with `full`, their offsets. `buf` holds the items afterwards.
@@ -432,42 +517,98 @@ pub fn solve<K: Kids>(sp: &Spec, kids: &K, cx: &mut Cx, known: [Option<V>; 2], p
     let pad = [sp.pad[0] * s, sp.pad[1] * s, sp.pad[2] * s, sp.pad[3] * s];
     let pb = [pad[0] + pad[2], pad[1] + pad[3]];
     let gap = sp.gap * s;
-    let mar = [(sp.margin[0] + sp.margin[2]) * s, (sp.margin[1] + sp.margin[3]) * s];
+    let leaf = kids.empty();
     let mut outer = own(sp, cx, known, parent, content, pb);
     let mut inner = [outer[0].map(|v| v.subk(pb[0])), outer[1].map(|v| v.subk(pb[1]))];
     let av = [
         match inner[0] {
             Some(v) => Av::Def(v),
-            None => avail[0].subk(mar[0]).subk(pb[0]),
+            None => avail[0].subk(pb[0]),
         },
         match inner[1] {
             Some(v) => Av::Def(v),
-            None => avail[1].subk(mar[1]).subk(pb[1]),
+            None => avail[1].subk(pb[1]),
         },
     ];
     let cross_av = av[c];
     let items_align = sp.items.unwrap_or(Align::Stretch);
-    kids.visit(&mut Gather { cx, buf, m, inner, cross_av, main_min: av[m] == Av::Min, items: items_align });
+    kids.visit(&mut Gather { cx, buf, m, inner, cross_av, items: items_align });
     let items = buf.items();
+    // A column of unknown width with a stretched item: the width that item will get.
+    let stretch = if m == 1 && inner[0].is_none() && items.iter().any(|i| i.abs.is_none() && i.size[0].is_none() && i.align == Align::Stretch) {
+        let mut w = Widest { cx, items, i: 0, inner, widest: V::k(0.0) };
+        kids.visit(&mut w);
+        let widest = w.widest;
+        let widest = match opt_min(sp.min[0], s) {
+            Some(mn) => vmaxk(cx, widest, mn - pb[0]),
+            None => widest,
+        };
+        Some(vmaxk(cx, widest, 0.0))
+    } else {
+        None
+    };
+    kids.visit(&mut Basis { cx, items, i: 0, m, inner, main_min: av[m] == Av::Min, stretch });
     let flow = items.iter().filter(|i| i.abs.is_none()).count();
     let gaps = if flow == 0 { 0.0 } else { gap * (flow - 1) as f32 };
 
     // The main size of a content-sized container.
     if inner[m].is_none() {
-        if av[m] == Av::Min && m == 0 {
-            kids.visit(&mut MinRow { cx, items, i: 0, inner, cross_av });
+        let mut sum = V::k(-0.0);
+        let definite = av[m].def();
+        for it in items.iter().filter(|i| i.abs.is_none()) {
+            let msum = it.margin[m] + it.margin[m + 2];
+            sum = sum.add(match definite {
+                Some(_) => it.hyp.addk(msum),
+                // under min- or max-content space an item contributes its content size within its limits,
+                // as the solver computes it (a flex fraction of the difference to its basis)
+                None => {
+                    let contribution = match it.size[m] {
+                        Some(pref) if m == 0 && it.grow != 0.0 => {
+                            let v = vmaxk(cx, pref, it.pb[m]).addk(msum);
+                            if it.min[m] > 0.0 { vmaxk(cx, v, it.min[m]) } else { v }
+                        }
+                        _ => it.hyp.addk(msum),
+                    };
+                    let diff = contribution.v - it.basis.v;
+                    let part = if diff > 0.0 {
+                        let g = it.grow.max(1.0);
+                        g * (diff / g)
+                    } else if diff < 0.0 {
+                        let sc = it.shrink.max(1.0) * (it.basis.v - it.pb[m]);
+                        if sc == 0.0 { 0.0 } else { sc * (diff / sc) }
+                    } else {
+                        0.0
+                    };
+                    V { v: it.basis.v + part, d: contribution.d | it.basis.d }
+                }
+            });
         }
-        let used = sum_outer(items, m, gaps);
-        let mut o = used.addk(pb[m]);
+        let content_main = vmaxk(cx, sum.addk(gaps), 0.0);
+        let mut o = content_main.addk(pb[m]);
+        // A row of unknown width in definite space shrinks to fit: no wider than the space, unless its
+        // min-content width is.
+        if let (Some(space), true) = (definite, m == 0) {
+            if cx.lt(space, content_main) {
+                let mc = min_content_width(sp, kids, cx, known, parent, avail, content);
+                let fit = cx.max(space.addk(pb[m]), mc);
+                let fit = match opt_min(sp.min[m], s) {
+                    Some(mn) if !(content && leaf) => vmaxk(cx, fit, mn),
+                    _ => fit,
+                };
+                let fit = vmaxk(cx, fit, pb[m]);
+                o = cx.min(o, fit);
+            }
+        }
         if let Some(mn) = opt_min(sp.min[m], s) {
-            if !content {
+            // (the solver clamps a container's content size by its minimum, a childless box's not)
+            if !(content && leaf) {
                 o = vmaxk(cx, o, mn);
             }
         }
         outer[m] = Some(o);
         inner[m] = Some(o.subk(pb[m]));
-        // (targets are the hypothetical sizes: the container was sized to hold them)
-    } else {
+    }
+    {
         let im = inner[m].unwrap_or(V::k(0.0));
         let used = sum_outer(items, m, gaps);
         let growing = cx.lt(used, im);
@@ -475,14 +616,20 @@ pub fn solve<K: Kids>(sp: &Spec, kids: &K, cx: &mut Cx, known: [Option<V>; 2], p
         if growing {
             let grow: f32 = items.iter().filter(|i| i.abs.is_none()).map(|i| i.grow).sum();
             if grow > 0.0 {
-                // style minimums only: an item that grows cannot violate its content minimum
-                for it in items.iter_mut() {
-                    it.auto_min = it.min[m].max(it.pb[m]);
+                if grow < 1.0 {
+                    // flex factors that sum to less than one take only part of the free space, less the
+                    // gaps: a target can come out under its basis, so the content minimums apply
+                    kids.visit(&mut Mins { cx, items, i: 0, m, inner });
+                } else {
+                    // style minimums only: an item that grows cannot violate its content minimum
+                    for it in items.iter_mut() {
+                        it.auto_min = it.min[m].max(it.pb[m]);
+                    }
                 }
                 resolve(items, m, im, gaps, true);
             }
         } else if shrinking {
-            kids.visit(&mut Mins { cx, items, i: 0, m, inner, cross_av });
+            kids.visit(&mut Mins { cx, items, i: 0, m, inner });
             resolve(items, m, im, gaps, false);
         }
     }
@@ -490,12 +637,10 @@ pub fn solve<K: Kids>(sp: &Spec, kids: &K, cx: &mut Cx, known: [Option<V>; 2], p
 
     // Cross sizes. A size-only question about the main axis of a container whose cross size is known stops here.
     if !full && outer[c].is_some() {
-        return Solved { outer: [outer[0].unwrap_or(V::k(0.0)), outer[1].unwrap_or(V::k(0.0))], inner };
+        return Solved { outer: [outer[0].unwrap_or(V::k(0.0)), outer[1].unwrap_or(V::k(0.0))], inner, start: V::k(pad[m]), m };
     }
-    let mut cav = [Av::Max; 2];
-    cav[m] = Av::Def(im);
-    cav[c] = cross_av;
-    kids.visit(&mut Cross { cx, items, i: 0, m, inner, av: cav, line: inner[c].is_some() });
+    let main_outer = outer[m].unwrap_or(V::k(0.0));
+    kids.visit(&mut Cross { cx, items, i: 0, m, inner, main: main_outer, line: inner[c].is_some(), stretch });
     let line = match inner[c] {
         Some(v) => v,
         None => {
@@ -509,7 +654,7 @@ pub fn solve<K: Kids>(sp: &Spec, kids: &K, cx: &mut Cx, known: [Option<V>; 2], p
     if outer[c].is_none() {
         let mut o = line.addk(pb[c]);
         if let Some(mn) = opt_min(sp.min[c], s) {
-            if !content {
+            if !(content && leaf) {
                 o = vmaxk(cx, o, mn);
             }
         }
@@ -518,7 +663,7 @@ pub fn solve<K: Kids>(sp: &Spec, kids: &K, cx: &mut Cx, known: [Option<V>; 2], p
     }
     let outer = [outer[0].unwrap_or(V::k(0.0)), outer[1].unwrap_or(V::k(0.0))];
     if !full {
-        return Solved { outer, inner };
+        return Solved { outer, inner, start: V::k(pad[m]), m };
     }
 
     // Stretch, justify, align: the offsets of every item from the container's origin.
@@ -536,8 +681,11 @@ pub fn solve<K: Kids>(sp: &Spec, kids: &K, cx: &mut Cx, known: [Option<V>; 2], p
             // free space decides the fallback: a decision
             let pos = cx.lt(V::k(0.0), free);
             match j {
-                Justify::SpaceBetween if !pos || flow == 1 => Justify::Start,
-                Justify::SpaceAround | Justify::SpaceEvenly if !pos || flow == 1 => Justify::Center,
+                // a distributed alignment with nothing to distribute falls back: to the start when there is
+                // no free space, to its single-item form otherwise
+                Justify::SpaceBetween | Justify::SpaceAround | Justify::SpaceEvenly if !pos => Justify::Start,
+                Justify::SpaceBetween if flow == 1 => Justify::Start,
+                Justify::SpaceAround | Justify::SpaceEvenly if flow == 1 => Justify::Center,
                 j => j,
             }
         }
@@ -551,14 +699,14 @@ pub fn solve<K: Kids>(sp: &Spec, kids: &K, cx: &mut Cx, known: [Option<V>; 2], p
         Justify::SpaceAround => (V { v: (free.v / n) / 2.0, d: free.blur().d }, V { v: gap + free.v / n, d: free.blur().d }),
         Justify::SpaceEvenly => (V { v: free.v / (n + 1.0), d: free.blur().d }, V { v: gap + free.v / (n + 1.0), d: free.blur().d }),
     };
-    let mut run = V::k(pad[m]);
     let mut seen = false;
     for it in items.iter_mut().filter(|i| i.abs.is_none()) {
         // cross
         if it.align == Align::Stretch && it.size[c].is_none() {
             let v = line.subk(it.margin[c] + it.margin[c + 2]);
             let v = if it.min[c] > 0.0 { vmaxk(cx, v, it.min[c]) } else { v };
-            it.target[c] = if it.pb[c] > 0.0 { vmaxk(cx, v, it.pb[c]) } else { v };
+            // (never negative: a line narrower than the item's margins leaves it empty)
+            it.target[c] = vmaxk(cx, v, 0.0);
         }
         let free_c = line.sub(it.target[c].addk(it.margin[c] + it.margin[c + 2]));
         let oc = match it.align {
@@ -566,16 +714,16 @@ pub fn solve<K: Kids>(sp: &Spec, kids: &K, cx: &mut Cx, known: [Option<V>; 2], p
             Align::End => free_c,
             Align::Center => free_c.mulk(0.5),
         };
-        it.off[c] = oc.addk(pad[c] + it.margin[c]);
+        it.off[c] = V::k(pad[c]).add(oc).addk(it.margin[c]);
         // main
         let om = if seen { between } else { first };
         seen = true;
         #[cfg(feature = "mutant_gap")]
         let om = if om.v == gap && gap != 0.0 { V::k(0.0) } else { om };
-        it.off[m] = run.add(om).addk(it.margin[m]);
-        run = run.add(om).addk(it.margin[m] + it.margin[m + 2]).add(it.target[m]);
+        // (the item's offset before it on the main axis; `Place` accumulates the positions)
+        it.off[m] = om;
     }
-    Solved { outer, inner }
+    Solved { outer, inner, start: V::k(pad[m]), m }
 }
 
 /// The gaps plus every in-flow item's hypothetical outer main size, summed as cephal sums them.
@@ -698,7 +846,18 @@ pub fn rect(cx: &mut Cx, size: [V; 2], org: [V; 2]) -> [i32; 4] {
 /// Place the children of a solved container.
 #[inline(always)]
 pub fn place_kids<K: Kids, O: Out + ?Sized>(kids: &K, cx: &mut Cx, buf: &mut Buf, sol: &Solved, org: [V; 2], out: &mut O, k: usize) -> usize {
-    let mut p = Place { cx, items: buf.items(), i: 0, out, k, org, inner: sol.inner, outer: sol.outer };
+    let mut p = Place { cx, items: buf.items(), i: 0, out, k, org, outer: sol.outer, m: sol.m, run: sol.start };
     kids.visit(&mut p);
     p.k
+}
+
+/// A container laid out at `size` reports at least its padding across its cross axis.
+#[inline(always)]
+pub fn reported(sp: &Spec, cx: &mut Cx, mut size: [V; 2]) -> [V; 2] {
+    let c = 1 - sp.column as usize;
+    let pb = (sp.pad[c] + sp.pad[c + 2]) * cx.s;
+    if pb > 0.0 {
+        size[c] = cx.max(size[c], V::k(pb));
+    }
+    size
 }

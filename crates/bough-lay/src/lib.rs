@@ -25,17 +25,21 @@ pub use val::{Av, Cx, V, Valid};
 
 use bough_expr::U;
 
-/// Lay a list row out: as wide as the list, as tall as its content or its own height says. Rects are relative
-/// to the row's origin. Returns the row's height in whole pixels and the interval of list widths over which
-/// every rect and the height are the same.
+/// The list a row sits in: a column as wide as the list, the row its one child. Solving it is what gives the
+/// row its width (stretched, or its own), its margins and its height, by the same code as any other container.
+const LIST: Spec = Spec::new(true);
+
+/// Lay a list row out. Rects are relative to the row's slot in the list (its margins included). Returns the
+/// slot's height in whole pixels and the interval of list widths over which every rect and the height are the
+/// same.
 #[inline(always)]
 pub fn place_row<L: Lay, O: Out + ?Sized>(l: &L, s: f32, u: &U, width: f32, out: &mut O) -> (i32, Valid) {
     let mut cx = Cx::new(s, u, [width, 0.0]);
     let w = V::avail(width, 0);
-    let known = [Some(w), None];
-    let size = l.size(&mut cx, known, [Some(w), None], [Av::Def(w), Av::Max], false);
-    l.place(&mut cx, [w, size[1]], [V::k(0.0), V::k(0.0)], out, 0);
-    (val::round(size[1].v), cx.valid)
+    let mut buf = flex::Buf::new();
+    let sol = flex::solve(&LIST, l, &mut cx, [Some(w), None], [None; 2], [Av::Def(w), Av::Max], false, &mut buf, true);
+    flex::place_kids(l, &mut cx, &mut buf, &sol, [V::k(0.0), V::k(0.0)], out, 0);
+    (val::round(sol.outer[1].v), cx.valid)
 }
 
 /// The height of a list row and its interval, with no rects: what an extent needs for a row that is not
@@ -44,8 +48,9 @@ pub fn place_row<L: Lay, O: Out + ?Sized>(l: &L, s: f32, u: &U, width: f32, out:
 pub fn size_row<L: Lay>(l: &L, s: f32, u: &U, width: f32) -> (i32, Valid) {
     let mut cx = Cx::new(s, u, [width, 0.0]);
     let w = V::avail(width, 0);
-    let size = l.size(&mut cx, [Some(w), None], [Some(w), None], [Av::Def(w), Av::Max], false);
-    (val::round(size[1].v), cx.valid)
+    let mut buf = flex::Buf::new();
+    let sol = flex::solve(&LIST, l, &mut cx, [Some(w), None], [None; 2], [Av::Def(w), Av::Max], false, &mut buf, false);
+    (val::round(sol.outer[1].v), cx.valid)
 }
 
 /// Lay a root out in a window of `avail` pixels. Returns the interval of window sizes over which every rect

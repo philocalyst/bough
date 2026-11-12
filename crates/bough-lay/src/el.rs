@@ -236,6 +236,10 @@ impl<P: Paint, C: Kids, H: HState> Lay for LBox<P, C, H> {
         solve(&self.spec, &self.kids, cx, known, parent, avail, content, &mut buf, false).outer
     }
     #[inline(always)]
+    fn reported(&self, cx: &mut Cx, size: [V; 2]) -> [V; 2] {
+        crate::flex::reported(&self.spec, cx, size)
+    }
+    #[inline(always)]
     fn place<O: Out + ?Sized>(&self, cx: &mut Cx, size: [V; 2], org: [V; 2], out: &mut O, k: usize) -> usize {
         if P::N == 1 {
             out.put(k, rect(cx, size, org));
@@ -291,6 +295,11 @@ pub fn text<M, A>(m: M, a: A) -> Leaf<M, Rec1<A>> {
 }
 impl<M, P> Leaf<M, P> {
     style_methods!();
+    #[inline(always)]
+    pub fn with_spec(mut self, spec: Spec) -> Self {
+        self.spec = spec;
+        self
+    }
 }
 
 /// The content size of a measured leaf under known content dimensions and available inline space.
@@ -341,9 +350,8 @@ impl<M: Measure, P: Paint> Lay for Leaf<M, P> {
         if let [Some(w), Some(h)] = node {
             return [w, h];
         }
-        let s = cx.s;
-        let av = avail[0].subk((self.spec.margin[0] + self.spec.margin[2]) * s);
-        content(&self.m, cx, node[0], node[1], av)
+        // (the available space is for the border box: the parent already took the margins off)
+        content(&self.m, cx, node[0], node[1], avail[0])
     }
     #[inline(always)]
     fn place<O: Out + ?Sized>(&self, cx: &mut Cx, size: [V; 2], org: [V; 2], out: &mut O, k: usize) -> usize {
@@ -364,6 +372,10 @@ impl Kids for () {
     const WRAPS: bool = false;
     #[inline(always)]
     fn visit<F: Visit>(&self, _: &mut F) {}
+    #[inline(always)]
+    fn empty(&self) -> bool {
+        true
+    }
     fn trees(&self, _: &mut Vec<Node>) {}
 }
 impl<L: Lay> Kids for L {

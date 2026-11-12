@@ -177,12 +177,12 @@ impl<'a> Cx<'a> {
                 (UNIT, INDEP) => {
                     // a = avail + c: a < b while avail < b - c
                     let t = b.v - (a.v - self.avail[ax]);
-                    if r { self.below(ax, t) } else { self.above(ax, t - EPS) }
+                    if r { self.below(ax, t) } else { self.above(ax, t) }
                 }
                 (INDEP, UNIT) => {
                     // b = avail + c: a < b while avail > a - c
                     let t = a.v - (b.v - self.avail[ax]);
-                    if r { self.above(ax, t) } else { self.below(ax, t + EPS) }
+                    if r { self.above(ax, t) } else { self.below(ax, t) }
                 }
                 _ => self.point(ax),
             }
@@ -208,7 +208,7 @@ impl<'a> Cx<'a> {
                 INDEP => {}
                 UNIT => {
                     let c = v.v - self.avail[ax];
-                    self.above(ax, lo - c - EPS);
+                    self.above(ax, lo - c);
                     self.below(ax, hi - c);
                 }
                 _ => self.point(ax),

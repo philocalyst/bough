@@ -173,7 +173,7 @@ impl Heights {
     /// append or a removal at the end touches one block.
     fn shift(&mut self, row: u32, ins: bool) {
         let n = self.n as usize;
-        let mut flat = |v: &mut Vec<[i32; B]>, fill: i32| {
+        let flat = |v: &mut Vec<[i32; B]>, fill: i32| {
             let s = v.as_flattened_mut();
             if ins {
                 s.copy_within(row as usize..n, row as usize + 1);
@@ -199,7 +199,7 @@ impl Heights {
             self.msum -= old as i64;
         }
         flat(&mut self.h, UNKNOWN);
-        let mut flatf = |v: &mut Vec<[f32; B]>, fill: f32| {
+        let flatf = |v: &mut Vec<[f32; B]>, fill: f32| {
             let s = v.as_flattened_mut();
             if ins {
                 s.copy_within(row as usize..n, row as usize + 1);
