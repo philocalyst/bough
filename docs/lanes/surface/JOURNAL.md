@@ -174,3 +174,40 @@ insert/remove (85.1 K to 85.7 K) vary run to run in both binaries alike (page fa
 the same 621 text symbols, the same `__const` and `__cstring` bytes, `__text` 128 bytes *smaller* (394,164
 against 394,292: code layout, no function added or removed). Resident bytes: no field was added to any core
 structure. Prediction held.
+
+## 3. What the user's inspector (Loupe) needs from a core, and what the new core answers (2026-11-12)
+
+Read for facts only (`~/projects/Private-Forks/gpui-ce-inspector`, `eaa93a2`, read only; no UI ported): the engine
+side (`crates/gpui/src/inspector/`, hooks in `window/inspector_*.rs`, `element.rs`, `view.rs`, `div.rs`), the
+four lenses and the analysis modules of `crates/gpui_inspector`, and `crates/gpui_lightbox`. Loupe records per
+frame (`FrameRecord`: phase timings, causes with `#[track_caller]` notify sites, view spans, scene stats, an
+element tree at the Tree level, `ElementDetails` at Full: box model and `LayoutFacts` for "why this size",
+style facts, a11y role/label), per input event (`InputRecord`: kind, hit path from the tree, key contexts,
+actions, handled, the frame it caused), per entity (observers, subscribers, notify counts and last site), and
+on demand (key binding resolution with verdicts); it holds the app still by replaying the previous frame's
+layers. Its "closed costs one Option check" is not literally true in four places (id-stack copy per located
+element, entity type-name map, notify origin, refresh scope).
+
+Answers in the new core (F: free, data that exists or a reader derives; N: a new fact):
+
+| Loupe fact | new core |
+|---|---|
+| element tree, kind, identity | F: store nesting, row, position, `type_name` of the element; N: parent position within a row, a const of the façade element type (0 when unused) |
+| source location | F per row/scope/list call (built); N per element: `#[track_caller]` constructors, the value carries the location to `Leaf::at` (no-op elsewhere; 0, same mechanism as measured) |
+| bounds, visible, clipped, paint order, primitives | F: rect lanes, origin, clip, walk order, sites |
+| interactivity flags | F: the column's handler kinds; scrollable: the space's word; stateful style: operand reads Pick/Focus/Press |
+| colours, radius, border, opacity, text | F: operand values now |
+| box model, `LayoutFacts`, why this size | N (layout lane): a reflection method on the element's layout type giving its spec and per-axis typestate; why-this-size is then static per axis from the type, not reconstructed |
+| phase timings | F: the host times the separate world calls |
+| causes of a frame | F: changed words (reader's previous block), relation journals, sweeps, the dispatch that ran; a write outside any handler has words, not a line (a write barrier is excluded) |
+| views rendered / self time | F equivalents: rows a list pass wrote, columns differentiated, records changed, damage per column |
+| hold, replay | F: a frame is a pure function of (block, columns) |
+| input record, hit path, handled, frame caused | N: `Dispatch` returned by every entry point and the changed-word mask returned by settle (values in a register: 0 when dropped) |
+| key tester | gap: no keymap in the new core yet |
+| entities, observers, notifies | excluded concepts; equivalents F: readers of a word, how often it changes, the handler of the turn it changed |
+| Lightbox: pixels, painted text and quads, clickables, appearance, time | F (raster; reflection; `Env`; `Time` is a word, sweeps give a motion's extent and end) |
+| Lightbox lint (13 rules) | all but gradient/image contrast static over reflection, for every row on demand and every theme or hover state by evaluating under alternate blocks, with no render |
+
+A "last turn" record is not needed: a turn's facts persist until the next turn (block, tiles, sweeps, journals,
+the lists' last plans, the pick and focus words), or are derived by a reader holding its previous block, or
+are return values. History is the reader's ring, kept only while it is attached.
