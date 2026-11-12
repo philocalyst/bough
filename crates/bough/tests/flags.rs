@@ -73,7 +73,7 @@ impl Sheet {
         let mut s = Sheet { lines: List::from_iter_in(self.lines.iter().map(|l| Line { id: l.id, views: Cell::new(0) })), y: Signal::new(*self.y), views: Cell::new(0) };
         for (k, slot) in self.lines.slots().enumerate() {
             for f in [Flag::SELECTED, Flag::CHECKED, Flag::SEARCH_HIT] {
-                if self.lines.flag(slot, f) {
+                if self.lines.has_flag(slot, f) {
                     s.lines.set_flag_at(k, f, true);
                 }
             }

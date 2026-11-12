@@ -322,7 +322,7 @@ impl<T> List<T> {
     // ------------------------------------------------------------------ item flags
     /// Is flag `f` set on the item at slot `s`? (A plain read: an owner describing itself subscribes to the
     /// list's items.)
-    pub fn flag(&self, s: Slot<T>, f: crate::flags::Flag) -> bool {
+    pub fn has_flag(&self, s: Slot<T>, f: crate::flags::Flag) -> bool {
         self.read_items();
         self.live(s) && self.fl[s.idx as usize] & f.bit() != 0
     }

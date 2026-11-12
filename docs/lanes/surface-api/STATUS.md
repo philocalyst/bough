@@ -32,4 +32,5 @@ not build (`bough-app-sketch-code` assigned the now-private `Spec::abs`; `c2ae86
 
 ## This session's work
 
-See `cards/2026-11-11-owner-grain.md` and the report at the end of the round.
+Owner grain and owner seal (`grain.rs`, `describe::OwnerSeal`), record state flags with variant tables (`flags.rs`),
+direct wires (`direct.rs`); propagation design in `PROPAGATION.md`. Numbers, gaps and avenues: `HANDOFF.md`.

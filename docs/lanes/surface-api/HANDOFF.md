@@ -1,275 +1,181 @@
-# Surface API round 6 handoff
+# surface-api round 6: handoff (2026-11-12)
 
-Stopped at the lead's request on 2026-11-11, before the first build or measurement. The production
-implementation is unchanged. Research state: **CARD**, with an unbuilt harness/oracle candidate.
-Nothing is GATED, MEASURED, independently accepted, or ready to integrate as a correctness fix.
+Written by the Opus session that took the lane over on 2026-11-11 at 21:10 (after the Astra handoff and the Fable
+agent). Supersedes the earlier HANDOFF and `STATUS.md`'s "this session" section. Design notes: `PROPAGATION.md`;
+card: `cards/2026-11-11-owner-grain.md`.
 
-## 1. What exists
+## State
 
-Base: `aa9943e7ae50595f6af026773ee82b46a4b85ae0`, branch `lane/surface-api/round6`.
+* Branch `lane/surface-api/round6`, head: the commit that adds this file (code head `68c05f5a36`).
+* Merged into this branch: `lead/core-r6` up to `4f4c469ef5` (write-proportional settle, wired seals) and `round6`
+  up to `33dfe4738f`. **Nothing of this session is in `round6`.**
+* Commits of this session, oldest first:
+  * `c2ae86085a` bough-app-sketch-code: `Spec::set_abs` (`cargo check --workspace --all-targets` did not build).
+  * `signal_cost` fix (the lead's harness did not compile: `NumFmt::new` arguments).
+  * `fd71e725b0` STATUS of the inherited work + card.
+  * `51d297ffd0` **owner grain + owner seal** (`grain.rs`, `describe::OwnerSeal`, seals for every element that had
+    none, `Signal::peek` for runtime reads, `tests/owner_grain.rs`).
+  * `149a3b49f5` **record state flags + variant tables** (`flags.rs`, `tests/flags.rs`, `examples/flags_cost.rs`).
+  * `2b5279ad17` merge of `lead/core-r6` (elem.rs conflicts resolved to the lead's `seal_wire`).
+  * `68c05f5a36` **direct wires** experiment (`direct.rs`, `tests/direct.rs`, `signal_cost` frame columns).
+* Inherited and verified (Fable agent, see `STATUS.md` table): scroll containers reconcile their content, `On::update`
+  refreshes route captures, routes resolve receivers along the owner chain, only handled owners re-describe, hover
+  follows the tree (finding 8), route seals. Each test passes; each mutant fails its test (run by this session).
 
-| Commit | Artifact | Status |
-|---|---|---|
-| `7052f930a3` | [Frozen propagation card](cards/2026-11-11-propagation.md) | Committed before any build |
-| `539765177c` | [F8 harness](../../../crates/bough/examples/propagation.rs), `propagation_support/{dashboard,scroll}.rs`; card clarification | Not compiled or run |
-| `4789413bb3` | [Scroll oracle](../../../crates/bough/tests/propagation_scroll.rs) | Formatted; not compiled or run |
+## Numbers
 
-The harness copies AWAGY dashboard/scroll descriptions, adds constructors and step functions, and adjusts
-relative asset paths. Application descriptions use `bough::prelude`; harness infrastructure imports
-`App`, `Config`, `Caps`, and the existing instruction counter. No root manifest, shared report, existing
-gate, vendor, or other lane was edited. No production repair, route oracle, mutant execution, assembly
-capture, or `DESIGN-R6.md` exists yet. This handoff preserves the design reasoning that would have gone there.
+All instruction counts on the calling thread (`tinstr` / `proc_pid_rusage`), release, M3 Pro under heavy load from
+other lanes (load average 60-130). Instruction counts are load-robust; each was run **once** unless noted.
 
-The scroll test describes ten plain rows below an outer scroll port and a nested scroll port. Its twelve
-operations change paint/width, scroll both ports, insert/remove/swap rows, move/resize the port, truncate,
-reset offset, clear, and repopulate. For each ring size 1..4 it compares presented pixels with a full
-redraw, then retained pixels with a fresh mount of the same state. **Expected**, not observed: the
-baseline should fail the first changed plain color. It does not yet test wheel glides, raw `scroll_y`,
-window resizing, or actual scroll-by-copy eligibility.
+| what | before | after | command | verified |
+|---|---:|---:|---|---|
+| signal path, colour write per `App::turn`, re-describing app, 16 rows | 32,244 | 788 (after the lead's write log) / 495 (direct wires) | `examples/signal_cost 16 256` | 1 run each state |
+| same, 256 rows | 510,970 | 745 / 502 (direct) | same | 1 run |
+| colour write, mount-once app, 256 rows, write above idle | 356 (712 - 356) | 62 (418 - 356) | `signal_cost`, `--features mutant_direct_off` for before | 1 run |
+| colour write + frame, 256 rows | 1,087 | 957 (damage moves to the frame) | `signal_cost` column `colour+frame` | 1 run |
+| idle turn, mount-once | 302 (lead's log, before flags/direct) | 356 | `signal_cost` | **regression +54** (TLS enter, arm and blur checks per turn) |
+| redescribe - once (owner-grain compare per handled turn) | n/a | +85 | `signal_cost` redescribe vs once | 1 run |
+| gui-bench fine, no-op turn (`turn(\|_\| {})`), 100 rows | 4,088 | 396 | `comparisons/bough-guibench` `probe 100 fine turn` (tinstr overhead 1,455 removed) | 1 run |
+| gui-bench fine, no-op key | 4,732 | 1,015 | `probe 100 fine noop` | 1 run |
+| gui-bench fine select (down + up + frame) | 14.86k | 15.0k (down +0.9k, up -0.8k) | `probe 100 fine select` | 1 run; **no gain**: see below |
+| gui-bench rows hover (move + frame) | 3.9k | 3.9k | `probe 100 rows hover` | 1 run |
+| idle frame (no damage) | 55 | 55 | `probe 100 fine frame` | the 1,500 seen earlier was `tinstr`'s own cost |
 
-## 2. Measurements and verification
+Flag flips (`examples/flags_cost 10000`, one run, turn / frame instructions): row hover 2,711 / 1,143; press
+(down/up alternating, the click re-describes) 4,034 / 1,143; Tab with focus ring and focus-within 3,814 / 1,398;
+disabled subtree by a plain field (the page re-describes) 15,104 / 1,228; the same by `flag_by` (a wire) 2,677 /
+1,228; single selection (one row off, one on) 11,035 / 1,262; clear a flag on all 10,000 rows 127,548 / 1,058;
+shift-range over 10,000 rows 305,373 / 2,866; checked toggle 7,404 / 1,058; 1,000 search hits 63,854 / 2,089;
+drag-over (with the drag route) 1,738 / 1,143. No owner re-described during the flips but the plain-field toggles.
 
-**There are no measured performance numbers from this lane.** No Cargo build/check/test command ran:
-the shared measurement lock was held by `core` on every check. Its continuation said it was waiting for
-other builds to drain. This lane neither acquired nor removed that lock. The stop instruction arrived
-before it became available. No baseline executable or executable hash exists.
+Baselines measured at the start (inherited head `88ed56ff5b`): `redescribe_cost` 1,000 rows owned 648 / static 614 /
+bare 233 per row, once 181; gui-bench R0 fine select 14.9k (10) / 15.7k (1,000) / 15.8k (10,000), rows hover 4.0k /
+4.5k, coarse select 28.0k (10) / 1.48M (1,000), coarse plain 27.3k / 1.48M. Mount-once floor, dist binaries of the
+inherited head, 10x spread, median of 5: heavy stream 157,510; lab both 29,413 (spread 4 %); vlist scroll 12,749
+(`runtime/lanes/surface-api/floor.py`). **The floor was not re-measured after my changes.**
 
-| Preregistered cell | Runs/results |
-|---|---|
-| Counter | 0; not measured |
-| AWAGY dashboard | 0; not measured |
-| AWAGY scroll, 1,000 rows | 0; not measured |
-| Plain column, 10 / 100 / 1,000 / 10,000 children | 0 in each cell; not measured |
-| List, same four sizes, forced mounted | 0 in each cell; not measured |
-| Deep tree, 32 nested columns | 0; not measured |
-| Fixed template-shaped tree, 64 wired leaves | 0; not measured |
-| STATUS and zgx/zgui mount-once regression floor | Not measured |
-| Dispatch owner-chain overhead | Not measured |
+## Not verified / known broken
 
-Planned measurement is `proc_pid_rusage` `ri_instructions`, through `bough_metal::perf::snap`, subtracting
-`snap_overhead`. Each cell constructs mount-once and ordinary Apps, warms 20 turns with frames, then
-brackets 1,000 `App::turn` calls without presentation (`F8_REPS` overrides). Run the complete executable
-three times. CSV reports repeats, instructions, instructions/turn, and retained record count. These
-counts and sizes are **workload settings**, not measurements.
+* The whole `cargo test --release -p bough` ran green on `51d297ffd0` (owner grain + seal) only. On the flags and
+  direct commits only the lane's test binaries ran (flags, owner_grain, direct, propagation_routes,
+  propagation_scroll, seals). Not run at all: `bough-suite`, `bough-awagy`, `bough-zgui` tests, the mount-once floor
+  (`bench/integrate/slope.py`, `bench/layout/slope.py`), the gui-bench sweep, the guibench gates.
+* `cargo check --workspace --all-targets` passes on the final head (after renaming `List::flag` to `has_flag`: the
+  blanket `Flagged::flag(self)` shadowed it, a by-value trait method beating a `&self` inherent one). That is the
+  risk of the blanket trait: `Flagged` claims `when`, `hover`, `active`, `focus`, `disabled`, `selected`, `flag`,
+  `flag_by` on every type once the prelude is imported. `tests/flags.rs` re-run green after the rename.
+* Idle-turn regression +54 instructions (above). The per-turn `root_dirty` compare costs ~85 where a single 8-byte
+  range should cost ~15 (`Plan::same` is generic; a fixed-shape fast path is unwritten).
+* Fine select did not improve: its root handlers change plain fields (`pressed`, `selected`), so the root re-describes;
+  the owner seal makes the walk a compare, but `view()` itself (status `format!`, building the tree) and the moves of
+  the description (finding 12) remain. The gui-bench port's selection was not moved to flags (script ready in the
+  session scratchpad, not applied).
+* Direct wires: entries are armed only after a mount/turn/frame; a box whose node gets variants after mount stays
+  correct (arming refuses) but a box that gains an opacity *signal* later is impossible by type. Multi-runtime threads
+  fall back (TLS points at the last runtime). The dirty list is drained only by `frame()`: a program that writes and
+  never frames keeps a bounded list (one entry per cell).
+* Plain reads of `Entities` / `Reader` in a description make the owner re-describe after every handled turn
+  (conservative). Owners with a `Vec`/`String`/`Box` field keep the old rule (re-describe after every handler on
+  them), though the owner seal makes it a compare where the description seals.
+* Findings 7 (list in a port at the window origin) and 15 (f32 offsets) were not worked on; 12 (O(d^2) moves) was
+  designed, not built (below).
 
-The bracket includes handler, settle, effects, re-description, and layout; it is not an isolated timer
-around `Element::update`. The once/ordinary difference is useful but also includes their different
-retained representations. For plain fields, the once arm intentionally leaves stale output and is only
-a cost control. It cannot qualify as a faster correct implementation. The all-wires tree still has
-constant *by-value layout operands*; it is not a proof that the present builder represents a fully static
-template. List overscan forces mounting and spaces are raised from APP_CAPS' 4,096 to 16,384 for this
-capacity-controlled experiment. Do not claim success at shipping capacities.
+## Experiments
 
-When resuming, use the pinned nightly, own target, cleared `RUSTC_WRAPPER`, four jobs, and the shared
-measurement protocol. `BOUGH_FONT` must name a readable font. First build:
+| experiment | mechanism | result | verdict |
+|---|---|---|---|
+| owner change detection by a compile-time plan | `type_info` walk of the owner type: scalar leaves as byte ranges, fieldless enums, `Option` payloads; cells skipped | signal path 32k -> 0.8k at 16 rows; no-op turn 4.1k -> 0.4k | kept |
+| tracked plain reads as wake wires | cells' read accessors record their head while an owner describes; the owner subscribes with an ordinary wire | needed for exactness (mutant `mutant_grain_track` fails the gate) | kept |
+| owner seal | the root's whole description compared before the walk | correct (mutant fails); gain unmeasured in isolation | kept |
+| flags with variant tables | flag word indexes a table resolved at mount | 2-4k per input flip, 7-11k per list flip | kept; list flips have a per-mounted-row scan |
+| direct wires | `set` stores into the column, the frame makes the damage | write 356 -> 62 above idle; turn+frame 644 -> 514 | kept as experiment; the damage half is the next win |
+| `Plan` via `array_len` | | rustc ICE on a named-const array length | replaced by size/element size |
 
-```sh
-cargo build --release -p bough --example propagation
-```
+## Underexplored and exotic avenues
 
-After acquiring the measurement lock, run `target/release/examples/propagation` three times, preserving
-stdout, stderr, revision, toolchain/features, font identity and executable hash. Do not substitute another
-lane's build. Keep the baseline binary before production edits. Preserve compile failures and partial
-runs; the harness has not yet passed even a smoke check.
+1. **Direct damage, not only direct stores.** A direct entry could carry the record's tile span (from its last
+   placed ink) and OR it into the paint plane at write time, with a per-page epoch that invalidates the span when the
+   page moves; the frame would then do nothing per write. Estimate: colour write + frame 514 -> ~150. Risk: stale
+   spans after scroll/layout; cheapest test: store the span at arm, compare against `visible_ink_handle` in a debug
+   assert over the suites. Depends on core's page epochs.
+2. **Derived cells with compile-time order** (`PROPAGATION.md`): a `Derived<T>` field recomputed by wires installed at
+   the front of each source's chain in field declaration order; readers are wires on the derived's head. Glitch-free
+   without a height sort; equal recompute values cut by the compare. Estimate: a derived of 2 sources costs one
+   recompute + one store per write (~100 instr). Test: a diamond (A -> B, A -> C, B+C -> D) with a counter of D's runs.
+3. **Batched writes to one cell**: with direct wires, N writes in a turn are N stores and one damage; for ordinary
+   wires the lead's log already dedupes by QUEUED. A `List` analogue (item flags) should log changed *positions as
+   runs* instead of rescanning mounted rows (today O(mounted) per flag turn: the 7k of a checked toggle).
+4. **Flags as core state planes**: move `Act::{own,sub,inh,eff}` into core's 16 bit columns per page with summaries
+   (COLUMN-PLAN.md). Subtree writes become mask writes over the subtree's page range; `any_state` makes focus-within
+   and "is anything selected" summary tests. Estimate: range flip over mounted records -> ~2 instr/record.
+5. **Per-position flag planes in `List`**: bitsets by position instead of a `u16` per slot; a range select over
+   10,000 rows becomes ~160 word writes instead of 10,000 scattered stores (305k -> ~10k). Cost: insert/remove shift
+   the planes (O(N/64)), permutations need an inverse map.
+6. **Owner seal as streamed columns** (the lead's "seals as columns"): seal words at fixed strides in page-aligned
+   buffers so an unchanged owner of 64 rows is a vector compare; with the plan compare in front, most owners never
+   reach it. Estimate idle re-description 550 -> <30 instr/row.
+7. **Contained views as owners** (rung 2): `part!(self.editor)` proving an offset like `sig!`, a tape and an owner
+   seal of its own, routes resolving to it by offset (no `List`/`Entities` hop). A handler on the editor re-describes
+   only the editor; the parent's walk steps over it. Needs a mounting element and OwnerRef kind; API addition only.
+8. **By-reference update (finding 12)**: `Element::update(&mut self, ..)`, `IntoProp::value(&self)`,
+   `ActOp::refresh(&self)`, `BoxOps::refresh(&self)`; `Vec`/`Each`/`Option` hand their items to `update_dyn` by
+   `take`/`by_ref`. ~104 sites in 14 files, mechanical. Removes the memmove that was 15 % of a no-op Fine turn's
+   samples and the d^2 term (200 levels: 533k -> ~25k predicted).
+9. **f64 / integer scroll offsets (finding 15)**: accept `Signal<f64>` wherever `Signal<f32>` scrolls (a sealed
+   `Offset` trait, monomorphic read/write fns in the scroller); the API does not get worse (f32 still works).
+10. **Variant-driven layout**: `.when(Flag::EXPANDED, |s| s.h(..))` resolving to a spec index per table entry; a flip
+    is a restyle of exactly the flipped records. Needs the store lane's spec columns.
+11. **Plain-read recording at compile time**: a description type that contains no `&Signal` plain operand and whose
+    `view` body is a const fn of `sig!` operands could prove "no plain reads"; Rust cannot see `*self.x` in arbitrary
+    code, so this needs a lint or a `#[pure_view]` attribute check. Speculative.
+12. **Hover chain as flags only**: once every hover look is a variant, `hover_set` reduces to two flag writes and the
+    act table's hover fields can go; the chain diff could be a symmetric difference of two sorted handle lists
+    (already) or a summary plane test.
+13. **Selection semantics in the API**: `List::select_only(slot)`, `select_range(a..b)` as thin helpers over
+    `set_flag` so applications do not each re-implement anchor/shift logic; keyboard extension via a `current` flag.
 
-The only completed validation is source inspection, intended-file formatting of the new scroll test,
-and `git diff --check`. Required workspace all-target checking and release tests remain **NOT RUN**.
-Stopping now follows the lead's explicit handover instruction, not completion of the frozen card.
+## API: what is at risk, composition, and what a user-facing review would change
 
-## 3. Mechanisms, deductions, and proposed direction
+* **Ergonomics bought for benchmarks, at risk**: `sig!(self.x).at(i)` arrays, `.num(f, NumFmt)` and `list_with`
+  exist for cost, not clarity; `Config::once()` still splits behaviour; `text(&self.s)` (a plain borrow, a
+  constant until the owner re-describes) and `text(sig!(self.s))` look alike and behave differently (this session
+  made the first exact through tracked reads, at a cost). Closures capped at 16 bytes of captures (routes,
+  mappings) and the `Copy` bound will bite real applications (a `String` capture does not compile).
+* **What the flags API costs users**: none of the existing code changed (the gui-bench and counter programs
+  compile unchanged); the new surface is `Flag`, `Flagged` (`.when/.hover/.active/.focus/.disabled/.selected/.flag/
+  .flag_by`), `Look` (`.bg/.border/.color`) and `List::{set_flag, set_flag_at, set_flag_range, clear_flag, has_flag}`.
+  The blanket `Flagged` trait claims common method names on every type in the prelude (see "not verified").
+  Before/after of the gui-bench fine row (not applied): `.bg(sig!(self.selected).map(|s| rgb(if *s { SEL } else
+  { EVEN })))` + a `selected: Signal<bool>` per row becomes `.bg(rgb(EVEN)).selected(|s| s.bg(rgb(SEL)))` and
+  `self.rows.set_flag(slot, Flag::SELECTED, true)`: shorter, and no signal per row.
+* **Composing and overriding external components**: variants are the natural override point (a component exposes
+  its looks per flag; a host overrides a `Look` without touching the component's code), and `flag_by` lets a host
+  drive a component's state from its own signal. Missing: a way to address a component's inner element from outside
+  (a part name), and a stable identity for an external view's records so `Flag`s and reflection can target them.
+  Owner-scoped re-description makes a contained component cheap to embed only once contained views are owners
+  (avenue 7).
+* **A user-facing review would change**: one `text()` operand story (plain vs wired visible in the type name or a
+  lint); `Signal::set` vs `*sig = ..` (they now differ in cost: direct wires apply only through `set`); the owner-type
+  in route closures (`|v: &mut Self|`) is clear, but `on_press` + `on_click` on a root to emulate row selection
+  (the gui-bench port) should be a row route plus a flag; selection helpers on `List` (avenue 13); error messages for
+  a route whose receiver is not on the owner chain are good (a mount panic naming both types).
 
-### What the current propagation path actually does
+## Where I think the lead or the plan is wrong
 
-`App::turn`, `flush`, and input settlement settle root wires, run `changed` waves, then re-describe the
-root unless the harness chose `Config::once()`. `describe::redescribe` runs `view()` and walks its result
-against a tape, with `pos` for paint preorder and `kid` for layout children. Dynamic items own scopes,
-tapes, and record/child counts. The root walk does not have dependency knowledge about ordinary Rust reads.
+* "A no-op handler under 300" counted with the frame: the turn alone reaches ~400 on Fine but the per-turn fixed
+  cost (settle log, effects, layout flush, flags flush, arm, blur, TLS enter) is now the floor; each mechanism adds
+  its own constant. The next gain is a single per-turn "nothing happened" bit, not faster mechanisms.
+* "Fine select under 2,000 at any row count" is not reachable with root handlers that change plain fields: the
+  owner re-describes by the design's rule 0. The gui-bench port should select through row routes or flags; the target
+  should be stated for that program, or for the turn without the frame (the frame alone is ~1.1k for two rows).
+* Measuring wire-path cells without a frame (`signal_cost`) hides where damage is computed; direct wires look 5.7x
+  better without the frame and 1.25x with it. Report both.
 
-`LBox::update` calls `restyle` on each visited box before updating children. That path constructs/interns
-layout styles; a stable tree is not merely reading one equality word per node. Hypothesis: this, description
-construction, and dynamic-part handling will dominate a plain-column F8 slope more than tape loads.
-Measure before designing SIMD around the tape.
+## Next (in order, with predictions)
 
-`LList::update` advances `pos` by `1 + sum(row.nrec)` over all mounted rows, even for an unchanged List.
-The List F8 cells isolate this predicted linear overhead. Each actual nested list structural edit already
-propagates record-count changes through `lr_count` to enclosing rows. A cached aggregate belongs to that
-same count invariant; it should not become a second independently maintained truth. A future implementation
-must cover mount/unmount, virtualization, permutation, nested dynamic growth, and release.
-
-### Scroll repair: retain the boundary, reconcile its content
-
-`ScrollBox::mount` uses `mount_opaque`; `update` calls `update_opaque`. The latter advances the cursors
-without visiting the child descriptions. `ScrollY` has the same explicit opacity. The recorded child tape
-is therefore not enough: update must restore the content's mounting context and use it.
-
-The bounded repair I would try first is a tape entry identifying the existing ScrollView, followed by
-normal port/content tapes. Update the port in the parent flow, then update content with the retained
-content space/clip, zero local origin, child depth, `mounting_view`, and its independent layout group.
-Restore parent `lay.cur`, `kid`, origin/space/clip/depth and mounting-view context afterwards. Preserve the
-existing offset, scroller, clip registration, layout placement hook, and view identity. Do not remount the
-port or allocate a new space/clip on every description. Keep mount-once resource layout/cost unchanged
-where possible; even an extra tape operation should compile away when no tape is retained.
-
-Important details: `LBox::update` does not set `lay.last_box`; do not use that mount-only scratch field to
-find an updated port. Obtain its retained lid from the tape or ScrollView's retained hook. New dynamic
-children must inherit `mounting_view`, otherwise nested clips/tooltips will not follow scrolling. The
-content has `lay.cur = NONE` at mount because it is a separate group; treating it as a regular layout child
-silently changes ownership. Raw `ScrollY` also has explicit rect, follows-window, and inset-width behavior.
-Do not blindly share the two paths without accounting for those differences.
-
-Further **unverified suspicions**: dynamic removal may leave stale nested-view/clip/tip registrations,
-because `Scope::cut_scope` cuts wires/layout/list/producers but has no visible general ScrollView removal
-step. Port-width changes may need explicit content available-width invalidation; check the placement hook,
-not just paint equality. These need focused lifecycle and resize witnesses before being called defects.
-The current scroll fixture is a starting point, not coverage of those invariants.
-
-### Owner routing is also an owner re-description problem
-
-Removing `input::root_owner_only` alone is unsound: route trampolines currently receive the root pointer.
-Changing that pointer alone is still incomplete: `mount_row` builds with a null tape, `lr_replay` settles
-edited row signals but never re-describes plain row fields, and entity mounts also use null tapes. Same-key
-entity updates skip an opaque item. This independently explains why a superficially working interactive
-row could still leave its plain UI stale.
-
-A class is a **schema of signal offsets**, not an owner identity. One List region shares its class across
-many rows. Do not put a single receiver pointer or dirty flag in `classes[cls]`. Entities can also have
-multiple displayed views, each with its own retained tree. One entity edit must refresh every mounted view
-of that generation; a row route must settle the proper class and invalidate the right descriptions.
-
-The structural direction I favor is: **owner as invalidation block; retained operand sites as patch
-locations; storage logs/generations as mutation authority**. Plain values force evaluation at their owner's
-grain. Promotion to Signal/List/Entity gives a finer grain without a component macro, hooks, or a view switch.
-Contained owners still need a real mounting path (D8); List/entity support alone does not complete that rung.
-
-For L4, store the receiver type in the route builder independently of the mounting `Element<V>` owner type.
-The current Click/Press/Hover/Key/Drag `ActOp<V>` bounds tie the closure receiver to V; allowing ancestor
-receivers requires changing those builder types/bounds, not just runtime dispatch. At mount, walk the owner
-chain and bind the nearest matching type. A missing match is a located mount error. The normal route call
-should not repeat a TypeId search.
-
-I considered two receiver-lifetime designs; **neither is implemented or selected by measurements**:
-
-* Validated owner tokens with parent, generation, receiver pointer, class, and mounted descriptions. Dispatch
-  is short when tokens can prove liveness, but every removal/reuse/reparent path must revoke them before
-  dereferencing either the receiver or a validator stored inside an ancestor. A validator pointing into a
-  dead parent is not safe merely because the leaf has a generation.
-* A typed access path rooted in the current App owner. Each erased step uses a proven field offset plus
-  `List::edit_slot` or `Entities::edit`, checking generation and obtaining the child through its live parent.
-  This naturally marks existing mutation logs and avoids trusting a cached pointer into a removed owner.
-  It costs O(owner depth) at dispatch and may conservatively dirty ancestors. Bind the path at mount, benchmark
-  depth 0/1/4/16, and only replace it with token shortcuts if that cost matters and lifecycle proof is sound.
-
-Preserve direct root dispatch cost. Adding an owner id to each Route may enlarge all five optional routes in
-an Act due to alignment; inspect `size_of` and code generation before claiming unused cost is zero. Route
-closure storage already permits 16 capture bytes, so stealing some bytes for an owner id would change the API.
-An extra runtime table or per-Act id has its own costs and is not automatically better.
-
-A route should validate both receiver lifetime and the still-live mounted interaction. A drag capture can
-survive removal of its element; a removed entity can keep last pixels by current contract while its handle
-is dead. Tests must cover drag release after removal, slot reuse in a later turn, ancestor removal, nearest
-same-type ancestor, multiple entity views, and a root-targeted route nested in a row. Scrollers/text fields
-also currently assume root-relative offsets. Do not globally remove their guard without binding those
-controls to their owner too.
-
-For re-description, give ordinary View rows their own tape and typed update function (the raw `list_with`
-callback is mount-only and cannot magically supply one). Refresh dirty descriptions after effects have
-settled, not half-way through an event. Keep enclosing dynamic/list record counts correct when a child
-changes structure. Root traversal plus a separate child queue can otherwise double-update a child or skip
-using stale counts. Entities with no records, multiple top-level roots, and multiple displayed views make a
-single guessed first-record anchor inadequate. Settle this representation explicitly before building it.
-
-### Skipping by proof: builder type is insufficient today
-
-A literal `Color` and one computed from `self.plain` have the same type. The same is true for `f32` sizes,
-conditional static strings, and most layout fields. An associated const folded through current element
-types can conservatively identify *possible* by-value operands, but cannot prove those operands constant.
-A tree containing only wired paint still has ordinary layout specs. Nor does a Wired type prove that its
-source offset or captured mapping recipe remains identical on the next description.
-
-Thus accept compile-time elimination only where the representation actually carries a proof (typed static
-structure/operands or a complete runtime operand identity check). Reject a const that simply declares
-existing plain operands static. No ambient tracking of ordinary `&self` reads is available in Rust without
-changing the programming model. Start with owner selection and honest retained comparisons; let F8 decide
-whether a new operand representation is needed to delete `once()`.
-
-### Packed operands: promising filter, not a correctness shortcut
-
-The existing tape stores node ids, not a contiguous canonical stream of all render-affecting operands.
-Raw-byte comparison of Rust structs is unsuitable: padding, pointer-bearing strings, float NaNs/signed zero,
-and pointer identity versus content equality must be defined. A useful packet would explicitly encode only
-semantic operands, with no uninitialized bytes, and associate changed lanes with known patch sites. Exact
-block equality can then skip entry into element updates; a hash alone cannot certify equality without a
-collision check. Count packet construction/storage and equality work alongside savings. A changed paint
-operand must not force layout reinterning. Benchmark sparse and dense changes and small trees; a summary
-filter that taxes every small case fails the floor. Mutants should omit one operand class from the summary.
-
-### Keyed structure: preserve the design's identity law
-
-`update_dyn` is positional; a differing `dyn_key` replaces the item in place. The entity wrapper supplies a
-key, so shifting an array of entity views can trigger many replacements. But Vec/each are positional by L3,
-and List is the durable keyed form. Applying an LCS to all Vec items changes public identity semantics.
-Do not silently do it in this repair. Improve keyed List delta/range handling and preserve row-owned state,
-then connect movement to core's motion/damage work. If explicit keyed description reconciliation is wanted,
-it needs a settled API/identity law and duplicate-key behavior first. Ripple's prefix/suffix/key-map/LIS
-approach is a reference for that separate problem, not permission to change ordinary Vec semantics.
-
-### Ordering and batching: take the mechanism, not the entire JavaScript runtime
-
-Local sources examined: Ripple `fa847e61d8da0e4eda4ad7384ab7ac7645d46253`; Solid `next`
-`ce5b288e33e3ffb924fc558fa5b09b1beff14e1b`.
-
-Ripple's compiled hydration reactivity fixture combines static `template_el` construction, retained node
-locations, and render blocks comparing prior operands. Tracked reads attach dependencies to the active
-block/derived computation. Writes use equality/version changes to schedule subscribers; scheduled flags
-deduplicate; the flush queue orders blocks by creation id when necessary and separates phases. The useful
-lesson for bough is a stable patch program per invalidation block. It is not proof that each source signal
-should create one dynamically dispatched Rust effect or that every expression needs its own block.
-
-Solid next's `heap.ts` uses height buckets, dependency marking, and deduplication. The core scheduler has
-additional handling for writes during recomputation/missed wakeups; height sorting alone is not the full
-correctness argument. `store/projection.ts` uses a derived producer plus leaf-level store subscriptions:
-refresh producer state before serving leaves, then notify changed observed paths. `store/reconcile.ts`
-compares the incoming immutable backing data and notifies observed nodes. A Rust analogue would be explicit
-typed projection outputs with per-output equality and generation validation, rather than Proxy machinery.
-
-Current bough leaf wires already patch known destinations directly. `settle_cls` scans class offsets for
-queued heads; a head runs its installed wire chain, and async rescan can repeat settlement. Producer/wire
-installation order matters. There is no general height-ordered derived DAG to optimize yet. Do not add a
-heap to every leaf paint write. Distinguish owner containment order, computation dependency order, and
-publication order: they are different graphs. For future projections use explicit dependency scheduling
-only where needed, with a transaction boundary before rendering/effects can observe the committed state.
-Test diamonds, write-during-recompute, cross-owner effects, removal during a wave, and async supersession;
-a reverse-order or dedup-disabled mutant must expose a torn state or duplicate dependent execution.
-
-One additional **unverified** lifetime concern is `App::effects`: it invokes root `changed` before iterating
-published child raw pointers. Inspect whether root `changed` can remove a published child before that loop.
-Do not claim this is safe merely because it originated from a previously live wire; write a bounded witness.
-
-## 4. Continuation traps and next work
-
-* The harness and test are uncompiled. Fix compiler errors before interpreting any results. A deep generic
-  type or the wired-tree macro may need a straightforward correction; preserve the failed attempt.
-* The F8 measured loop does not call `frame`; examine pending damage/text allocation behavior over the batch.
-  If it accumulates unrelated work, revise the frozen measurement clarification and preserve the original.
-* A low scroll baseline can reflect skipped child work. Always pair costs with retained/fresh correctness.
-* `On::update` currently only updates the underlying element; it does not refresh captured route recipes.
-  A positional row closure capturing a new index/value can retain an old capture. This is source-observed
-  behavior, not yet reproduced by a test. Fixing generic On update must not reinstall wires/scrollers each turn.
-* Scope release is two-phase: revoke reachability now, reclaim storage later. Receiver revocation cannot wait
-  for deferred reclaim. Nested list changes also need enclosing record counts updated immediately.
-* Existing entity removal deliberately retains last pixels. Fresh-mount tests must distinguish removing a
-  view from removing its entity; blindly fresh-mounting a dead entity currently panics.
-* Keep exact pixel comparisons and existing gates. The new oracle is not a replacement for generalization's
-  table scenarios, the scene suites, native controls, or cold layout comparison.
-* Do not run broad formatters. Do not modify other worktrees or shared docs/root manifests. If Cargo resolves
-  lockfile source entries, keep a reviewable patch and report the exact inputs rather than silently committing it.
-* No performance floor is certified. Preserve the 1.02x regression floor and 1.05x no-once target. All are
-  UNKNOWN here. No higher-level propagation optimization was authorized before proposal/card settlement.
-
-Next bounded sequence: (1) compile and measure F8 three times, preserving the baseline; (2) run the scroll
-oracle on baseline and keep its failure; (3) repair ScrollBox with lifecycle/offset/layout checks and a
-skip-child mutant; (4) freeze the precise owner-path/tape design, repair typed routes and child plain-field
-re-description together, and add generation/removal/ancestor/multiple-view mutants; (5) run touched-crate
-release tests, all-target checking, assembly inspection and all floor cells; (6) write DESIGN-R6 with actual
-numbers and settle the larger owner/operand program before implementing it. Independent review must replay
-any proposed acceptance.
+1. Take the per-turn constants back (idle 356 -> ~300): enter TLS only when direct entries exist, inline the arm
+   check, fold blur into `set_focus`'s callers; fast path for one-range plans (+85 -> +15).
+2. Direct damage (avenue 1): colour write + frame 957 -> ~400 at 256 rows; then numeric labels with fixed advance as
+   direct glyph-id stores.
+3. By-reference update (avenue 8) and the gui-bench fine port on flags; re-run the sweep's fine/coarse cells and the
+   mount-once floor (must stay within 1.02x).
