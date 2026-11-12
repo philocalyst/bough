@@ -60,6 +60,38 @@ pub fn atlas() -> Vec<u8> {
     }
     a
 }
+pub const IMG_W: u32 = 256;
+pub const IMG_ROWS: u32 = 96;
+/// A synthetic image atlas (premultiplied RGBA8, `IMG_W` x `IMG_ROWS`): rows 0..32 are ramps (256 texels
+/// each), the rest is a smooth translucent picture that images sample.
+pub fn images() -> Vec<u8> {
+    let mut r = Rng(0x1234_5678_9abc_def1);
+    let mut v = vec![0u8; (IMG_W * IMG_ROWS * 4) as usize];
+    for y in 0..IMG_ROWS {
+        let (o0, o1) = (r.next() & 1 == 0, r.next() & 1 == 0);
+        let (c0, c1, c2) = (r.color(o0), r.color(o1), r.color(true));
+        for x in 0..IMG_W {
+            let c = if y < 32 {
+                // a three-stop ramp
+                let t = x as f32 / 255.0;
+                let (a, b, u) = if t < 0.4 { (c0, c1, t / 0.4) } else { (c1, c2, (t - 0.4) / 0.6) };
+                let ch = |s: u32| ((a >> s & 255) as f32 * (1.0 - u) + (b >> s & 255) as f32 * u) as u32;
+                ch(0) | ch(8) << 8 | ch(16) << 16 | ch(24) << 24
+            } else {
+                let (fx, fy) = (x as f32 * 0.11, y as f32 * 0.23);
+                let ch = |p: f32| ((fx + p).sin() * (fy - p).cos() * 127.0 + 128.0) as u32;
+                ch(0.0) | ch(1.0) << 8 | ch(2.0) << 16 | (160 + (ch(3.0) >> 2)) << 24
+            };
+            // premultiply
+            let a = c >> 24;
+            let pm = |s: u32| ((c >> s & 255) * a + 127) / 255;
+            let i = ((y * IMG_W + x) * 4) as usize;
+            v[i..i + 4].copy_from_slice(&[pm(0) as u8, pm(8) as u8, pm(16) as u8, a as u8]);
+        }
+    }
+    v
+}
+
 /// The first texel of atlas cell `i`.
 pub fn cell(i: u32) -> u32 {
     let i = i % ATLAS_CELLS;
@@ -81,7 +113,7 @@ fn any(r: &mut Rng, fw: f32, fh: f32, clip: &Clip) -> Option<crate::Cmd> {
     let (c1, c2, ct) = (r.color(o1), r.color(o2), r.color(false));
     let (p, q) = (r.f(0.25, 5.0), r.f(0.3, 14.0));
     let g = r.u(ATLAS_CELLS);
-    match r.u(12) {
+    match r.u(13) {
         0 | 1 => stage::solid(x.round(), y.round(), w.round(), h.round(), c1, clip),
         2 | 3 => stage::rrect(x, y, w, h, rad, c2, clip),
         4 | 5 => stage::border(x, y, w, h, rad, p, c1, c2, clip),
@@ -89,6 +121,9 @@ fn any(r: &mut Rng, fw: f32, fh: f32, clip: &Clip) -> Option<crate::Cmd> {
         8 => stage::shadow(x, y, w, h, if o1 { 0.0 } else { rad.min(40.0) }, q, ct, clip),
         9 => stage::grad(x, y, w, h, rad, q, c1, c2, clip),
         10 => stage::user(x, y, w, h, rad, g & 1, c1, ct, clip),
+        11 if g % 3 == 0 => stage::image(x, y, (w * 0.5).round().max(2.0), (h * 0.5).round().max(2.0), if o2 { 0.0 } else { q }, 32 * IMG_W + g * 2, ct, clip),
+        11 if g % 3 == 1 => stage::ramp(x, y, w, h, rad, stage::Ramp::Linear(q), (g % 32) * IMG_W, clip),
+        11 => stage::ramp(x, y, w, h, rad, stage::Ramp::Radial(p * 0.2, q * 0.07), (g % 32) * IMG_W, clip),
         _ => stage::rrect(x, y, w * 3.0, h * 3.0, rad, c1 | 0xff00_0000, clip),
     }
 }
@@ -108,8 +143,17 @@ pub fn adversarial(seed: u64, fw: u32, fh: u32, n: usize) -> Scene {
         } else {
             NO_CLIP
         };
-        let Some(a) = any(&mut r, fwf, fhf, &clip) else { continue };
-        if r.u(8) != 0 {
+        // one command in six lives in a transformed space (rotation, scale, shear about a pivot)
+        let a = if r.u(6) == 0 {
+            let (ang, sx, sy) = (r.f(-0.7, 0.7), r.f(0.4, 1.8), r.f(0.4, 1.8));
+            let (cs, sn) = (ang.cos(), ang.sin());
+            let x = stage::Xf { m: [cs * sx, -sn * sy + r.f(-0.2, 0.2), sn * sx, cs * sy], k: [r.pos(0.0, fwf), r.pos(0.0, fhf)], t: [r.pos(-30.0, 30.0), r.pos(-30.0, 30.0)] };
+            stage::xf(any(&mut r, fwf, fhf, &NO_CLIP), &x, &clip)
+        } else {
+            any(&mut r, fwf, fhf, &clip)
+        };
+        let Some(a) = a else { continue };
+        if a.xs != 0 || a.par.x == crate::k::K_IMAGE || a.par.x == crate::k::K_RAMP || r.u(8) != 0 {
             s.push(a);
             continue;
         }

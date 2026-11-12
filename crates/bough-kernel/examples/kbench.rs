@@ -41,6 +41,7 @@ fn time(reps: usize, mut f: impl FnMut()) -> (f64, f64, f64) {
 
 struct Bench {
     atlas: Vec<u8>,
+    images: Vec<u8>,
     pool: Pool,
     bin: Binner,
     prog: Prog,
@@ -54,6 +55,7 @@ impl Bench {
         let workers = std::env::var("KB_WORKERS").ok().and_then(|s| s.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map_or(3, |n| n.get() - 1));
         Bench {
             atlas: scenes::atlas(),
+            images: scenes::images(),
             pool: Pool::new(workers),
             bin: Binner::default(),
             prog: Prog::default(),
@@ -65,7 +67,7 @@ impl Bench {
     fn cpu(&mut self, scene: &Scene, extra: usize, opt: Opt, reps: usize) -> (f64, f64, f64, Stats) {
         let (fw, fh) = (self.prog.fw() as usize, self.prog.fh() as usize);
         self.out.resize(fw * fh, 0);
-        let atlas = Atlas { px: &self.atlas, w: scenes::ATLAS_W };
+        let atlas = Atlas::new(&self.atlas, scenes::ATLAS_W).with_images(&self.images, scenes::IMG_W);
         let mut st = Stats::default();
         let (pool, prog, out) = (&self.pool, &self.prog, &mut self.out);
         let (a, b, c) = time(reps, || st = cpu::raster(scene, prog, &atlas, out, fw, pool, extra, opt));
@@ -76,7 +78,7 @@ impl Bench {
     fn gpu(&mut self, scene: &Scene, reps: usize, gap_us: u64) -> Option<(f64, f64, f64, f64)> {
         let g = self.gpu.as_mut()?;
         let words = (self.prog.fw() * self.prog.fh()) as usize;
-        g.upload(scene, &self.atlas, &self.prog);
+        g.upload(scene, &Atlas::new(&self.atlas, scenes::ATLAS_W).with_images(&self.images, scenes::IMG_W), &self.prog);
         let nt = self.prog.tiles();
         let mut kern = f64::MAX;
         g.render(nt, words);
@@ -99,7 +101,7 @@ impl Bench {
         None
     }
     fn bin(&mut self, scene: &Scene, fw: u32, fh: u32, d: &Damage, cut: bool) {
-        let atlas = Atlas { px: &self.atlas, w: scenes::ATLAS_W };
+        let atlas = Atlas::new(&self.atlas, scenes::ATLAS_W).with_images(&self.images, scenes::IMG_W);
         self.bin.bin(scene, fw, fh, fw, &atlas, 0, d, cut, &mut self.prog);
     }
 }
@@ -175,7 +177,7 @@ fn scene(b: &mut Bench, name: &str, fw: u32, fh: u32, nodes: usize) {
     for cut in [false, true] {
         let (tb, _, ib) = {
             let (bin, prog) = (&mut b.bin, &mut b.prog);
-            let atlas = Atlas { px: &b.atlas, w: scenes::ATLAS_W };
+            let atlas = Atlas::new(&b.atlas, scenes::ATLAS_W).with_images(&b.images, scenes::IMG_W);
             time(10, || bin.bin(&s, fw, fh, fw, &atlas, 0, &Damage::All, cut, prog))
         };
         let (t, _, i, st) = b.cpu(&s, 0, Opt::default(), 10);
@@ -219,7 +221,7 @@ fn scene(b: &mut Bench, name: &str, fw: u32, fh: u32, nodes: usize) {
         // at a display's cadence the caches are cold and the workers parked: one frame every 4 ms
         let cad = |b: &mut Bench, extra: usize| {
             let (fw, _) = (b.prog.fw() as usize, 0);
-            let atlas = Atlas { px: &b.atlas, w: scenes::ATLAS_W };
+            let atlas = Atlas::new(&b.atlas, scenes::ATLAS_W).with_images(&b.images, scenes::IMG_W);
             let mut t = Vec::new();
             for _ in 0..40 {
                 std::thread::sleep(std::time::Duration::from_micros(4000));
@@ -301,7 +303,7 @@ fn anim(b: &mut Bench, fw: u32, fh: u32, cw: u32, ch: u32) {
     let (tb, _, ib) = {
         let (s2, _) = build(Some(77));
         let (bin, prog) = (&mut b.bin, &mut bough_kernel::cpu::Prog::default());
-        let atlas = Atlas { px: &b.atlas, w: scenes::ATLAS_W };
+        let atlas = Atlas::new(&b.atlas, scenes::ATLAS_W).with_images(&b.images, scenes::IMG_W);
         time(10, || bin.bin(&s2, fw, fh, fw, &atlas, 0, &Damage::All, true, prog))
     };
     println!("turn per frame, before raster: restage {:.0} us {:.0} Kinstr + bin {:.0} us {:.0} Kinstr; as a kernel parameter: one word written", t * 1e6, i / 1e3, tb * 1e6, ib / 1e3);
@@ -325,7 +327,7 @@ fn anim(b: &mut Bench, fw: u32, fh: u32, cw: u32, ch: u32) {
         // the same frame staged statically by the application must be the same pixels
         let (s2, _) = build(Some(now));
         let mut out2 = vec![0u32; words];
-        let atlas = Atlas { px: &b.atlas, w: scenes::ATLAS_W };
+        let atlas = Atlas::new(&b.atlas, scenes::ATLAS_W).with_images(&b.images, scenes::IMG_W);
         cpu::naive_tiles(&s2, fw, fh, &atlas, &mut out2, fw as usize, &b.pool);
         let twin = out2.iter().zip(&cpu_px).filter(|(a, b)| a != b).count();
         println!("{now}\t{:.0}\t{:.0}\t{:.0}\t{g}\t{diff}\t{twin}", c1.0 * 1e6, c1.2 / 1e3, cn.0 * 1e6);
@@ -333,8 +335,8 @@ fn anim(b: &mut Bench, fw: u32, fh: u32, cw: u32, ch: u32) {
 }
 
 fn hash() {
-    let atlas_px = scenes::atlas();
-    let atlas = Atlas { px: &atlas_px, w: scenes::ATLAS_W };
+    let (atlas_px, img_px) = (scenes::atlas(), scenes::images());
+    let atlas = Atlas::new(&atlas_px, scenes::ATLAS_W).with_images(&img_px, scenes::IMG_W);
     let (fw, fh, stride) = (320u32, 250u32, 328usize);
     let mut h = 0u64;
     let pool = Pool::new(3);

@@ -65,14 +65,15 @@ pub mod kernel {
     storage!(group(0), binding(1), PROG: RuntimeArray<u32>);
     storage!(group(0), binding(2), ATLAS: RuntimeArray<u32>);
     storage!(group(0), binding(3), read_write, OUT: RuntimeArray<u32>);
+    storage!(group(0), binding(4), IMAGES: RuntimeArray<u32>);
 
     /// 1.0 in Q15.
     pub const ONE: u32 = 32768u32;
     pub const HALF: u32 = 16384u32;
     /// Words of a packed command (`load`).
-    pub const CMD_WORDS: u32 = 20u32;
+    pub const CMD_WORDS: u32 = 30u32;
     /// Words of the program header; the tile table (4 words per tile: x, y, list offset, list length) follows.
-    pub const PROG_HDR: u32 = 8u32;
+    pub const PROG_HDR: u32 = 12u32;
     pub const K_SOLID: u32 = 0u32;
     pub const K_RRECT: u32 = 1u32;
     pub const K_BORDER: u32 = 2u32;
@@ -82,6 +83,14 @@ pub mod kernel {
     /// A user shader node (`fx::user_shade`): coverage and colour are the user's, the window, the blend and
     /// the store are the kernel's.
     pub const K_USER: u32 = 6u32;
+    /// An image: premultiplied RGBA texels from the image atlas, rotated about the box's centre, bilinear.
+    pub const K_IMAGE: u32 = 7u32;
+    /// A ramp gradient: 256 premultiplied texels of the image atlas along a line or a radius, in a rounded
+    /// box.
+    pub const K_RAMP: u32 = 8u32;
+    /// Word 0 flag: the command lives in a transformed space (words 20..29: the inverse matrix in Q16, the
+    /// pivot and the translated pivot in Q8, the scale in Q8).
+    pub const F_XF: u32 = 0x40000u32;
     /// Word 0 flag: the command is a transition. The next slot holds its end state; word 3 of this slot is
     /// the start time and word 3 of the next is (duration << 2 | ease), times in presenter ticks.
     pub const F_ANIM: u32 = 0x10000u32;
@@ -106,6 +115,12 @@ pub mod kernel {
         /// Premultiplied Q15 colours.
         pub pm: Vec4u,
         pub pm2: Vec4u,
+        /// Transformed space: the inverse matrix (m00, m01, m10, m11), Q16.
+        pub xi: Vec4i,
+        /// Transformed space: the pivot (x, y) and the pivot plus translation (z, w), Q8.
+        pub xk: Vec4i,
+        /// Transformed space: pixels per local unit (Q8); 0 = untransformed.
+        pub xs: i32,
     }
 
     pub fn splat(v: u32) -> Vec4u {
@@ -317,26 +332,204 @@ pub mod kernel {
         }
         let tx = (x * 256i32 + 128i32 - c.b.x()) >> 8u32;
         let ty = (y * 256i32 + 128i32 - c.b.y()) >> 8u32;
-        if tx < 0i32 || ty < 0i32 || tx >= c.rad.z() || ty >= c.rad.w() {
+        if tx < 0i32 || ty < 0i32 || tx >= ((c.b.z() - c.b.x()) >> 8u32) || ty >= ((c.b.w() - c.b.y()) >> 8u32) {
             return NO_TEXEL;
         }
         c.par.z() + (ty as u32) * aw + (tx as u32)
     }
 
-    /// The command's premultiplied source at pixel (x, y). `t` is the atlas coverage (0..255) at `texel`.
-    pub fn shade(c: Cmd, x: i32, y: i32, t: u32, now: u32) -> Vec4u {
+    // ---- transformed spaces, images, ramps: the point is mapped into the command's own frame, samplers
+    // ---- read four taps ----
+
+    /// (a * m) >> 16 for |a| < 2^22 and |m| < 2^23, without a 64-bit product (16-bit limbs; the magnitude
+    /// rounds down).
+    pub fn mulq16(a: i32, m: i32) -> i32 {
+        let ua = abs(a) as u32;
+        let um = abs(m) as u32;
+        let al = ua & 65535u32;
+        let ah = ua >> 16u32;
+        let ml = um & 65535u32;
+        let mh = um >> 16u32;
+        let r = (((ah * mh) << 16u32) + ah * ml + al * mh + ((al * ml) >> 16u32)) as i32;
+        if (a < 0i32) != (m < 0i32) {
+            return -r;
+        }
+        r
+    }
+    /// The pixel centre (Q8) in the command's own frame: u = k + M^-1 (c - k - t).
+    pub fn to_local(c: Cmd, cx: i32, cy: i32) -> Vec2i {
+        if c.xs == 0i32 {
+            return vec2i(cx, cy);
+        }
+        let dx = clamp(cx - c.xk.z(), -4194303i32, 4194303i32);
+        let dy = clamp(cy - c.xk.w(), -4194303i32, 4194303i32);
+        vec2i(c.xk.x() + mulq16(dx, c.xi.x()) + mulq16(dy, c.xi.y()), c.xk.y() + mulq16(dx, c.xi.z()) + mulq16(dy, c.xi.w()))
+    }
+    /// Coverage of a point at local distance `d` when a local unit is `s` / 256 pixels.
+    pub fn cov_s(d: i32, s: i32) -> u32 {
+        cov((clamp(d, -32768i32, 32768i32) * s) >> 8u32)
+    }
+    /// A sampler's position in texel space (Q8; texel (0, 0)'s centre is at 0): a glyph's box, or an
+    /// image's box rotated about its centre (`rad.z`, `rad.w` = cos and sin of its angle, Q16).
+    pub fn sample_pos(c: Cmd, ux: i32, uy: i32) -> Vec2i {
+        if c.par.x() == K_IMAGE {
+            let hx = (c.b.z() - c.b.x()) >> 1u32;
+            let hy = (c.b.w() - c.b.y()) >> 1u32;
+            let px = clamp(ux - (c.b.x() + hx), -4194303i32, 4194303i32);
+            let py = clamp(uy - (c.b.y() + hy), -4194303i32, 4194303i32);
+            return vec2i(mulq16(px, c.rad.z()) + mulq16(py, c.rad.w()) + hx - 128i32, mulq16(py, c.rad.z()) - mulq16(px, c.rad.w()) + hy - 128i32);
+        }
+        vec2i(ux - c.b.x() - 128i32, uy - c.b.y() - 128i32)
+    }
+    /// The index of bilinear tap `j` (0..3: +x on bit 0, +y on bit 1) at texel position `t`, in a texture of
+    /// `stride` texels per row; NO_TEXEL outside the command's texels.
+    pub fn tap(c: Cmd, t: Vec2i, j: u32, stride: u32) -> u32 {
+        let qx = (t.x() >> 8u32) + ((j & 1u32) as i32);
+        let qy = (t.y() >> 8u32) + ((j >> 1u32) as i32);
+        if qx < 0i32 || qy < 0i32 || qx >= ((c.b.z() - c.b.x()) >> 8u32) || qy >= ((c.b.w() - c.b.y()) >> 8u32) {
+            return NO_TEXEL;
+        }
+        c.par.z() + (qy as u32) * stride + (qx as u32)
+    }
+    /// Tap `j`'s bilinear weight (Q16; the four sum to 65536).
+    pub fn tap_w(t: Vec2i, j: u32) -> u32 {
+        let fx = (t.x() & 255i32) as u32;
+        let fy = (t.y() & 255i32) as u32;
+        select(256u32 - fx, fx, (j & 1u32) == 1u32) * select(256u32 - fy, fy, j >= 2u32)
+    }
+    /// A ramp's parameter (Q15) at a local point: along `rad.zw` (a direction scaled so the box spans 0..1),
+    /// or, when `par.w` has bit 31, the distance from the centre `rad.zw` over the radius `par.w & 0x7fff`
+    /// (1/16 px).
+    pub fn ramp_t(c: Cmd, ux: i32, uy: i32) -> u32 {
+        let px = ux - ((c.b.x() + c.b.z()) >> 1u32);
+        let py = uy - ((c.b.y() + c.b.w()) >> 1u32);
+        if (c.par.w() >> 31u32) == 0u32 {
+            return clamp((((px >> 4u32) * c.rad.z() + (py >> 4u32) * c.rad.w()) >> 15u32) + 16384i32, 0i32, 32768i32) as u32;
+        }
+        let r = max(c.par.w() & 32767u32, 1u32);
+        let dx = min((abs(px - c.rad.z()) >> 4u32) as u32, 16383u32);
+        let dy = min((abs(py - c.rad.w()) >> 4u32) as u32, 16383u32);
+        (min(isqrt(dx * dx + dy * dy), r) * ONE) / r
+    }
+    /// The ramp's lower texel (0..254) and the fraction towards the next (Q15), packed (index << 16 | frac).
+    pub fn ramp_at(t: u32) -> u32 {
+        let x = t * 255u32;
+        let i = min(x >> 15u32, 254u32);
+        (i << 16u32) | (x - (i << 15u32))
+    }
+    /// An RGBA8 word (premultiplied) as Q15.
+    pub fn rgba15(w: u32) -> Vec4u {
+        vec4u(q15(w & 255u32), q15((w >> 8u32) & 255u32), q15((w >> 16u32) & 255u32), q15(w >> 24u32))
+    }
+    /// The indices of the texels a command reads at pixel (x, y): one atlas texel for a glyph, four for a
+    /// transformed glyph, four image texels for an image, two for a ramp; NO_TEXEL where there is none.
+    /// `aw`, `iw`: the glyph atlas's and the image atlas's row strides.
+    pub fn taps(c: Cmd, x: i32, y: i32, aw: u32, iw: u32) -> Vec4u {
+        let none = splat(NO_TEXEL);
+        let kind = c.par.x();
+        if !inside(c.win, x, y) {
+            return none;
+        }
+        if kind == K_GLYPH && c.xs == 0i32 {
+            return vec4u(texel(c, x, y, aw), NO_TEXEL, NO_TEXEL, NO_TEXEL);
+        }
+        let u = to_local(c, x * 256i32 + 128i32, y * 256i32 + 128i32);
+        if kind == K_GLYPH {
+            let t = sample_pos(c, u.x(), u.y());
+            return vec4u(tap(c, t, 0u32, aw), tap(c, t, 1u32, aw), tap(c, t, 2u32, aw), tap(c, t, 3u32, aw));
+        }
+        if kind == K_IMAGE {
+            let t = sample_pos(c, u.x(), u.y());
+            return vec4u(tap(c, t, 0u32, iw), tap(c, t, 1u32, iw), tap(c, t, 2u32, iw), tap(c, t, 3u32, iw));
+        }
+        if kind == K_RAMP {
+            let i = c.par.z() + (ramp_at(ramp_t(c, u.x(), u.y())) >> 16u32);
+            return vec4u(i, i + 1u32, NO_TEXEL, NO_TEXEL);
+        }
+        none
+    }
+    /// A transformed glyph's coverage (Q15) from its four atlas texels.
+    pub fn bil_cov(c: Cmd, ux: i32, uy: i32, tex: Vec4u) -> u32 {
+        let t = sample_pos(c, ux, uy);
+        (q15(tex.x()) * tap_w(t, 0u32) + q15(tex.y()) * tap_w(t, 1u32) + q15(tex.z()) * tap_w(t, 2u32) + q15(tex.w()) * tap_w(t, 3u32)) >> 16u32
+    }
+    pub fn sh_image(c: Cmd, ux: i32, uy: i32, tex: Vec4u) -> Vec4u {
+        let t = sample_pos(c, ux, uy);
+        let a = rgba15(tex.x());
+        let b = rgba15(tex.y());
+        let d = rgba15(tex.z());
+        let e = rgba15(tex.w());
+        let w0 = tap_w(t, 0u32);
+        let w1 = tap_w(t, 1u32);
+        let w2 = tap_w(t, 2u32);
+        let w3 = tap_w(t, 3u32);
+        let v = vec4u(
+            (a.x() * w0 + b.x() * w1 + d.x() * w2 + e.x() * w3) >> 16u32,
+            (a.y() * w0 + b.y() * w1 + d.y() * w2 + e.y() * w3) >> 16u32,
+            (a.z() * w0 + b.z() * w1 + d.z() * w2 + e.z() * w3) >> 16u32,
+            (a.w() * w0 + b.w() * w1 + d.w() * w2 + e.w() * w3) >> 16u32,
+        );
+        scale(v, c.pm.w())
+    }
+    pub fn ramp_color(c: Cmd, ux: i32, uy: i32, tex: Vec4u) -> Vec4u {
+        lerp15(rgba15(tex.x()), rgba15(tex.y()), ramp_at(ramp_t(c, ux, uy)) & 65535u32)
+    }
+    /// `shade` for a command in a transformed space: the point in the command's frame, distances scaled.
+    pub fn shade_xf(c: Cmd, cx: i32, cy: i32, tex: Vec4u, now: u32) -> Vec4u {
+        let u = to_local(c, cx, cy);
+        let kind = c.par.x();
+        if kind == K_GLYPH {
+            return scale(c.pm, bil_cov(c, u.x(), u.y(), tex));
+        }
+        if kind == K_IMAGE {
+            return sh_image(c, u.x(), u.y(), tex);
+        }
+        if kind == K_SHADOW {
+            return sh_shadow(c, u.x(), u.y());
+        }
+        let d = sd(u.x(), u.y(), c.b, c.rad.x(), c.par.y());
+        let cv = cov_s(d, c.xs);
+        if kind == K_BORDER {
+            let inner = min(cov_s(d + c.rad.y(), c.xs), cv);
+            return scale(c.pm, cv - inner) + scale(c.pm2, inner);
+        }
+        if kind == K_GRAD {
+            return scale(grad_color(c, u.x(), u.y()), cv);
+        }
+        if kind == K_RAMP {
+            return scale(ramp_color(c, u.x(), u.y(), tex), cv);
+        }
+        if kind == K_USER {
+            return scale(user_color(c, u.x(), u.y(), now), cv);
+        }
+        // a solid or a rounded box
+        scale(c.pm, cv)
+    }
+
+    /// The command's premultiplied source at pixel (x, y). `tex` holds the texels at `taps`: atlas coverage
+    /// bytes (0..255) for a glyph, RGBA8 words for an image or a ramp, 0 where a tap is NO_TEXEL.
+    pub fn shade(c: Cmd, x: i32, y: i32, tex: Vec4u, now: u32) -> Vec4u {
         if !inside(c.win, x, y) {
             return splat(0u32);
         }
         let kind = c.par.x();
+        let cx = x * 256i32 + 128i32;
+        let cy = y * 256i32 + 128i32;
+        if c.xs != 0i32 {
+            return shade_xf(c, cx, cy, tex, now);
+        }
         if kind == K_SOLID {
             return c.pm;
         }
         if kind == K_GLYPH {
-            return scale(c.pm, q15(t));
+            return scale(c.pm, q15(tex.x()));
         }
-        let cx = x * 256i32 + 128i32;
-        let cy = y * 256i32 + 128i32;
+        if kind == K_IMAGE {
+            return sh_image(c, cx, cy, tex);
+        }
+        if kind == K_RAMP {
+            return scale(ramp_color(c, cx, cy, tex), cov(sd(cx, cy, c.b, c.rad.x(), c.par.y())));
+        }
         if kind == K_RRECT {
             return sh_rrect(c, cx, cy);
         }
@@ -405,6 +598,9 @@ pub mod kernel {
             rad: vec4i(mix_i(a.rad.x(), b.rad.x(), t), mix_i(a.rad.y(), b.rad.y(), t), a.rad.z(), a.rad.w()),
             pm: mix4u(a.pm, b.pm, t),
             pm2: mix4u(a.pm2, b.pm2, t),
+            xi: a.xi,
+            xk: a.xk,
+            xs: a.xs,
         }
     }
     /// What `shade` returns at a pixel of `c.core` (where coverage is exactly ONE): the command's colour
@@ -431,7 +627,7 @@ pub mod kernel {
         if kind == K_GRAD {
             return c.pm.w() == ONE && c.pm2.w() == ONE;
         }
-        if kind == K_USER || kind == K_GLYPH {
+        if kind == K_USER || kind == K_GLYPH || kind == K_IMAGE || kind == K_RAMP {
             return false;
         }
         c.pm.w() == ONE
@@ -445,9 +641,10 @@ pub mod kernel {
     pub fn unpack_u16x4(a: u32, b: u32) -> Vec4u {
         vec4u(a & 65535u32, a >> 16u32, b & 65535u32, b >> 16u32)
     }
-    /// A command from its 20 words (five groups of four): head (kind | shift << 8 | flags, aux0, aux1, time),
-    /// window and core (i16 x 8), geometry, radii and aux2/aux3, the two colours (u16 x 8).
-    pub fn decode(h: Vec4u, wc: Vec4u, g: Vec4u, r: Vec4u, p: Vec4u) -> Cmd {
+    /// A command from its 30 words: head (kind | shift << 8 | flags, aux0, aux1, time), window and core
+    /// (i16 x 8), geometry, radii and aux2/aux3, the two colours (u16 x 8), and for a transformed space the
+    /// inverse matrix, the pivots and the scale (`x1`, `x2`, `xs`; zero otherwise).
+    pub fn decode(h: Vec4u, wc: Vec4u, g: Vec4u, r: Vec4u, p: Vec4u, x1: Vec4u, x2: Vec4u, xs: u32) -> Cmd {
         Cmd {
             win: unpack_i16x4(wc.x(), wc.y()),
             core: unpack_i16x4(wc.z(), wc.w()),
@@ -456,6 +653,9 @@ pub mod kernel {
             rad: vec4i(r.x() as i32, r.y() as i32, r.z() as i32, r.w() as i32),
             pm: unpack_u16x4(p.x(), p.y()),
             pm2: unpack_u16x4(p.z(), p.w()),
+            xi: vec4i(x1.x() as i32, x1.y() as i32, x1.z() as i32, x1.w() as i32),
+            xk: vec4i(x2.x() as i32, x2.y() as i32, x2.z() as i32, x2.w() as i32),
+            xs: xs as i32,
         }
     }
     /// The transition whose two states are `a` and `b` (heads `ha`, `hb`) as it is at `now`.
@@ -467,7 +667,11 @@ pub mod kernel {
     }
     pub fn load(i: u32) -> Cmd {
         let w = i * CMD_WORDS;
-        decode(word4(w), word4(w + 4u32), word4(w + 8u32), word4(w + 12u32), word4(w + 16u32))
+        let h = word4(w);
+        if (h.x() & F_XF) == 0u32 {
+            return decode(h, word4(w + 4u32), word4(w + 8u32), word4(w + 12u32), word4(w + 16u32), splat(0u32), splat(0u32), 0u32);
+        }
+        decode(h, word4(w + 4u32), word4(w + 8u32), word4(w + 12u32), word4(w + 16u32), word4(w + 20u32), word4(w + 24u32), get!(CMDS)[w + 28u32])
     }
     /// Command `i` as it is at `now`.
     pub fn load_at(i: u32, now: u32) -> Cmd {
@@ -478,14 +682,34 @@ pub mod kernel {
         }
         timed(a, load(i + 1u32), ha, word4((i + 1u32) * CMD_WORDS), now)
     }
-    pub fn fetch(c: Cmd, x: i32, y: i32, aw: u32) -> u32 {
-        let t = texel(c, x, y, aw);
+    /// One atlas coverage byte (0 for NO_TEXEL). Bounds by construction: the index is clamped to the
+    /// atlas's last texel (PROG word 6).
+    pub fn atlas_at(t: u32) -> u32 {
         if t == NO_TEXEL {
             return 0u32;
         }
-        // bounds by construction: the index is clamped to the atlas's last texel (PROG word 6)
         let i = min(t, get!(PROG)[6u32]);
         (get!(ATLAS)[i >> 2u32] >> ((i & 3u32) * 8u32)) & 255u32
+    }
+    /// One image texel (0 for NO_TEXEL), clamped to the image atlas's last texel (PROG word 8).
+    pub fn image_at(t: u32) -> u32 {
+        if t == NO_TEXEL {
+            return 0u32;
+        }
+        get!(IMAGES)[min(t, get!(PROG)[8u32])]
+    }
+    /// The texels `shade` needs at pixel (x, y).
+    pub fn fetch(c: Cmd, x: i32, y: i32, aw: u32, iw: u32) -> Vec4u {
+        let kind = c.par.x();
+        if kind == K_GLYPH {
+            let t = taps(c, x, y, aw, iw);
+            return vec4u(atlas_at(t.x()), atlas_at(t.y()), atlas_at(t.z()), atlas_at(t.w()));
+        }
+        if kind == K_IMAGE || kind == K_RAMP {
+            let t = taps(c, x, y, aw, iw);
+            return vec4u(image_at(t.x()), image_at(t.y()), image_at(t.z()), image_at(t.w()));
+        }
+        splat(0u32)
     }
 
     #[compute]
@@ -496,6 +720,7 @@ pub mod kernel {
         let stride = get!(PROG)[2u32];
         let aw = get!(PROG)[3u32];
         let now = get!(PROG)[4u32];
+        let iw = get!(PROG)[7u32];
         let tw = PROG_HDR + wg.x() * 4u32;
         let off = get!(PROG)[tw + 2u32];
         let n = get!(PROG)[tw + 3u32];
@@ -517,10 +742,10 @@ pub mod kernel {
                     a2 = blend(a2, core_shade(c, x, y + 1i32, now));
                     a3 = blend(a3, core_shade(c, x + 1i32, y + 1i32, now));
                 } else {
-                    a0 = blend(a0, shade(c, x, y, fetch(c, x, y, aw), now));
-                    a1 = blend(a1, shade(c, x + 1i32, y, fetch(c, x + 1i32, y, aw), now));
-                    a2 = blend(a2, shade(c, x, y + 1i32, fetch(c, x, y + 1i32, aw), now));
-                    a3 = blend(a3, shade(c, x + 1i32, y + 1i32, fetch(c, x + 1i32, y + 1i32, aw), now));
+                    a0 = blend(a0, shade(c, x, y, fetch(c, x, y, aw, iw), now));
+                    a1 = blend(a1, shade(c, x + 1i32, y, fetch(c, x + 1i32, y, aw, iw), now));
+                    a2 = blend(a2, shade(c, x, y + 1i32, fetch(c, x, y + 1i32, aw, iw), now));
+                    a3 = blend(a3, shade(c, x + 1i32, y + 1i32, fetch(c, x + 1i32, y + 1i32, aw, iw), now));
                 }
             }
             i += 1u32;

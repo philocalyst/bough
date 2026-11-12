@@ -24,7 +24,8 @@ fn first_diff(a: &[u32], b: &[u32]) -> Option<(usize, usize, u32, u32)> {
 #[test]
 fn executors_agree() {
     let atlas_px = scenes::atlas();
-    let atlas = Atlas { px: &atlas_px, w: scenes::ATLAS_W };
+    let img_px = scenes::images();
+    let atlas = Atlas::new(&atlas_px, scenes::ATLAS_W).with_images(&img_px, scenes::IMG_W);
     let pool = Pool::new(3);
     let words = STRIDE * FH as usize;
     #[cfg(target_os = "macos")]
@@ -70,7 +71,7 @@ fn executors_agree() {
         check_subset(&out, "cpu");
         #[cfg(target_os = "macos")]
         if let Some(g) = gpu.as_mut() {
-            g.upload(&scene, &atlas_px, &prog);
+            g.upload(&scene, &atlas, &prog);
             let sentinel = vec![0x5a5a_5a5au32; words];
             g.set_out(&sentinel);
             g.render(prog.tiles(), words);
@@ -100,7 +101,8 @@ fn gpu_rounding_mutant_is_caught() {
     assert!(msl.contains(needle), "the mutation site moved: update the needle");
     let Some(mut gpu) = bough_kernel::metal::Gpu::new(&msl.replacen(needle, "16383u", 1)) else { return };
     let atlas_px = scenes::atlas();
-    let atlas = Atlas { px: &atlas_px, w: scenes::ATLAS_W };
+    let img_px = scenes::images();
+    let atlas = Atlas::new(&atlas_px, scenes::ATLAS_W).with_images(&img_px, scenes::IMG_W);
     let words = STRIDE * FH as usize;
     let (mut bin, mut prog) = (Binner::default(), Prog::default());
     let mut caught = 0;
@@ -109,7 +111,7 @@ fn gpu_rounding_mutant_is_caught() {
         let mut spec = vec![0u32; words];
         cpu::naive(&scene, FW, FH, &atlas, 0, &mut spec, STRIDE);
         bin.bin(&scene, FW, FH, STRIDE as u32, &atlas, 0, &Damage::All, true, &mut prog);
-        gpu.upload(&scene, &atlas_px, &prog);
+        gpu.upload(&scene, &atlas, &prog);
         gpu.clear_out(words);
         gpu.render(prog.tiles(), words);
         caught += first_diff(gpu.out(words), &spec).is_some() as u32;
@@ -170,7 +172,8 @@ fn arithmetic_identities() {
 #[test]
 fn translation_invariance() {
     let atlas_px = scenes::atlas();
-    let atlas = Atlas { px: &atlas_px, w: scenes::ATLAS_W };
+    let img_px = scenes::images();
+    let atlas = Atlas::new(&atlas_px, scenes::ATLAS_W).with_images(&img_px, scenes::IMG_W);
     let (w, h) = (160u32, 128u32);
     for seed in 0..6 {
         let a = scenes::adversarial(seed, w, h, 40);
@@ -189,6 +192,13 @@ fn translation_invariance() {
             c[10] = (c[10] as i32 + dx * 256) as u32;
             c[9] = (c[9] as i32 + dy * 256) as u32;
             c[11] = (c[11] as i32 + dy * 256) as u32;
+            if c[0] & k::F_XF != 0 {
+                // the pivot and the translated pivot move with the scene; the matrix does not
+                for i in [24, 26] {
+                    c[i] = (c[i] as i32 + dx * 256) as u32;
+                    c[i + 1] = (c[i + 1] as i32 + dy * 256) as u32;
+                }
+            }
         }
         let (fw, fh) = (w + 32, h + 32);
         let stride = fw as usize;

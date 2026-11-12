@@ -15,9 +15,9 @@ pub struct Gpu {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     pso: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    /// 0 commands, 1 programs, 2 atlas, 3 output, 4 naga's array-sizes buffer (declared by its translation of
+    /// 0 commands, 1 programs, 2 atlas, 3 output, 4 image atlas, 5 naga's array-sizes buffer (declared by its translation of
     /// runtime-sized arrays; the kernel never asks for a length).
-    bufs: [Option<Buf>; 5],
+    bufs: [Option<Buf>; 6],
 }
 
 /// An output buffer over caller-owned memory (`Gpu::wrap`).
@@ -40,7 +40,7 @@ impl Gpu {
         let lib = device.newLibraryWithSource_options_error(&NSString::from_str(msl), None).unwrap_or_else(|e| panic!("kernel msl: {e}"));
         let f = lib.newFunctionWithName(&NSString::from_str("fs_ktile")).expect("fs_ktile");
         let pso = device.newComputePipelineStateWithFunction_error(&f).expect("pipeline");
-        Some(Gpu { device, queue, pso, bufs: [None, None, None, None, None] })
+        Some(Gpu { device, queue, pso, bufs: [None, None, None, None, None, None] })
     }
 
     fn buf(&mut self, i: usize, bytes: usize) -> &Buf {
@@ -59,14 +59,12 @@ impl Gpu {
         unsafe { std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, b.contents().as_ptr() as *mut u8, n) };
     }
 
-    /// Upload the scene, the atlas and the program (in the runtime these already live in shared memory).
-    pub fn upload(&mut self, scene: &Scene, atlas: &[u8], prog: &Prog) {
+    /// Upload the scene, both atlases and the program (in the runtime these already live in shared memory).
+    pub fn upload(&mut self, scene: &Scene, atlas: &crate::cpu::Atlas, prog: &Prog) {
         self.put(0, &scene.words);
         self.put(1, &prog.words);
-        // the kernel reads the atlas as words: pad to a multiple of 4 bytes
-        let b = self.buf(2, atlas.len() + 4);
-        // SAFETY: as `put`.
-        unsafe { std::ptr::copy_nonoverlapping(atlas.as_ptr(), b.contents().as_ptr() as *mut u8, atlas.len()) };
+        self.upload_atlas(atlas.px);
+        self.upload_images(atlas.img);
     }
     /// Rewrite only the program (a new damage set, or just a new `now`).
     pub fn upload_prog(&mut self, prog: &Prog) {
@@ -84,6 +82,11 @@ impl Gpu {
         unsafe { std::ptr::copy_nonoverlapping(atlas.as_ptr(), b.contents().as_ptr() as *mut u8, atlas.len()) };
     }
 
+    /// The image atlas (premultiplied RGBA8 bytes).
+    pub fn upload_images(&mut self, img: &[u8]) {
+        self.put(4, img);
+    }
+
     /// A buffer over memory the caller owns: a surface the kernel writes in place (journal E9: Metal accepts
     /// an IOSurface's base address, and the surface's texture view and the compositor see the words).
     /// `None` if Metal refuses (the address or length is not page aligned).
@@ -99,6 +102,7 @@ impl Gpu {
     /// Run the uploaded program with `target` as the output (its stride is the program's).
     pub fn render_to(&mut self, tiles: usize, target: &Target) -> GpuTime {
         self.buf(4, 16);
+        self.buf(5, 16);
         self.run(tiles, Some(&target.0))
     }
 
@@ -106,6 +110,7 @@ impl Gpu {
     pub fn render(&mut self, tiles: usize, out_words: usize) -> GpuTime {
         self.buf(3, out_words * 4);
         self.buf(4, 16);
+        self.buf(5, 16);
         self.run(tiles, None)
     }
     fn run(&mut self, tiles: usize, target: Option<&Buf>) -> GpuTime {
@@ -113,7 +118,7 @@ impl Gpu {
         let cmd = self.queue.commandBuffer().expect("command buffer");
         let enc = cmd.computeCommandEncoder().expect("encoder");
         enc.setComputePipelineState(&self.pso);
-        for i in 0..5 {
+        for i in 0..6 {
             let b = if i == 3 { target.map(|t| &**t).or(self.bufs[3].as_deref()) } else { self.bufs[i].as_deref() };
             // SAFETY: each buffer is alive for the frame and bound at the index naga's translation reads.
             unsafe { enc.setBuffer_offset_atIndex(b, 0, i) };

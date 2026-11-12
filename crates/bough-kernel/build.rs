@@ -19,10 +19,10 @@ fn main() {
         .validate(&module)
         .unwrap_or_else(|e| panic!("naga validation: {e:?}"));
     let mut m = BTreeMap::new();
-    for b in 0..4u32 {
+    for b in 0..5u32 {
         m.insert(naga::ResourceBinding { group: 0, binding: b }, msl::BindTarget { buffer: Some(b as u8), mutable: b == 3, ..Default::default() });
     }
-    let res = msl::EntryPointResources { resources: m, immediates_buffer: None, sizes_buffer: Some(4) };
+    let res = msl::EntryPointResources { resources: m, immediates_buffer: None, sizes_buffer: Some(5) };
     let options = msl::Options {
         lang_version: (3, 0),
         per_entry_point_map: [("fs_ktile".to_string(), res)].into_iter().collect(),

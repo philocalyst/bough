@@ -8,11 +8,51 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Condvar, Mutex};
 use wgsl_rs::std::{Vec4, Vec4u};
 
-/// The glyph atlas: one coverage byte per texel, `w` texels per row.
+/// The textures commands read: the glyph atlas (one coverage byte per texel, `w` texels per row) and the
+/// image atlas (premultiplied RGBA8, four bytes per texel, `iw` texels per row; may be empty).
 #[derive(Clone, Copy)]
 pub struct Atlas<'a> {
     pub px: &'a [u8],
     pub w: u32,
+    pub img: &'a [u8],
+    pub iw: u32,
+}
+
+impl<'a> Atlas<'a> {
+    /// Glyphs only.
+    pub fn new(px: &'a [u8], w: u32) -> Atlas<'a> {
+        Atlas { px, w, img: &[], iw: 1 }
+    }
+    pub fn with_images(self, img: &'a [u8], iw: u32) -> Atlas<'a> {
+        Atlas { img, iw, ..self }
+    }
+    #[inline(always)]
+    fn cov(&self, t: u32) -> u32 {
+        if t == k::NO_TEXEL || self.px.is_empty() { 0 } else { self.px[(t as usize).min(self.px.len() - 1)] as u32 }
+    }
+    #[inline(always)]
+    fn image(&self, t: u32) -> u32 {
+        if t == k::NO_TEXEL || self.img.len() < 4 {
+            return 0;
+        }
+        let i = (t as usize).min(self.img.len() / 4 - 1) * 4;
+        u32::from_le_bytes([self.img[i], self.img[i + 1], self.img[i + 2], self.img[i + 3]])
+    }
+    /// The texels `k::shade` needs at pixel (x, y): the CPU's twin of the kernel's `fetch` (the same
+    /// `k::taps`, the same clamps).
+    #[inline(always)]
+    pub fn fetch(&self, c: &Cmd, x: i32, y: i32) -> Vec4u {
+        let kind = c.par.x;
+        if kind == k::K_GLYPH {
+            let t = k::taps(*c, x, y, self.w, self.iw);
+            return Vec4 { x: self.cov(t.x), y: self.cov(t.y), z: self.cov(t.z), w: self.cov(t.w) };
+        }
+        if kind == k::K_IMAGE || kind == k::K_RAMP {
+            let t = k::taps(*c, x, y, self.w, self.iw);
+            return Vec4 { x: self.image(t.x), y: self.image(t.y), z: self.image(t.z), w: self.image(t.w) };
+        }
+        k::splat(0)
+    }
 }
 
 /// A frame's tile programs, as the words the GPU kernel reads: header (`PROG_HDR` words: width, height,
@@ -74,7 +114,7 @@ pub struct Binner {
 /// replication; a command rarely covers its whole tile, so these lean high for the per-pixel kinds, which
 /// biases an effect-heavy frame towards the GPU). Index: kind, then for shadows and gradients whether the
 /// cheap form applies (square corners; vertical).
-pub const KIND_NS: [[u32; 2]; 7] = [[10, 10], [100, 100], [100, 100], [190, 190], [1900, 900], [3000, 300], [2500, 2500]];
+pub const KIND_NS: [[u32; 2]; 9] = [[10, 10], [100, 100], [100, 100], [190, 190], [1900, 900], [3000, 300], [2500, 2500], [3000, 3000], [3000, 3000]];
 
 /// How a frame is executed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,7 +220,7 @@ impl Binner {
             let (x0, y0, x1, y1) = span(&c);
             // An opaque cover: the tile lies inside the core and the core's value is opaque. A transition
             // never cuts (its opacity is a function of time).
-            let ns = KIND_NS[(c.par.x as usize).min(6)][(c.par.x == k::K_SHADOW && c.rad.x == 0 || c.par.x == k::K_GRAD && c.rad.z == 0) as usize] as u64;
+            let ns = if c.xs != 0 { 3000 } else { KIND_NS[(c.par.x as usize).min(8)][(c.par.x == k::K_SHADOW && c.rad.x == 0 || c.par.x == k::K_GRAD && c.rad.z == 0) as usize] as u64 };
             let opaque = cut && h & k::F_ANIM == 0 && (k::opaque(c) || (cfg!(feature = "mutant_cut") && c.pm.w >= k::ONE / 2));
             for y in y0..y1 {
                 for x in x0..x1 {
@@ -202,7 +242,7 @@ impl Binner {
         }
         let w = &mut prog.words;
         w.clear();
-        w.extend_from_slice(&[fw, fh, stride, aw, now, nt as u32, alim, 0]);
+        w.extend_from_slice(&[fw, fh, stride, aw, now, nt as u32, alim, atlas.iw, (atlas.img.len() as u32 / 4).saturating_sub(1), 0, 0, 0]);
         w.resize(HDR + 4 * nt, 0);
         let mut off = (HDR + 4 * nt) as u32;
         for (i, &s) in self.slot.iter().enumerate() {
@@ -355,9 +395,7 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
                 let (gx, gy) = (ox + x as i32, oy + y as i32);
                 let mut acc = k::splat(0);
                 for c in sc.cmds.iter() {
-                    let t = k::texel(*c, gx, gy, atlas.w);
-                    let cov = if t == k::NO_TEXEL { 0 } else { atlas.px[(t as usize).min(atlas.px.len() - 1)] as u32 };
-                    acc = k::blend(acc, k::shade(*c, gx, gy, cov, now));
+                    acc = k::blend(acc, k::shade(*c, gx, gy, atlas.fetch(c, gx, gy), now));
                 }
                 dst[y * stride + x] = k::store8(acc);
             }
@@ -373,7 +411,9 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
         }
         let win = rows(c.win.y - oy, c.win.w - oy);
         let kind = c.par.x;
-        let flat = if kind == k::K_SOLID {
+        let flat = if c.xs != 0 {
+            0
+        } else if kind == k::K_SOLID {
             win
         } else if kind == k::K_RRECT || kind == k::K_BORDER || kind == k::K_SHADOW || (kind == k::K_GRAD && c.rad.w == 0) {
             if cfg!(feature = "mutant_flat") { win } else { rows(c.core.y - oy, c.core.w - oy) & win }
@@ -405,19 +445,28 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
             m &= m - 1;
             let gy = oy + y;
             let row = &mut sc.acc[(y * 32) as usize..(y * 32 + 32) as usize];
+            if c.xs != 0 || kind == k::K_IMAGE || kind == k::K_RAMP {
+                // a transformed space or a sampler: the kernel's `shade`, pixel by pixel
+                for x in x0..x1 {
+                    let p = &mut row[x as usize];
+                    *p = st(k::blend(ld(p), k::shade(*c, ox + x, gy, atlas.fetch(c, ox + x, gy), now)));
+                }
+                continue;
+            }
             if kind == k::K_SOLID {
                 over(&mut row[x0 as usize..x1 as usize], c.pm);
                 continue;
             }
             if kind == k::K_GLYPH {
                 let ty = (gy * 256 + 128 - c.b.y) >> 8;
-                if ty < 0 || ty >= c.rad.w {
+                let (gw, gh) = ((c.b.z - c.b.x) >> 8, (c.b.w - c.b.y) >> 8);
+                if ty < 0 || ty >= gh {
                     continue;
                 }
                 let base = c.par.z as usize + ty as usize * atlas.w as usize;
                 for x in x0..x1 {
                     let tx = ((ox + x) * 256 + 128 - c.b.x) >> 8;
-                    if tx < 0 || tx >= c.rad.z {
+                    if tx < 0 || tx >= gw {
                         continue;
                     }
                     let t = atlas.px[(base + tx as usize).min(atlas.px.len() - 1)] as u32;
@@ -675,16 +724,14 @@ pub fn naive(scene: &Scene, fw: u32, fh: u32, atlas: &Atlas, now: u32, out: &mut
         for x in 0..fw as i32 {
             let mut acc = k::splat(0);
             for c in &cmds {
-                let t = k::texel(*c, x, y, atlas.w);
-                let cov = if t == k::NO_TEXEL { 0 } else { atlas.px[(t as usize).min(atlas.px.len() - 1)] as u32 };
-                acc = k::blend(acc, k::shade(*c, x, y, cov, now));
+                acc = k::blend(acc, k::shade(*c, x, y, atlas.fetch(c, x, y), now));
             }
             out[y as usize * stride + x as usize] = k::store8(acc);
         }
     }
 }
 
-const _: () = assert!(WORDS == 20);
+const _: () = assert!(WORDS == 30);
 
 /// Identity 5 as a key: a 128-bit hash of a tile's program *relative to the tile's origin*, with every
 /// command reduced to what the tile can see of it (its window clamped to the tile; a command whose visible
@@ -721,6 +768,13 @@ pub fn tile_key(scene: &Scene, list: &[u32], ox: i32, oy: i32, now: u32) -> u128
         mix(c4(c.pm2));
         if kind == k::K_USER {
             mix(now as u64);
+        }
+        if c.xs != 0 {
+            mix((c.xi.x as u32 as u64) | (c.xi.y as u32 as u64) << 32);
+            mix((c.xi.z as u32 as u64) | (c.xi.w as u32 as u64) << 32);
+            mix(((c.xk.x - ox * 256) as u32 as u64) | ((c.xk.y - oy * 256) as u32 as u64) << 32);
+            mix(((c.xk.z - ox * 256) as u32 as u64) | ((c.xk.w - oy * 256) as u32 as u64) << 32);
+            mix(c.xs as u64);
         }
     }
     (h.0 as u128) << 64 | h.1 as u128

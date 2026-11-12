@@ -51,7 +51,7 @@ fn shift(r: i32) -> u32 {
     s
 }
 fn cmd(kind: u32, sh: u32, win: Vec4i, core: Vec4i, b: [i32; 4], rad: [i32; 4], aux: [u32; 2], pm: Vec4u, pm2: Vec4u) -> Cmd {
-    Cmd { win, core, b: Vec4 { x: b[0], y: b[1], z: b[2], w: b[3] }, par: Vec4 { x: kind, y: sh, z: aux[0], w: aux[1] }, rad: Vec4 { x: rad[0], y: rad[1], z: rad[2], w: rad[3] }, pm, pm2 }
+    Cmd { win, core, b: Vec4 { x: b[0], y: b[1], z: b[2], w: b[3] }, par: Vec4 { x: kind, y: sh, z: aux[0], w: aux[1] }, rad: Vec4 { x: rad[0], y: rad[1], z: rad[2], w: rad[3] }, pm, pm2, xi: EMPTY, xk: EMPTY, xs: 0 }
 }
 fn edges(x: f32, y: f32, w: f32, h: f32) -> ([i32; 2], [i32; 2]) {
     let p0 = [q8(x), q8(y)];
@@ -86,7 +86,7 @@ pub fn glyph(x: f32, y: f32, gw: u32, gh: u32, texel0: u32, color: u32, clip: &C
     let p0 = [q8(x), q8(y)];
     let p1 = [p0[0] + gw as i32 * 256, p0[1] + gh as i32 * 256];
     let win = window(p0, p1, clip)?;
-    Some(cmd(k::K_GLYPH, 0, win, EMPTY, [p0[0], p0[1], p1[0], p1[1]], [0, 0, gw as i32, gh as i32], [texel0, 0], k::premul(color), k::splat(0)))
+    Some(cmd(k::K_GLYPH, 0, win, EMPTY, [p0[0], p0[1], p1[0], p1[1]], [0; 4], [texel0, 0], k::premul(color), k::splat(0)))
 }
 /// The shadow of a rounded box blurred by `sigma` px (the caller applies offset and spread to the box).
 pub fn shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, sigma: f32, color: u32, clip: &Clip) -> Option<Cmd> {
@@ -117,6 +117,80 @@ pub fn user(x: f32, y: f32, w: f32, h: f32, radius: f32, id: u32, c0: u32, c1: u
     Some(cmd(k::K_USER, shift(r), win, core(p0, p1, r.max(128) + CORE_SLACK, win), [p0[0], p0[1], p1[0], p1[1]], [r, 0, 0, 0], [id, 0], k::premul(c0), k::premul(c1)))
 }
 
+/// An image: `w` x `h` premultiplied RGBA texels of the image atlas starting at index `texel0` (row stride =
+/// the atlas width), drawn in the box at (x, y), rotated by `angle` radians about its centre, times the
+/// alpha of `color`.
+pub fn image(x: f32, y: f32, w: f32, h: f32, angle: f32, texel0: u32, color: u32, clip: &Clip) -> Option<Cmd> {
+    let (p0, p1) = edges(x, y, w, h);
+    let win = window([p0[0] - 256, p0[1] - 256], [p1[0] + 256, p1[1] + 256], clip)?;
+    let q16 = |v: f32| (v * 65536.0).round() as i32;
+    Some(cmd(k::K_IMAGE, 0, win, EMPTY, [p0[0], p0[1], p1[0], p1[1]], [0, 0, q16(angle.cos()), q16(angle.sin())], [texel0, 0], k::premul(color), k::splat(0)))
+}
+/// Where a ramp gradient runs.
+pub enum Ramp {
+    /// Along `angle` (radians, CSS: 0 = to top, clockwise), spanning the box.
+    Linear(f32),
+    /// From a centre given as fractions of the box, to the box's farthest corner.
+    Radial(f32, f32),
+}
+/// A ramp gradient in a rounded box: 256 premultiplied RGBA texels of the image atlas starting at `texel0`.
+pub fn ramp(x: f32, y: f32, w: f32, h: f32, radius: f32, dir: Ramp, texel0: u32, clip: &Clip) -> Option<Cmd> {
+    let (p0, p1) = edges(x, y, w, h);
+    let win = window([p0[0] - 256, p0[1] - 256], [p1[0] + 256, p1[1] + 256], clip)?;
+    let r = q8(radius).clamp(0, (p1[0] - p0[0]).min(p1[1] - p0[1]) / 2);
+    let (rz, rw, aux) = match dir {
+        Ramp::Linear(angle) => {
+            let (dx, dy) = (angle.sin(), -angle.cos());
+            let len = ((w * dx).abs() + (h * dy).abs()).max(1.0);
+            let s = (1u32 << 26) as f32 / len;
+            ((dx * s).round() as i32, (dy * s).round() as i32, 0)
+        }
+        Ramp::Radial(gx, gy) => {
+            let (hx, hy) = (w * 0.5, h * 0.5);
+            let g = [(gx - 0.5) * 2.0 * hx, (gy - 0.5) * 2.0 * hy];
+            let far = ((g[0].abs() + hx).powi(2) + (g[1].abs() + hy).powi(2)).sqrt();
+            (q8(g[0]), q8(g[1]), 0x8000_0000 | ((far * 16.0).round() as u32).clamp(1, 16383))
+        }
+    };
+    Some(cmd(k::K_RAMP, shift(r), win, EMPTY, [p0[0], p0[1], p1[0], p1[1]], [r, 0, rz, rw], [texel0, aux], k::splat(0), k::splat(0)))
+}
+
+/// An affine transform of a space: p' = k + t + M (p - k), M = (m00, m01, m10, m11).
+#[derive(Clone, Copy, Debug)]
+pub struct Xf {
+    pub m: [f32; 4],
+    pub k: [f32; 2],
+    pub t: [f32; 2],
+}
+/// Put a command staged in its own frame (with no clip, or with a clip that lives in that frame) into a
+/// transformed space: its window becomes the transformed window's bounding box grown by a pixel and clipped
+/// to `clip` (window coordinates); the kernel maps each pixel back through the inverse. A solid becomes a
+/// square-cornered box (its edges are no longer on pixel boundaries); no core survives.
+pub fn xf(c: Option<Cmd>, x: &Xf, clip: &Clip) -> Option<Cmd> {
+    let mut c = c?;
+    let pt = |u: [f32; 2]| {
+        let d = [u[0] - x.k[0], u[1] - x.k[1]];
+        [x.k[0] + x.t[0] + x.m[0] * d[0] + x.m[1] * d[1], x.k[1] + x.t[1] + x.m[2] * d[0] + x.m[3] * d[1]]
+    };
+    let (a, b) = ([c.win.x as f32, c.win.y as f32], [c.win.z as f32, c.win.w as f32]);
+    let ps = [pt(a), pt([b[0], a[1]]), pt([a[0], b[1]]), pt(b)];
+    let lo = [ps.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min) - 1.0, ps.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min) - 1.0];
+    let hi = [ps.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max) + 1.0, ps.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max) + 1.0];
+    let lim = |v: f32| v.clamp(-16000.0, 16000.0);
+    c.win = window([q8(lim(lo[0])), q8(lim(lo[1]))], [q8(lim(hi[0])), q8(lim(hi[1]))], clip)?;
+    c.core = EMPTY;
+    let det = x.m[0] * x.m[3] - x.m[1] * x.m[2];
+    let id = if det.abs() > 1e-12 { 1.0 / det } else { 0.0 };
+    let q16 = |v: f32| ((v * 65536.0).round() as i64).clamp(-(1 << 23) + 1, (1 << 23) - 1) as i32;
+    c.xi = Vec4 { x: q16(x.m[3] * id), y: q16(-x.m[1] * id), z: q16(-x.m[2] * id), w: q16(x.m[0] * id) };
+    c.xk = Vec4 { x: q8(x.k[0]), y: q8(x.k[1]), z: q8(x.k[0] + x.t[0]), w: q8(x.k[1] + x.t[1]) };
+    c.xs = ((det.abs().sqrt() * 256.0).round() as i32).clamp(1, 16384);
+    if c.par.x == k::K_SOLID {
+        c.par.x = k::K_RRECT;
+    }
+    Some(c)
+}
+
 /// A command list as words: what the GPU's buffer holds and what the CPU executors decode.
 #[derive(Default, Clone)]
 pub struct Scene {
@@ -127,7 +201,7 @@ fn pack(c: &Cmd, flags: u32, time: u32) -> [u32; WORDS] {
     let p2 = |a: i32, b: i32| (a as u32 & 0xffff) | (b as u32) << 16;
     let u2 = |a: u32, b: u32| a | b << 16;
     [
-        c.par.x | c.par.y << 8 | flags,
+        c.par.x | c.par.y << 8 | flags | if c.xs != 0 { k::F_XF } else { 0 },
         c.par.z,
         c.par.w,
         time,
@@ -147,6 +221,16 @@ fn pack(c: &Cmd, flags: u32, time: u32) -> [u32; WORDS] {
         u2(c.pm.z, c.pm.w),
         u2(c.pm2.x, c.pm2.y),
         u2(c.pm2.z, c.pm2.w),
+        c.xi.x as u32,
+        c.xi.y as u32,
+        c.xi.z as u32,
+        c.xi.w as u32,
+        c.xk.x as u32,
+        c.xk.y as u32,
+        c.xk.z as u32,
+        c.xk.w as u32,
+        c.xs as u32,
+        0,
     ]
 }
 
@@ -199,7 +283,7 @@ impl Scene {
     #[inline]
     pub fn load(&self, i: u32) -> Cmd {
         let w = i as usize * WORDS;
-        k::decode(self.w4(w), self.w4(w + 4), self.w4(w + 8), self.w4(w + 12), self.w4(w + 16))
+        k::decode(self.w4(w), self.w4(w + 4), self.w4(w + 8), self.w4(w + 12), self.w4(w + 16), self.w4(w + 20), self.w4(w + 24), self.words[w + 28])
     }
     /// Command `i` as it is at `now` (the CPU's twin of the kernel's `load_at`: the same `decode` and `timed`
     /// over the same words).
