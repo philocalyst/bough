@@ -264,6 +264,9 @@ struct Kern {
     /// Mirror of `arm.armed_upto` for a lock-free "already armed?" test.
     armed: AtomicU64,
     arm: std::sync::Mutex<ArmState>,
+    /// Set by a pre-armed batch's completion handler when the driver killed it (a batch left waiting on its event
+    /// for ~10 s of idle errors with kIOGPUCommandBufferCallbackErrorTimeout); the next `sync` re-arms.
+    dead: Arc<AtomicBool>,
 }
 struct ArmState {
     armed_upto: u64,
@@ -320,6 +323,16 @@ impl Kern {
             self.encode(&cmd, (f % 2) as usize, 0, 0, true);
             cmd.encodeSignalEvent_value(ProtocolObject::from_ref(&*self.ev), 2 * f);
         }
+        // a batch the driver kills (it waited on its event too long: an idle window) marks the stream dead
+        let dead = self.dead.clone();
+        let blk = block2::RcBlock::new(move |c: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+            // SAFETY: Metal hands the handler the live command buffer.
+            if unsafe { c.as_ref() }.status() == MTLCommandBufferStatus::Error {
+                dead.store(true, std::sync::atomic::Ordering::Release);
+            }
+        });
+        // SAFETY: the block is copied by Metal and called once, on completion or error.
+        unsafe { cmd.addCompletedHandler(block2::RcBlock::as_ptr(&blk)) };
         cmd.commit();
         if st.batches.len() == 2 {
             st.batches.pop_front();
@@ -599,6 +612,8 @@ pub struct Stats {
     pub resident_surfaces: usize,
     /// Pre-armed batches drained because the residency set grew.
     pub drains: u64,
+    /// Pre-armed streams re-armed after the driver killed a batch (`recover_stream`).
+    pub recoveries: u64,
 }
 
 pub struct Fused {
@@ -816,6 +831,7 @@ impl Fused {
             batch: std::sync::atomic::AtomicUsize::new(16),
             armed: AtomicU64::new(0),
             arm: std::sync::Mutex::new(ArmState { armed_upto: 0, batches: std::collections::VecDeque::with_capacity(3) }),
+            dead: Arc::new(AtomicBool::new(false)),
         });
         let layer = CALayer::new();
         layer.setContentsScale(scale);
@@ -986,12 +1002,23 @@ impl Fused {
     /// When the GPU is done (the common case) this is one read of the event's shared value.
     #[inline]
     pub fn sync(&mut self) {
+        if self.kern.dead.load(std::sync::atomic::Ordering::Acquire) {
+            self.recover_stream();
+        }
         let want = 2 * self.released;
         if self.ev.signaledValue() < want {
             let t0 = fl::now_ns();
-            if !self.ev.waitUntilSignaledValue_timeoutMS(want, 5000) {
-                let err = self.kern.arm.lock().unwrap().batches.iter().map(|c| format!("{:?} {:?}", c.status(), c.error())).collect::<Vec<_>>();
-                panic!("GPU frame {} did not finish within 5 s (stream batches: {err:?})", self.released);
+            let mut waited = 0;
+            while !self.ev.waitUntilSignaledValue_timeoutMS(want, 100) {
+                if self.kern.dead.load(std::sync::atomic::Ordering::Acquire) {
+                    self.recover_stream();
+                    continue;
+                }
+                waited += 100;
+                if waited >= 5000 {
+                    let err = self.kern.arm.lock().unwrap().batches.iter().map(|c| format!("{:?} {:?}", c.status(), c.error())).collect::<Vec<_>>();
+                    panic!("GPU frame {} did not finish within 5 s (stream batches: {err:?})", self.released);
+                }
             }
             if fl::ON {
                 fl::note(fl::N_GPU_WAIT, (fl::now_ns() - t0) / 1000, self.released);
@@ -1002,6 +1029,31 @@ impl Fused {
             // a clock-driven frame, drawn (and repaired if a bin overflowed): on screen now
             self.commit_now(i);
         }
+    }
+
+    /// The driver killed a pre-armed batch (it waited on its event longer than the driver allows: ~10 s without a
+    /// frame, measured by `tests/stall.rs`): a frame released into it never ran, so it is drawn from its slot on the
+    /// aux queue and marked done, and a fresh batch is armed after it. No pixels are lost; the frame after a long
+    /// idle pays one aux submission instead of waiting forever.
+    fn recover_stream(&mut self) {
+        self.kern.dead.store(false, std::sync::atomic::Ordering::Release);
+        let kern = self.kern.clone();
+        let mut st = kern.arm.lock().unwrap();
+        let want = 2 * self.released;
+        if self.ev.signaledValue() < want {
+            if let Some((k, _target, nr, nt)) = self.last_frame {
+                let cmd = self.aux.commandBuffer().expect("command buffer");
+                self.encode(&cmd, k, nr, nt, false);
+                cmd.commit();
+                cmd.waitUntilCompleted();
+            }
+            self.ev.setSignaledValue(want);
+        }
+        st.batches.clear();
+        st.armed_upto = self.released;
+        kern.arm_locked(&mut st);
+        self.stats.recoveries += 1;
+        fl::note(fl::N_DRAIN, 0, u64::MAX);
     }
 
     /// After a GPU frame completed: if a row bin overflowed, grow the bins to the recorded need and redraw
@@ -1226,6 +1278,9 @@ impl Fused {
         let t0 = fl::now_ns();
         let r0 = self.released;
         let want = 2 * self.released;
+        if self.kern.dead.load(std::sync::atomic::Ordering::Acquire) {
+            self.recover_stream();
+        }
         if self.ev.signaledValue() < want {
             self.ev.waitUntilSignaledValue_timeoutMS(want, 5000);
         }
