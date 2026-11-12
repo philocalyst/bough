@@ -29,7 +29,7 @@ JOBS = int(os.environ.get("QUICK_JOBS", "4"))
 # ------------------------------------------------------------------------------------------------ what is built
 PKGS = ["bough-heavy", "bough-scenes", "bough-vlist", "bough"]
 BINS = ["heavy_headless", "heavy_life", "lab_headless", "animate_headless", "vlist_headless"]
-EXAMPLES = ["quick_life", "redescribe_cost"]
+EXAMPLES = ["quick_life", "redescribe_cost", "close_probe"]
 # The pixel smoke: the fastest gates that still fail on a broken presenter (README.md "Smoke").
 SMOKE = [
     ("bough-vlist", "correctness", ["scroll_is_pixel_exact"]),
@@ -148,7 +148,8 @@ def find_paths(paths):
     for b in BINS:
         paths[("bin", b, "")] = (os.path.join(rel, b), ROOT)
     for x in EXAMPLES:
-        paths[("example", x, "")] = (os.path.join(rel, "examples", x), ROOT)
+        if os.path.exists(os.path.join(rel, "examples", x)):
+            paths[("example", x, "")] = (os.path.join(rel, "examples", x), ROOT)
     import glob
     for pkg, t, _ in SMOKE:
         # cargo's build-dir layout (build/<pkg>/<hash>/out/<test>-<hash>), or the older deps/<test>-<hash>
@@ -245,55 +246,97 @@ def spawn_measured(argv, extra):
     return out, list(r.v), t_seen
 
 
+def life_record(m, v, t_seen):
+    start, exit_ = abs_ns(v[RI_START]), abs_ns(v[RI_EXIT])
+    r = dict(
+        startup_ms=(m["up_first"] - start) / 1e6, premain_ms=(m["up_main"] - start) / 1e6,
+        new_ms=(m["up_new"] - m["up_main"]) / 1e6, frame_ms=(m["up_first"] - m["up_new"]) / 1e6,
+        startup_instr=m["instr_first"], premain_instr=m["instr_main"], new_instr=m["instr_new"] - m["instr_main"],
+        frame_instr=m["instr_first"] - m["instr_new"],
+        shutdown_ms=(t_seen - m["up_close"]) / 1e6, shutdown_kernel_ms=(exit_ - m["up_close"]) / 1e6,
+        gpu_drop_us=(m["up_gpu_drop"] - m["up_close"]) / 1e3, app_drop_us=(m["up_app_drop"] - m["up_gpu_drop"]) / 1e3,
+        exit_ms=(t_seen - m["up_app_drop"]) / 1e6,
+        shutdown_instr=v[RI_INSTR] - m["instr_close"], gpu_drop_instr=m["instr_gpu_drop"] - m["instr_close"],
+        app_drop_instr=m["instr_app_drop"] - m["instr_gpu_drop"], exit_instr=v[RI_INSTR] - m["instr_app_drop"],
+        footprint_first=m["footprint_first"], rss_first=m["rss_first"], footprint_100=m["footprint_frames"],
+        rss_100=m["rss_frames"], max_footprint=v[RI_MAXFP])
+    for k in ("mount_ns", "gpu_prep_ns", "gpu_wait_ns"):
+        if k in m:
+            r[k.replace("_ns", "_ms")] = m[k] / 1e6
+    for k in ("mount_instr", "gpu_prep_instr"):
+        if k in m:
+            r[k] = m[k]
+    return r
+
+
 def life(paths, lock_info):
-    apps = {"counter": ([paths[("example", "quick_life", "")][0], "counter"], {}),
-            "heavy": ([paths[("bin", "heavy_life", "")][0]], {"ZGX_MODE": "both"})}
+    ql, hl = paths[("example", "quick_life", "")][0], paths[("bin", "heavy_life", "")][0]
+    fast = {"QUICK_PREPARE": 1, "QUICK_EXIT": "fast"}
+    # name -> (argv, env, what)
+    apps = {
+        "empty": ([ql, "empty"], {}, "quick_life empty (a bare div)"),
+        "counter": ([ql, "counter"], {}, "quick_life counter"),
+        "heavy": ([hl], {"ZGX_MODE": "both"}, "heavy_life (ZGX_MODE=both)"),
+        "empty.prepared": ([ql, "empty"], fast, "quick_life empty, QUICK_PREPARE=1 QUICK_EXIT=fast"),
+        "counter.prepared": ([ql, "counter"], fast, "quick_life counter, QUICK_PREPARE=1 QUICK_EXIT=fast"),
+    }
+    probe = paths.get(("example", "close_probe", ""))
     runs = {a: [] for a in apps}
     first = {}
-    for a, (argv, env) in apps.items():
+    for a, (argv, env, _) in apps.items():
         # one unmeasured launch first: a new binary's first launch also fills the Metal shader cache (no prebuilt
         # metallib without Xcode), which is a different event from the startup measured here; its time is kept
-        s = up_ns()
-        spawn_measured(argv, env)
-        first[a] = round((up_ns() - s) / 1e6, 1)
+        if argv[0] not in first:
+            s = up_ns()
+            spawn_measured(argv, env)
+            first[argv[0]] = round((up_ns() - s) / 1e6, 1)
+    window = []
     for k in range(LIFE_REPS):
         for a in (list(apps) if k % 2 == 0 else list(apps)[::-1]):  # interleaved
-            argv, env = apps[a]
+            argv, env, _ = apps[a]
             out, v, t_seen = spawn_measured(argv, env)
             line = next((l for l in out.splitlines() if l.startswith("quick_life ")), "")
             m = {k2: int(x) for k2, x in re.findall(r"(\w+)=(\d+)", line)}
             if "up_first" not in m:
                 sys.exit(f"quick: {argv}: no quick_life line\n{out}")
-            start, exit_ = abs_ns(v[RI_START]), abs_ns(v[RI_EXIT])
-            runs[a].append(dict(
-                startup_ms=(m["up_first"] - start) / 1e6, premain_ms=(m["up_main"] - start) / 1e6,
-                new_ms=(m["up_new"] - m["up_main"]) / 1e6, frame_ms=(m["up_first"] - m["up_new"]) / 1e6,
-                startup_instr=m["instr_first"], premain_instr=m["instr_main"], new_instr=m["instr_new"] - m["instr_main"],
-                frame_instr=m["instr_first"] - m["instr_new"],
-                shutdown_ms=(t_seen - m["up_close"]) / 1e6, shutdown_kernel_ms=(exit_ - m["up_close"]) / 1e6,
-                gpu_drop_us=(m["up_gpu_drop"] - m["up_close"]) / 1e3, app_drop_us=(m["up_app_drop"] - m["up_gpu_drop"]) / 1e3,
-                exit_ms=(t_seen - m["up_app_drop"]) / 1e6,
-                shutdown_instr=v[RI_INSTR] - m["instr_close"], gpu_drop_instr=m["instr_gpu_drop"] - m["instr_close"],
-                app_drop_instr=m["instr_app_drop"] - m["instr_gpu_drop"], exit_instr=v[RI_INSTR] - m["instr_app_drop"],
-                footprint_first=m["footprint_first"], rss_first=m["rss_first"], footprint_100=m["footprint_frames"],
-                rss_100=m["rss_frames"], max_footprint=v[RI_MAXFP]))
+            runs[a].append(life_record(m, v, t_seen))
+        if probe:
+            out, v, t_seen = spawn_measured([probe[0]], {})
+            m = {k2: int(x) for k2, x in re.findall(r"(\w+)=(\d+)", out)}
+            if "outlived_close_ms" in m or "up_close" not in m:
+                window.append(None)
+            else:
+                window.append(((t_seen - m["up_close"]) / 1e6, v[RI_INSTR] - m["instr_close"]))
     cells, details = {}, {}
     locked = lock_info.get("held", False)
+    tw = dict(lock=locked, load=lock_info.get("load"))
     for a, rs in runs.items():
         col = lambda key: [r[key] for r in rs]
-        src = "quick_life counter" if a == "counter" else "heavy_life (ZGX_MODE=both)"
-        base = (f"{src}, headless, App::new(view, cfg, gpu=true) as Application::run builds it; {LIFE_REPS} cold processes, "
+        argv, env, what = apps[a]
+        base = (f"{what}: headless, App::new(view, cfg, gpu=true) as Application::run builds it; {LIFE_REPS} cold processes, "
                 "interleaved, after one unmeasured launch (the Metal shader cache warm)")
-        tw = dict(lock=locked, load=lock_info.get("load"))
         cells[f"startup.{a}.wall"] = cell("time", "ms", col("startup_ms"), base + "; kernel process start (ri_proc_start_abstime) to the first frame complete on the GPU (CLOCK_UPTIME_RAW)", **tw)
         cells[f"startup.{a}.instr"] = cell("instr", "instr", col("startup_instr"), base + "; process-wide instructions at the first frame complete (dyld, runtime init, App::new, frame, sync)")
-        cells[f"shutdown.{a}.wall"] = cell("time", "ms", col("shutdown_ms"), base + "; close request (after 100 frames) to the parent's waitid seeing the exit", **tw)
+        sd = "fast" if env.get("QUICK_EXIT") == "fast" else a
+        cells[f"shutdown.{a}.wall"] = cell("time", "ms", col("shutdown_ms"), base + ("; close request (after 100 frames) to the parent's waitid seeing the exit"
+                                                                                  + ("; the close calls _exit (no destructors)" if sd == "fast" else "; drops the presenter, then the app, then returns from main")), **tw)
         cells[f"shutdown.{a}.instr"] = cell("instr", "instr", col("shutdown_instr"), base + "; the exited process's total instructions minus those at the close request")
-        for key, label in (("footprint_first", "phys_footprint after the first frame"), ("rss_first", "resident size after the first frame"),
-                           ("footprint_100", "phys_footprint after 100 more frames"), ("rss_100", "resident size after 100 more frames")):
-            cells[f"memory.{a}.{key}"] = cell("mem", "MiB", [x / 1048576 for x in col(key)], base + f"; {label} (proc_pid_rusage)")
+        if "prepared" not in a:
+            for key, label in (("footprint_first", "phys_footprint after the first frame"), ("rss_first", "resident size after the first frame"),
+                               ("footprint_100", "phys_footprint after 100 more frames"), ("rss_100", "resident size after 100 more frames")):
+                cells[f"memory.{a}.{key}"] = cell("mem", "MiB", [x / 1048576 for x in col(key)], base + f"; {label} (proc_pid_rusage)")
         details[a] = {k: noise(col(k)) for k in rs[0]}
-        details[a]["warmup_launch_ms"] = first[a]
+        details[a]["warmup_launch_ms"] = first[argv[0]]
+    if probe:
+        ok = [w for w in window if w]
+        details["window_close"] = {"runs": len(window), "exited": len(ok)}
+        if len(ok) == len(window):
+            cells["shutdown.window.counter.wall"] = cell("time", "ms", [w[0] for w in ok], "close_probe: the counter in run_interactive's window "
+                                                         "(a private Space), NSWindow::close 300 ms after the first frame, to the parent's waitid seeing the exit", **tw)
+            cells["shutdown.window.counter.instr"] = cell("instr", "instr", [w[1] for w in ok], "close_probe: total instructions minus those at the close")
+        else:
+            cells["shutdown.window.counter.exits"] = dict(kind="gate", unit="", value=0, noise=noise([0]),
+                                                          method=f"close_probe: {len(window) - len(ok)} of {len(window)} processes outlived their closed window by 3 s")
     return cells, details
 
 
@@ -540,7 +583,8 @@ def main():
     print("group seconds: " + ", ".join(f"{k} {v}" for k, v in timing.items()))
     bad = [n for n, c, b, ratio, flag in rows if flag.startswith(("REGRESSED", "FAILED"))]
     if a.self_test:
-        injected = [n for n, c, b, ratio, flag in rows if b is not None and n.split(".")[0] in ("slope", "redescribe", "mount", "startup", "shutdown")]
+        injected = [n for n, c, b, ratio, flag in rows if b is not None and n.split(".")[0] in ("slope", "redescribe", "mount", "startup", "shutdown")
+                    and not n.startswith("shutdown.window")]  # close_probe has no inject hook
         missed = [n for n in injected if n not in bad]
         print(f"self-test ({a.self_test}, {inject}): {len(injected) - len(missed)}/{len(injected)} injected cells flagged"
               + (f"; NOT flagged: {', '.join(missed)}" if missed else ""))
