@@ -324,7 +324,10 @@ unsafe fn patch_view(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     if let Some(pos) = rt.bough.pos_of(h) {
         let end = rt.bough.subtree_end(pos);
         let port = rt.bough.clip_rect(clip);
-        rt.bough.scroll_run(pos + 1, end - pos - 1, 0, -dy, port);
+        // scroll by copy (the list regions' path): damage is the exposed strip and the static content's bands,
+        // the rest of the port is the previous frame's pixels moved (round 7, platform lane: a full-window
+        // `.scroll()` box repainted the whole port on every step, 1,000 tiles at 1280 x 800)
+        rt.scroll_copy(pos + 1, end - pos - 1, -dy, port);
     }
     shift_nested(rt, v, 0, -dy);
 }
