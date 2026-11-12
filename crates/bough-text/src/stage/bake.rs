@@ -56,8 +56,12 @@ pub fn bake(font: &[u8], size_px: f32) -> Result<Vec<u8>, NoImage> {
     // coverage of every token that has a glyph
     let mut cache = GlyphCache::new(font);
     let strike = cache.strike(size_px);
+    // Coverage is one byte image `STRIDE` texels wide, the glyphs packed left to right in shelves: an
+    // executor that reads an atlas by texel index and row stride binds it as it is.
+    const STRIDE: usize = 256;
     let mut slots = vec![0u8; 256 * 8];
     let mut cov: Vec<u8> = Vec::new();
+    let (mut shelf_y, mut shelf_h, mut pen_x) = (0usize, 0usize, 0usize);
     for t in 2..256usize {
         // a token is live if some pair starting with it has a step
         if tt.step[t << 8..(t + 1) << 8].iter().all(|&s| s == 0xffff) {
@@ -68,8 +72,14 @@ pub fn bake(font: &[u8], size_px: f32) -> Result<Vec<u8>, NoImage> {
         if w > 255 || h > 255 || !(-128..128).contains(&left) || !(-128..128).contains(&top) {
             return Err(NoImage::TooLarge);
         }
+        if pen_x + w > STRIDE {
+            (shelf_y, shelf_h, pen_x) = (shelf_y + shelf_h, 0, 0);
+        }
+        shelf_h = shelf_h.max(h);
+        cov.resize((shelf_y + shelf_h) * STRIDE, 0);
+        let off = shelf_y * STRIDE + pen_x;
         let at = t * 8;
-        slots[at..at + 4].copy_from_slice(&(cov.len() as u32).to_le_bytes());
+        slots[at..at + 4].copy_from_slice(&(off as u32).to_le_bytes());
         slots[at + 4] = left as i8 as u8;
         slots[at + 5] = top as i8 as u8;
         slots[at + 6] = w as u8;
@@ -77,8 +87,9 @@ pub fn bake(font: &[u8], size_px: f32) -> Result<Vec<u8>, NoImage> {
         let aw = cache.atlas.width as usize;
         for r in 0..h {
             let s = (e.uv[1] as usize + r) * aw + e.uv[0] as usize;
-            cov.extend_from_slice(&cache.atlas.pixels[s..s + w]);
+            cov[off + r * STRIDE..off + r * STRIDE + w].copy_from_slice(&cache.atlas.pixels[s..s + w]);
         }
+        pen_x += w;
     }
 
     let mut lig_first = [0u8; 16];
@@ -118,7 +129,8 @@ pub fn bake(font: &[u8], size_px: f32) -> Result<Vec<u8>, NoImage> {
         Err(_) => b.extend_from_slice(&[0xff; 8]),
     }
     b.extend_from_slice(&(cov.len() as u32).to_le_bytes());
-    b.extend_from_slice(&[0; 12]);
+    b.extend_from_slice(&(STRIDE as u32).to_le_bytes());
+    b.extend_from_slice(&[0; 8]);
     debug_assert_eq!(b.len(), 64);
     b.extend_from_slice(&row_of);
     b.extend_from_slice(&col_of);

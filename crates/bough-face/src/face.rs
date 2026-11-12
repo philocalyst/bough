@@ -3,24 +3,26 @@
 //! Layout (little-endian; every table at a fixed offset computed from the header):
 //!
 //! ```text
-//!   0  magic "BFC1"            4  size in 1/64 px          8  scale: px per font unit, Q32 (u64)
+//!   0  magic "BFC2"            4  size in 1/64 px          8  scale: px per font unit, Q32 (u64)
 //!  16  upem                   20  ascent (font units)     24  descent (font units, positive)
 //!  28  line gap               32  step rows (u16), step columns (u16)
 //!  36  ligatures              40  digit advance, point advance, minus advance, largest digit-pair kern (u16 x 4;
 //!                                 digit advance 0xffff: the digits are not a cell)
-//!  48  coverage bytes         52  reserved (12)
+//!  48  coverage bytes         52  coverage stride (the atlas is `stride` texels wide)     56  reserved (8)
 //!  64  row class of each token (256 bytes)          320  column class of each token (256 bytes)
 //! 576  slots: 256 x { coverage offset u32, left i8, top i8, w u8, h u8 }
 //! 2624 which ASCII bytes start a ligature (16 bytes, one bit each)
 //! 2640 ligatures: n x { first, rest length, rest[4], token, 0 }
 //!      steps: rows x columns x u16 (0xffff: this pair needs the full shaper)
-//!      coverage
+//!      coverage: one byte image `stride` texels wide, the glyphs packed in it; a slot's offset is the index
+//!      of its first texel, and its row `r` starts `r * stride` texels on. An executor that reads an atlas by
+//!      texel index and row stride binds this section as it is.
 //! ```
 //!
 //! A token is an ASCII byte or a Latin-1 code point as itself, [`TOK_PAD`] for the end of a run, and a value
 //! below 0x20 for a ligature. `steps[row[t]][col[u]]` is the advance of `t` followed by `u`, kerning included.
 
-pub const MAGIC: u32 = 0x3143_4642; // "BFC1"
+pub const MAGIC: u32 = 0x3243_4642; // "BFC2"
 /// The token after the last glyph of a run.
 pub const TOK_PAD: u8 = 0;
 const HEADER: usize = 64;
@@ -69,6 +71,7 @@ pub struct Face {
     nlig: usize,
     steps: usize,
     cov: usize,
+    stride: usize,
 }
 
 impl Face {
@@ -81,7 +84,7 @@ impl Face {
         let cov = steps + rows * cols * 2;
         assert!(cov + rd32(b, 48) as usize == b.len(), "truncated face image");
         let scale = (rd32(b, 8) as u64) | (rd32(b, 12) as u64) << 32;
-        Face { b, scale, cols, nlig, steps, cov }
+        Face { b, scale, cols, nlig, steps, cov, stride: rd32(b, 52) as usize }
     }
     /// The size in pixels per em.
     pub const fn size(&self) -> f32 {
@@ -129,11 +132,21 @@ impl Face {
         let b = self.b;
         Slot { off: rd32(b, at), left: b[at + 4] as i8 as i32, top: b[at + 5] as i8 as i32, w: b[at + 6] as u32, h: b[at + 7] as u32 }
     }
-    /// A glyph's coverage: `w * h` bytes, rows top to bottom, linear, 255 is covered.
+    /// The face's coverage atlas: one byte image [`Face::stride`] texels wide (8 bits, linear, 255 is
+    /// covered). A slot's `off` indexes it.
     #[inline(always)]
-    pub fn coverage(&self, s: Slot) -> &'static [u8] {
-        let at = self.cov + s.off as usize;
-        &self.b[at..at + (s.w * s.h) as usize]
+    pub fn atlas(&self) -> &'static [u8] {
+        &self.b[self.cov..]
+    }
+    #[inline(always)]
+    pub const fn stride(&self) -> usize {
+        self.stride
+    }
+    /// Row `r` of a glyph's coverage: `w` bytes.
+    #[inline(always)]
+    pub fn row(&self, s: Slot, r: u32) -> &'static [u8] {
+        let at = self.cov + s.off as usize + r as usize * self.stride;
+        &self.b[at..at + s.w as usize]
     }
     #[inline(always)]
     fn step(&self, t: u8, u: u8) -> u32 {
@@ -214,6 +227,25 @@ impl Face {
             self.glyph_spans(g, org.0 + self.px(pen - x0), org.1, clip, &mut f);
         }
     }
+    /// A line as one box per glyph, for an executor whose records are glyphs (the raster lane's `Glyph`
+    /// archetype): `f(box, texel)` with `box = [x0, y0, x1, y1]` in whole pixels, already cut to `cut` (the
+    /// line record's rect, so the expansion inks exactly what the line record inks), and `texel` the index in
+    /// [`Face::atlas`] of the texel under the box's top-left pixel; rows are [`Face::stride`] apart. Glyphs
+    /// with no ink, or wholly outside the cut, are not emitted.
+    #[inline]
+    pub fn expand(&self, slot: &[u16], x: &[i32], x0: i32, org: (i32, i32), cut: [i32; 4], mut f: impl FnMut([i32; 4], u32)) {
+        for (&g, &pen) in slot.iter().zip(x) {
+            let s = self.slot(g);
+            if s.w == 0 {
+                continue;
+            }
+            let (gx, gy) = (org.0 + self.px(pen - x0) + s.left, org.1 + s.top);
+            let b = [gx.max(cut[0]), gy.max(cut[1]), (gx + s.w as i32).min(cut[2]), (gy + s.h as i32).min(cut[3])];
+            if b[0] < b[2] && b[1] < b[3] {
+                f(b, s.off + (b[1] - gy) as u32 * self.stride as u32 + (b[0] - gx) as u32);
+            }
+        }
+    }
     /// One glyph with its pen at pixel `(px, baseline)`.
     #[inline(always)]
     pub fn glyph_spans(&self, tok: u16, px: i32, baseline: i32, clip: [i32; 4], f: &mut impl FnMut(i32, i32, &[u8])) {
@@ -227,11 +259,10 @@ impl Face {
         if cx0 >= cx1 || cy0 >= cy1 {
             return;
         }
-        let cov = self.coverage(s);
         let mut y = cy0;
         while y < cy1 {
-            let row = ((y - gy) * w) as usize;
-            f(cx0, y, &cov[row + (cx0 - gx) as usize..row + (cx1 - gx) as usize]);
+            let row = self.row(s, (y - gy) as u32);
+            f(cx0, y, &row[(cx0 - gx) as usize..(cx1 - gx) as usize]);
             y += 1;
         }
     }
