@@ -22,6 +22,13 @@ mod kernel;
 pub mod cpu;
 #[cfg(target_os = "macos")]
 pub mod metal;
+#[cfg(target_os = "linux")]
+pub mod vulkan;
+/// The GPU executor of this platform: Metal on macOS, Vulkan on Linux (the same API).
+#[cfg(target_os = "macos")]
+pub use metal as gpu;
+#[cfg(target_os = "linux")]
+pub use vulkan as gpu;
 pub mod scenes;
 pub mod stage;
 
@@ -31,6 +38,8 @@ pub use k::Cmd;
 
 /// The kernel as naga translated it (compiled by Metal at run time).
 pub const KERNEL_MSL: &str = include_str!(concat!(env!("OUT_DIR"), "/kernel.metal"));
+/// The kernel as naga's SPIR-V 1.3 (the Vulkan executor's module), little-endian words.
+pub const KERNEL_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kernel.spv"));
 /// The kernel as wgsl-rs emitted it.
 pub const KERNEL_WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/kernel.wgsl"));
 
