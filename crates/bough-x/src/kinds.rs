@@ -1,6 +1,6 @@
 //! Paint kinds: the closed set of things a record can be, each generic over the expressions of its operands.
 //! A kind applied to expression types is an archetype ([`Arch`]).
-use crate::expr::{Color, Cx, Expr, StageId, U, Words, later};
+use crate::expr::{Code, Color, Cx, Expr, Frame, Map, StageId, U, U_TIME, Words, later};
 use crate::store::{Arch, Backend, ColRef};
 
 pub trait FillArch: Arch {
@@ -137,6 +137,46 @@ impl<C: Expr<Out = Color>> LabelArch for Label<C> {
     }
 }
 
+/// An expression that places a record: an offset, and until when it is still moving.
+pub trait Motion: Expr<Out = (i32, i32)> {
+    /// 0 when at rest under `u`.
+    #[inline(always)]
+    fn until(&self, _u: &U) -> u32 {
+        0
+    }
+}
+/// A function of state moves a record only when that state is written: it is always at rest between turns.
+impl<F, A> Motion for Map<F, A> where Map<F, A>: Expr<Out = (i32, i32)> {}
+
+/// From `from` to `to` over `DUR` ticks of `Time` starting at `t0`, linearly, in integers: a transition as an
+/// expression. It costs no turn while it runs.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Glide<const DUR: u32, F, T, S>(pub F, pub T, pub S);
+// SAFETY: `repr(C)` over `Words` operands.
+unsafe impl<const DUR: u32, F: Words, T: Words, S: Words> Words for Glide<DUR, F, T, S> {}
+impl<const DUR: u32, F: Expr<Out = (i32, i32)>, T: Expr<Out = (i32, i32)>, S: Expr<Out = u32>> Expr for Glide<DUR, F, T, S> {
+    type Out = (i32, i32);
+    type Stage = Frame;
+    const READS: u64 = F::READS | T::READS | S::READS | 1 << U_TIME;
+    const CODE: &'static Code = &Code::Call("x_glide", &[F::CODE, T::CODE, S::CODE, &Code::U(U_TIME), &Code::Lit(DUR)]);
+    #[inline(always)]
+    fn eval(&self, cx: &Cx) -> (i32, i32) {
+        let (a, b) = (self.0.eval(cx), self.1.eval(cx));
+        // progress in 1/256ths, saturating at both ends
+        let dt = cx.u.w[U_TIME].wrapping_sub(self.2.eval(cx));
+        let p = if dt >= DUR { 256 } else { (dt * 256 / DUR) as i64 };
+        (a.0 + ((b.0 - a.0) as i64 * p >> 8) as i32, a.1 + ((b.1 - a.1) as i64 * p >> 8) as i32)
+    }
+}
+impl<const DUR: u32, F: Expr<Out = (i32, i32)>, T: Expr<Out = (i32, i32)>, S: Expr<Out = u32>> Motion for Glide<DUR, F, T, S> {
+    #[inline(always)]
+    fn until(&self, u: &U) -> u32 {
+        let end = self.2.eval(&Cx::of(u)).wrapping_add(DUR);
+        if u.w[U_TIME].wrapping_sub(self.2.eval(&Cx::of(u))) < DUR { end } else { 0 }
+    }
+}
+
 /// A border of `W` device pixels, translated by a Frame-stage expression: it moves without a turn of layout,
 /// and its damage is where it was and where it is.
 #[repr(C)]
@@ -144,9 +184,14 @@ impl<C: Expr<Out = Color>> LabelArch for Label<C> {
 pub struct Outline<const W: i32, C, T>(pub C, pub T);
 // SAFETY: `repr(C)` over `Words` operands.
 unsafe impl<const W: i32, C: Words, T: Words> Words for Outline<W, C, T> {}
-impl<const W: i32, C: Expr<Out = Color>, T: Expr<Out = (i32, i32)>> Arch for Outline<W, C, T> {
+impl<const W: i32, C: Expr<Out = Color>, T: Motion> Arch for Outline<W, C, T> {
     const READS: u64 = C::READS | T::READS;
     const MOVES: bool = T::READS != 0;
+    const TIMED: bool = T::READS & (1 << U_TIME) != 0;
+    #[inline(always)]
+    fn until(&self, u: &U) -> u32 {
+        self.1.until(u)
+    }
     const NAME: &'static str = "outline";
     const STAGE: StageId = later(&[T::STAGE, C::STAGE]);
     #[inline(always)]
@@ -162,7 +207,7 @@ impl<const W: i32, C: Expr<Out = Color>, T: Expr<Out = (i32, i32)>> Arch for Out
         b.outline(col, u)
     }
 }
-impl<const W: i32, C: Expr<Out = Color>, T: Expr<Out = (i32, i32)>> OutlineArch for Outline<W, C, T> {
+impl<const W: i32, C: Expr<Out = Color>, T: Motion> OutlineArch for Outline<W, C, T> {
     const WIDTH: i32 = W;
     #[inline(always)]
     fn color(&self, u: &U) -> Color {

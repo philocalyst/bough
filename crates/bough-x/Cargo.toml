@@ -19,3 +19,5 @@ mutant_delta = []
 mutant_journal = []
 # a moved record damages only where it is now
 mutant_moves = []
+# a frame with records in motion damages nothing
+mutant_sweep = []

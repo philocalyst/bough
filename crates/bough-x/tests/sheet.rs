@@ -1,7 +1,8 @@
 //! The pixel gates of phase 1, on the sheet: after every step of a random script,
 //!   retained (damaged tiles repaired) == full redraw from the stores == immediate-mode paint by the view
 //!   == a fresh mount.
-//! `--features mutant_delta` (the derivative skips odd records) must fail this.
+//! Time advances every step (a frame with no turn), so the selection outline is checked in mid-glide too.
+//! Each mutant feature of the crate must fail this.
 #[path = "../scenes/sheet.rs"]
 mod sheet;
 use bough_x::prelude::*;
@@ -28,7 +29,7 @@ fn check(tag: &str, step: usize, sheet: &Sheet, world: &mut World<Soft>, retaine
     world.paint(&mut full);
     assert!(retained.px == full.px, "{tag} step {step}: retained != full redraw ({} pixels)", diff(&retained.px, &full.px));
     let mut now = Soft::new(W, H);
-    sheet.view(&mut Immediate::new(&mut now, &sheet.u));
+    sheet.view(&mut Immediate::new(&mut now, &world.shown));
     assert!(full.px == now.px, "{tag} step {step}: stores != immediate ({} pixels)", diff(&full.px, &now.px));
     if fresh {
         let mut w2 = World::<Soft>::new(W, H, NWORDS);
@@ -50,8 +51,12 @@ fn script(rows: usize, steps: usize, redescribe: bool) {
     let mut rng = Rng(0x5ee7 | 1);
     let tag = if redescribe { "redescribe" } else { "once" };
     check(tag, 0, &sheet, &mut world, &mut retained, true);
+    let mut t = 0u32;
     for step in 1..=steps {
         let n = sheet.rows.len();
+        // a frame: time moves on, by a frame or by enough to finish any glide
+        t += if rng.below(4) == 0 { 400 } else { 16 + rng.below(40) as u32 };
+        world.tick(t);
         match rng.below(10) {
             0 => {
                 let c = rng.below(COLS);
@@ -68,7 +73,10 @@ fn script(rows: usize, steps: usize, redescribe: bool) {
                 let (c, v) = (rng.below(COLS), rng.below(1_000_000) as f32 / 100.0);
                 if redescribe { sheet.edit_opaque(r, c, v) } else { sheet.edit(r, c, v) }
             }
-            4 => sheet.select(rng.below(n * COLS) as u32),
+            4 => {
+                let top = (sheet.u.get::<Scroll>() / CELL_H) as usize;
+                sheet.select(((top + rng.below(30)).min(n - 1) * COLS + rng.below(COLS)) as u32, world.now());
+            }
             5 => sheet.scroll_by(if rng.below(2) == 0 { 132 } else { -132 }),
             6 => sheet.scroll_by(rng.below(4000) as i32 - 1500),
             7 => sheet.scroll_by(rng.below(90) as i32 - 40),
