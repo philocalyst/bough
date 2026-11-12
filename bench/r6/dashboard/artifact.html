@@ -1,0 +1,1429 @@
+<title>Bough Round 6 Results</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>:root {
+  color-scheme: light;
+  --bg: #f6f6f2; --panel: #ffffff; --fg: #1b1b1f; --muted: #5f5f68; --rule: #dcdcd6; --grid: #e9e9e3;
+  --measured: #2a5db0; --reported: #b4661a; --estimated: #7a4fb0; --good: #17806a; --bad: #c0503a;
+  --c1: #2a5db0; --c2: #17806a; --c3: #b4661a; --c4: #7a4fb0; --c5: #b03a72;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+  color-scheme: dark;
+  --bg: #131316; --panel: #1c1c21; --fg: #ececef; --muted: #9d9da7; --rule: #34343c; --grid: #2a2a31;
+  --measured: #7aa3e8; --reported: #e8a464; --estimated: #b994e8; --good: #5fd0b2; --bad: #f08f76;
+  --c1: #7aa3e8; --c2: #5fd0b2; --c3: #e8a464; --c4: #b994e8; --c5: #ef8fbd;
+}
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #131316; --panel: #1c1c21; --fg: #ececef; --muted: #9d9da7; --rule: #34343c; --grid: #2a2a31;
+  --measured: #7aa3e8; --reported: #e8a464; --estimated: #b994e8; --good: #5fd0b2; --bad: #f08f76;
+  --c1: #7aa3e8; --c2: #5fd0b2; --c3: #e8a464; --c4: #b994e8; --c5: #ef8fbd;
+}
+
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+[hidden] { display: none !important; }
+* { box-sizing: border-box; }
+main { max-width: 880px; margin: 0 auto; padding-block: 16px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1 { font-size: 1.6rem; margin: 0.3em 0 0.1em; }
+h2 { font-size: 1.15rem; margin: 2.2rem 0 0.6rem; padding-bottom: 0.3em; border-bottom: 1px solid var(--rule);
+  display: flex; flex-wrap: wrap; gap: 0.2em 0.6em; align-items: baseline; }
+h3 { font-size: 1rem; margin: 1.4rem 0 0.2rem; overflow-wrap: break-word; }
+h4 { font-size: 0.95rem; margin: 0 0 0.2rem; overflow-wrap: break-word; }
+p { margin: 0.4em 0; overflow-wrap: break-word; }
+.meta, .cap, .small-note { color: var(--muted); font-size: 0.875rem; }
+.meta { margin: 0 0 1rem; }
+.cap { margin: 0.35rem 0 0; }
+.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; margin: 0.6rem 0; }
+.tag { display: inline-block; font-size: 0.78rem; font-weight: normal; padding: 0 0.45em; margin-left: 0.2em;
+  border: 1px solid var(--muted); border-radius: 4px; color: var(--muted); white-space: nowrap; line-height: 1.5; }
+.tag.m { border-color: var(--measured); color: var(--measured); }
+.tag.r { border-color: var(--reported); color: var(--reported); }
+.tag.e { border-color: var(--estimated); color: var(--estimated); border-style: dotted; }
+.tag.n { border-style: dashed; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 10px; margin: 0.8rem 0 0; }
+.tile { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 10px 12px; }
+.tile b { display: block; font-size: 1.45rem; font-variant-numeric: tabular-nums; }
+.tile span { color: var(--muted); font-size: 0.85rem; }
+.tile.donut { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.legend-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; font-size: 0.9rem; }
+.legend-list li { display: flex; gap: 8px; align-items: center; }
+.legend-list svg { flex: none; }
+.scroll { overflow-x: auto; max-width: 100%; -webkit-overflow-scrolling: touch; padding-bottom: 4px; }
+svg { display: block; }
+svg.fit { width: 100%; height: auto; max-width: 100%; }
+svg.wide { width: 600px; height: auto; }
+svg text { font-family: inherit; font-size: 14px; fill: var(--fg); font-variant-numeric: tabular-nums; }
+svg .lbl { fill: var(--muted); }
+svg .small { font-size: 12px; }
+svg .mid { text-anchor: middle; }
+svg .end { text-anchor: end; }
+svg .grid { stroke: var(--grid); stroke-width: 1; }
+svg .axis { stroke: var(--rule); stroke-width: 1; }
+svg .hit { fill: transparent; cursor: default; }
+svg .hit:focus { outline: none; }
+svg [data-tip]:focus-visible { stroke: var(--fg); stroke-width: 1.5; }
+svg .guide { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 2 5; }
+/* kind encodings: measured = solid and filled; reported = hollow and dashed; estimated = dotted */
+.k-m { fill: var(--k, var(--measured)); stroke: var(--k, var(--measured)); stroke-width: 1.5; }
+.k-r { fill: var(--bg); stroke: var(--k, var(--reported)); stroke-width: 2; stroke-dasharray: 3 2; }
+.k-e { fill: none; stroke: var(--k, var(--estimated)); stroke-width: 2; stroke-dasharray: 1 3; stroke-linecap: round; }
+.k-n { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.l-m { fill: none; stroke: var(--k, var(--measured)); stroke-width: 2.5; stroke-linejoin: round; }
+.l-r { fill: none; stroke: var(--k, var(--reported)); stroke-width: 2; stroke-dasharray: 6 4; stroke-linejoin: round; }
+.l-e { fill: none; stroke: var(--k, var(--estimated)); stroke-width: 2; stroke-dasharray: 1 4; stroke-linecap: round; }
+.c-good { stroke: var(--good); stroke-width: 4; stroke-linecap: round; fill: none; }
+.c-bad { stroke: var(--bad); stroke-width: 4; stroke-linecap: round; fill: none; }
+.c-flat { stroke: var(--muted); stroke-width: 4; stroke-linecap: round; fill: none; }
+.b-m { fill: var(--measured); }
+.b-r { fill: var(--reported); fill-opacity: 0.25; stroke: var(--reported); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.b-d { fill: none; stroke: var(--muted); stroke-width: 2; stroke-dasharray: 1 3; stroke-linecap: round; }
+.b-t { fill: var(--fg); fill-opacity: 0.12; stroke: var(--fg); stroke-width: 1.5; }
+.h-good { fill: var(--good); }
+.h-bad { fill: var(--bad); }
+.h-none { fill: none; stroke: var(--muted); stroke-dasharray: 4 3; stroke-width: 1.2; }
+.sw { display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: var(--k, var(--muted)); }
+/* load animation: connectors draw in, marks fade in, bars grow; staggered with --d */
+@keyframes draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes rise { from { opacity: 0; } to { opacity: 1; } }
+@keyframes grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.anim-draw { stroke-dasharray: 1; animation: draw 1.1s ease-out var(--d, 0s) both; }
+.anim-fade { animation: rise 0.6s ease var(--d, 0s) both; }
+.anim-grow { transform-box: fill-box; transform-origin: left center; animation: grow 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) var(--d, 0s) both; }
+@media (prefers-reduced-motion: reduce) {
+  .anim-draw, .anim-fade, .anim-grow { animation: none; }
+}
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-top: 0.4rem; }
+.card { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.card ol { margin: 0.4em 0 0; padding-left: 1.2em; font-size: 0.85rem; color: var(--muted); }
+.card ol li { overflow-wrap: anywhere; margin: 0.1em 0; }
+.card ol b { color: var(--fg); font-weight: 600; }
+.empty { border: 1px dashed var(--muted); border-radius: 10px; padding: 12px 14px; color: var(--muted); }
+.empty b { color: var(--fg); }
+.singles { margin: 0.4rem 0 0; padding-left: 1.2em; }
+.singles li { margin: 0.25em 0; overflow-wrap: anywhere; }
+.tip { position: fixed; z-index: 10; left: 0; top: 0; max-width: min(320px, calc(100vw - 16px)); pointer-events: none;
+  background: var(--panel); color: var(--fg); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px;
+  font-size: 13px; line-height: 1.4; white-space: pre-line; overflow-wrap: anywhere;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18); }
+footer { margin-top: 2.4rem; color: var(--muted); font-size: 0.85rem; }
+</style>
+<main>
+<h1>bough round 6</h1>
+<p class="meta">Updated 2026-11-11 · 43 series, 98 points · every chart is generated from data.json by build.py</p>
+<div class="tiles"><div class="tile"><b>43</b><span>series</span></div><div class="tile"><b>98</b><span>points</span></div><div class="tile"><b>51</b><span>measured</span></div><div class="tile"><b>47</b><span>reported</span></div><div class="tile"><b>1</b><span>section not measured</span></div><div class="tile donut"><svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="Points by kind">
+<circle cx="60" cy="60" r="46" fill="none" style="stroke: var(--grid)" stroke-width="16"/>
+<circle cx="60" cy="60" r="46" fill="none" style="stroke: var(--measured)" stroke-width="16" stroke-dasharray="150.41 138.61" stroke-dashoffset="-0.00" transform="rotate(-90 60 60)" data-tip="measured: 51 of 98 points" tabindex="0"/>
+<circle cx="60" cy="60" r="46" fill="none" style="stroke: var(--reported)" stroke-width="16" stroke-dasharray="138.61 150.41" stroke-dashoffset="-150.41" transform="rotate(-90 60 60)" data-tip="reported: 47 of 98 points" tabindex="0"/>
+<text x="60" y="65" class="mid" style="font-size:18px;font-weight:600">98</text>
+</svg><div><b>51 of 98</b><span>points measured</span></div></div></div>
+<div class="panel"><ul class="legend-list">
+<li><svg width="26" height="14" aria-hidden="true"><rect class="b-m" x="1" y="1" width="24" height="12" rx="3"/></svg><span><b>measured</b>: a number someone produced with the stated method. Solid, filled.</span></li>
+<li><svg width="26" height="14" aria-hidden="true"><rect class="b-r" x="1" y="1" width="24" height="12" rx="3"/></svg><span><b>reported</b>: an agent's report not yet replayed by anyone else. Hollow, dashed.</span></li>
+<li><svg width="26" height="14" aria-hidden="true"><rect class="b-d" x="1" y="1" width="24" height="12" rx="3"/></svg><span><b>estimated</b>: a derived or projected figure. Dotted. None in data.json yet.</span></li>
+<li><svg width="26" height="14" aria-hidden="true"><rect fill="none" style="stroke: var(--muted)" stroke-dasharray="3 3" x="1" y="1" width="24" height="12" rx="3"/></svg><span><b>not measured</b>: an explicit empty state. Nothing is invented to fill it.</span></li>
+</ul></div>
+
+<h2>Scaling with rows</h2>
+<p class="cap">Log-log. Each line is one operation family at N rows: dashed hollow = base (reported), solid filled = round6 (measured). A flat line means the cost does not grow with N. The dotted guide is slope 1, cost proportional to N.</p>
+<div class="scroll"><svg class="wide" viewBox="0 0 600 330" role="img" aria-label="Log-log cost against rows, by operation family">
+<text class="lbl small" x="78" y="14">instructions per operation (log scale)</text>
+<line class="grid" x1="78" x2="572" y1="282.0" y2="282.0"/>
+<text class="lbl small end" x="70" y="286.0">1,000</text>
+<line class="grid" x1="78" x2="572" y1="238.7" y2="238.7"/>
+<text class="lbl small end" x="70" y="242.7">10,000</text>
+<line class="grid" x1="78" x2="572" y1="195.3" y2="195.3"/>
+<text class="lbl small end" x="70" y="199.3">100,000</text>
+<line class="grid" x1="78" x2="572" y1="152.0" y2="152.0"/>
+<text class="lbl small end" x="70" y="156.0">1,000,000</text>
+<line class="grid" x1="78" x2="572" y1="108.7" y2="108.7"/>
+<text class="lbl small end" x="70" y="112.7">10,000,000</text>
+<line class="grid" x1="78" x2="572" y1="65.3" y2="65.3"/>
+<text class="lbl small end" x="70" y="69.3">100,000,000</text>
+<line class="grid" x1="78" x2="572" y1="22.0" y2="22.0"/>
+<text class="lbl small end" x="70" y="26.0">1,000,000,000</text>
+<line class="grid" x1="78.0" x2="78.0" y1="22" y2="282"/>
+<text class="lbl small mid" x="78.0" y="300">10</text>
+<line class="grid" x1="242.7" x2="242.7" y1="22" y2="282"/>
+<text class="lbl small mid" x="242.7" y="300">100</text>
+<line class="grid" x1="407.3" x2="407.3" y1="22" y2="282"/>
+<text class="lbl small mid" x="407.3" y="300">1,000</text>
+<line class="grid" x1="572.0" x2="572.0" y1="22" y2="282"/>
+<text class="lbl small mid" x="572.0" y="300">10,000</text>
+<text class="lbl small mid" x="325.0" y="324">rows N (log scale)</text>
+<line class="guide" x1="78.0" y1="200.4" x2="572.0" y2="70.4"/>
+<text class="lbl small end" x="566.0" y="62.4">slope 1: proportional to N</text>
+<path class="l-r" style="--k: var(--c1);" d="M78.0 200.4 L242.7 159.6 L407.3 116.6 L522.4 86.3"/>
+<circle class="k-r" style="--k: var(--c1);" cx="78.0" cy="200.4" r="5"/>
+<circle class="hit" data-tip="coarse / plain select N=10
+base aa9943e: 76,597 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." cx="78.0" cy="200.4" r="11" tabindex="0"/>
+<circle class="k-r" style="--k: var(--c1);" cx="242.7" cy="159.6" r="5"/>
+<circle class="hit" data-tip="coarse / plain select N=100
+base aa9943e: 667,431 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." cx="242.7" cy="159.6" r="11" tabindex="0"/>
+<circle class="k-r" style="--k: var(--c1);" cx="407.3" cy="116.6" r="5"/>
+<circle class="hit" data-tip="Select
+N=1000: 6,567,603 instructions / operation (reported)" cx="407.3" cy="116.6" r="11" tabindex="0"/>
+<circle class="k-r" style="--k: var(--c1);" cx="522.4" cy="86.3" r="5"/>
+<circle class="hit" data-tip="Select
+N=5000: 32,874,375 instructions / operation (reported)" cx="522.4" cy="86.3" r="11" tabindex="0"/>
+<path class="l-m" style="--k: var(--c1);" d="M78.0 207.8 L242.7 167.7 L407.3 124.7"/>
+<circle class="k-m" style="--k: var(--c1);" cx="78.0" cy="207.8" r="5"/>
+<circle class="hit" data-tip="coarse / plain select N=10
+round6 42c514cc: 51,531 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.673 (improved). Tree integ @ 42c514ccbe." cx="78.0" cy="207.8" r="11" tabindex="0"/>
+<circle class="k-m" style="--k: var(--c1);" cx="242.7" cy="167.7" r="5"/>
+<circle class="hit" data-tip="coarse / plain select N=100
+round6 42c514cc: 433,899 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.650 (improved). Tree integ @ 42c514ccbe." cx="242.7" cy="167.7" r="11" tabindex="0"/>
+<circle class="k-m" style="--k: var(--c1);" cx="407.3" cy="124.7" r="5"/>
+<circle class="hit" data-tip="coarse / plain select N=1000
+round6 42c514cc: 4,258,832 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.648 (improved). Tree integ @ 42c514ccbe." cx="407.3" cy="124.7" r="11" tabindex="0"/>
+<path class="l-r" style="--k: var(--c2);" d="M78.0 207.2 L242.7 166.1 L407.3 123.0 L522.4 92.7"/>
+<circle class="k-r" style="--k: var(--c2);" cx="78.0" cy="207.2" r="5"/>
+<circle class="hit" data-tip="coarse / plain update10 N=10
+base aa9943e: 53,095 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." cx="78.0" cy="207.2" r="11" tabindex="0"/>
+<circle class="k-r" style="--k: var(--c2);" cx="242.7" cy="166.1" r="5"/>
+<circle class="hit" data-tip="coarse / plain update10 N=100
+base aa9943e: 471,495 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." cx="242.7" cy="166.1" r="11" tabindex="0"/>
+<circle class="k-r" style="--k: var(--c2);" cx="407.3" cy="123.0" r="5"/>
+<circle class="hit" data-tip="Update every 10th row
+N=1000: 4,662,665 instructions / operation (reported)" cx="407.3" cy="123.0" r="11" tabindex="0"/>
+<circle class="k-r" style="--k: var(--c2);" cx="522.4" cy="92.7" r="5"/>
+<circle class="hit" data-tip="Update every 10th row
+N=5000: 23,336,384 instructions / operation (reported)" cx="522.4" cy="92.7" r="11" tabindex="0"/>
+<path class="l-m" style="--k: var(--c2);" d="M78.0 212.1 L242.7 171.5 L407.3 128.4"/>
+<circle class="k-m" style="--k: var(--c2);" cx="78.0" cy="212.1" r="5"/>
+<circle class="hit" data-tip="coarse / plain update10 N=10
+round6 42c514cc: 40,944 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.771 (improved). Tree integ @ 42c514ccbe." cx="78.0" cy="212.1" r="11" tabindex="0"/>
+<circle class="k-m" style="--k: var(--c2);" cx="242.7" cy="171.5" r="5"/>
+<circle class="hit" data-tip="coarse / plain update10 N=100
+round6 42c514cc: 354,273 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.751 (improved). Tree integ @ 42c514ccbe." cx="242.7" cy="171.5" r="11" tabindex="0"/>
+<circle class="k-m" style="--k: var(--c2);" cx="407.3" cy="128.4" r="5"/>
+<circle class="hit" data-tip="coarse / plain update10 N=1000
+round6 42c514cc: 3,510,245 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.753 (improved). Tree integ @ 42c514ccbe." cx="407.3" cy="128.4" r="11" tabindex="0"/>
+<path class="l-r" style="--k: var(--c3);" d="M78.0 201.9 L242.7 170.9 L407.3 129.5 L522.4 99.3"/>
+<circle class="k-r" style="--k: var(--c3);" cx="78.0" cy="201.9" r="5"/>
+<circle class="hit" data-tip="coarse / plain swap N=10
+base aa9943e: 70,664 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." cx="78.0" cy="201.9" r="11" tabindex="0"/>
+<circle class="k-r" style="--k: var(--c3);" cx="242.7" cy="170.9" r="5"/>
+<circle class="hit" data-tip="coarse / plain swap N=100
+base aa9943e: 366,536 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." cx="242.7" cy="170.9" r="11" tabindex="0"/>
+<circle class="k-r" style="--k: var(--c3);" cx="407.3" cy="129.5" r="5"/>
+<circle class="hit" data-tip="Swap
+N=1000: 3,311,480 instructions / operation (reported)" cx="407.3" cy="129.5" r="11" tabindex="0"/>
+<circle class="k-r" style="--k: var(--c3);" cx="522.4" cy="99.3" r="5"/>
+<circle class="hit" data-tip="Swap
+N=5000: 16,465,534 instructions / operation (reported)" cx="522.4" cy="99.3" r="11" tabindex="0"/>
+<path class="l-m" style="--k: var(--c3);" d="M78.0 205.6 L242.7 178.1 L407.3 137.5"/>
+<circle class="k-m" style="--k: var(--c3);" cx="78.0" cy="205.6" r="5"/>
+<circle class="hit" data-tip="coarse / plain swap N=10
+round6 42c514cc: 58,057 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.822 (improved). Tree integ @ 42c514ccbe." cx="78.0" cy="205.6" r="11" tabindex="0"/>
+<circle class="k-m" style="--k: var(--c3);" cx="242.7" cy="178.1" r="5"/>
+<circle class="hit" data-tip="coarse / plain swap N=100
+round6 42c514cc: 249,504 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.681 (improved). Tree integ @ 42c514ccbe." cx="242.7" cy="178.1" r="11" tabindex="0"/>
+<circle class="k-m" style="--k: var(--c3);" cx="407.3" cy="137.5" r="5"/>
+<circle class="hit" data-tip="coarse / plain swap N=1000
+round6 42c514cc: 2,165,518 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.654 (improved). Tree integ @ 42c514ccbe." cx="407.3" cy="137.5" r="11" tabindex="0"/>
+<circle class="k-r" style="--k: var(--c4);" cx="522.4" cy="62.5" r="5"/>
+<circle class="hit" data-tip="Remove
+N=5000: 116,538,216 instructions / operation (reported)" cx="522.4" cy="62.5" r="11" tabindex="0"/>
+<circle class="k-r" style="--k: var(--c5);" cx="78.0" cy="235.0" r="5"/>
+<circle class="hit" data-tip="fine / plain select N=10
+base aa9943e: 12,132 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." cx="78.0" cy="235.0" r="11" tabindex="0"/>
+<circle class="k-m" style="--k: var(--c5);" cx="78.0" cy="237.8" r="5"/>
+<circle class="hit" data-tip="fine / plain select N=10
+round6 42c514cc: 10,475 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.863 (improved). Tree integ @ 42c514ccbe." cx="78.0" cy="237.8" r="11" tabindex="0"/>
+<path class="l-r" style="--k: var(--c1);" d="M78.0 254.8 L242.7 254.4 L407.3 252.6"/>
+<circle class="k-r" style="--k: var(--c1);" cx="78.0" cy="254.8" r="5"/>
+<circle class="hit" data-tip="fine hover N=10
+base aa9943e: 4,240 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." cx="78.0" cy="254.8" r="11" tabindex="0"/>
+<circle class="k-r" style="--k: var(--c1);" cx="242.7" cy="254.4" r="5"/>
+<circle class="hit" data-tip="fine hover N=100
+base aa9943e: 4,326 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." cx="242.7" cy="254.4" r="11" tabindex="0"/>
+<circle class="k-r" style="--k: var(--c1);" cx="407.3" cy="252.6" r="5"/>
+<circle class="hit" data-tip="fine hover N=1000
+base aa9943e: 4,781 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." cx="407.3" cy="252.6" r="11" tabindex="0"/>
+<path class="l-m" style="--k: var(--c1);" d="M78.0 254.2 L242.7 253.8 L407.3 252.0"/>
+<circle class="k-m" style="--k: var(--c1);" cx="78.0" cy="254.2" r="5"/>
+<circle class="hit" data-tip="fine hover N=10
+round6 42c514cc: 4,384 instructions / operation (measured)
+sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.034 (regression). Tree integ @ 42c514ccbe." cx="78.0" cy="254.2" r="11" tabindex="0"/>
+<circle class="k-m" style="--k: var(--c1);" cx="242.7" cy="253.8" r="5"/>
+<circle class="hit" data-tip="fine hover N=100
+round6 42c514cc: 4,470 instructions / operation (measured)
+sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.033 (regression). Tree integ @ 42c514ccbe." cx="242.7" cy="253.8" r="11" tabindex="0"/>
+<circle class="k-m" style="--k: var(--c1);" cx="407.3" cy="252.0" r="5"/>
+<circle class="hit" data-tip="fine hover N=1000
+round6 42c514cc: 4,925 instructions / operation (measured)
+sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.030 (regression). Tree integ @ 42c514ccbe." cx="407.3" cy="252.0" r="11" tabindex="0"/>
+</svg></div>
+<ul class="legend-list"><li><span class="sw" style="--k: var(--c1);"></span><span><b>table coarse plain select</b> <span class="lbl">base N=10, 100, 1000, 5000; round6 at N=10, 100, 1000; round6 not measured at N=5000</span></span></li><li><span class="sw" style="--k: var(--c2);"></span><span><b>table coarse plain update10</b> <span class="lbl">base N=10, 100, 1000, 5000; round6 at N=10, 100, 1000; round6 not measured at N=5000</span></span></li><li><span class="sw" style="--k: var(--c3);"></span><span><b>table coarse plain swap</b> <span class="lbl">base N=10, 100, 1000, 5000; round6 at N=10, 100, 1000; round6 not measured at N=5000</span></span></li><li><span class="sw" style="--k: var(--c4);"></span><span><b>table coarse plain remove</b> <span class="lbl">base N=5000; base only</span></span></li><li><span class="sw" style="--k: var(--c5);"></span><span><b>table fine plain select</b> <span class="lbl">base N=10; round6 at N=10; round6 not measured at N=100, 1000, 5000</span></span></li><li><span class="sw" style="--k: var(--c1);"></span><span><b>rows fine hover</b> <span class="lbl">base N=10, 100, 1000; round6 at N=10, 100, 1000; round6 not measured at N=5000</span></span></li></ul>
+<h3>Round 6 over base, by cell</h3>
+<p class="cap">Ratio = round6 / base for each operation and N, lower is better. Green = improved, orange = regression; deeper colour = larger change. Cells with no pair say not measured.</p>
+<div class="panel"><svg class="fit" viewBox="0 0 438 310" role="img" aria-label="Heat grid of round6 over base ratio by operation and rows">
+<text class="lbl small mid" x="221.0" y="18">N=10</text>
+<text class="lbl small mid" x="283.0" y="18">N=100</text>
+<text class="lbl small mid" x="345.0" y="18">N=1,000</text>
+<text class="lbl small mid" x="407.0" y="18">N=5,000</text>
+<text x="0" y="58.0">table coarse plain select</text>
+<rect class="h-good" style="fill-opacity: 0.52" x="192" y="32" width="58" height="42" rx="6" data-tip="table coarse plain select, N=10
+base: 76,597 instructions (reported)
+round6: 51,531 instructions (measured)
+ratio round6 / base = 0.673 (improved)" tabindex="0"/>
+<text class="mid" x="221.0" y="56.0">0.673x</text>
+<rect class="h-good" style="fill-opacity: 0.55" x="254" y="32" width="58" height="42" rx="6" data-tip="table coarse plain select, N=100
+base: 667,431 instructions (reported)
+round6: 433,899 instructions (measured)
+ratio round6 / base = 0.650 (improved)" tabindex="0"/>
+<text class="mid" x="283.0" y="56.0">0.650x</text>
+<rect class="h-good" style="fill-opacity: 0.55" x="316" y="32" width="58" height="42" rx="6" data-tip="table coarse plain select, N=1,000
+base: 6,567,603 instructions (reported)
+round6: 4,258,832 instructions (measured)
+ratio round6 / base = 0.648 (improved)" tabindex="0"/>
+<text class="mid" x="345.0" y="56.0">0.648x</text>
+<rect class="h-none" x="378" y="32" width="58" height="42" rx="6" data-tip="table coarse plain select, N=5,000
+base: 32,874,375 (reported)
+round6: not measured" tabindex="0"/>
+<text class="lbl small mid" x="407.0" y="48.0">round6</text>
+<text class="lbl small mid" x="407.0" y="59.0">not</text>
+<text class="lbl small mid" x="407.0" y="70.0">measured</text>
+<text x="0" y="104.0">table coarse plain upda...</text>
+<rect class="h-good" style="fill-opacity: 0.40" x="192" y="78" width="58" height="42" rx="6" data-tip="table coarse plain update10, N=10
+base: 53,095 instructions (reported)
+round6: 40,944 instructions (measured)
+ratio round6 / base = 0.771 (improved)" tabindex="0"/>
+<text class="mid" x="221.0" y="102.0">0.771x</text>
+<rect class="h-good" style="fill-opacity: 0.43" x="254" y="78" width="58" height="42" rx="6" data-tip="table coarse plain update10, N=100
+base: 471,495 instructions (reported)
+round6: 354,273 instructions (measured)
+ratio round6 / base = 0.751 (improved)" tabindex="0"/>
+<text class="mid" x="283.0" y="102.0">0.751x</text>
+<rect class="h-good" style="fill-opacity: 0.43" x="316" y="78" width="58" height="42" rx="6" data-tip="table coarse plain update10, N=1,000
+base: 4,662,665 instructions (reported)
+round6: 3,510,245 instructions (measured)
+ratio round6 / base = 0.753 (improved)" tabindex="0"/>
+<text class="mid" x="345.0" y="102.0">0.753x</text>
+<rect class="h-none" x="378" y="78" width="58" height="42" rx="6" data-tip="table coarse plain update10, N=5,000
+base: 23,336,384 (reported)
+round6: not measured" tabindex="0"/>
+<text class="lbl small mid" x="407.0" y="94.0">round6</text>
+<text class="lbl small mid" x="407.0" y="105.0">not</text>
+<text class="lbl small mid" x="407.0" y="116.0">measured</text>
+<text x="0" y="150.0">table coarse plain swap</text>
+<rect class="h-good" style="fill-opacity: 0.35" x="192" y="124" width="58" height="42" rx="6" data-tip="table coarse plain swap, N=10
+base: 70,664 instructions (reported)
+round6: 58,057 instructions (measured)
+ratio round6 / base = 0.822 (improved)" tabindex="0"/>
+<text class="mid" x="221.0" y="148.0">0.822x</text>
+<rect class="h-good" style="fill-opacity: 0.51" x="254" y="124" width="58" height="42" rx="6" data-tip="table coarse plain swap, N=100
+base: 366,536 instructions (reported)
+round6: 249,504 instructions (measured)
+ratio round6 / base = 0.681 (improved)" tabindex="0"/>
+<text class="mid" x="283.0" y="148.0">0.681x</text>
+<rect class="h-good" style="fill-opacity: 0.55" x="316" y="124" width="58" height="42" rx="6" data-tip="table coarse plain swap, N=1,000
+base: 3,311,480 instructions (reported)
+round6: 2,165,518 instructions (measured)
+ratio round6 / base = 0.654 (improved)" tabindex="0"/>
+<text class="mid" x="345.0" y="148.0">0.654x</text>
+<rect class="h-none" x="378" y="124" width="58" height="42" rx="6" data-tip="table coarse plain swap, N=5,000
+base: 16,465,534 (reported)
+round6: not measured" tabindex="0"/>
+<text class="lbl small mid" x="407.0" y="140.0">round6</text>
+<text class="lbl small mid" x="407.0" y="151.0">not</text>
+<text class="lbl small mid" x="407.0" y="162.0">measured</text>
+<text x="0" y="196.0">table coarse plain remove</text>
+<rect class="h-none" x="192" y="170" width="58" height="42" rx="6" data-tip="table coarse plain remove, N=10: not measured" tabindex="0"/>
+<text class="lbl small mid" x="221.0" y="191.5">not</text>
+<text class="lbl small mid" x="221.0" y="202.5">measured</text>
+<rect class="h-none" x="254" y="170" width="58" height="42" rx="6" data-tip="table coarse plain remove, N=100: not measured" tabindex="0"/>
+<text class="lbl small mid" x="283.0" y="191.5">not</text>
+<text class="lbl small mid" x="283.0" y="202.5">measured</text>
+<rect class="h-none" x="316" y="170" width="58" height="42" rx="6" data-tip="table coarse plain remove, N=1,000: not measured" tabindex="0"/>
+<text class="lbl small mid" x="345.0" y="191.5">not</text>
+<text class="lbl small mid" x="345.0" y="202.5">measured</text>
+<rect class="h-none" x="378" y="170" width="58" height="42" rx="6" data-tip="table coarse plain remove, N=5,000
+base: 116,538,216 (reported)
+round6: not measured" tabindex="0"/>
+<text class="lbl small mid" x="407.0" y="186.0">round6</text>
+<text class="lbl small mid" x="407.0" y="197.0">not</text>
+<text class="lbl small mid" x="407.0" y="208.0">measured</text>
+<text x="0" y="242.0">table fine plain select</text>
+<rect class="h-good" style="fill-opacity: 0.31" x="192" y="216" width="58" height="42" rx="6" data-tip="table fine plain select, N=10
+base: 12,132 instructions (reported)
+round6: 10,475 instructions (measured)
+ratio round6 / base = 0.863 (improved)" tabindex="0"/>
+<text class="mid" x="221.0" y="240.0">0.863x</text>
+<rect class="h-none" x="254" y="216" width="58" height="42" rx="6" data-tip="table fine plain select, N=100: not measured" tabindex="0"/>
+<text class="lbl small mid" x="283.0" y="237.5">not</text>
+<text class="lbl small mid" x="283.0" y="248.5">measured</text>
+<rect class="h-none" x="316" y="216" width="58" height="42" rx="6" data-tip="table fine plain select, N=1,000: not measured" tabindex="0"/>
+<text class="lbl small mid" x="345.0" y="237.5">not</text>
+<text class="lbl small mid" x="345.0" y="248.5">measured</text>
+<rect class="h-none" x="378" y="216" width="58" height="42" rx="6" data-tip="table fine plain select, N=5,000: not measured" tabindex="0"/>
+<text class="lbl small mid" x="407.0" y="237.5">not</text>
+<text class="lbl small mid" x="407.0" y="248.5">measured</text>
+<text x="0" y="288.0">rows fine hover</text>
+<rect class="h-bad" style="fill-opacity: 0.21" x="192" y="262" width="58" height="42" rx="6" data-tip="rows fine hover, N=10
+base: 4,240 instructions (reported)
+round6: 4,384 instructions (measured)
+ratio round6 / base = 1.034 (regression)" tabindex="0"/>
+<text class="mid" x="221.0" y="286.0">1.034x</text>
+<rect class="h-bad" style="fill-opacity: 0.21" x="254" y="262" width="58" height="42" rx="6" data-tip="rows fine hover, N=100
+base: 4,326 instructions (reported)
+round6: 4,470 instructions (measured)
+ratio round6 / base = 1.033 (regression)" tabindex="0"/>
+<text class="mid" x="283.0" y="286.0">1.033x</text>
+<rect class="h-bad" style="fill-opacity: 0.21" x="316" y="262" width="58" height="42" rx="6" data-tip="rows fine hover, N=1,000
+base: 4,781 instructions (reported)
+round6: 4,925 instructions (measured)
+ratio round6 / base = 1.030 (regression)" tabindex="0"/>
+<text class="mid" x="345.0" y="286.0">1.030x</text>
+<rect class="h-none" x="378" y="262" width="58" height="42" rx="6" data-tip="rows fine hover, N=5,000: not measured" tabindex="0"/>
+<text class="lbl small mid" x="407.0" y="283.5">not</text>
+<text class="lbl small mid" x="407.0" y="294.5">measured</text>
+</svg></div>
+
+<h2>Before and after</h2>
+<p class="cap">Each row is one before/after series, drawn from its first point to its last point, with the ratio on the connector.</p>
+<h3>Re-description · instructions / row / turn</h3><p class="cap">Unit: instructions / row / turn. linear scale from zero. Filled dot = measured, hollow dashed = reported. Green connector = improved, orange = worse. Ratio = last / first.</p>
+<div class="panel">
+<svg class="fit" viewBox="0 0 440 254" role="img" aria-label="Re-description · instructions / row / turn, before and after">
+<line class="grid" x1="18.0" x2="18.0" y1="6" y2="228"/>
+<text class="lbl small start" x="18.0" y="246">0</text>
+<line class="grid" x1="220.0" x2="220.0" y1="6" y2="228"/>
+<text class="lbl small mid" x="220.0" y="246">1,371</text>
+<line class="grid" x1="422.0" x2="422.0" y1="6" y2="228"/>
+<text class="lbl small end" x="422.0" y="246">2,742</text>
+<rect class="hit" x="0" y="6" width="440" height="74" data-tip="Re-describing one plain row (box + integer label + string label)
+base aa9943e: 2,742 instructions / row / turn (measured)
+with insert/remove detection (lead/core-r6): 645 instructions / row / turn (measured)
+last / first = 0.235
+The look-ahead for shift detection cost about 70 instructions per row back." tabindex="0"/>
+<text x="18" y="22">Re-describing one plain row (box + integer label...</text>
+<path class="c-good anim-draw" style="--d: 0.15s" pathLength="1" d="M422.0 50 L113.0 50"/>
+<text class="small mid" x="267.5" y="39">0.235x (4.3x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="422.0" cy="50" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="113.0" cy="50" r="6.5"/>
+<text class="lbl small" x="18" y="71">base aa9943e 2,742</text>
+<text class="lbl small end" x="422" y="71">with insert/remov... 645</text>
+<rect class="hit" x="0" y="80" width="440" height="74" data-tip="Re-describing one row with two static labels
+base aa9943e: 2,313 instructions / row / turn (measured)
+seals + byte specs (lead/core-r6): 522 instructions / row / turn (measured)
+last / first = 0.226" tabindex="0"/>
+<text x="18" y="96">Re-describing one row with two static labels</text>
+<path class="c-good anim-draw" style="--d: 0.27s" pathLength="1" d="M358.8 124 L94.9 124"/>
+<text class="small mid" x="226.9" y="113">0.226x (4.4x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.42s" cx="358.8" cy="124" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.42s" cx="94.9" cy="124" r="6.5"/>
+<text class="lbl small" x="18" y="145">base aa9943e 2,313</text>
+<text class="lbl small end" x="422" y="145">seals + byte spec... 522</text>
+<rect class="hit" x="0" y="154" width="440" height="74" data-tip="Re-describing one box alone
+base aa9943e: 465 instructions / row / turn (measured)
+seals + byte specs (lead/core-r6): 148 instructions / row / turn (measured)
+last / first = 0.318" tabindex="0"/>
+<text x="18" y="170">Re-describing one box alone</text>
+<path class="c-good anim-draw" style="--d: 0.39s" pathLength="1" d="M86.5 198 L39.8 198"/>
+<text class="small mid" x="63.2" y="187">0.318x (3.1x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.54s" cx="86.5" cy="198" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.54s" cx="39.8" cy="198" r="6.5"/>
+<text class="lbl small" x="18" y="219">base aa9943e 465</text>
+<text class="lbl small end" x="422" y="219">seals + byte spec... 148</text>
+</svg>
+</div><h3>Correctness · tests failing</h3><p class="cap">Unit: tests failing. linear scale from zero. Filled dot = measured, hollow dashed = reported. Green connector = improved, orange = worse. Ratio = last / first.</p>
+<div class="panel">
+<svg class="fit" viewBox="0 0 440 106" role="img" aria-label="Correctness · tests failing, before and after">
+<line class="grid" x1="18.0" x2="18.0" y1="6" y2="80"/>
+<text class="lbl small start" x="18.0" y="98">0</text>
+<line class="grid" x1="220.0" x2="220.0" y1="6" y2="80"/>
+<text class="lbl small mid" x="220.0" y="98">2.5</text>
+<line class="grid" x1="422.0" x2="422.0" y1="6" y2="80"/>
+<text class="lbl small end" x="422.0" y="98">5</text>
+<rect class="hit" x="0" y="6" width="440" height="74" data-tip="Workspace tests failing (bough-suite only; workspace not rerun)
+main bd9978c: 5 tests failing (measured)
+lane/verification fixes: 0 tests failing (measured)
+last / first = 0.000" tabindex="0"/>
+<text x="18" y="22">Workspace tests failing (bough-suite only; worksp...</text>
+<path class="c-good anim-draw" style="--d: 0.15s" pathLength="1" d="M422.0 50 L18.0 50"/>
+<text class="small mid" x="220.0" y="39">0.000x (reached zero)</text>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="422.0" cy="50" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="18.0" cy="50" r="6.5"/>
+<text class="lbl small" x="18" y="71">main bd9978c 5</text>
+<text class="lbl small end" x="422" y="71">lane/verification... 0</text>
+</svg>
+</div><h3>gui-bench on the integration branch (gates pass) · instructions / operation</h3><p class="cap">Unit: instructions / operation. log scale, each gridline is 10x. Filled dot = measured, hollow dashed = reported. Green connector = improved, orange = worse. Ratio = last / first.</p>
+<div class="panel">
+<svg class="fit" viewBox="0 0 440 994" role="img" aria-label="gui-bench on the integration branch (gates pass) · instructions / operation, before and after">
+<line class="grid" x1="18.0" x2="18.0" y1="6" y2="968"/>
+<text class="lbl small start" x="18.0" y="986">1,000</text>
+<line class="grid" x1="119.0" x2="119.0" y1="6" y2="968"/>
+<text class="lbl small mid" x="119.0" y="986">10,000</text>
+<line class="grid" x1="220.0" x2="220.0" y1="6" y2="968"/>
+<text class="lbl small mid" x="220.0" y="986">100,000</text>
+<line class="grid" x1="321.0" x2="321.0" y1="6" y2="968"/>
+<text class="lbl small mid" x="321.0" y="986">1,000,000</text>
+<line class="grid" x1="422.0" x2="422.0" y1="6" y2="968"/>
+<text class="lbl small end" x="422.0" y="986">10,000,000</text>
+<rect class="hit" x="0" y="6" width="440" height="74" data-tip="coarse / plain select N=1000
+base aa9943e: 6,567,603 instructions / operation (reported)
+round6 42c514cc: 4,258,832 instructions / operation (measured)
+last / first = 0.648
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.648 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+<text x="18" y="22">coarse / plain select N=1000</text>
+<path class="c-good anim-draw" style="--d: 0.15s" pathLength="1" d="M403.6 50 L384.6 50"/>
+<text class="small mid" x="394.1" y="39">0.648x (1.5x lower)</text>
+<circle class="k-r anim-fade" style="--d: 0.30s" cx="403.6" cy="50" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="384.6" cy="50" r="6.5"/>
+<text class="lbl small" x="18" y="71">base aa9943e 6,567,603</text>
+<text class="lbl small end" x="422" y="71">round6 42c514cc 4,258,832</text>
+<rect class="hit" x="0" y="80" width="440" height="74" data-tip="coarse / plain select N=100
+base aa9943e: 667,431 instructions / operation (reported)
+round6 42c514cc: 433,899 instructions / operation (measured)
+last / first = 0.650
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.650 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+<text x="18" y="96">coarse / plain select N=100</text>
+<path class="c-good anim-draw" style="--d: 0.27s" pathLength="1" d="M303.3 124 L284.4 124"/>
+<text class="small mid" x="293.8" y="113">0.650x (1.5x lower)</text>
+<circle class="k-r anim-fade" style="--d: 0.42s" cx="303.3" cy="124" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.42s" cx="284.4" cy="124" r="6.5"/>
+<text class="lbl small" x="18" y="145">base aa9943e 667,431</text>
+<text class="lbl small end" x="422" y="145">round6 42c514cc 433,899</text>
+<rect class="hit" x="0" y="154" width="440" height="74" data-tip="coarse / plain swap N=1000
+base aa9943e: 3,311,480 instructions / operation (reported)
+round6 42c514cc: 2,165,518 instructions / operation (measured)
+last / first = 0.654
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.654 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+<text x="18" y="170">coarse / plain swap N=1000</text>
+<path class="c-good anim-draw" style="--d: 0.39s" pathLength="1" d="M373.5 198 L354.9 198"/>
+<text class="small mid" x="364.2" y="187">0.654x (1.5x lower)</text>
+<circle class="k-r anim-fade" style="--d: 0.54s" cx="373.5" cy="198" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.54s" cx="354.9" cy="198" r="6.5"/>
+<text class="lbl small" x="18" y="219">base aa9943e 3,311,480</text>
+<text class="lbl small end" x="422" y="219">round6 42c514cc 2,165,518</text>
+<rect class="hit" x="0" y="228" width="440" height="74" data-tip="coarse / plain select N=10
+base aa9943e: 76,597 instructions / operation (reported)
+round6 42c514cc: 51,531 instructions / operation (measured)
+last / first = 0.673
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.673 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+<text x="18" y="244">coarse / plain select N=10</text>
+<path class="c-good anim-draw" style="--d: 0.51s" pathLength="1" d="M208.3 272 L190.9 272"/>
+<text class="small mid" x="199.6" y="261">0.673x (1.5x lower)</text>
+<circle class="k-r anim-fade" style="--d: 0.66s" cx="208.3" cy="272" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.66s" cx="190.9" cy="272" r="6.5"/>
+<text class="lbl small" x="18" y="293">base aa9943e 76,597</text>
+<text class="lbl small end" x="422" y="293">round6 42c514cc 51,531</text>
+<rect class="hit" x="0" y="302" width="440" height="74" data-tip="coarse / plain swap N=100
+base aa9943e: 366,536 instructions / operation (reported)
+round6 42c514cc: 249,504 instructions / operation (measured)
+last / first = 0.681
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.681 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+<text x="18" y="318">coarse / plain swap N=100</text>
+<path class="c-good anim-draw" style="--d: 0.63s" pathLength="1" d="M277.0 346 L260.1 346"/>
+<text class="small mid" x="268.5" y="335">0.681x (1.5x lower)</text>
+<circle class="k-r anim-fade" style="--d: 0.78s" cx="277.0" cy="346" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.78s" cx="260.1" cy="346" r="6.5"/>
+<text class="lbl small" x="18" y="367">base aa9943e 366,536</text>
+<text class="lbl small end" x="422" y="367">round6 42c514cc 249,504</text>
+<rect class="hit" x="0" y="376" width="440" height="74" data-tip="coarse / plain update10 N=100
+base aa9943e: 471,495 instructions / operation (reported)
+round6 42c514cc: 354,273 instructions / operation (measured)
+last / first = 0.751
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.751 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+<text x="18" y="392">coarse / plain update10 N=100</text>
+<path class="c-good anim-draw" style="--d: 0.75s" pathLength="1" d="M288.0 420 L275.5 420"/>
+<text class="small mid" x="281.8" y="409">0.751x (1.3x lower)</text>
+<circle class="k-r anim-fade" style="--d: 0.90s" cx="288.0" cy="420" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.90s" cx="275.5" cy="420" r="6.5"/>
+<text class="lbl small" x="18" y="441">base aa9943e 471,495</text>
+<text class="lbl small end" x="422" y="441">round6 42c514cc 354,273</text>
+<rect class="hit" x="0" y="450" width="440" height="74" data-tip="coarse / plain update10 N=1000
+base aa9943e: 4,662,665 instructions / operation (reported)
+round6 42c514cc: 3,510,245 instructions / operation (measured)
+last / first = 0.753
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.753 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+<text x="18" y="466">coarse / plain update10 N=1000</text>
+<path class="c-good anim-draw" style="--d: 0.87s" pathLength="1" d="M388.5 494 L376.1 494"/>
+<text class="small mid" x="382.3" y="483">0.753x (1.3x lower)</text>
+<circle class="k-r anim-fade" style="--d: 1.02s" cx="388.5" cy="494" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 1.02s" cx="376.1" cy="494" r="6.5"/>
+<text class="lbl small" x="18" y="515">base aa9943e 4,662,665</text>
+<text class="lbl small end" x="422" y="515">round6 42c514cc 3,510,245</text>
+<rect class="hit" x="0" y="524" width="440" height="74" data-tip="coarse / plain update10 N=10
+base aa9943e: 53,095 instructions / operation (reported)
+round6 42c514cc: 40,944 instructions / operation (measured)
+last / first = 0.771
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.771 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+<text x="18" y="540">coarse / plain update10 N=10</text>
+<path class="c-good anim-draw" style="--d: 0.99s" pathLength="1" d="M192.2 568 L180.8 568"/>
+<text class="small mid" x="186.5" y="557">0.771x (1.3x lower)</text>
+<circle class="k-r anim-fade" style="--d: 1.14s" cx="192.2" cy="568" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 1.14s" cx="180.8" cy="568" r="6.5"/>
+<text class="lbl small" x="18" y="589">base aa9943e 53,095</text>
+<text class="lbl small end" x="422" y="589">round6 42c514cc 40,944</text>
+<rect class="hit" x="0" y="598" width="440" height="74" data-tip="coarse / plain swap N=10
+base aa9943e: 70,664 instructions / operation (reported)
+round6 42c514cc: 58,057 instructions / operation (measured)
+last / first = 0.822
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.822 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+<text x="18" y="614">coarse / plain swap N=10</text>
+<path class="c-good anim-draw" style="--d: 1.11s" pathLength="1" d="M204.8 642 L196.1 642"/>
+<text class="small mid" x="200.5" y="631">0.822x (1.2x lower)</text>
+<circle class="k-r anim-fade" style="--d: 1.26s" cx="204.8" cy="642" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 1.26s" cx="196.1" cy="642" r="6.5"/>
+<text class="lbl small" x="18" y="663">base aa9943e 70,664</text>
+<text class="lbl small end" x="422" y="663">round6 42c514cc 58,057</text>
+<rect class="hit" x="0" y="672" width="440" height="74" data-tip="fine / plain select N=10
+base aa9943e: 12,132 instructions / operation (reported)
+round6 42c514cc: 10,475 instructions / operation (measured)
+last / first = 0.863
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.863 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+<text x="18" y="688">fine / plain select N=10</text>
+<path class="c-good anim-draw" style="--d: 1.23s" pathLength="1" d="M127.5 716 L121.0 716"/>
+<text class="small mid" x="124.3" y="705">0.863x (1.2x lower)</text>
+<circle class="k-r anim-fade" style="--d: 1.38s" cx="127.5" cy="716" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 1.38s" cx="121.0" cy="716" r="6.5"/>
+<text class="lbl small" x="18" y="737">base aa9943e 12,132</text>
+<text class="lbl small end" x="422" y="737">round6 42c514cc 10,475</text>
+<rect class="hit" x="0" y="746" width="440" height="74" data-tip="fine hover N=10
+base aa9943e: 4,240 instructions / operation (reported)
+round6 42c514cc: 4,384 instructions / operation (measured)
+last / first = 1.034
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.
+sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.034 (regression). Tree integ @ 42c514ccbe." tabindex="0"/>
+<text x="18" y="762">fine hover N=10</text>
+<path class="c-bad anim-draw" style="--d: 1.35s" pathLength="1" d="M81.4 790 L82.8 790"/>
+<text class="small mid" x="82.1" y="779">1.034x (worse)</text>
+<circle class="k-r anim-fade" style="--d: 1.50s" cx="81.4" cy="790" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 1.50s" cx="82.8" cy="790" r="6.5"/>
+<text class="lbl small" x="18" y="811">base aa9943e 4,240</text>
+<text class="lbl small end" x="422" y="811">round6 42c514cc 4,384</text>
+<rect class="hit" x="0" y="820" width="440" height="74" data-tip="fine hover N=100
+base aa9943e: 4,326 instructions / operation (reported)
+round6 42c514cc: 4,470 instructions / operation (measured)
+last / first = 1.033
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.
+sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.033 (regression). Tree integ @ 42c514ccbe." tabindex="0"/>
+<text x="18" y="836">fine hover N=100</text>
+<path class="c-bad anim-draw" style="--d: 1.47s" pathLength="1" d="M82.2 864 L83.7 864"/>
+<text class="small mid" x="83.0" y="853">1.033x (worse)</text>
+<circle class="k-r anim-fade" style="--d: 1.62s" cx="82.2" cy="864" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 1.62s" cx="83.7" cy="864" r="6.5"/>
+<text class="lbl small" x="18" y="885">base aa9943e 4,326</text>
+<text class="lbl small end" x="422" y="885">round6 42c514cc 4,470</text>
+<rect class="hit" x="0" y="894" width="440" height="74" data-tip="fine hover N=1000
+base aa9943e: 4,781 instructions / operation (reported)
+round6 42c514cc: 4,925 instructions / operation (measured)
+last / first = 1.030
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.
+sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.030 (regression). Tree integ @ 42c514ccbe." tabindex="0"/>
+<text x="18" y="910">fine hover N=1000</text>
+<path class="c-bad anim-draw" style="--d: 1.59s" pathLength="1" d="M86.6 938 L87.9 938"/>
+<text class="small mid" x="87.3" y="927">1.030x (worse)</text>
+<circle class="k-r anim-fade" style="--d: 1.74s" cx="86.6" cy="938" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 1.74s" cx="87.9" cy="938" r="6.5"/>
+<text class="lbl small" x="18" y="959">base aa9943e 4,781</text>
+<text class="lbl small end" x="422" y="959">round6 42c514cc 4,925</text>
+</svg>
+</div><h3>Binary size · bytes</h3><p class="cap">Unit: bytes. linear scale from zero. Filled dot = measured, hollow dashed = reported. Green connector = improved, orange = worse. Ratio = last / first.</p>
+<div class="panel">
+<svg class="fit" viewBox="0 0 440 106" role="img" aria-label="Binary size · bytes, before and after">
+<line class="grid" x1="18.0" x2="18.0" y1="6" y2="80"/>
+<text class="lbl small start" x="18.0" y="98">0</text>
+<line class="grid" x1="220.0" x2="220.0" y1="6" y2="80"/>
+<text class="lbl small mid" x="220.0" y="98">1,443,744</text>
+<line class="grid" x1="422.0" x2="422.0" y1="6" y2="80"/>
+<text class="lbl small end" x="422.0" y="98">2,887,488</text>
+<rect class="hit" x="0" y="6" width="440" height="74" data-tip="Counter example, production profile, stripped
+base aa9943e: 2,887,488 bytes (reported)
+lane developer-loop, size build: 1,547,216 bytes (reported)
+last / first = 0.536
+std rebuilt for size, fill-only glyph rasteriser, cold crates at opt-level z. Every pixel gate passes on binaries built this way; hot instruction cells within 1.012x. Reported, not replayed." tabindex="0"/>
+<text x="18" y="22">Counter example, production profile, stripped</text>
+<path class="c-good anim-draw" style="--d: 0.15s" pathLength="1" d="M422.0 50 L234.5 50"/>
+<text class="small mid" x="328.2" y="39">0.536x (1.9x lower)</text>
+<circle class="k-r anim-fade" style="--d: 0.30s" cx="422.0" cy="50" r="6.5"/>
+<circle class="k-r anim-fade" style="--d: 0.30s" cx="234.5" cy="50" r="6.5"/>
+<text class="lbl small" x="18" y="71">base aa9943e 2,887,488</text>
+<text class="lbl small end" x="422" y="71">lane developer-lo... 1,547,216</text>
+</svg>
+</div><h3>Startup · instructions</h3><p class="cap">Unit: instructions. linear scale from zero. Filled dot = measured, hollow dashed = reported. Green connector = improved, orange = worse. Ratio = last / first.</p>
+<div class="panel">
+<svg class="fit" viewBox="0 0 440 106" role="img" aria-label="Startup · instructions, before and after">
+<line class="grid" x1="18.0" x2="18.0" y1="6" y2="80"/>
+<text class="lbl small start" x="18.0" y="98">0</text>
+<line class="grid" x1="220.0" x2="220.0" y1="6" y2="80"/>
+<text class="lbl small mid" x="220.0" y="98">8,546,193</text>
+<line class="grid" x1="422.0" x2="422.0" y1="6" y2="80"/>
+<text class="lbl small end" x="422.0" y="98">17,092,386</text>
+<rect class="hit" x="0" y="6" width="440" height="74" data-tip="An empty headless app: construction plus first turn
+base aa9943e: 17,092,386 instructions (measured)
+font found by bytes, not hashed (lead/core-r6): 13,212,385 instructions (measured)
+last / first = 0.773
+crates/bough/examples/redescribe_cost.rs MOUNT=1, calling-thread instruction counter." tabindex="0"/>
+<text x="18" y="22">An empty headless app: construction plus first turn</text>
+<path class="c-good anim-draw" style="--d: 0.15s" pathLength="1" d="M422.0 50 L330.3 50"/>
+<text class="small mid" x="376.1" y="39">0.773x (1.3x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="422.0" cy="50" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="330.3" cy="50" r="6.5"/>
+<text class="lbl small" x="18" y="71">base aa9943e 17,092,386</text>
+<text class="lbl small end" x="422" y="71">font found by byt... 13,212,385</text>
+</svg>
+</div><h3>Signal cost (lead/core-r6) · instructions per turn</h3><p class="cap">Unit: instructions per turn. log scale, each gridline is 10x. Filled dot = measured, hollow dashed = reported. Green connector = improved, orange = worse. Ratio = last / first.</p>
+<div class="panel">
+<svg class="fit" viewBox="0 0 440 476" role="img" aria-label="Signal cost (lead/core-r6) · instructions per turn, before and after">
+<line class="grid" x1="18.0" x2="18.0" y1="6" y2="450"/>
+<text class="lbl small start" x="18.0" y="468">100</text>
+<line class="grid" x1="119.0" x2="119.0" y1="6" y2="450"/>
+<text class="lbl small mid" x="119.0" y="468">1,000</text>
+<line class="grid" x1="220.0" x2="220.0" y1="6" y2="450"/>
+<text class="lbl small mid" x="220.0" y="468">10,000</text>
+<line class="grid" x1="321.0" x2="321.0" y1="6" y2="450"/>
+<text class="lbl small mid" x="321.0" y="468">100,000</text>
+<line class="grid" x1="422.0" x2="422.0" y1="6" y2="450"/>
+<text class="lbl small end" x="422.0" y="468">1,000,000</text>
+<rect class="hit" x="0" y="6" width="440" height="74" data-tip="Idle turn, 256 rows
+before: 10,925 instructions per turn (measured)
+after: 247 instructions per turn (measured)
+last / first = 0.023
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+<text x="18" y="22">Idle turn, 256 rows</text>
+<path class="c-good anim-draw" style="--d: 0.15s" pathLength="1" d="M223.9 50 L57.7 50"/>
+<text class="small mid" x="140.8" y="39">0.023x (44.2x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="223.9" cy="50" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="57.7" cy="50" r="6.5"/>
+<text class="lbl small" x="18" y="71">before 10,925</text>
+<text class="lbl small end" x="422" y="71">after 247</text>
+<rect class="hit" x="0" y="80" width="440" height="74" data-tip="Colour signal write, 256 rows
+before: 11,097 instructions per turn (measured)
+after: 606 instructions per turn (measured)
+last / first = 0.055
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+<text x="18" y="96">Colour signal write, 256 rows</text>
+<path class="c-good anim-draw" style="--d: 0.27s" pathLength="1" d="M224.6 124 L97.0 124"/>
+<text class="small mid" x="160.8" y="113">0.055x (18.3x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.42s" cx="224.6" cy="124" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.42s" cx="97.0" cy="124" r="6.5"/>
+<text class="lbl small" x="18" y="145">before 11,097</text>
+<text class="lbl small end" x="422" y="145">after 606</text>
+<rect class="hit" x="0" y="154" width="440" height="74" data-tip="Colour signal write, 16 rows
+before: 1,088 instructions per turn (measured)
+after: 746 instructions per turn (measured)
+last / first = 0.686
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+<text x="18" y="170">Colour signal write, 16 rows</text>
+<path class="c-good anim-draw" style="--d: 0.39s" pathLength="1" d="M122.7 198 L106.1 198"/>
+<text class="small mid" x="114.4" y="187">0.686x (1.5x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.54s" cx="122.7" cy="198" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.54s" cx="106.1" cy="198" r="6.5"/>
+<text class="lbl small" x="18" y="219">before 1,088</text>
+<text class="lbl small end" x="422" y="219">after 746</text>
+<rect class="hit" x="0" y="228" width="440" height="74" data-tip="Numeric label write, 256 rows
+before: 19,236 instructions per turn (measured)
+after: 8,725 instructions per turn (measured)
+last / first = 0.454
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+<text x="18" y="244">Numeric label write, 256 rows</text>
+<path class="c-good anim-draw" style="--d: 0.51s" pathLength="1" d="M248.7 272 L214.0 272"/>
+<text class="small mid" x="231.4" y="261">0.454x (2.2x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.66s" cx="248.7" cy="272" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.66s" cx="214.0" cy="272" r="6.5"/>
+<text class="lbl small" x="18" y="293">before 19,236</text>
+<text class="lbl small end" x="422" y="293">after 8,725</text>
+<rect class="hit" x="0" y="302" width="440" height="74" data-tip="String label write, 256 rows
+before: 31,399 instructions per turn (measured)
+after: 20,853 instructions per turn (measured)
+last / first = 0.664
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+<text x="18" y="318">String label write, 256 rows</text>
+<path class="c-good anim-draw" style="--d: 0.63s" pathLength="1" d="M270.2 346 L252.2 346"/>
+<text class="small mid" x="261.2" y="335">0.664x (1.5x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.78s" cx="270.2" cy="346" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.78s" cx="252.2" cy="346" r="6.5"/>
+<text class="lbl small" x="18" y="367">before 31,399</text>
+<text class="lbl small end" x="422" y="367">after 20,853</text>
+<rect class="hit" x="0" y="376" width="440" height="74" data-tip="Re-describing owner, idle turn, 256 rows
+before: 511,585 instructions per turn (measured)
+after: 140,223 instructions per turn (measured)
+last / first = 0.274
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+<text x="18" y="392">Re-describing owner, idle turn, 256 rows</text>
+<path class="c-good anim-draw" style="--d: 0.75s" pathLength="1" d="M392.6 420 L335.8 420"/>
+<text class="small mid" x="364.2" y="409">0.274x (3.6x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.90s" cx="392.6" cy="420" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.90s" cx="335.8" cy="420" r="6.5"/>
+<text class="lbl small" x="18" y="441">before 511,585</text>
+<text class="lbl small end" x="422" y="441">after 140,223</text>
+</svg>
+</div><h3>Store (lane/store/round6) · instructions / turn</h3><p class="cap">Unit: instructions / turn. linear scale from zero. Filled dot = measured, hollow dashed = reported. Green connector = improved, orange = worse. Ratio = last / first.</p>
+<div class="panel">
+<svg class="fit" viewBox="0 0 440 106" role="img" aria-label="Store (lane/store/round6) · instructions / turn, before and after">
+<line class="grid" x1="18.0" x2="18.0" y1="6" y2="80"/>
+<text class="lbl small start" x="18.0" y="98">0</text>
+<line class="grid" x1="220.0" x2="220.0" y1="6" y2="80"/>
+<text class="lbl small mid" x="220.0" y="98">1,634.5</text>
+<line class="grid" x1="422.0" x2="422.0" y1="6" y2="80"/>
+<text class="lbl small end" x="422.0" y="98">3,269</text>
+<rect class="hit" x="0" y="6" width="440" height="74" data-tip="Numeric label write, 1 row
+before: 3,269 instructions / turn (measured)
+after: 664 instructions / turn (measured)
+last / first = 0.203
+source: lane/store/round6" tabindex="0"/>
+<text x="18" y="22">Numeric label write, 1 row</text>
+<path class="c-good anim-draw" style="--d: 0.15s" pathLength="1" d="M422.0 50 L100.1 50"/>
+<text class="small mid" x="261.0" y="39">0.203x (4.9x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="422.0" cy="50" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="100.1" cy="50" r="6.5"/>
+<text class="lbl small" x="18" y="71">before 3,269</text>
+<text class="lbl small end" x="422" y="71">after 664</text>
+</svg>
+</div><h3>Store (lane/store/round6) · instructions / row / turn</h3><p class="cap">Unit: instructions / row / turn. linear scale from zero. Filled dot = measured, hollow dashed = reported. Green connector = improved, orange = worse. Ratio = last / first.</p>
+<div class="panel">
+<svg class="fit" viewBox="0 0 440 254" role="img" aria-label="Store (lane/store/round6) · instructions / row / turn, before and after">
+<line class="grid" x1="18.0" x2="18.0" y1="6" y2="228"/>
+<text class="lbl small start" x="18.0" y="246">0</text>
+<line class="grid" x1="220.0" x2="220.0" y1="6" y2="228"/>
+<text class="lbl small mid" x="220.0" y="246">327.5</text>
+<line class="grid" x1="422.0" x2="422.0" y1="6" y2="228"/>
+<text class="lbl small end" x="422.0" y="246">655</text>
+<rect class="hit" x="0" y="6" width="440" height="74" data-tip="Re-description per row owned
+before: 655 instructions / row / turn (measured)
+after: 298 instructions / row / turn (measured)
+last / first = 0.455
+source: lane/store/round6" tabindex="0"/>
+<text x="18" y="22">Re-description per row owned</text>
+<path class="c-good anim-draw" style="--d: 0.15s" pathLength="1" d="M422.0 50 L201.8 50"/>
+<text class="small mid" x="311.9" y="39">0.455x (2.2x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="422.0" cy="50" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="201.8" cy="50" r="6.5"/>
+<text class="lbl small" x="18" y="71">before 655</text>
+<text class="lbl small end" x="422" y="71">after 298</text>
+<rect class="hit" x="0" y="80" width="440" height="74" data-tip="Re-description per row, static
+before: 631 instructions / row / turn (measured)
+after: 301 instructions / row / turn (measured)
+last / first = 0.477
+source: lane/store/round6" tabindex="0"/>
+<text x="18" y="96">Re-description per row, static</text>
+<path class="c-good anim-draw" style="--d: 0.27s" pathLength="1" d="M407.2 124 L203.7 124"/>
+<text class="small mid" x="305.4" y="113">0.477x (2.1x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.42s" cx="407.2" cy="124" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.42s" cx="203.7" cy="124" r="6.5"/>
+<text class="lbl small" x="18" y="145">before 631</text>
+<text class="lbl small end" x="422" y="145">after 301</text>
+<rect class="hit" x="0" y="154" width="440" height="74" data-tip="Re-description per row, bare
+before: 224 instructions / row / turn (measured)
+after: 126 instructions / row / turn (measured)
+last / first = 0.562
+source: lane/store/round6" tabindex="0"/>
+<text x="18" y="170">Re-description per row, bare</text>
+<path class="c-good anim-draw" style="--d: 0.39s" pathLength="1" d="M156.2 198 L95.7 198"/>
+<text class="small mid" x="125.9" y="187">0.562x (1.8x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.54s" cx="156.2" cy="198" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.54s" cx="95.7" cy="198" r="6.5"/>
+<text class="lbl small" x="18" y="219">before 224</text>
+<text class="lbl small end" x="422" y="219">after 126</text>
+</svg>
+</div><h3>Store (lane/store/round6) · instructions / row</h3><p class="cap">Unit: instructions / row. linear scale from zero. Filled dot = measured, hollow dashed = reported. Green connector = improved, orange = worse. Ratio = last / first.</p>
+<div class="panel">
+<svg class="fit" viewBox="0 0 440 106" role="img" aria-label="Store (lane/store/round6) · instructions / row, before and after">
+<line class="grid" x1="18.0" x2="18.0" y1="6" y2="80"/>
+<text class="lbl small start" x="18.0" y="98">0</text>
+<line class="grid" x1="220.0" x2="220.0" y1="6" y2="80"/>
+<text class="lbl small mid" x="220.0" y="98">8,018.5</text>
+<line class="grid" x1="422.0" x2="422.0" y1="6" y2="80"/>
+<text class="lbl small end" x="422.0" y="98">16,037</text>
+<rect class="hit" x="0" y="6" width="440" height="74" data-tip="Churn per row
+before: 16,037 instructions / row (measured)
+after: 11,959 instructions / row (measured)
+last / first = 0.746
+source: lane/store/round6" tabindex="0"/>
+<text x="18" y="22">Churn per row</text>
+<path class="c-good anim-draw" style="--d: 0.15s" pathLength="1" d="M422.0 50 L319.3 50"/>
+<text class="small mid" x="370.6" y="39">0.746x (1.3x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="422.0" cy="50" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="319.3" cy="50" r="6.5"/>
+<text class="lbl small" x="18" y="71">before 16,037</text>
+<text class="lbl small end" x="422" y="71">after 11,959</text>
+</svg>
+</div><h3>Core (lane/core/round6) · instructions per page</h3><p class="cap">Unit: instructions per page. linear scale from zero. Filled dot = measured, hollow dashed = reported. Green connector = improved, orange = worse. Ratio = last / first.</p>
+<div class="panel">
+<svg class="fit" viewBox="0 0 440 106" role="img" aria-label="Core (lane/core/round6) · instructions per page, before and after">
+<line class="grid" x1="18.0" x2="18.0" y1="6" y2="80"/>
+<text class="lbl small start" x="18.0" y="98">0</text>
+<line class="grid" x1="220.0" x2="220.0" y1="6" y2="80"/>
+<text class="lbl small mid" x="220.0" y="98">54.5</text>
+<line class="grid" x1="422.0" x2="422.0" y1="6" y2="80"/>
+<text class="lbl small end" x="422.0" y="98">109</text>
+<rect class="hit" x="0" y="6" width="440" height="74" data-tip="Whole-page translate
+before: 109 instructions per page (measured)
+after: 32 instructions per page (measured)
+last / first = 0.294
+source: lane/core/round6" tabindex="0"/>
+<text x="18" y="22">Whole-page translate</text>
+<path class="c-good anim-draw" style="--d: 0.15s" pathLength="1" d="M422.0 50 L136.6 50"/>
+<text class="small mid" x="279.3" y="39">0.294x (3.4x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="422.0" cy="50" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="136.6" cy="50" r="6.5"/>
+<text class="lbl small" x="18" y="71">before 109</text>
+<text class="lbl small end" x="422" y="71">after 32</text>
+</svg>
+</div><h3>Core (lane/core/round6) · instructions</h3><p class="cap">Unit: instructions. linear scale from zero. Filled dot = measured, hollow dashed = reported. Green connector = improved, orange = worse. Ratio = last / first.</p>
+<div class="panel">
+<svg class="fit" viewBox="0 0 440 106" role="img" aria-label="Core (lane/core/round6) · instructions, before and after">
+<line class="grid" x1="18.0" x2="18.0" y1="6" y2="80"/>
+<text class="lbl small start" x="18.0" y="98">0</text>
+<line class="grid" x1="220.0" x2="220.0" y1="6" y2="80"/>
+<text class="lbl small mid" x="220.0" y="98">424,500</text>
+<line class="grid" x1="422.0" x2="422.0" y1="6" y2="80"/>
+<text class="lbl small end" x="422.0" y="98">849,000</text>
+<rect class="hit" x="0" y="6" width="440" height="74" data-tip="Translate half, 1,000,000 records
+before: 849,000 instructions (measured)
+after: 271,000 instructions (measured)
+last / first = 0.319
+source: lane/core/round6" tabindex="0"/>
+<text x="18" y="22">Translate half, 1,000,000 records</text>
+<path class="c-good anim-draw" style="--d: 0.15s" pathLength="1" d="M422.0 50 L147.0 50"/>
+<text class="small mid" x="284.5" y="39">0.319x (3.1x lower)</text>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="422.0" cy="50" r="6.5"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="147.0" cy="50" r="6.5"/>
+<text class="lbl small" x="18" y="71">before 849,000</text>
+<text class="lbl small end" x="422" y="71">after 271,000</text>
+</svg>
+</div>
+<h3>Single values</h3><p class="cap">These series have one point, so there is no before value to draw against.</p><ul class="singles"><li><b>Remove</b>: 116,538,216 instructions / operation <span class="tag r">reported</span>. <span class="tag n">before: not measured</span></li><li><b>State-plane flag flip through a handle</b>: 95 instructions <span class="tag m">measured</span>. <span class="tag n">before: not measured</span> source: lane/core/round6.</li></ul>
+
+<h2>Where the counter's footprint goes</h2>
+<p class="cap">Each bar starts where the one above ends. Hollow dashed = reported holders. The dotted bar is not in data.json: it is the gap between the footprint and the sum of the holders.</p>
+<div class="panel">
+<svg class="fit" viewBox="0 0 440 408" role="img" aria-label="Waterfall of the counter footprint by holder">
+<rect class="hit" x="0" y="6" width="440" height="42" data-tip="Where the counter example&#x27;s footprint is
+GPU driver unmapped: 68.0 MiB (reported)" tabindex="0"/>
+<text x="16" y="20">GPU driver unmapped</text>
+<text class="end small" x="424" y="20">68 MiB</text>
+<rect class="b-r anim-grow" style="--d: 0.10s" x="16.0" y="26" width="226.5" height="12" rx="3"/>
+<rect class="hit" x="0" y="48" width="440" height="42" data-tip="Where the counter example&#x27;s footprint is
+IOAccelerator+IOKit unmapped: 8.0 MiB (reported)" tabindex="0"/>
+<text x="16" y="62">IOAccelerator+IOKit unmapped</text>
+<text class="end small" x="424" y="62">8 MiB</text>
+<rect class="b-r anim-grow" style="--d: 0.20s" x="242.5" y="68" width="26.6" height="12" rx="3"/>
+<rect class="hit" x="0" y="90" width="440" height="42" data-tip="Where the counter example&#x27;s footprint is
+region buffer: 20.0 MiB (reported)" tabindex="0"/>
+<text x="16" y="104">region buffer</text>
+<text class="end small" x="424" y="104">20 MiB</text>
+<rect class="b-r anim-grow" style="--d: 0.30s" x="269.1" y="110" width="66.6" height="12" rx="3"/>
+<rect class="hit" x="0" y="132" width="440" height="42" data-tip="Where the counter example&#x27;s footprint is
+IOSurfaces drawn: 4.7 MiB (reported)" tabindex="0"/>
+<text x="16" y="146">IOSurfaces drawn</text>
+<text class="end small" x="424" y="146">4.7 MiB</text>
+<rect class="b-r anim-grow" style="--d: 0.40s" x="335.7" y="152" width="15.7" height="12" rx="3"/>
+<rect class="hit" x="0" y="174" width="440" height="42" data-tip="Where the counter example&#x27;s footprint is
+malloc dirty: 12.4 MiB (reported)" tabindex="0"/>
+<text x="16" y="188">malloc dirty</text>
+<text class="end small" x="424" y="188">12.4 MiB</text>
+<rect class="b-r anim-grow" style="--d: 0.50s" x="351.4" y="194" width="41.3" height="12" rx="3"/>
+<rect class="hit" x="0" y="216" width="440" height="42" data-tip="Where the counter example&#x27;s footprint is
+other GPU objects: 0.8 MiB (reported)" tabindex="0"/>
+<text x="16" y="230">other GPU objects</text>
+<text class="end small" x="424" y="230">0.8 MiB</text>
+<rect class="b-r anim-grow" style="--d: 0.60s" x="392.7" y="236" width="2.7" height="12" rx="3"/>
+<rect class="hit" x="0" y="258" width="440" height="42" data-tip="Where the counter example&#x27;s footprint is
+rest: 5.8 MiB (reported)" tabindex="0"/>
+<text x="16" y="272">rest</text>
+<text class="end small" x="424" y="272">5.8 MiB</text>
+<rect class="b-r anim-grow" style="--d: 0.70s" x="395.4" y="278" width="19.3" height="12" rx="3"/>
+<rect class="hit" x="0" y="300" width="440" height="42" data-tip="derived, not in data.json: 122.5 minus 119.7 = 2.8
+counter footprint is reported in memory_footprint (122.5 MiB)" tabindex="0"/>
+<text x="16" y="314">unattributed (derived here: footprint minus...</text>
+<text class="end small" x="424" y="314">2.8 MiB</text>
+<rect class="b-d anim-grow" style="--d: 0.80s" x="414.7" y="320" width="9.3" height="12" rx="3"/>
+<rect class="hit" x="0" y="342" width="440" height="42" data-tip="counter footprint
+counter: 122.5 MiB (reported)
+source: memory_footprint" tabindex="0"/>
+<text x="16" y="356">counter footprint (memory_footprint)</text>
+<text class="end small" x="424" y="356">122.5 MiB</text>
+<rect class="b-t anim-grow" style="--d: 0.90s" x="16" y="362" width="408.0" height="12" rx="3"/>
+<text class="lbl small" x="16" y="402">0 to 122.5 MiB, linear</text>
+</svg>
+</div>
+
+<h2>Every series over commits</h2>
+<p class="cap">One card per series, grouped as in data.json. Connected lines are before/after or commit sequences; dots are scenes or values with no order. Scale is log when the range exceeds 50x, otherwise linear from zero.</p>
+<h3>Re-description</h3>
+<div class="cards"><article class="card"><h4>Re-describing one plain row (box + integer label + string label)</h4><p class="cap">instructions / row / turn · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Re-describing one plain row (box + integer label + string label)">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L120.0 64.2 L230.0 62.5"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Re-describing one plain row (box + integer label + string label)
+base aa9943e: 2,742 instructions / row / turn (measured)" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="120.0" cy="64.2" r="4.5" data-tip="Re-describing one plain row (box + integer label + string label)
+seals + byte specs (lead/core-r6): 574 instructions / row / turn (measured)" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.40s" cx="230.0" cy="62.5" r="4.5" data-tip="Re-describing one plain row (box + integer label + string label)
+with insert/remove detection (lead/core-r6): 645 instructions / row / turn (measured)
+The look-ahead for shift detection cost about 70 instructions per row back." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>2,742</b> <span class="tag m">measured</span></li><li>seals + byte specs (lead/core-r6): <b>574</b> <span class="tag m">measured</span></li><li>with insert/remove detection (lead/core-r6): <b>645</b> <span class="tag m">measured</span> <span>The look-ahead for shift detection cost about 70 instructions per row back.</span></li></ol><p class="cap">crates/bough/examples/redescribe_cost.rs, 1,000 rows, one plain field changed, calling-thread instruction counter</p></article><article class="card"><h4>Re-describing one row with two static labels</h4><p class="cap">instructions / row / turn · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Re-describing one row with two static labels">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 63.1"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Re-describing one row with two static labels
+base aa9943e: 2,313 instructions / row / turn (measured)" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="63.1" r="4.5" data-tip="Re-describing one row with two static labels
+seals + byte specs (lead/core-r6): 522 instructions / row / turn (measured)" tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>2,313</b> <span class="tag m">measured</span></li><li>seals + byte specs (lead/core-r6): <b>522</b> <span class="tag m">measured</span></li></ol><p class="cap">Same method as the app-row series: crates/bough/examples/redescribe_cost.rs, 1,000 rows, calling-thread instruction counter</p></article><article class="card"><h4>Re-describing one box alone</h4><p class="cap">instructions / row / turn · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Re-describing one box alone">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 57.0"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Re-describing one box alone
+base aa9943e: 465 instructions / row / turn (measured)" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="57.0" r="4.5" data-tip="Re-describing one box alone
+seals + byte specs (lead/core-r6): 148 instructions / row / turn (measured)" tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>465</b> <span class="tag m">measured</span></li><li>seals + byte specs (lead/core-r6): <b>148</b> <span class="tag m">measured</span></li></ol><p class="cap">Same method as the app-row series: crates/bough/examples/redescribe_cost.rs, 1,000 rows, calling-thread instruction counter</p></article></div><h3>gui-bench table, coarse (plain Vec)</h3>
+<div class="cards"><article class="card"><h4>Select</h4><p class="cap">instructions / operation · lower is better · dots, not a sequence · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Select">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="64.8" r="4.5" data-tip="Select
+N=1000: 6,567,603 instructions / operation (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.30s" cx="230.0" cy="12.0" r="4.5" data-tip="Select
+N=5000: 32,874,375 instructions / operation (reported)" tabindex="0"/>
+</svg><ol><li>N=1000: <b>6,567,603</b> <span class="tag r">reported</span></li><li>N=5000: <b>32,874,375</b> <span class="tag r">reported</span></li></ol><p class="cap">Lane generalization on the base. Points are labelled by N (rows). Reported, not yet replayed.</p></article><article class="card"><h4>Update every 10th row</h4><p class="cap">instructions / operation · lower is better · dots, not a sequence · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Update every 10th row">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="64.8" r="4.5" data-tip="Update every 10th row
+N=1000: 4,662,665 instructions / operation (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.30s" cx="230.0" cy="12.0" r="4.5" data-tip="Update every 10th row
+N=5000: 23,336,384 instructions / operation (reported)" tabindex="0"/>
+</svg><ol><li>N=1000: <b>4,662,665</b> <span class="tag r">reported</span></li><li>N=5000: <b>23,336,384</b> <span class="tag r">reported</span></li></ol><p class="cap">Lane generalization on the base. Points are labelled by N (rows). Reported, not yet replayed.</p></article><article class="card"><h4>Swap</h4><p class="cap">instructions / operation · lower is better · dots, not a sequence · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Swap">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="64.7" r="4.5" data-tip="Swap
+N=1000: 3,311,480 instructions / operation (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.30s" cx="230.0" cy="12.0" r="4.5" data-tip="Swap
+N=5000: 16,465,534 instructions / operation (reported)" tabindex="0"/>
+</svg><ol><li>N=1000: <b>3,311,480</b> <span class="tag r">reported</span></li><li>N=5000: <b>16,465,534</b> <span class="tag r">reported</span></li></ol><p class="cap">Lane generalization on the base. Points are labelled by N (rows). Reported, not yet replayed.</p></article><article class="card"><h4>Remove</h4><p class="cap">instructions / operation · lower is better · dots, not a sequence · one point</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Remove">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="120.0" cy="12.0" r="4.5" data-tip="Remove
+N=5000: 116,538,216 instructions / operation (reported)" tabindex="0"/>
+</svg><p class="cap"><span class="tag n">not measured</span> no second point, so no before/after.</p><ol><li>N=5000: <b>116,538,216</b> <span class="tag r">reported</span></li></ol><p class="cap">Lane generalization on the base. Only N=5000 was reported. Reported, not yet replayed.</p></article></div><h3>Memory (base)</h3>
+<div class="cards"><article class="card"><h4>Footprint, active at t=3 s</h4><p class="cap">MiB · dots, not a sequence · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Footprint, active at t=3 s">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="29.4" r="4.5" data-tip="Footprint, active at t=3 s
+counter: 122.5 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.30s" cx="54.0" cy="12.0" r="4.5" data-tip="Footprint, active at t=3 s
+dashboard: 166.2 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.40s" cx="98.0" cy="17.9" r="4.5" data-tip="Footprint, active at t=3 s
+scroll 100 rows: 151.4 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.50s" cx="142.0" cy="17.0" r="4.5" data-tip="Footprint, active at t=3 s
+scroll 1K: 153.6 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.60s" cx="186.0" cy="12.6" r="4.5" data-tip="Footprint, active at t=3 s
+scroll 7K: 164.6 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.70s" cx="230.0" cy="20.1" r="4.5" data-tip="Footprint, active at t=3 s
+heavy: 145.9 MiB (reported)" tabindex="0"/>
+</svg><ol><li>counter: <b>122.5</b> <span class="tag r">reported</span></li><li>dashboard: <b>166.2</b> <span class="tag r">reported</span></li><li>scroll 100 rows: <b>151.4</b> <span class="tag r">reported</span></li><li>scroll 1K: <b>153.6</b> <span class="tag r">reported</span></li><li>scroll 7K: <b>164.6</b> <span class="tag r">reported</span></li><li>heavy: <b>145.9</b> <span class="tag r">reported</span></li></ol><p class="cap">Lane memory, base, M3 Pro 2x. Points are labelled by scene. Reported, not yet replayed.</p></article><article class="card"><h4>Resident, active at t=3 s</h4><p class="cap">MiB · dots, not a sequence · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Resident, active at t=3 s">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="34.8" r="4.5" data-tip="Resident, active at t=3 s
+counter: 39.8 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.30s" cx="54.0" cy="19.2" r="4.5" data-tip="Resident, active at t=3 s
+dashboard: 54.2 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.40s" cx="98.0" cy="34.4" r="4.5" data-tip="Resident, active at t=3 s
+scroll 100 rows: 40.2 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.50s" cx="142.0" cy="31.6" r="4.5" data-tip="Resident, active at t=3 s
+scroll 1K: 42.7 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.60s" cx="186.0" cy="12.0" r="4.5" data-tip="Resident, active at t=3 s
+scroll 7K: 60.8 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.70s" cx="230.0" cy="36.5" r="4.5" data-tip="Resident, active at t=3 s
+heavy: 38.2 MiB (reported)" tabindex="0"/>
+</svg><ol><li>counter: <b>39.8</b> <span class="tag r">reported</span></li><li>dashboard: <b>54.2</b> <span class="tag r">reported</span></li><li>scroll 100 rows: <b>40.2</b> <span class="tag r">reported</span></li><li>scroll 1K: <b>42.7</b> <span class="tag r">reported</span></li><li>scroll 7K: <b>60.8</b> <span class="tag r">reported</span></li><li>heavy: <b>38.2</b> <span class="tag r">reported</span></li></ol><p class="cap">Lane memory, base, M3 Pro 2x. Points are labelled by scene. Reported, not yet replayed.</p></article><article class="card"><h4>Where the counter example&#x27;s footprint is</h4><p class="cap">MiB · dots, not a sequence · log scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Where the counter example&#x27;s footprint is">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="15.7" r="4.5" data-tip="Where the counter example&#x27;s footprint is
+GPU driver unmapped: 68.0 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.30s" cx="46.7" cy="36.1" r="4.5" data-tip="Where the counter example&#x27;s footprint is
+IOAccelerator+IOKit unmapped: 8.0 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.40s" cx="83.3" cy="27.4" r="4.5" data-tip="Where the counter example&#x27;s footprint is
+region buffer: 20.0 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.50s" cx="120.0" cy="41.2" r="4.5" data-tip="Where the counter example&#x27;s footprint is
+IOSurfaces drawn: 4.7 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.60s" cx="156.7" cy="31.9" r="4.5" data-tip="Where the counter example&#x27;s footprint is
+malloc dirty: 12.4 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.70s" cx="193.3" cy="58.1" r="4.5" data-tip="Where the counter example&#x27;s footprint is
+other GPU objects: 0.8 MiB (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.80s" cx="230.0" cy="39.2" r="4.5" data-tip="Where the counter example&#x27;s footprint is
+rest: 5.8 MiB (reported)" tabindex="0"/>
+</svg><ol><li>GPU driver unmapped: <b>68.0</b> <span class="tag r">reported</span></li><li>IOAccelerator+IOKit unmapped: <b>8.0</b> <span class="tag r">reported</span></li><li>region buffer: <b>20.0</b> <span class="tag r">reported</span></li><li>IOSurfaces drawn: <b>4.7</b> <span class="tag r">reported</span></li><li>malloc dirty: <b>12.4</b> <span class="tag r">reported</span></li><li>other GPU objects: <b>0.8</b> <span class="tag r">reported</span></li><li>rest: <b>5.8</b> <span class="tag r">reported</span></li></ol><p class="cap">Counter example on the base. These are holders of the footprint, not a sequence of versions. Reported, not yet replayed.</p></article></div><h3>Correctness</h3>
+<div class="cards"><article class="card"><h4>Workspace tests failing (bough-suite only; workspace not rerun)</h4><p class="cap">tests failing · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Workspace tests failing (bough-suite only; workspace not rerun)">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 78.0"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Workspace tests failing (bough-suite only; workspace not rerun)
+main bd9978c: 5 tests failing (measured)" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="78.0" r="4.5" data-tip="Workspace tests failing (bough-suite only; workspace not rerun)
+lane/verification fixes: 0 tests failing (measured)" tabindex="0"/>
+</svg><ol><li>main bd9978c: <b>5</b> <span class="tag m">measured</span></li><li>lane/verification fixes: <b>0</b> <span class="tag m">measured</span></li></ol><p class="cap">main bd9978c: 5 failing of 225, and the tree did not build with all targets. lane/verification fixes: 0 for bough-suite&#x27;s 32 tests only; the whole workspace has not been rerun on the fixed tree.</p></article></div><h3>gui-bench on the integration branch (gates pass)</h3>
+<div class="cards"><article class="card"><h4>coarse / plain select N=1000</h4><p class="cap">instructions / operation · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="coarse / plain select N=1000">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 35.2"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="coarse / plain select N=1000
+base aa9943e: 6,567,603 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="35.2" r="4.5" data-tip="coarse / plain select N=1000
+round6 42c514cc: 4,258,832 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.648 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>6,567,603</b> <span class="tag r">reported</span> <span>Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.</span></li><li>round6 42c514cc: <b>4,258,832</b> <span class="tag m">measured</span> <span>sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.648 (improved). Tree integ @ 42c514ccbe.</span></li></ol></article><article class="card"><h4>coarse / plain select N=100</h4><p class="cap">instructions / operation · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="coarse / plain select N=100">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 35.1"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="coarse / plain select N=100
+base aa9943e: 667,431 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="35.1" r="4.5" data-tip="coarse / plain select N=100
+round6 42c514cc: 433,899 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.650 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>667,431</b> <span class="tag r">reported</span> <span>Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.</span></li><li>round6 42c514cc: <b>433,899</b> <span class="tag m">measured</span> <span>sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.650 (improved). Tree integ @ 42c514ccbe.</span></li></ol></article><article class="card"><h4>coarse / plain swap N=1000</h4><p class="cap">instructions / operation · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="coarse / plain swap N=1000">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 34.8"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="coarse / plain swap N=1000
+base aa9943e: 3,311,480 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="34.8" r="4.5" data-tip="coarse / plain swap N=1000
+round6 42c514cc: 2,165,518 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.654 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>3,311,480</b> <span class="tag r">reported</span> <span>Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.</span></li><li>round6 42c514cc: <b>2,165,518</b> <span class="tag m">measured</span> <span>sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.654 (improved). Tree integ @ 42c514ccbe.</span></li></ol></article><article class="card"><h4>coarse / plain select N=10</h4><p class="cap">instructions / operation · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="coarse / plain select N=10">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 33.6"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="coarse / plain select N=10
+base aa9943e: 76,597 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="33.6" r="4.5" data-tip="coarse / plain select N=10
+round6 42c514cc: 51,531 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.673 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>76,597</b> <span class="tag r">reported</span> <span>Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.</span></li><li>round6 42c514cc: <b>51,531</b> <span class="tag m">measured</span> <span>sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.673 (improved). Tree integ @ 42c514ccbe.</span></li></ol></article><article class="card"><h4>coarse / plain swap N=100</h4><p class="cap">instructions / operation · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="coarse / plain swap N=100">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 33.1"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="coarse / plain swap N=100
+base aa9943e: 366,536 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="33.1" r="4.5" data-tip="coarse / plain swap N=100
+round6 42c514cc: 249,504 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.681 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>366,536</b> <span class="tag r">reported</span> <span>Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.</span></li><li>round6 42c514cc: <b>249,504</b> <span class="tag m">measured</span> <span>sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.681 (improved). Tree integ @ 42c514ccbe.</span></li></ol></article><article class="card"><h4>coarse / plain update10 N=100</h4><p class="cap">instructions / operation · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="coarse / plain update10 N=100">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 28.4"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="coarse / plain update10 N=100
+base aa9943e: 471,495 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="28.4" r="4.5" data-tip="coarse / plain update10 N=100
+round6 42c514cc: 354,273 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.751 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>471,495</b> <span class="tag r">reported</span> <span>Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.</span></li><li>round6 42c514cc: <b>354,273</b> <span class="tag m">measured</span> <span>sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.751 (improved). Tree integ @ 42c514ccbe.</span></li></ol></article><article class="card"><h4>coarse / plain update10 N=1000</h4><p class="cap">instructions / operation · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="coarse / plain update10 N=1000">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 28.3"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="coarse / plain update10 N=1000
+base aa9943e: 4,662,665 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="28.3" r="4.5" data-tip="coarse / plain update10 N=1000
+round6 42c514cc: 3,510,245 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.753 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>4,662,665</b> <span class="tag r">reported</span> <span>Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.</span></li><li>round6 42c514cc: <b>3,510,245</b> <span class="tag m">measured</span> <span>sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.753 (improved). Tree integ @ 42c514ccbe.</span></li></ol></article><article class="card"><h4>coarse / plain update10 N=10</h4><p class="cap">instructions / operation · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="coarse / plain update10 N=10">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 27.1"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="coarse / plain update10 N=10
+base aa9943e: 53,095 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="27.1" r="4.5" data-tip="coarse / plain update10 N=10
+round6 42c514cc: 40,944 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.771 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>53,095</b> <span class="tag r">reported</span> <span>Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.</span></li><li>round6 42c514cc: <b>40,944</b> <span class="tag m">measured</span> <span>sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.771 (improved). Tree integ @ 42c514ccbe.</span></li></ol></article><article class="card"><h4>coarse / plain swap N=10</h4><p class="cap">instructions / operation · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="coarse / plain swap N=10">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 23.8"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="coarse / plain swap N=10
+base aa9943e: 70,664 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="23.8" r="4.5" data-tip="coarse / plain swap N=10
+round6 42c514cc: 58,057 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.822 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>70,664</b> <span class="tag r">reported</span> <span>Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.</span></li><li>round6 42c514cc: <b>58,057</b> <span class="tag m">measured</span> <span>sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.822 (improved). Tree integ @ 42c514ccbe.</span></li></ol></article><article class="card"><h4>fine / plain select N=10</h4><p class="cap">instructions / operation · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="fine / plain select N=10">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 21.0"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="fine / plain select N=10
+base aa9943e: 12,132 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="21.0" r="4.5" data-tip="fine / plain select N=10
+round6 42c514cc: 10,475 instructions / operation (measured)
+sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.863 (improved). Tree integ @ 42c514ccbe." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>12,132</b> <span class="tag r">reported</span> <span>Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.</span></li><li>round6 42c514cc: <b>10,475</b> <span class="tag m">measured</span> <span>sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.863 (improved). Tree integ @ 42c514ccbe.</span></li></ol></article><article class="card"><h4>fine hover N=10</h4><p class="cap">instructions / operation · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="fine hover N=10">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 14.2 L230.0 12.0"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="14.2" r="4.5" data-tip="fine hover N=10
+base aa9943e: 4,240 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="12.0" r="4.5" data-tip="fine hover N=10
+round6 42c514cc: 4,384 instructions / operation (measured)
+sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.034 (regression). Tree integ @ 42c514ccbe." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>4,240</b> <span class="tag r">reported</span> <span>Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.</span></li><li>round6 42c514cc: <b>4,384</b> <span class="tag m">measured</span> <span>sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.034 (regression). Tree integ @ 42c514ccbe.</span></li></ol></article><article class="card"><h4>fine hover N=100</h4><p class="cap">instructions / operation · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="fine hover N=100">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 14.1 L230.0 12.0"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="14.1" r="4.5" data-tip="fine hover N=100
+base aa9943e: 4,326 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="12.0" r="4.5" data-tip="fine hover N=100
+round6 42c514cc: 4,470 instructions / operation (measured)
+sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.033 (regression). Tree integ @ 42c514ccbe." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>4,326</b> <span class="tag r">reported</span> <span>Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.</span></li><li>round6 42c514cc: <b>4,470</b> <span class="tag m">measured</span> <span>sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.033 (regression). Tree integ @ 42c514ccbe.</span></li></ol></article><article class="card"><h4>fine hover N=1000</h4><p class="cap">instructions / operation · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="fine hover N=1000">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 13.9 L230.0 12.0"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="13.9" r="4.5" data-tip="fine hover N=1000
+base aa9943e: 4,781 instructions / operation (reported)
+Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass." tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="12.0" r="4.5" data-tip="fine hover N=1000
+round6 42c514cc: 4,925 instructions / operation (measured)
+sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.030 (regression). Tree integ @ 42c514ccbe." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>4,781</b> <span class="tag r">reported</span> <span>Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass.</span></li><li>round6 42c514cc: <b>4,925</b> <span class="tag m">measured</span> <span>sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.030 (regression). Tree integ @ 42c514ccbe.</span></li></ol></article></div><h3>Binary size</h3>
+<div class="cards"><article class="card"><h4>Counter example, production profile, stripped</h4><p class="cap">bytes · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Counter example, production profile, stripped">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 42.6"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Counter example, production profile, stripped
+base aa9943e: 2,887,488 bytes (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.30s" cx="230.0" cy="42.6" r="4.5" data-tip="Counter example, production profile, stripped
+lane developer-loop, size build: 1,547,216 bytes (reported)
+std rebuilt for size, fill-only glyph rasteriser, cold crates at opt-level z. Every pixel gate passes on binaries built this way; hot instruction cells within 1.012x. Reported, not replayed." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>2,887,488</b> <span class="tag r">reported</span></li><li>lane developer-loop, size build: <b>1,547,216</b> <span class="tag r">reported</span> <span>std rebuilt for size, fill-only glyph rasteriser, cold crates at opt-level z. Every pixel gate passes on binaries built this way; hot instruction cells within 1.012x. Reported, not replayed.</span></li></ol></article></div><h3>Startup</h3>
+<div class="cards"><article class="card"><h4>An empty headless app: construction plus first turn</h4><p class="cap">instructions · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="An empty headless app: construction plus first turn">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 27.0"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="An empty headless app: construction plus first turn
+base aa9943e: 17,092,386 instructions (measured)" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="27.0" r="4.5" data-tip="An empty headless app: construction plus first turn
+font found by bytes, not hashed (lead/core-r6): 13,212,385 instructions (measured)
+crates/bough/examples/redescribe_cost.rs MOUNT=1, calling-thread instruction counter." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>17,092,386</b> <span class="tag m">measured</span></li><li>font found by bytes, not hashed (lead/core-r6): <b>13,212,385</b> <span class="tag m">measured</span> <span>crates/bough/examples/redescribe_cost.rs MOUNT=1, calling-thread instruction counter.</span></li></ol></article></div><h3>Record tree</h3>
+<div class="cards"><article class="card"><h4>Append one record at 1,000,000 records</h4><p class="cap">instructions · lower is better · dots, not a sequence · log scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Append one record at 1,000,000 records">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="23.5" r="4.5" data-tip="Append one record at 1,000,000 records
+base aa9943e: 300,808 instructions (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.30s" cx="230.0" cy="69.3" r="4.5" data-tip="Append one record at 1,000,000 records
+prefix rebuild honours its start index: 2,473 instructions (reported)
+Lane core&#x27;s cost matrix, warm columns. Reported, not replayed." tabindex="0"/>
+</svg><ol><li>base aa9943e: <b>300,808</b> <span class="tag r">reported</span></li><li>prefix rebuild honours its start index: <b>2,473</b> <span class="tag r">reported</span> <span>Lane core&#x27;s cost matrix, warm columns. Reported, not replayed.</span></li></ol><p class="cap">The second point is a different operation (prefix rebuild), not the same append measured after a change. Not drawn as a before/after pair.</p></article></div><h3>Pacing</h3>
+<div class="cards"><article class="card"><h4>Presents per second while typing, 120 Hz display</h4><p class="cap">presents / s · lower is better · dots, not a sequence · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Presents per second while typing, 120 Hz display">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Presents per second while typing, 120 Hz display
+frame per input event (base): 242 presents / s (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.30s" cx="230.0" cy="44.9" r="4.5" data-tip="Presents per second while typing, 120 Hz display
+deadline commit (lane pacing): 121.5 presents / s (reported)
+In-process probe, machine load 78-103. Input-to-vsync latency unchanged within noise. Not merged: its mutant and instruction gates have not been run." tabindex="0"/>
+</svg><ol><li>frame per input event (base): <b>242</b> <span class="tag r">reported</span></li><li>deadline commit (lane pacing): <b>121.5</b> <span class="tag r">reported</span> <span>In-process probe, machine load 78-103. Input-to-vsync latency unchanged within noise. Not merged: its mutant and instruction gates have not been run.</span></li></ol><p class="cap">Fewer presents for the same content is the goal (redundant presents halved).</p></article><article class="card"><h4>Scroll commit interval p95, 1,000 rows</h4><p class="cap">ms · lower is better · dots, not a sequence · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Scroll commit interval p95, 1,000 rows">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<circle class="k-r anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Scroll commit interval p95, 1,000 rows
+frame per input event (base): 12.35 ms (reported)" tabindex="0"/>
+<circle class="k-r anim-fade" style="--d: 0.30s" cx="230.0" cy="33.4" r="4.5" data-tip="Scroll commit interval p95, 1,000 rows
+deadline commit (lane pacing): 8.34 ms (reported)" tabindex="0"/>
+</svg><ol><li>frame per input event (base): <b>12.35</b> <span class="tag r">reported</span></li><li>deadline commit (lane pacing): <b>8.34</b> <span class="tag r">reported</span></li></ol></article></div><h3>Signal cost (lead/core-r6)</h3>
+<div class="cards"><article class="card"><h4>Idle turn, 256 rows</h4><p class="cap">instructions per turn · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Idle turn, 256 rows">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 76.5"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Idle turn, 256 rows
+before: 10,925 instructions per turn (measured)
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="76.5" r="4.5" data-tip="Idle turn, 256 rows
+after: 247 instructions per turn (measured)
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+</svg><ol><li>before: <b>10,925</b> <span class="tag m">measured</span></li><li>after: <b>247</b> <span class="tag m">measured</span></li></ol><p class="cap">source: lead/core-r6 signal_cost, instructions per turn, once mode</p></article><article class="card"><h4>Colour signal write, 256 rows</h4><p class="cap">instructions per turn · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Colour signal write, 256 rows">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 74.4"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Colour signal write, 256 rows
+before: 11,097 instructions per turn (measured)
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="74.4" r="4.5" data-tip="Colour signal write, 256 rows
+after: 606 instructions per turn (measured)
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+</svg><ol><li>before: <b>11,097</b> <span class="tag m">measured</span></li><li>after: <b>606</b> <span class="tag m">measured</span></li></ol><p class="cap">source: lead/core-r6 signal_cost, instructions per turn, once mode</p></article><article class="card"><h4>Colour signal write, 16 rows</h4><p class="cap">instructions per turn · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Colour signal write, 16 rows">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 32.7"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Colour signal write, 16 rows
+before: 1,088 instructions per turn (measured)
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="32.7" r="4.5" data-tip="Colour signal write, 16 rows
+after: 746 instructions per turn (measured)
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+</svg><ol><li>before: <b>1,088</b> <span class="tag m">measured</span></li><li>after: <b>746</b> <span class="tag m">measured</span></li></ol><p class="cap">source: lead/core-r6 signal_cost, instructions per turn, once mode</p></article><article class="card"><h4>Numeric label write, 256 rows</h4><p class="cap">instructions per turn · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Numeric label write, 256 rows">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 48.1"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Numeric label write, 256 rows
+before: 19,236 instructions per turn (measured)
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="48.1" r="4.5" data-tip="Numeric label write, 256 rows
+after: 8,725 instructions per turn (measured)
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+</svg><ol><li>before: <b>19,236</b> <span class="tag m">measured</span></li><li>after: <b>8,725</b> <span class="tag m">measured</span></li></ol><p class="cap">source: lead/core-r6 signal_cost, instructions per turn, once mode</p></article><article class="card"><h4>String label write, 256 rows</h4><p class="cap">instructions per turn · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="String label write, 256 rows">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 34.2"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="String label write, 256 rows
+before: 31,399 instructions per turn (measured)
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="34.2" r="4.5" data-tip="String label write, 256 rows
+after: 20,853 instructions per turn (measured)
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+</svg><ol><li>before: <b>31,399</b> <span class="tag m">measured</span></li><li>after: <b>20,853</b> <span class="tag m">measured</span></li></ol><p class="cap">source: lead/core-r6 signal_cost, instructions per turn, once mode</p></article><article class="card"><h4>Re-describing owner, idle turn, 256 rows</h4><p class="cap">instructions per turn · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Re-describing owner, idle turn, 256 rows">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 59.9"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Re-describing owner, idle turn, 256 rows
+before: 511,585 instructions per turn (measured)
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="59.9" r="4.5" data-tip="Re-describing owner, idle turn, 256 rows
+after: 140,223 instructions per turn (measured)
+source: lead/core-r6 signal_cost, instructions per turn, once mode" tabindex="0"/>
+</svg><ol><li>before: <b>511,585</b> <span class="tag m">measured</span></li><li>after: <b>140,223</b> <span class="tag m">measured</span></li></ol><p class="cap">source: lead/core-r6 signal_cost, instructions per turn, once mode</p></article></div><h3>Store (lane/store/round6)</h3>
+<div class="cards"><article class="card"><h4>Numeric label write, 1 row</h4><p class="cap">instructions / turn · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Numeric label write, 1 row">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 64.6"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Numeric label write, 1 row
+before: 3,269 instructions / turn (measured)
+source: lane/store/round6" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="64.6" r="4.5" data-tip="Numeric label write, 1 row
+after: 664 instructions / turn (measured)
+source: lane/store/round6" tabindex="0"/>
+</svg><ol><li>before: <b>3,269</b> <span class="tag m">measured</span></li><li>after: <b>664</b> <span class="tag m">measured</span></li></ol><p class="cap">source: lane/store/round6</p></article><article class="card"><h4>Re-description per row owned</h4><p class="cap">instructions / row / turn · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Re-description per row owned">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 48.0"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Re-description per row owned
+before: 655 instructions / row / turn (measured)
+source: lane/store/round6" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="48.0" r="4.5" data-tip="Re-description per row owned
+after: 298 instructions / row / turn (measured)
+source: lane/store/round6" tabindex="0"/>
+</svg><ol><li>before: <b>655</b> <span class="tag m">measured</span></li><li>after: <b>298</b> <span class="tag m">measured</span></li></ol><p class="cap">source: lane/store/round6</p></article><article class="card"><h4>Re-description per row, static</h4><p class="cap">instructions / row / turn · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Re-description per row, static">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 46.5"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Re-description per row, static
+before: 631 instructions / row / turn (measured)
+source: lane/store/round6" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="46.5" r="4.5" data-tip="Re-description per row, static
+after: 301 instructions / row / turn (measured)
+source: lane/store/round6" tabindex="0"/>
+</svg><ol><li>before: <b>631</b> <span class="tag m">measured</span></li><li>after: <b>301</b> <span class="tag m">measured</span></li></ol><p class="cap">source: lane/store/round6</p></article><article class="card"><h4>Re-description per row, bare</h4><p class="cap">instructions / row / turn · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Re-description per row, bare">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 40.9"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Re-description per row, bare
+before: 224 instructions / row / turn (measured)
+source: lane/store/round6" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="40.9" r="4.5" data-tip="Re-description per row, bare
+after: 126 instructions / row / turn (measured)
+source: lane/store/round6" tabindex="0"/>
+</svg><ol><li>before: <b>224</b> <span class="tag m">measured</span></li><li>after: <b>126</b> <span class="tag m">measured</span></li></ol><p class="cap">source: lane/store/round6</p></article><article class="card"><h4>Churn per row</h4><p class="cap">instructions / row · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Churn per row">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 28.8"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Churn per row
+before: 16,037 instructions / row (measured)
+source: lane/store/round6" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="28.8" r="4.5" data-tip="Churn per row
+after: 11,959 instructions / row (measured)
+source: lane/store/round6" tabindex="0"/>
+</svg><ol><li>before: <b>16,037</b> <span class="tag m">measured</span></li><li>after: <b>11,959</b> <span class="tag m">measured</span></li></ol><p class="cap">source: lane/store/round6</p></article></div><h3>Core (lane/core/round6)</h3>
+<div class="cards"><article class="card"><h4>Whole-page translate</h4><p class="cap">instructions per page · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Whole-page translate">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 58.6"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Whole-page translate
+before: 109 instructions per page (measured)
+source: lane/core/round6" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="58.6" r="4.5" data-tip="Whole-page translate
+after: 32 instructions per page (measured)
+source: lane/core/round6" tabindex="0"/>
+</svg><ol><li>before: <b>109</b> <span class="tag m">measured</span></li><li>after: <b>32</b> <span class="tag m">measured</span></li></ol><p class="cap">source: lane/core/round6</p></article><article class="card"><h4>Translate half, 1,000,000 records</h4><p class="cap">instructions · lower is better · connected in order · linear scale</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="Translate half, 1,000,000 records">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<path class="l-m anim-draw" style="--k: var(--lbl-line, var(--muted)); stroke-width: 1.8" pathLength="1" d="M10.0 12.0 L230.0 56.9"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="10.0" cy="12.0" r="4.5" data-tip="Translate half, 1,000,000 records
+before: 849,000 instructions (measured)
+source: lane/core/round6" tabindex="0"/>
+<circle class="k-m anim-fade" style="--d: 0.30s" cx="230.0" cy="56.9" r="4.5" data-tip="Translate half, 1,000,000 records
+after: 271,000 instructions (measured)
+source: lane/core/round6" tabindex="0"/>
+</svg><ol><li>before: <b>849,000</b> <span class="tag m">measured</span></li><li>after: <b>271,000</b> <span class="tag m">measured</span></li></ol><p class="cap">source: lane/core/round6</p></article><article class="card"><h4>State-plane flag flip through a handle</h4><p class="cap">instructions · lower is better · dots, not a sequence · one point</p><svg class="fit" viewBox="0 0 240 92" role="img" aria-label="State-plane flag flip through a handle">
+<line class="axis" x1="10" x2="230" y1="78" y2="78"/>
+<circle class="k-m anim-fade" style="--d: 0.20s" cx="120.0" cy="12.0" r="4.5" data-tip="State-plane flag flip through a handle
+through a handle: 95 instructions (measured)
+source: lane/core/round6" tabindex="0"/>
+</svg><p class="cap"><span class="tag n">not measured</span> no second point, so no before/after.</p><ol><li>through a handle: <b>95</b> <span class="tag m">measured</span></li></ol><p class="cap">source: lane/core/round6</p></article></div>
+
+<h2>zortax gui-bench under fakeland <span class="tag n">not measured yet</span></h2>
+<div class="empty"><p><b>not measured yet.</b> No zortax gui-bench numbers exist in data.json. The radial and beeswarm comparisons against other frameworks will draw here once zortax points are added.</p><p>Points in data.json: 0. Nothing is drawn for this section until a point is added.</p></div>
+<div class="cards" style="grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));">
+<article class="card"><h4>Radial comparison</h4><p class="cap">not measured</p><svg class="fit" viewBox="0 0 240 150" role="img" aria-label="Radial comparison: not measured"><circle cx="120" cy="75" r="60" fill="none" style="stroke: var(--muted)" stroke-dasharray="4 4"/><circle cx="120" cy="75" r="30" fill="none" style="stroke: var(--grid)"/><text class="mid" x="120" y="80" style="fill: var(--muted)">not measured</text></svg></article>
+<article class="card"><h4>Beeswarm against other frameworks</h4><p class="cap">not measured</p><svg class="fit" viewBox="0 0 240 150" role="img" aria-label="Beeswarm: not measured"><line x1="16" x2="224" y1="110" y2="110" style="stroke: var(--muted)" stroke-dasharray="4 4"/><text class="mid" x="120" y="70" style="fill: var(--muted)">not measured</text></svg></article>
+</div>
+
+<footer>Generated by build.py from data.json · 43 series · 98 points · no external sources or scripts beyond this page.</footer>
+</main>
+<script>
+(function () {
+  "use strict";
+  var tip = document.createElement("div");
+  tip.className = "tip";
+  tip.setAttribute("role", "tooltip");
+  tip.hidden = true;
+  document.body.appendChild(tip);
+  var timer = null;
+
+  function place(x, y) {
+    var w = tip.offsetWidth, h = tip.offsetHeight, gap = 14;
+    var left = x + gap, top = y + gap;
+    if (left + w > window.innerWidth - 8) left = x - w - gap;
+    if (top + h > window.innerHeight - 8) top = y - h - gap;
+    tip.style.left = Math.max(8, left) + "px";
+    tip.style.top = Math.max(8, top) + "px";
+  }
+  function hide() { tip.hidden = true; }
+  function showFor(el, x, y) {
+    var text = el.getAttribute("data-tip");
+    if (!text) { hide(); return; }
+    tip.textContent = text;
+    tip.hidden = false;
+    place(x, y);
+  }
+  function target(e) {
+    return e.target && e.target.closest ? e.target.closest("[data-tip]") : null;
+  }
+  document.addEventListener("pointerover", function (e) {
+    var el = target(e);
+    if (el) { showFor(el, e.clientX, e.clientY); } else { hide(); }
+  });
+  document.addEventListener("pointermove", function (e) {
+    if (!tip.hidden) { place(e.clientX, e.clientY); }
+  });
+  document.addEventListener("pointerdown", function (e) {
+    var el = target(e);
+    clearTimeout(timer);
+    if (el) {
+      showFor(el, e.clientX, e.clientY);
+      timer = setTimeout(hide, 2600);
+    } else {
+      hide();
+    }
+  });
+  document.addEventListener("focusin", function (e) {
+    var el = target(e);
+    if (!el) { return; }
+    var r = el.getBoundingClientRect();
+    showFor(el, r.left + r.width / 2, r.top);
+  });
+  document.addEventListener("focusout", hide);
+  document.addEventListener("scroll", hide, true);
+})();
+</script>

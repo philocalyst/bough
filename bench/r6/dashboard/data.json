@@ -1,0 +1,992 @@
+{
+ "updated": "2026-11-11",
+ "series": [
+  {
+   "id": "redescribe_app_row",
+   "group": "Re-description",
+   "title": "Re-describing one plain row (box + integer label + string label)",
+   "unit": "instructions / row / turn",
+   "lower_is_better": true,
+   "note": "crates/bough/examples/redescribe_cost.rs, 1,000 rows, one plain field changed, calling-thread instruction counter",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 2742,
+     "kind": "measured"
+    },
+    {
+     "label": "seals + byte specs (lead/core-r6)",
+     "value": 574,
+     "kind": "measured"
+    },
+    {
+     "label": "with insert/remove detection (lead/core-r6)",
+     "value": 645,
+     "kind": "measured",
+     "note": "The look-ahead for shift detection cost about 70 instructions per row back."
+    }
+   ]
+  },
+  {
+   "id": "redescribe_two_static_labels",
+   "group": "Re-description",
+   "title": "Re-describing one row with two static labels",
+   "unit": "instructions / row / turn",
+   "lower_is_better": true,
+   "note": "Same method as the app-row series: crates/bough/examples/redescribe_cost.rs, 1,000 rows, calling-thread instruction counter",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 2313,
+     "kind": "measured"
+    },
+    {
+     "label": "seals + byte specs (lead/core-r6)",
+     "value": 522,
+     "kind": "measured"
+    }
+   ]
+  },
+  {
+   "id": "redescribe_box_alone",
+   "group": "Re-description",
+   "title": "Re-describing one box alone",
+   "unit": "instructions / row / turn",
+   "lower_is_better": true,
+   "note": "Same method as the app-row series: crates/bough/examples/redescribe_cost.rs, 1,000 rows, calling-thread instruction counter",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 465,
+     "kind": "measured"
+    },
+    {
+     "label": "seals + byte specs (lead/core-r6)",
+     "value": 148,
+     "kind": "measured"
+    }
+   ]
+  },
+  {
+   "id": "table_select",
+   "group": "gui-bench table, coarse (plain Vec)",
+   "title": "Select",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "Lane generalization on the base. Points are labelled by N (rows). Reported, not yet replayed.",
+   "points": [
+    {
+     "label": "N=1000",
+     "value": 6567603,
+     "kind": "reported"
+    },
+    {
+     "label": "N=5000",
+     "value": 32874375,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "table_update_every_10th",
+   "group": "gui-bench table, coarse (plain Vec)",
+   "title": "Update every 10th row",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "Lane generalization on the base. Points are labelled by N (rows). Reported, not yet replayed.",
+   "points": [
+    {
+     "label": "N=1000",
+     "value": 4662665,
+     "kind": "reported"
+    },
+    {
+     "label": "N=5000",
+     "value": 23336384,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "table_swap",
+   "group": "gui-bench table, coarse (plain Vec)",
+   "title": "Swap",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "Lane generalization on the base. Points are labelled by N (rows). Reported, not yet replayed.",
+   "points": [
+    {
+     "label": "N=1000",
+     "value": 3311480,
+     "kind": "reported"
+    },
+    {
+     "label": "N=5000",
+     "value": 16465534,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "table_remove",
+   "group": "gui-bench table, coarse (plain Vec)",
+   "title": "Remove",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "Lane generalization on the base. Only N=5000 was reported. Reported, not yet replayed.",
+   "points": [
+    {
+     "label": "N=5000",
+     "value": 116538216,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "memory_footprint",
+   "group": "Memory (base)",
+   "title": "Footprint, active at t=3 s",
+   "unit": "MiB",
+   "lower_is_better": false,
+   "note": "Lane memory, base, M3 Pro 2x. Points are labelled by scene. Reported, not yet replayed.",
+   "points": [
+    {
+     "label": "counter",
+     "value": 122.5,
+     "kind": "reported"
+    },
+    {
+     "label": "dashboard",
+     "value": 166.2,
+     "kind": "reported"
+    },
+    {
+     "label": "scroll 100 rows",
+     "value": 151.4,
+     "kind": "reported"
+    },
+    {
+     "label": "scroll 1K",
+     "value": 153.6,
+     "kind": "reported"
+    },
+    {
+     "label": "scroll 7K",
+     "value": 164.6,
+     "kind": "reported"
+    },
+    {
+     "label": "heavy",
+     "value": 145.9,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "memory_resident",
+   "group": "Memory (base)",
+   "title": "Resident, active at t=3 s",
+   "unit": "MiB",
+   "lower_is_better": false,
+   "note": "Lane memory, base, M3 Pro 2x. Points are labelled by scene. Reported, not yet replayed.",
+   "points": [
+    {
+     "label": "counter",
+     "value": 39.8,
+     "kind": "reported"
+    },
+    {
+     "label": "dashboard",
+     "value": 54.2,
+     "kind": "reported"
+    },
+    {
+     "label": "scroll 100 rows",
+     "value": 40.2,
+     "kind": "reported"
+    },
+    {
+     "label": "scroll 1K",
+     "value": 42.7,
+     "kind": "reported"
+    },
+    {
+     "label": "scroll 7K",
+     "value": 60.8,
+     "kind": "reported"
+    },
+    {
+     "label": "heavy",
+     "value": 38.2,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "memory_holders_counter",
+   "group": "Memory (base)",
+   "title": "Where the counter example's footprint is",
+   "unit": "MiB",
+   "lower_is_better": false,
+   "note": "Counter example on the base. These are holders of the footprint, not a sequence of versions. Reported, not yet replayed.",
+   "points": [
+    {
+     "label": "GPU driver unmapped",
+     "value": 68.0,
+     "kind": "reported"
+    },
+    {
+     "label": "IOAccelerator+IOKit unmapped",
+     "value": 8.0,
+     "kind": "reported"
+    },
+    {
+     "label": "region buffer",
+     "value": 20.0,
+     "kind": "reported"
+    },
+    {
+     "label": "IOSurfaces drawn",
+     "value": 4.7,
+     "kind": "reported"
+    },
+    {
+     "label": "malloc dirty",
+     "value": 12.4,
+     "kind": "reported"
+    },
+    {
+     "label": "other GPU objects",
+     "value": 0.8,
+     "kind": "reported"
+    },
+    {
+     "label": "rest",
+     "value": 5.8,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "tests_failing",
+   "group": "Correctness",
+   "title": "Workspace tests failing (bough-suite only; workspace not rerun)",
+   "unit": "tests failing",
+   "lower_is_better": true,
+   "note": "main bd9978c: 5 failing of 225, and the tree did not build with all targets. lane/verification fixes: 0 for bough-suite's 32 tests only; the whole workspace has not been rerun on the fixed tree.",
+   "points": [
+    {
+     "label": "main bd9978c",
+     "value": 5,
+     "kind": "measured"
+    },
+    {
+     "label": "lane/verification fixes",
+     "value": 0,
+     "kind": "measured"
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-select-n1000",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain select N=1000",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 6567603,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 4258832,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.648 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-select-n100",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain select N=100",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 667431,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 433899,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.650 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-swap-n1000",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain swap N=1000",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 3311480,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 2165518,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.654 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-select-n10",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain select N=10",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 76597,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 51531,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.673 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-swap-n100",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain swap N=100",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 366536,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 249504,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.681 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-update10-n100",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain update10 N=100",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 471495,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 354273,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.751 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-update10-n1000",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain update10 N=1000",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 4662665,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 3510245,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.753 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-update10-n10",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain update10 N=10",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 53095,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 40944,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.771 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-swap-n10",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain swap N=10",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 70664,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 58057,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.822 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-fine-plain-select-n10",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "fine / plain select N=10",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 12132,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 10475,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.863 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-rows-fine-hover-n10",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "fine hover N=10",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 4240,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 4384,
+     "kind": "measured",
+     "note": "sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.034 (regression). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-rows-fine-hover-n100",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "fine hover N=100",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 4326,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 4470,
+     "kind": "measured",
+     "note": "sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.033 (regression). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-rows-fine-hover-n1000",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "fine hover N=1000",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 4781,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 4925,
+     "kind": "measured",
+     "note": "sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.030 (regression). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "size_counter",
+   "group": "Binary size",
+   "title": "Counter example, production profile, stripped",
+   "unit": "bytes",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 2887488,
+     "kind": "reported"
+    },
+    {
+     "label": "lane developer-loop, size build",
+     "value": 1547216,
+     "kind": "reported",
+     "note": "std rebuilt for size, fill-only glyph rasteriser, cold crates at opt-level z. Every pixel gate passes on binaries built this way; hot instruction cells within 1.012x. Reported, not replayed."
+    }
+   ]
+  },
+  {
+   "id": "startup_empty",
+   "group": "Startup",
+   "title": "An empty headless app: construction plus first turn",
+   "unit": "instructions",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 17092386,
+     "kind": "measured"
+    },
+    {
+     "label": "font found by bytes, not hashed (lead/core-r6)",
+     "value": 13212385,
+     "kind": "measured",
+     "note": "crates/bough/examples/redescribe_cost.rs MOUNT=1, calling-thread instruction counter."
+    }
+   ]
+  },
+  {
+   "id": "core_append_1e6",
+   "group": "Record tree",
+   "title": "Append one record at 1,000,000 records",
+   "unit": "instructions",
+   "lower_is_better": true,
+   "note": "The second point is a different operation (prefix rebuild), not the same append measured after a change. Not drawn as a before/after pair.",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 300808,
+     "kind": "reported"
+    },
+    {
+     "label": "prefix rebuild honours its start index",
+     "value": 2473,
+     "kind": "reported",
+     "note": "Lane core's cost matrix, warm columns. Reported, not replayed."
+    }
+   ],
+   "paired": false
+  },
+  {
+   "id": "pace_presents",
+   "group": "Pacing",
+   "title": "Presents per second while typing, 120 Hz display",
+   "unit": "presents / s",
+   "lower_is_better": true,
+   "note": "Fewer presents for the same content is the goal (redundant presents halved).",
+   "points": [
+    {
+     "label": "frame per input event (base)",
+     "value": 242,
+     "kind": "reported"
+    },
+    {
+     "label": "deadline commit (lane pacing)",
+     "value": 121.5,
+     "kind": "reported",
+     "note": "In-process probe, machine load 78-103. Input-to-vsync latency unchanged within noise. Not merged: its mutant and instruction gates have not been run."
+    }
+   ]
+  },
+  {
+   "id": "pace_scroll_p95",
+   "group": "Pacing",
+   "title": "Scroll commit interval p95, 1,000 rows",
+   "unit": "ms",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "frame per input event (base)",
+     "value": 12.35,
+     "kind": "reported"
+    },
+    {
+     "label": "deadline commit (lane pacing)",
+     "value": 8.34,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "sig_idle_256",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "Idle turn, 256 rows",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 10925,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    },
+    {
+     "label": "after",
+     "value": 247,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    }
+   ]
+  },
+  {
+   "id": "sig_colour_write_256",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "Colour signal write, 256 rows",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 11097,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    },
+    {
+     "label": "after",
+     "value": 606,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    }
+   ]
+  },
+  {
+   "id": "sig_colour_write_16",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "Colour signal write, 16 rows",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 1088,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    },
+    {
+     "label": "after",
+     "value": 746,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    }
+   ]
+  },
+  {
+   "id": "sig_numeric_label_256",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "Numeric label write, 256 rows",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 19236,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    },
+    {
+     "label": "after",
+     "value": 8725,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    }
+   ]
+  },
+  {
+   "id": "sig_string_label_256",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "String label write, 256 rows",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 31399,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    },
+    {
+     "label": "after",
+     "value": 20853,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    }
+   ]
+  },
+  {
+   "id": "sig_redescribe_owner_idle_256",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "Re-describing owner, idle turn, 256 rows",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 511585,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    },
+    {
+     "label": "after",
+     "value": 140223,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    }
+   ]
+  },
+  {
+   "id": "store_numeric_label_1row",
+   "group": "Store (lane/store/round6)",
+   "title": "Numeric label write, 1 row",
+   "unit": "instructions / turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 3269,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    },
+    {
+     "label": "after",
+     "value": 664,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    }
+   ]
+  },
+  {
+   "id": "store_redescribe_owned_per_row",
+   "group": "Store (lane/store/round6)",
+   "title": "Re-description per row owned",
+   "unit": "instructions / row / turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 655,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    },
+    {
+     "label": "after",
+     "value": 298,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    }
+   ]
+  },
+  {
+   "id": "store_redescribe_static_per_row",
+   "group": "Store (lane/store/round6)",
+   "title": "Re-description per row, static",
+   "unit": "instructions / row / turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 631,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    },
+    {
+     "label": "after",
+     "value": 301,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    }
+   ]
+  },
+  {
+   "id": "store_redescribe_bare_per_row",
+   "group": "Store (lane/store/round6)",
+   "title": "Re-description per row, bare",
+   "unit": "instructions / row / turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 224,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    },
+    {
+     "label": "after",
+     "value": 126,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    }
+   ]
+  },
+  {
+   "id": "store_churn_per_row",
+   "group": "Store (lane/store/round6)",
+   "title": "Churn per row",
+   "unit": "instructions / row",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 16037,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    },
+    {
+     "label": "after",
+     "value": 11959,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    }
+   ]
+  },
+  {
+   "id": "core_page_translate",
+   "group": "Core (lane/core/round6)",
+   "title": "Whole-page translate",
+   "unit": "instructions per page",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 109,
+     "kind": "measured",
+     "source": "lane/core/round6"
+    },
+    {
+     "label": "after",
+     "value": 32,
+     "kind": "measured",
+     "source": "lane/core/round6"
+    }
+   ]
+  },
+  {
+   "id": "core_translate_half_1e6",
+   "group": "Core (lane/core/round6)",
+   "title": "Translate half, 1,000,000 records",
+   "unit": "instructions",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 849000,
+     "kind": "measured",
+     "source": "lane/core/round6"
+    },
+    {
+     "label": "after",
+     "value": 271000,
+     "kind": "measured",
+     "source": "lane/core/round6"
+    }
+   ]
+  },
+  {
+   "id": "core_flag_flip_handle",
+   "group": "Core (lane/core/round6)",
+   "title": "State-plane flag flip through a handle",
+   "unit": "instructions",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "through a handle",
+     "value": 95,
+     "kind": "measured",
+     "source": "lane/core/round6"
+    }
+   ]
+  }
+ ],
+ "not_measured": [
+  {
+   "id": "zortax_guibench_fakeland",
+   "group": "zortax gui-bench under fakeland",
+   "status": "not measured yet",
+   "note": "No zortax gui-bench numbers exist in data.json. The radial and beeswarm comparisons against other frameworks will draw here once zortax points are added."
+  }
+ ]
+}
