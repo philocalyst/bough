@@ -7,7 +7,7 @@
 //! staged primitives, in paint order, the kind of each call fixed by the type. The tile rasteriser, the
 //! flat-row classifier, the window pass, the per-pixel specification, the oracle's stager and the pick are
 //! six sinks; each is monomorphised per archetype, so none of them tests a kind.
-use crate::expr::{Code, Cx, Expr, Words};
+use crate::expr::{Code, Cx, Expr, Ty, Val, Words};
 use crate::ops::ops as x;
 use bough_kernel::Cmd;
 use wgsl_rs::std::{Vec4, Vec4i, Vec4u};
@@ -37,7 +37,7 @@ pub const fn worst(a: Cost, b: Cost) -> Cost {
 #[derive(Debug)]
 pub enum PCode {
     /// `p(mk(args.., clip), x, y)`; `glyph`: `p` also takes the atlas byte at `x_texel(mk(..), x, y, aw)`.
-    Prim { mk: &'static str, p: &'static str, args: &'static [&'static Code], glyph: bool, opaque: bool },
+    Prim { mk: &'static str, p: &'static str, args: &'static [&'static Code], tys: &'static [Ty], glyph: bool, opaque: bool },
     /// `a` then `b`; `cut`: `b`'s core is opaque, so `a` is skipped inside it.
     Over { a: &'static PCode, b: &'static PCode, cut: bool },
     Clip { p: &'static PCode, k: &'static Code },
@@ -100,7 +100,7 @@ macro_rules! prim {
             const OPAQUE_CORE: bool = $opq;
             const COST: Cost = $cost;
             const LAYERS: usize = 1;
-            const CODE: &'static PCode = &PCode::Prim { mk: stringify!($mk), p: stringify!($p), args: &[$($T::CODE),*], glyph: $gl, opaque: $opq };
+            const CODE: &'static PCode = &PCode::Prim { mk: stringify!($mk), p: stringify!($p), args: &[$($T::CODE),*], tys: &[$(<$ty as Val>::TY),*], glyph: $gl, opaque: $opq };
             #[inline(always)]
             fn paint<Sk: Sink>(&self, cx: &Cx, clip: Vec4i, s: &mut Sk) {
                 s.$sink(x::$mk($(self.$f.eval(cx)),*, clip))
@@ -247,12 +247,7 @@ pub struct WinSink(pub Vec4i);
 impl WinSink {
     #[inline(always)]
     fn add(&mut self, c: Cmd) {
-        let w = c.win;
-        if w.x >= w.z {
-            return;
-        }
-        let a = self.0;
-        self.0 = if a.x >= a.z { w } else { Vec4 { x: a.x.min(w.x), y: a.y.min(w.y), z: a.z.max(w.z), w: a.w.max(w.w) } };
+        self.0 = x::x_union(self.0, c.win);
     }
 }
 impl Sink for WinSink {

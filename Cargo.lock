@@ -238,6 +238,10 @@ name = "bough-paint"
 version = "0.0.0"
 dependencies = [
  "bough-kernel",
+ "naga",
+ "objc2",
+ "objc2-foundation",
+ "objc2-metal",
  "wgsl-rs",
 ]
 

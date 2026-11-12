@@ -87,6 +87,16 @@ pub mod ops {
     pub fn x_and(a: Vec4i, b: Vec4i) -> Vec4i {
         vec4i(max(a.x(), b.x()), max(a.y(), b.y()), min(a.z(), b.z()), min(a.w(), b.w()))
     }
+    /// The bounding window of two pixel windows (an empty one, x0 >= x1, is the identity).
+    pub fn x_union(a: Vec4i, b: Vec4i) -> Vec4i {
+        if b.x() >= b.z() {
+            return a;
+        }
+        if a.x() >= a.z() {
+            return b;
+        }
+        vec4i(min(a.x(), b.x()), min(a.y(), b.y()), max(a.z(), b.z()), max(a.w(), b.w()))
+    }
     pub fn x_over(acc: Vec4u, sh: Vec4u) -> Vec4u {
         blend(acc, sh)
     }

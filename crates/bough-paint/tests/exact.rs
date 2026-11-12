@@ -196,3 +196,119 @@ fn archetype_kernels_equal_the_oracle() {
     eprintln!("exact: {} scenes x 6 block states, oracle hash {h:016x}, {bad} failing states", seeds());
     assert_eq!(bad, 0);
 }
+
+/// R3: the generated source. The WGSL of every archetype validates under naga, and every leaf a code tree
+/// names exists under that name in naga's MSL of the leaves (the run-time path appends calls by name).
+#[test]
+fn generated_source_is_valid() {
+    let s = build(1, 320, 250, 16);
+    let descs: Vec<&bough_paint::scene::Desc> = s.cols.iter().map(|c| c.desc).collect();
+    let wgsl = bough_paint::emit::wgsl(&descs);
+    let module = naga::front::wgsl::parse_str(&wgsl).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&wgsl)));
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|e| panic!("{e:?}"));
+    let mut names = vec!["x_over", "x_in", "x_union", "x_and", "x_rect", "c_core", "c_win", "x_texel", "x_store", "x_neu", "x_nei", "x_nev", "x_ner"];
+    for d in &descs {
+        bough_paint::emit::leaves(d.code, &mut names);
+    }
+    names.sort_unstable();
+    names.dedup();
+    for n in &names {
+        assert!(bough_paint::emit::LEAVES_MSL.contains(&format!(" {n}(\n")), "leaf {n} is not in the MSL under that name");
+    }
+    eprintln!("generated: {} archetypes, {} bytes of WGSL (leaves {}), {} leaves named", descs.len(), wgsl.len(), bough_paint::emit::LEAVES_WGSL.len(), names.len());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn gpu_functions_equal_the_oracle() {
+    use bough_paint::metal::Gpu;
+    let (fw, fh) = (320u32, 250u32);
+    let stride = fw as usize + 3;
+    let words = stride * fh as usize;
+    let pool = Pool::new(2);
+    let (mut bad, mut picks, mut overflow) = (0usize, 0usize, 0u32);
+    let (mut hits, mut shaded, mut full) = (0usize, 0u32, 0u32);
+    for seed in 0..seeds() {
+        let mut s = build(seed, fw, fh, 110);
+        let Some(mut gpu) = Gpu::new(&s, words, 256) else {
+            eprintln!("no Metal device: skipped");
+            return;
+        };
+        let mut res = Gpu::new(&s, words, 256).unwrap();
+        let mut g = Rng(seed * 77 + 5);
+        let mut u = block(&mut g);
+        let mut kept = vec![0u32; words];
+        let mut shown = u;
+        for k in 0..6 {
+            // the pick's reference: the CPU scene still holds the frame the surface shows
+            let (px, py) = (g.u(fw) as i32, g.u(fh) as i32);
+            let want_pick = (k > 0).then(|| s.pick(&shown, px, py));
+            s.frame(&u, &mut kept, stride, &pool, 0);
+            shown = u;
+            let ks = s.stage(&u);
+            let mut oracle = vec![0u32; words];
+            cpu::naive(&ks, fw, fh, &cpu::Atlas::new(&s.atlas, s.aw), 0, &mut oracle, stride);
+            // A: the generated shade functions over the CPU's bins, every tile
+            let all: Vec<u32> = (0..(s.tx * s.ty) as u32).collect();
+            gpu.out_mut(words).fill(0);
+            gpu.shade_with(&s, &u, &all, stride);
+            let d_a = diff(gpu.out(words), &oracle);
+            // B: the resident frame: the CPU sent the block and a pointer, nothing else; retained across steps
+            let (_, pick) = res.frame(&u, Some((px, py)), stride);
+            overflow += res.last().1;
+            hits += (pick != NO_HIT) as usize;
+            if k > 0 {
+                shaded += res.last().0;
+                full += (s.tx * s.ty) as u32;
+            }
+            let d_b = diff(res.out(words), &oracle);
+            let d_p = want_pick.is_some_and(|w| w != pick) as usize;
+            picks += want_pick.is_some() as usize;
+            if d_a + d_b + d_p != 0 {
+                eprintln!("seed {seed} step {k}: shade over CPU bins {d_a}, resident {d_b} differing words, pick mismatch {d_p}");
+                bad += 1;
+            }
+            step(&mut g, &mut u);
+        }
+    }
+    eprintln!("gpu exact: {} scenes x 6 block states, {picks} picks ({hits} on a record with an id), retained frames shaded {shaded} of {full} tiles, {overflow} slab overflows, {bad} failing states", seeds());
+    assert!(hits > 0 && shaded < full);
+    assert_eq!(bad, 0);
+    assert_eq!(overflow, 0);
+}
+
+/// Negative controls for the GPU gate: a rounding constant changed in the leaves, a layer dropped from the
+/// generated functions, the damage of a changed operand dropped from the window pass. Each must be seen.
+#[cfg(target_os = "macos")]
+#[test]
+fn gpu_mutants_are_caught() {
+    use bough_paint::metal::{Gpu, source};
+    let (fw, fh) = (320u32, 250u32);
+    let stride = fw as usize + 3;
+    let words = stride * fh as usize;
+    let s = build(3, fw, fh, 110);
+    let descs: Vec<&bough_paint::scene::Desc> = s.cols.iter().map(|c| c.desc).collect();
+    let lays: Vec<(usize, usize)> = s.cols.iter().map(|c| (c.base, c.desc.words)).collect();
+    let good = source(&descs, &lays);
+    let mutants = [
+        ("rounding", good.replacen("constant uint HALF = 16384u;", "constant uint HALF = 16383u;", 1)),
+        ("dropped layer", good.replacen("    a = x_over(a, p_rrect(", "    // a = x_over(a, p_rrect(", 1)),
+        ("dropped damage", good.replace("} else if (a", "} else if (false && a")),
+    ];
+    for (name, src) in mutants {
+        assert!(src != good, "{name}: the mutation did not apply");
+        let Some(mut m) = Gpu::with_source(&s, words, 256, &src) else { return };
+        let mut ok = Gpu::new(&s, words, 256).unwrap();
+        let mut g = Rng(99);
+        let mut u = block(&mut g);
+        let mut d = 0;
+        for _ in 0..8 {
+            m.frame(&u, None, stride);
+            ok.frame(&u, None, stride);
+            d += diff(m.out(words), ok.out(words));
+            step(&mut g, &mut u);
+        }
+        eprintln!("gpu mutant {name}: {d} differing words over 8 retained frames");
+        assert!(d > 0, "{name} was not caught");
+    }
+}

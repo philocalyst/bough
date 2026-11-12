@@ -9,7 +9,18 @@ description = "Round 8 raster lane: paints as types, one monomorphised CPU kerne
 bough-kernel = { path = "../bough-kernel" }
 wgsl-rs = { git = "https://github.com/schell/wgsl-rs", rev = "b2de16a1b81e67d76bc265c296184f882864badb", default-features = false }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3" }
+objc2-metal = { version = "0.3" }
+
+[build-dependencies]
+bough-kernel = { path = "../bough-kernel" }
+wgsl-rs = { git = "https://github.com/schell/wgsl-rs", rev = "b2de16a1b81e67d76bc265c296184f882864badb", default-features = false }
+naga = { version = "29.0.4", features = ["wgsl-in", "msl-out"] }
+
 [dev-dependencies]
+naga = { version = "29.0.4", features = ["wgsl-in", "msl-out"] }
 # the `#[wgsl]` macro's generated `__validate_wgsl` tests (naga validation of each module); tests only
 wgsl-rs = { git = "https://github.com/schell/wgsl-rs", rev = "b2de16a1b81e67d76bc265c296184f882864badb", default-features = false, features = ["validation"] }
 

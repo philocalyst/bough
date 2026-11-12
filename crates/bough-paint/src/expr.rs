@@ -7,7 +7,7 @@
 //! A combinator has no body of its own. `op!` takes a leaf of `ops.rs` and emits both faces from that one
 //! identifier: `eval` calls the leaf on the operands' values; `CODE` is a static tree naming the leaf and the
 //! operands' trees. The CPU kernel is `eval` monomorphised and inlined; the GPU function is `CODE` rendered
-//! (`gen.rs`). Neither can say something the other does not.
+//! (`emit.rs`). Neither can say something the other does not.
 use crate::ops::ops as x;
 use wgsl_rs::std::{Vec4i, Vec4u};
 
@@ -78,6 +78,30 @@ pub enum Code {
     Call(&'static str, &'static [&'static Code]),
 }
 
+/// The type of an expression's value, for generated code.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ty {
+    U32,
+    I32,
+    V4u,
+    V4i,
+}
+pub trait Val: Copy + PartialEq {
+    const TY: Ty;
+}
+impl Val for u32 {
+    const TY: Ty = Ty::U32;
+}
+impl Val for i32 {
+    const TY: Ty = Ty::I32;
+}
+impl Val for Vec4u {
+    const TY: Ty = Ty::V4u;
+}
+impl Val for Vec4i {
+    const TY: Ty = Ty::V4i;
+}
+
 /// A value whose bytes are whole 32-bit words with no padding and no invalid bit pattern: a record can be
 /// read in place from a column and handed to the GPU as words.
 ///
@@ -88,7 +112,7 @@ pub unsafe trait Words: Copy + 'static {}
 unsafe impl Words for u32 {}
 
 pub trait Expr: Words {
-    type Out: Copy + PartialEq;
+    type Out: Val;
     const STAGE: Stage;
     /// The block words it reads.
     const READS: u64;
