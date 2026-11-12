@@ -22,6 +22,15 @@ pub unsafe trait Surfaces {
     fn present(&mut self, i: usize, damage: &[u128], full: bool);
     /// The window is now `w` x `h` device pixels: every surface follows (contents undefined until redrawn).
     fn resize(&mut self, w: u32, h: u32);
+    /// A calm window: give back the memory of surface `i` (not the one on screen). Its contents are gone; it is
+    /// drawn whole when next used. Returns whether it held memory. Default: nothing to give back.
+    fn release(&mut self, _i: usize) -> bool {
+        false
+    }
+    /// Bytes each surface holds now (memory ledger; 0 for a surface that owns no memory yet).
+    fn held_bytes(&self) -> Vec<usize> {
+        Vec::new()
+    }
 }
 
 /// Offscreen surfaces in plain memory: what `App::new(.., gpu: true)` draws into where no GPU presenter exists, so
@@ -94,6 +103,12 @@ unsafe impl Surfaces for MemSurfaces {
         for b in &mut self.bufs {
             *b = None;
         }
+    }
+    fn release(&mut self, i: usize) -> bool {
+        self.bufs[i].take().is_some()
+    }
+    fn held_bytes(&self) -> Vec<usize> {
+        self.bufs.iter().map(|b| b.as_ref().map_or(0, |b| b.layout.size())).collect()
     }
 }
 

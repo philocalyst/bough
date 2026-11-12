@@ -79,11 +79,21 @@ fn run<V: View>(view: V, scene: &str, w: f32, h: f32) {
     let mut cfg = Config::new(w, h, 2.0, font());
     cfg.caps = CAPS;
     let (i0, w0) = (instr(), Instant::now());
-    let mut app = App::new(view, cfg, true);
+    // `NOGPU=1`: no Metal device at all; the kernel's CPU executor draws into plain-memory surfaces (the lazy-GPU
+    // policy's start, and what a window gets before its device is up)
+    let nogpu = std::env::var_os("NOGPU").is_some();
+    let ring = cfg.surfaces();
+    let (pw, ph) = ((w * 2.0).round() as u32, (h * 2.0).round() as u32);
+    let mut app = App::new(view, cfg, !nogpu);
+    if nogpu {
+        app.target = Some(Box::new(bough::backend::MemSurfaces::new(pw, ph, ring)));
+    }
     app.windowed = true;
+    let (mi, mw) = (instr() - i0, w0.elapsed());
     app.frame();
     app.wait_presented();
     let (di, dw) = (instr() - i0, w0.elapsed());
+    eprintln!("{scene}: App::new {:.1} ms {:.1} M instr (mount {:.1} M), first frame {:.1} ms {:.1} M", mw.as_secs_f64() * 1e3, mi as f64 / 1e6, app.startup.mount_instr as f64 / 1e6, (dw - mw).as_secs_f64() * 1e3, (di - mi) as f64 / 1e6);
     let recs = app.rt.bough.len();
     eprintln!("{scene}: startup {:.1} ms, {:.1} M instr, {} records", dw.as_secs_f64() * 1e3, di as f64 / 1e6, recs);
     out.sample(&mut app, "startup", &format!("\"startup_ns\":{},\"startup_instr\":{di},\"records\":{recs},", dw.as_nanos()));

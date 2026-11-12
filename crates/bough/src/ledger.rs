@@ -116,6 +116,11 @@ impl<V: View> App<V> {
         self.ledger_app(&mut l);
         #[allow(unused_mut)]
         let mut p = Proc::now();
+        if let Some(t) = self.target.as_ref() {
+            for (i, b) in t.held_bytes().into_iter().enumerate() {
+                l.push("target", format!("CPU surface {i}"), Space::Heap, Scales::Window, b, b, Some(b), Some(b));
+            }
+        }
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
         if let Some(g) = self.gpu.as_ref() {
             let m = g.gpu_mem();

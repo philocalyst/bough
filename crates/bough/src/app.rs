@@ -1091,6 +1091,23 @@ impl<V: View> App<V> {
             self.trim_mark = self.frames;
             return n > 0;
         }
+        // a CPU target (no GPU presenter): spare surfaces give their memory back; a released surface holds nothing
+        // valid, so it is drawn whole when next used
+        if let Some(t) = self.target.as_mut() {
+            let quiet = if active { 8 } else { 0 };
+            let mut n = 0;
+            for i in 0..self.held.len() {
+                if Some(i) != self.shown && self.frames - self.last_use[i] >= quiet && !t.in_use(i) && t.release(i) {
+                    self.held[i] = None;
+                    n += 1;
+                }
+            }
+            if n > 0 {
+                self.surf_stats.trims += 1;
+            }
+            self.trim_mark = self.frames;
+            return n > 0;
+        }
         let _ = active;
         false
     }
