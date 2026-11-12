@@ -5,7 +5,10 @@ animate, vlist scroll) and a few more. A = $BOUGH_A, B = $BOUGH_B: directories h
 animate_headless and vlist_headless (any profile, the same for both). RENDER=1 (the GPU path: the presenter's CPU
 side included) unless $RENDERS says otherwise. Prints every repetition, the medians and B/A.
 
-Usage: slopes_ab.py [reps=3]
+Usage: slopes_ab.py [reps=5]
+
+The spread between the two frame counts is 10x (lane developer-loop measured the default 2x spread's own noise at
+up to 14 % in an A-vs-A control, and 0.4-0.9 % at 10x, median of 5).
 """
 import os, statistics, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "integrate"))
@@ -18,14 +21,14 @@ def run(dist, scene, mode, render):
     old = slope.BIN[("bough", scene)]
     slope.BIN[("bough", scene)] = os.path.join(dist, os.path.basename(old))
     try:
-        a, b = {"animate": (600, 1200), "vlist": (600, 3600)}.get(scene, (300, 600))
+        a, b = {"animate": (600, 6000), "vlist": (600, 6000)}.get(scene, (300, 3000))
         return (slope.instr("bough", scene, mode, render, b) - slope.instr("bough", scene, mode, render, a)) / (b - a)
     finally:
         slope.BIN[("bough", scene)] = old
 
 
 def main():
-    reps = int(sys.argv[1]) if len(sys.argv) > 1 else 3
+    reps = int(sys.argv[1]) if len(sys.argv) > 1 else 5
     A, B = os.environ["BOUGH_A"], os.environ["BOUGH_B"]
     for render in (int(r) for r in os.environ.get("RENDERS", "1").split(",")):
         for scene, mode in CELLS:
