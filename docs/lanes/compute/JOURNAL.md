@@ -479,3 +479,62 @@ Signal-write frame by ring size (`BOUGH_RING`, default backend, slope OPS 2000 -
 ring 1 (buffer age 1, what a window sees) **43.5-44.3 K**; ring 2 47.1 K; ring 4 52.6-52.9 K; the presenter's
 kernels 107.4-108.8 K. CPU time 2.9 us median. A text tile costs about 11 K here (zeroing, shading and
 storing all 32 rows of a tile with glyphs); frames at ring 4 repair 2-6 tiles.
+
+### 0. Merged r7/platform (`3b74924d50`)
+
+The portable target path (`App::draw_target`, wl_shm and offscreen targets) now draws through the kernel
+backend only; `cpu_raster.rs` and `repair.rs` are gone on every platform. macOS: workspace check clean,
+bough-kernel tests pass. The Linux side of the merge (two stats prints in `wayland.rs` and
+`bough-guibench`) was edited blind. **No windowed run was made**: the host shows its window with
+`orderFrontRegardless` on the active Space and there is no switch to place it elsewhere; adding one is a
+host change I did not want to make unreviewed under the no-focus rule. The publisher and present paths are
+covered headlessly by `comparisons/bough-scenes/tests/present.rs`, which passes.
+
+### The table: themed operands resolved by the kernel (interface for core; approved design)
+
+**What it is.** A small table of 32-bit pairs that travels with the frame. A command may say "my colour is
+entry i" instead of carrying a colour; the kernel resolves it when it loads the command. A theme switch is a
+table write plus damage; no record is re-applied, restaged or rebinned unless an entry's opacity class
+changes.
+
+**Where it lives.** At the end of the program words (`Prog`): header word 9 is the table's word offset, word
+10 its last entry index. No new buffer and no new binding, so the Metal and Vulkan executors do not change;
+the program is rewritten every frame anyway, and the table is 2 words per entry (512 words for 256
+entries). On the CPU it is `Scene::table: Vec<u32>`, copied into the program by the binner.
+
+**Entry formats.** Colour: premultiplied Q15 RGBA, 4 x u16 in two words (`stage::table_color(rgba8)`);
+writing the table is where the premultiply happens, once. Scalar: a Q15 value in the low 16 bits of the
+first word (`stage::table_scalar`), used as an opacity step.
+
+**Command format (32 words, was 30).** Word 0 flags `F_T_PM` (0x80000: the first colour is entry
+`word29 & 0xffff`), `F_T_PM2` (0x100000: the second colour is entry `word29 >> 16`), `F_T_OP` (0x200000:
+both colours are scaled by the scalar entry `word30 & 0xffff`). Word 31 is spare. Staging:
+`Scene::push_tinted(cmd, Tint { pm, pm2, opacity })`.
+
+**Cost.** Per command load: one flag test when untinted; two to six words read and at most eight Q15
+products when tinted. Per pixel: nothing (a command's colour is per command). On the CPU the fast executor
+loads a command once per tile it touches.
+
+**Animated themes.** The presenter writes the *effective* table each frame:
+`stage::table_mix(from, to, t)` (the kernel's own `mix4u`, so every executor sees the same integers); 256
+entries are about 3 K instructions. The kernel does not interpolate tables itself.
+
+**Exactness.** The table is input data like the atlas; nothing about it is executor-specific. The gate
+tints a share of its commands and also checks that a tinted scene equals the same scene staged with the
+table's colours baked in.
+
+**Occlusion.** The cut asks `opaque(cmd)` of the *resolved* command, at bin time. Binning is per frame
+today, so a table write that makes an entry opaque or translucent is simply seen by the next bin. When tile
+programs are retained (keyed on page seals), their key must also include the opacity class of every entry
+they use: the backend will expose `opacity_bits() -> [u64; 4]` (one bit per entry: resolved alpha == ONE)
+and a retained program is valid while the bits of its entries are unchanged.
+
+**Damage (core's side).** A table write must damage the tiles of the records that use the entry. The kernel
+side needs nothing; the suggested shape is a 64-bit bloom per page, bit `i & 63` set for every entry index a
+record of the page names (`stage::bloom(index) -> u64`), so a write to entry i damages the pages whose bloom
+has that bit.
+
+**What the table does not carry.** Radii and stroke widths. They are geometry: a command's window, core and
+root shift are derived from them at staging, so a radius that changes without restaging would invalidate the
+core (identity 3) unless the record also declared an upper bound and was staged for it. That is possible
+later (stage with the bound, resolve the value at load) but it is not free, so it is not in this change.
