@@ -546,7 +546,7 @@ fn list_plan(st: &mut Store, cx: &mut Cx<'_>, l: &List<'_>, (lo, hi): (u32, u32)
     // The one check per batch: this list's rows are still the rows its columns were made for (same call site,
     // same shape).
     match st.src {
-        Some(s) => assert!(s.1 == src.1 && s.2 == src.2 && *s.0 == *src.0, "a list's rows changed shape"),
+        Some(s) => assert!(s.1 == src.1 && s.2 == src.2 && (core::ptr::eq(s.0, src.0) || *s.0 == *src.0), "a list's rows changed shape"),
         None => assert!(lo == hi),
     }
     let geo = (l.x, l.y, l.row_h);

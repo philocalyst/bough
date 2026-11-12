@@ -563,6 +563,11 @@ pub struct Store {
 }
 
 static COL_ID: AtomicU32 = AtomicU32::new(1);
+/// How many columns the process has created: a table of columns built at `n` is current while this is `n`.
+#[inline(always)]
+pub fn columns_made() -> u32 {
+    COL_ID.load(Ordering::Relaxed)
+}
 
 impl Store {
     pub fn new(cap: u32, space: Space) -> Store {

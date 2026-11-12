@@ -47,7 +47,10 @@ pub struct World<B> {
     focus: Option<Focused>,
     /// The world's columns in paint order: a place's column number indexes this. Rebuilt when columns appear.
     ctab: Vec<(Path, u32)>,
-    ctab_at: (u32, usize),
+    ctab_at: u32,
+    /// Scratch for the pointer path (no allocation per event once warm).
+    buf: Vec<(Path, u32, u32)>,
+    places: Vec<u32>,
     _b: PhantomData<B>,
 }
 
@@ -57,7 +60,7 @@ impl<B: Backend> World<B> {
         for w in [U_PICK, U_FOCUS, U_PRESS] {
             shown.w[w] = NONE;
         }
-        World { root: Store::new(1, Space::root(w, h)), shown, tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, reads: 0, clock: 0, ptr: None, hov: Vec::new(), held: None, focus: None, ctab: Vec::new(), ctab_at: (0, 0), _b: PhantomData }
+        World { root: Store::new(1, Space::root(w, h)), shown, tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, reads: 0, clock: 0, ptr: None, hov: Vec::new(), held: None, focus: None, ctab: Vec::new(), ctab_at: 0, buf: Vec::new(), places: Vec::new(), _b: PhantomData }
     }
 
     /// The application's block with the words the raster owns (time, pointer, pick) as the world has them.
@@ -205,10 +208,7 @@ impl<B: Backend> World<B> {
                 }
             }
         }
-        fn count(st: &Store) -> (u32, usize) {
-            st.subs.iter().map(count).fold((st.cols.len() as u32, st.subs.len()), |a, b| (a.0 + b.0, a.1 + b.1))
-        }
-        let n = count(&self.root);
+        let n = crate::store::columns_made();
         if n != self.ctab_at {
             self.ctab.clear();
             walk(&self.root, &mut Path::default(), &mut self.ctab);
@@ -218,9 +218,28 @@ impl<B: Backend> World<B> {
 
     /// The places under (x, y) whose handlers hear one of `kinds`, bottom first (the last is the pick).
     fn chain(&mut self, x: i32, y: i32, kinds: u32) -> Vec<u32> {
-        let mut v = Vec::new();
-        self.root.chain(&self.shown, x, y, kinds, &mut Path::default(), &mut v);
-        v.into_iter().map(|(p, c, r)| self.place(&p, c, r)).collect()
+        let mut out = core::mem::take(&mut self.places);
+        self.chain_into(x, y, kinds, &mut out);
+        out
+    }
+    fn chain_into(&mut self, x: i32, y: i32, kinds: u32, out: &mut Vec<u32>) {
+        self.columns();
+        let mut buf = core::mem::take(&mut self.buf);
+        buf.clear();
+        out.clear();
+        self.root.chain(&self.shown, x, y, kinds, &mut Path::default(), &mut buf);
+        for &(p, c, r) in &buf {
+            if let Some(i) = self.ctab.iter().position(|&(q, d)| q == p && d == c) {
+                out.push((i as u32) << PLACE_REC_BITS | r);
+            }
+        }
+        self.buf = buf;
+    }
+    /// Give back a chain's buffer.
+    fn done(&mut self, v: Vec<u32>) {
+        if v.capacity() > self.places.capacity() {
+            self.places = v;
+        }
     }
 
     /// Run the handler of `place` that hears `e`, if it has one.
@@ -250,12 +269,12 @@ impl<B: Backend> World<B> {
         if self.shown.w[slot] == val {
             return;
         }
-        let mut u = self.shown;
-        u.w[slot] = val;
         if self.reads >> slot & 1 != 0 {
+            let mut u = self.shown;
+            u.w[slot] = val;
             self.root.delta(&self.shown, &u, 1 << slot, &mut self.tiles);
         }
-        self.shown = u;
+        self.shown.w[slot] = val;
     }
 
     /// The platform's settings changed (`event::ENV_*` bits). Reduced motion takes effect at the next frame.
@@ -281,7 +300,9 @@ impl<B: Backend> World<B> {
     pub fn repick<V: View>(&mut self, v: &mut V) -> Dispatch {
         let Some((x, y)) = self.ptr else { return Dispatch::NOTHING };
         let all = self.chain(x, y, kind::POINTER);
-        self.picked(v, all.last().copied().unwrap_or(NONE), &all)
+        let d = self.picked(v, all.last().copied().unwrap_or(NONE), &all);
+        self.done(all);
+        d
     }
     /// A pick that arrived from the raster with a frame: `place` is the `Pick` word.
     pub fn accept_pick<V: View>(&mut self, v: &mut V, place: u32) -> Dispatch {
@@ -293,10 +314,19 @@ impl<B: Backend> World<B> {
     }
     fn picked<V: View>(&mut self, v: &mut V, pick: u32, all: &[u32]) -> Dispatch {
         self.core_word(U_PICK, pick);
-        let hov: Vec<u32> = all.iter().copied().filter(|&p| self.kinds(p) & kind::HOVER != 0).collect();
-        if hov == self.hov {
+        // the hovered set is unchanged (the usual move): compare in place, allocate nothing
+        let mut same = true;
+        let mut k = 0;
+        for &p in all {
+            if self.kinds(p) & kind::HOVER != 0 {
+                same &= self.hov.get(k) == Some(&p);
+                k += 1;
+            }
+        }
+        if same && k == self.hov.len() {
             return Dispatch { kind: kind::HOVER, place: pick, consumed: false };
         }
+        let hov: Vec<u32> = all.iter().copied().filter(|&p| self.kinds(p) & kind::HOVER != 0).collect();
         let old = core::mem::replace(&mut self.hov, hov);
         let (x, y) = self.ptr.map_or((-1.0, -1.0), |(x, y)| (x as f32, y as f32));
         let mut out = Dispatch { kind: kind::HOVER, place: NONE, consumed: false };
