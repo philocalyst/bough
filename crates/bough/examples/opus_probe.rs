@@ -72,7 +72,16 @@ fn flat(rows: &[(u32, String)], sel: u32, i: usize, out: &mut [u64; 4]) -> usize
 }
 
 fn main() {
-    let rows: Vec<(u32, String)> = (0..N as u32).map(|i| (i, format!("Row label {i}"))).collect();
+    // PAD=n pads every label to n bytes (F2's overfit check: long strings spill past the record's 16 bytes)
+    let pad: usize = std::env::var("PAD").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let rows: Vec<(u32, String)> = (0..N as u32)
+        .map(|i| (i, format!("Row label {i:<w$}", w = pad.saturating_sub(10))))
+        .collect();
+    // the retained tails past 16 bytes, as a separate copy (what the part's byte arena would hold)
+    let tails: Vec<Vec<u8>> = rows
+        .iter()
+        .map(|(_, l)| l.as_bytes().get(16..).unwrap_or(&[]).to_vec())
+        .collect();
     let sel = u32::MAX;
     let mut descs = SpecTable::default();
     // retained seals, as update_dyn writes them
@@ -123,9 +132,9 @@ fn main() {
             let n = flat(&rows, black_box(sel), i, &mut w);
             let r = &ret[i];
             let mut d = (w[0] ^ r[0]) | (w[1] ^ r[1]) | (w[2] ^ r[2]) | (w[3] ^ r[3]);
-            if n > 16 {
-                // long labels: the tail is compared as bytes against the retained text (cold here)
-                d |= 1;
+            if d == 0 && n > 16 {
+                // long labels: the tail is compared as bytes against the retained copy
+                d |= (rows[i].1.as_bytes()[16..] != tails[i][..]) as u64;
             }
             eq += (d == 0) as usize;
         }
@@ -170,11 +179,15 @@ fn main() {
             for j in 0..W {
                 d |= w[j] ^ r[j];
             }
+            let lb = rows[i].1.as_bytes();
+            if d == 0 && lb.len() > 16 {
+                d |= (lb[16..] != tails[i][..]) as u64;
+            }
             eq += (d == 0) as usize;
         }
         assert_eq!(eq, N);
     });
-    println!("seal bytes per row: {avg}");
+    println!("label bytes: {}; seal bytes per row: {avg}", rows[N / 2].1.len());
     println!("(d) whole description as a 288-byte word record (specs inline) + xor: {fullc:8.1} instr/row");
     println!("(a) describe one row (build only):            {build:8.1} instr/row");
     println!("(b) describe + SealCheck (sealed_as):          {check:8.1} instr/row");
