@@ -173,6 +173,31 @@ impl NRect {
             & (COORD_MIN..=COORD_MAX).contains(&(y1 + dy));
         d.then(|| NRect([(x0 + dx) as i16, (y0 + dy) as i16, (-(x1 + dx)) as i16, (-(y1 + dy)) as i16]))
     }
+    /// Translate by `(dx, dy)`, or `None` if a coordinate would leave the domain or the delta is beyond
+    /// i16 (EMPTY stays EMPTY). `translate_checked` in one saturating lane add and one lane compare: a
+    /// lane of a non-empty in-domain rect lies in `[-32766, 32766]`, and a sum that left it saturates or
+    /// lands on a value of larger magnitude.
+    #[inline(always)]
+    pub fn translate_in_domain(self, dx: i32, dy: i32) -> Option<NRect> {
+        if self.0[0] == MAXC {
+            return Some(NRect::EMPTY);
+        }
+        if (dx.unsigned_abs() | dy.unsigned_abs()) > 32766 {
+            return None;
+        }
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            let d = [dx as i16, dy as i16, (-dx) as i16, (-dy) as i16];
+            let r = vqadd_s16(vld1_s16(self.0.as_ptr()), vld1_s16(d.as_ptr()));
+            let out = vcgt_s16(vqabs_s16(r), vdup_n_s16(COORD_MAX as i16));
+            if vget_lane_u64::<0>(vreinterpret_u64_u16(out)) != 0 {
+                return None;
+            }
+            Some(NRect(core::mem::transmute::<int16x4_t, [i16; 4]>(r)))
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        self.translate_checked(dx, dy)
+    }
     /// Translate; the canonical empty rect stays canonical. Coordinates must stay in the domain.
     #[inline(always)]
     pub fn translate(self, dx: i32, dy: i32) -> NRect {
@@ -389,7 +414,9 @@ pub unsafe fn translate_union(p: *mut NRect, n: usize, dx: i32, dy: i32) -> (NRe
         let q = p as *mut i16;
         for i in 0..pairs {
             let v = vld1q_s16(q.add(i * 8));
-            let t = vqaddq_s16(v, dv);
+            // wrapping: equal to the saturating add whenever the result is in the domain, and exactly
+            // undone by the opposite translation when a caller finds afterwards that it was not
+            let t = vaddq_s16(v, dv);
             let is_empty = vceqq_s16(v, maxv);
             let r = vbslq_s16(is_empty, maxv, t);
             vst1q_s16(q.add(i * 8), r);
@@ -400,15 +427,10 @@ pub unsafe fn translate_union(p: *mut NRect, n: usize, dx: i32, dy: i32) -> (NRe
         let (mut o, mut w) = (fold(old), fold(new));
         if n & 1 == 1 {
             let r = *p.add(n - 1);
-            let t = r.translate(dx, dy);
+            let t = if r.0[0] == MAXC { r } else { r.add_lanes([dx as i16, dy as i16, (-dx) as i16, (-dy) as i16]) };
             *p.add(n - 1) = t;
             o = o.union(r);
             w = w.union(t);
-        }
-        #[cfg(debug_assertions)]
-        for i in 0..n {
-            let r = *p.add(i);
-            debug_assert!(r.is_empty() == (r.0[0] == MAXC), "translate left domain");
         }
         (o, w)
     }
@@ -479,5 +501,74 @@ pub unsafe fn union8(p: *const NRect) -> NRect {
     #[cfg(not(target_arch = "aarch64"))]
     unsafe {
         union_all_scalar(core::slice::from_raw_parts(p, 8))
+    }
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Exact rectangles.
+// ---------------------------------------------------------------------------------------------
+
+/// An exact device-pixel rectangle `[x0, x1) x [y0, y1)` in i32 (coordinates within `±WRect::LIMIT`).
+/// `NRect` is the 16-bit form the pages store *relative to their offset* and the form every window test
+/// uses; a `WRect` is what a record's ink *is*. `to_nrect` is the clamped view (exact inside the domain,
+/// and a rect wholly outside it becomes EMPTY): it may be tested and marked, never translated again.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct WRect(pub [i32; 4]);
+
+impl WRect {
+    pub const EMPTY: WRect = WRect([0; 4]);
+    pub const LIMIT: i32 = 1 << 29;
+    #[inline]
+    pub fn new(x0: i32, y0: i32, x1: i32, y1: i32) -> WRect {
+        let c = |v: i32| v.clamp(-Self::LIMIT, Self::LIMIT);
+        let (x0, y0, x1, y1) = (c(x0), c(y0), c(x1), c(y1));
+        if x0 >= x1 || y0 >= y1 { WRect::EMPTY } else { WRect([x0, y0, x1, y1]) }
+    }
+    #[inline(always)]
+    pub fn is_empty(self) -> bool {
+        self.0[0] >= self.0[2] || self.0[1] >= self.0[3]
+    }
+    #[inline]
+    pub fn translate(self, dx: i32, dy: i32) -> WRect {
+        if self.is_empty() {
+            return WRect::EMPTY;
+        }
+        let [x0, y0, x1, y1] = self.0;
+        WRect::new(x0 + dx, y0 + dy, x1 + dx, y1 + dy)
+    }
+    #[inline]
+    pub fn union(self, o: WRect) -> WRect {
+        if self.is_empty() {
+            return o;
+        }
+        if o.is_empty() {
+            return self;
+        }
+        let (a, b) = (self.0, o.0);
+        WRect([a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])])
+    }
+    /// The clamped 16-bit view.
+    #[inline]
+    pub fn to_nrect(self) -> NRect {
+        if self.is_empty() {
+            return NRect::EMPTY;
+        }
+        NRect::new(self.0[0], self.0[1], self.0[2], self.0[3])
+    }
+    /// Is the rect representable exactly as an `NRect` (inside the domain, or empty)?
+    #[inline]
+    pub fn in_domain(self) -> bool {
+        self.is_empty() || self.0.iter().all(|v| (COORD_MIN..=COORD_MAX).contains(v))
+    }
+}
+
+impl From<NRect> for WRect {
+    #[inline]
+    fn from(r: NRect) -> WRect {
+        if r.is_empty() {
+            return WRect::EMPTY;
+        }
+        WRect(r.to_xyxy())
     }
 }

@@ -1,0 +1,9 @@
+diff --git a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2141,0 +2142 @@
++source = "git+https://github.com/zeronsh/zgx?rev=06debe9df86dbcb0a82d6074d01f98ace98a65b3#06debe9df86dbcb0a82d6074d01f98ace98a65b3"
+@@ -2163,0 +2165 @@
++source = "git+https://github.com/zeronsh/zgx?rev=06debe9df86dbcb0a82d6074d01f98ace98a65b3#06debe9df86dbcb0a82d6074d01f98ace98a65b3"
+@@ -2174,0 +2177 @@
++source = "git+https://github.com/zeronsh/zgx?rev=06debe9df86dbcb0a82d6074d01f98ace98a65b3#06debe9df86dbcb0a82d6074d01f98ace98a65b3"
