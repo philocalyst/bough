@@ -125,4 +125,7 @@ impl<'a, T: 'static, V: 'static, F: Fn(&T, usize) -> Lane + Copy + 'static> Elem
         m.tape_next();
         m.pos += 1;
     }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        p.leaf(crate::probe::Family::Quad, std::any::type_name::<Self>(), "lanes");
+    }
 }

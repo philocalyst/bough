@@ -380,6 +380,11 @@ impl<V, E: Element<V>> Element<V> for Option<E> {
     fn update(self, m: &mut Mounter<'_, V>) {
         update_dyn(m, self.into_iter());
     }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        if let Some(e) = self {
+            e.probe(p);
+        }
+    }
 }
 
 /// Re-describe the root owner `v` against its tape (`App::turn` and every handler, unless `Config::mount_once`).

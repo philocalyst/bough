@@ -136,6 +136,16 @@ pub trait Element<V>: Sized {
     fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
         s.refuse()
     }
+    /// Reflection (`probe.rs`): show this description to `p` in mount order, mounting nothing. Runs only
+    /// when somebody reflects (a test, the inspector, the devtools server, accessibility), never in a turn.
+    ///
+    /// The default says nothing about how the element mounts, so the walk leaves the rest of its container
+    /// unattributed (the records themselves are still reflected). An element that emits one record subtree
+    /// says `p.leaf(..)`; a container `p.open(..)`, its children, `p.close(..)`; a wrapper probes its inner
+    /// element and annotates what it produced.
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        p.unknown(std::any::type_name::<Self>())
+    }
 }
 
 impl<V> Element<V> for () {
@@ -143,6 +153,7 @@ impl<V> Element<V> for () {
     fn update(self, _: &mut Mounter<'_, V>) {}
     #[inline(always)]
     fn seal<S: crate::seal::Sealer>(&self, _: &mut S) {}
+    fn probe(self, _: &mut crate::probe::Probe<'_, V>) {}
 }
 
 macro_rules! tuple_elements {
@@ -164,6 +175,11 @@ macro_rules! tuple_elements {
                 let ($($t,)+) = self;
                 $($t.seal(s);)+
             }
+            #[allow(non_snake_case)]
+            fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+                let ($($t,)+) = self;
+                $($t.probe(p);)+
+            }
         }
     };
 }
@@ -183,6 +199,11 @@ impl<V, E: Element<V>> Element<V> for Vec<E> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_dyn(m, self.into_iter());
     }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        for e in self {
+            e.probe(p);
+        }
+    }
 }
 
 /// Children from an iterator (`each((0..30).map(|i| card(i)))`).
@@ -199,6 +220,11 @@ where
     }
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_dyn(m, self.0);
+    }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        for e in self.0 {
+            e.probe(p);
+        }
     }
 }
 
@@ -221,6 +247,10 @@ pub trait IntoProp<P: 'static, V>: Sized {
     #[inline(always)]
     fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
         s.refuse()
+    }
+    /// Reflection (`probe.rs`): the signal this operand is bound to, if it is a wired one.
+    fn bound(&self) -> Option<crate::probe::Bound> {
+        None
     }
 }
 
@@ -294,6 +324,9 @@ impl<'a, T: Clone + 'static, V> IntoProp<T, V> for Wired<'a, T, V> {
     fn value(self) -> T {
         self.get().clone()
     }
+    fn bound(&self) -> Option<crate::probe::Bound> {
+        Some(self.bound_here())
+    }
 }
 
 impl<'a, T: 'static, V, F, P: 'static> IntoProp<P, V> for WMap<'a, T, V, F>
@@ -307,6 +340,9 @@ where
     }
     fn value(self) -> P {
         (self.f)(self.w.get())
+    }
+    fn bound(&self) -> Option<crate::probe::Bound> {
+        Some(self.w.bound_here())
     }
 }
 
@@ -456,7 +492,6 @@ where
         if dynamic {
             let hd = m.rt.bough.new_handle();
             handle_idx = hd.idx;
-            m.rt.reflect.elem(hd.idx, std::any::type_name::<Self>());
             let n = &mut m.rt.nodes[node as usize];
             n.handle = hd;
             n.run = run;
@@ -543,6 +578,16 @@ where
         m.ox = ox;
         m.oy = oy;
     }
+
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let o = p.open(crate::probe::Family::Quad, std::any::type_name::<Self>(), "quad");
+        let (bg, wd, sp) = (self.bg.bound(), self.wd.bound(), self.sp.bound());
+        p.bind(o.seen(), "bg", bg);
+        p.bind(o.seen(), "width", wd);
+        p.bind(o.seen(), "span", sp);
+        self.ch.probe(p);
+        p.close(o);
+    }
 }
 
 // =============================================================================== text
@@ -563,6 +608,10 @@ pub trait TextSrc<V>: Sized {
     #[inline(always)]
     fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
         s.refuse()
+    }
+    /// Reflection (`probe.rs`): the signal this text is bound to, if it is a wired one.
+    fn bound(&self) -> Option<crate::probe::Bound> {
+        None
     }
 }
 
@@ -731,6 +780,9 @@ impl<'a, V> TextSrc<V> for Wired<'a, String, V> {
     fn value(self) -> String {
         self.get().clone()
     }
+    fn bound(&self) -> Option<crate::probe::Bound> {
+        Some(self.bound_here())
+    }
 }
 impl<'a, T: 'static, V, F: Fn(&T) -> String + Copy + 'static> TextSrc<V> for WMap<'a, T, V, F> {
     fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String {
@@ -740,6 +792,9 @@ impl<'a, T: 'static, V, F: Fn(&T) -> String + Copy + 'static> TextSrc<V> for WMa
     }
     fn value(self) -> String {
         (self.f)(self.w.get())
+    }
+    fn bound(&self) -> Option<crate::probe::Bound> {
+        Some(self.w.bound_here())
     }
 }
 impl<'a, T: 'static, V, F: Fn(&T) -> f32 + Copy + 'static> TextSrc<V> for Num<'a, T, V, F> {
@@ -758,6 +813,9 @@ impl<'a, T: 'static, V, F: Fn(&T) -> f32 + Copy + 'static> TextSrc<V> for Num<'a
         let mut slow = String::new();
         let n = render_num(&self.fmt, v, &mut buf, &mut slow);
         if n == usize::MAX { slow } else { bough_text::numeric::as_str(&buf, n).to_owned() }
+    }
+    fn bound(&self) -> Option<crate::probe::Bound> {
+        Some(self.w.bound_here())
     }
 }
 
@@ -885,7 +943,6 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
         m.tape_push(node);
         let hd = if dynamic { m.rt.bough.new_handle() } else { Handle { idx: 0, generation: 0 } };
         if dynamic {
-            m.rt.reflect.elem(hd.idx, std::any::type_name::<Self>());
         }
         let ti = m.rt.alloc_text(TextNode {
             text: init,
@@ -978,6 +1035,11 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
         }
         m.pos += 1;
     }
+
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let i = p.leaf(crate::probe::Family::Text, std::any::type_name::<Self>(), "text");
+        p.bind(i, "text", self.s.bound());
+    }
 }
 
 // =============================================================================== grouping
@@ -1003,6 +1065,9 @@ impl<V, Ch: Element<V>> Element<V> for At<Ch> {
         self.2.update(m);
         m.ox = ox;
         m.oy = oy;
+    }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        self.2.probe(p)
     }
 }
 
@@ -1046,6 +1111,9 @@ impl<V, Ch: Element<V>> Element<V> for Clip<Ch> {
         m.clip = m.rt.scoped_clip(r, prev);
         self.1.mount(m);
         m.clip = prev;
+    }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        self.1.probe(p)
     }
 }
 
@@ -1307,5 +1375,9 @@ impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a,
     /// The series is wire-driven; its geometry constants are taken as fixed for the owner's life.
     fn update(self, m: &mut Mounter<'_, V>) {
         m.pos += 1;
+    }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let i = p.leaf(crate::probe::Family::Quad, std::any::type_name::<Self>(), "bars");
+        p.bind(i, "key", Some(self.key.bound_here()));
     }
 }

@@ -256,6 +256,12 @@ impl<'a, T: crate::app::View, V: 'static> Element<V> for EntityView<'a, T, V> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_dyn(m, std::iter::once(Keyed(self)));
     }
+    /// Reflection: the entity is an owner of its own; its view is walked with it.
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        if let Some(t) = self.ents.ents.get(self.e) {
+            p.entity(t, self.e.idx, |q| t.view().probe(q));
+        }
+    }
 }
 
 /// The entity view as a dynamic item keyed by its entity (`Element::dyn_key`).

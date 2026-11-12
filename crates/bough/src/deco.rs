@@ -447,6 +447,9 @@ impl<V: 'static, A: IntoProp<f32, V>> Element<V> for Image<A> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        p.leaf(crate::probe::Family::Quad, std::any::type_name::<Self>(), "image");
+    }
 }
 
 /// A box (x, y, w, h points, corner radius) with CSS box shadows beneath and a fill: a gradient, or

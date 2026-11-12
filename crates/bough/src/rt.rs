@@ -438,8 +438,6 @@ pub struct Rt {
     pub lay: crate::layout::Lay,
     /// List regions (`listview.rs`).
     pub lists: crate::listview::Lists,
-    /// Reflection (`reflect.rs`): wired fields' descriptors, element type names by record handle.
-    pub reflect: crate::reflect::Reflect,
     /// Released subtrees whose resources return to the free lists at the next frames (`reclaim`).
     pub(crate) reclaim_q: Vec<Scope>,
     /// Dynamic parts of re-describing owners (`describe.rs`).
@@ -558,7 +556,6 @@ impl Rt {
             lay: crate::layout::Lay::new(scale),
             lists: Default::default(),
             reclaim_q: Vec::new(),
-            reflect: Default::default(),
             dyns: Default::default(),
             eviews: Vec::new(),
             asy: Default::default(),

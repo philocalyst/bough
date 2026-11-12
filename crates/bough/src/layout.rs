@@ -1450,7 +1450,6 @@ where
         let s = m.rt.scale;
         let hd = m.rt.bough.new_handle();
         let mut spec = self.spec;
-        m.rt.reflect.elem(hd.idx, std::any::type_name::<Self>());
         // size operands: the box is created with their initial values, the spec kept for later restyles
         let lid = if X::SIZE {
             let lid = m.rt.lay.eng.add(hd, &spec, s, None);
@@ -1577,6 +1576,18 @@ where
         self.x.seal(s);
         self.ch.seal(s);
     }
+
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let name = match (self.spec.container, self.spec.column) {
+            (true, true) => "column",
+            (true, false) => "row",
+            _ => "box",
+        };
+        let o = p.open(crate::probe::Family::Box, std::any::type_name::<Self>(), name);
+        p.bind(o.seen(), "bg", self.bg.bound());
+        self.ch.probe(p);
+        p.close(o);
+    }
 }
 
 /// A re-description's spec for layout node `lid`: restyle and queue its group when it changed.
@@ -1660,7 +1671,6 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
         }
         m.rt.lay.prof.mark(LP_TEXT_SET);
         let hd = m.rt.bough.new_handle();
-        m.rt.reflect.elem(hd.idx, std::any::type_name::<Self>());
         let spec = if self.wrap {
             self.spec
         } else {
@@ -1749,6 +1759,12 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
         s.f32(self.lh);
         self.color.seal(s);
         self.s.seal(s);
+    }
+
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let i = p.leaf(crate::probe::Family::Text, std::any::type_name::<Self>(), if self.wrap { "para" } else { "text" });
+        p.bind(i, "text", self.s.bound());
+        p.bind(i, "color", self.color.bound());
     }
 }
 

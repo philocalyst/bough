@@ -157,8 +157,6 @@ pub(crate) struct Slot {
     pub uv: [u16; 4],
     pub last: Option<Placement>,
     pub live: bool,
-    /// Provenance: where the element was built.
-    pub at: &'static std::panic::Location<'static>,
 }
 
 /// The window's foreign elements and its host.
@@ -219,7 +217,6 @@ impl<V: 'static> Element<V> for Foreign {
         crate::describe::mount_opaque(m, move |m: &mut Mounter<'_, V>| {
             let s = m.rt.scale;
             let hd = m.rt.bough.new_handle();
-            m.rt.reflect.elem(hd.idx, std::any::type_name::<Self>());
             let lid = m.rt.lay.eng.add(hd, &self.spec, s, None);
             attach(m, lid);
             let node = m.rt.alloc_node();
@@ -253,11 +250,16 @@ impl<V: 'static> Element<V> for Foreign {
             m.rt.lay.info[lid as usize].kind = 1;
             let flags = if self.hit == Hit::Pass { KF_NOHIT } else { 0 };
             m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_FOREIGN | flags, payload: inst, handle: hd.idx, clip: m.clip });
-            m.rt.foreign.add(Slot { id: self.id, handle: hd, node, mode: self.mode, hit: self.hit, radius, signal: Arc::new(AtomicU64::new(0)), seen: 0, uv: [0; 4], last: None, live: true, at: self.at });
+            m.rt.foreign.add(Slot { id: self.id, handle: hd, node, mode: self.mode, hit: self.hit, radius, signal: Arc::new(AtomicU64::new(0)), seen: 0, uv: [0; 4], last: None, live: true });
         })
     }
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
+    }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let mark = p.mark();
+        p.leaf(crate::probe::Family::Foreign, std::any::type_name::<Self>(), "foreign");
+        p.at(mark, self.at);
     }
 }
 
@@ -455,13 +457,16 @@ impl<V: View> App<V> {
     /// Every live foreign element in paint order (reflection: the inspector lists them with the records).
     pub fn reflect_foreign(&self) -> Vec<ForeignView> {
         let f = &self.rt.foreign;
+        // provenance from the description, walked again (nothing is kept per element for it)
+        let w = (f.live != 0).then(|| crate::probe::walk_root(&self.rt, &*self.owner));
+        let source = |pos: usize| w.as_ref().and_then(|w| w.at_rec.get(pos).filter(|&&i| i != u32::MAX).and_then(|&i| w.seen[i as usize].at)).map_or_else(String::new, |a| a.to_string());
         let mut v: Vec<(usize, ForeignView)> = f
             .slots
             .iter()
             .filter(|s| s.live)
             .filter_map(|s| {
                 let pos = self.rt.bough.pos_of(s.handle)?;
-                Some((pos, ForeignView { id: s.id, handle: s.handle.idx, mode: s.mode, hit: s.hit, source: s.at.to_string(), placement: s.last }))
+                Some((pos, ForeignView { id: s.id, handle: s.handle.idx, mode: s.mode, hit: s.hit, source: source(pos), placement: s.last }))
             })
             .collect();
         v.sort_by_key(|x| x.0);

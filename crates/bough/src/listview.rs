@@ -1505,6 +1505,10 @@ pub trait RowSource<V>: Sized + sealed::Sealed {
     /// Wire the source to region `reg` (a list: its log's patch).
     #[doc(hidden)]
     fn wire(&self, m: &mut Mounter<'_, V>, reg: u32);
+    /// Reflection (`probe.rs`): walk the description of the mounted row of `slot` whose item is at `item`.
+    /// By default rows are not walked (their records are reflected without what their descriptions said).
+    #[doc(hidden)]
+    fn probe_row(&self, _p: &mut crate::probe::Probe<'_, V>, _item: *const u8, _slot: u32) {}
 }
 mod sealed {
     pub trait Sealed {}
@@ -1526,6 +1530,8 @@ pub struct SrcParts {
 pub struct ListRows<'a, T, V> {
     list: LWired<'a, T, V>,
     row: fn(&T, &mut Mounter<'_, T>),
+    /// The row's description walked for reflection (`list`: the item's `View::view`; `list_with`: none).
+    probe: Option<fn(&T, &mut crate::probe::Probe<'_, T>)>,
 }
 impl<T, V> sealed::Sealed for ListRows<'_, T, V> {}
 impl<T: 'static, V: 'static> RowSource<V> for ListRows<'_, T, V> {
@@ -1546,6 +1552,14 @@ impl<T: 'static, V: 'static> RowSource<V> for ListRows<'_, T, V> {
     fn wire(&self, m: &mut Mounter<'_, V>, reg: u32) {
         // SAFETY: `self.list` is an `offset_of!`-proven `List<T>` field of `V`; `patch_list::<T>` reads one.
         unsafe { m.wire_cell(self.list.list.head(), self.list.off, patch_list::<T>, reg, [0; 16]) };
+    }
+    fn probe_row(&self, p: &mut crate::probe::Probe<'_, V>, item: *const u8, slot: u32) {
+        if let Some(f) = self.probe {
+            // SAFETY: `item` is the region's item pointer for a mounted slot (`LRegion::item` of this list
+            // type), live while the walk borrows the app.
+            let t = unsafe { &*(item as *const T) };
+            p.row(t, slot, |q| f(t, q));
+        }
     }
 }
 
@@ -1578,11 +1592,14 @@ pub struct LList<'a, S, V> {
 
 /// A `List<T>` of views: item `T` is mounted by its `View::view`.
 pub fn list<'a, T: crate::app::View, V>(l: LWired<'a, T, V>) -> LList<'a, ListRows<'a, T, V>, V> {
-    list_with(l, view_row::<T>)
+    LList::new(ListRows { list: l, row: view_row::<T>, probe: Some(probe_view_row::<T>) })
+}
+fn probe_view_row<T: crate::app::View>(v: &T, p: &mut crate::probe::Probe<'_, T>) {
+    crate::elem::Element::probe(v.view(), p)
 }
 /// A `List<T>` whose rows are mounted by `row`.
 pub fn list_with<'a, T, V>(l: LWired<'a, T, V>, row: fn(&T, &mut Mounter<'_, T>)) -> LList<'a, ListRows<'a, T, V>, V> {
-    LList::new(ListRows { list: l, row })
+    LList::new(ListRows { list: l, row, probe: None })
 }
 /// `n` rows, row `i` mounted by `row(owner, i)` (an index source: no list, no per-row storage).
 pub fn index_list<'a, V>(n: usize, row: fn(&V, usize, &mut Mounter<'_, V>)) -> LList<'a, IndexRows<V>, V> {
@@ -1767,5 +1784,23 @@ impl<'a, S: RowSource<V>, V: 'static> Element<V> for LList<'a, S, V> {
         }
         m.pos += 1 + m.rt.lists.regs[reg].rows.iter().map(|r| r.nrec as usize).sum::<usize>();
         m.kid += 1;
+    }
+
+    /// Reflection: the container, then each mounted row's description walked with the row's item as its
+    /// owner (rows not mounted have no records).
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let o = p.open(crate::probe::Family::Box, std::any::type_name::<Self>(), "list");
+        if let Some(pos) = o.pos() {
+            let h = p.w.recs[pos].handle;
+            let rt = p.rt;
+            if let Some(r) = rt.lists.regs.iter().find(|r| !r.dead && r.anchor.idx == h) {
+                for row in r.rows.iter().filter(|row| row.mounted) {
+                    // SAFETY: a mounted row's slot is live in the region's source.
+                    let item = unsafe { (r.item)(r.list, row.slot) };
+                    self.src.probe_row(p, item, row.slot);
+                }
+            }
+        }
+        p.close(o);
     }
 }

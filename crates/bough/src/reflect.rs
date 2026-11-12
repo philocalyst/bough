@@ -744,23 +744,6 @@ pub(crate) unsafe fn set_raw(s: &'static Schema, root: *mut u8, path: &str, text
     true
 }
 
-/// Element type names by record handle (recorded at mount; reflection of the element tree).
-#[derive(Default)]
-pub struct Reflect {
-    pub(crate) types: Vec<&'static str>,
-    /// Parts (`part.rs`) by record handle index: sparse, only part sites pay.
-    pub(crate) parts: std::collections::HashMap<u32, PartInfo>,
-    /// Live owners inside the root owner (`embed!`): where, what type, and its type's reflection thunks.
-    pub(crate) owners: Vec<OwnerInfo>,
-}
-/// An embedded owner: its offset in the root owner and the monomorphic thunks that reflect its type (taken
-/// at the `embed!` site, where the type is known; the component's author wrote nothing).
-pub(crate) struct OwnerInfo {
-    pub base: u32,
-    pub type_name: &'static str,
-    pub fields: unsafe fn(*const u8) -> Vec<FieldView>,
-    pub set: unsafe fn(*mut u8, &str, &str) -> bool,
-}
 /// # Safety
 /// `p` points at a live `T`.
 pub(crate) unsafe fn owner_fields<T>(p: *const u8) -> Vec<FieldView> {
@@ -782,26 +765,88 @@ pub struct OwnerView {
     /// Byte offset inside the root owner.
     pub offset: u32,
 }
-/// A part site's reflection: its key's name, index, where it was marked, and the generation of the handle it
-/// was recorded for (a reused handle index is another record).
-pub(crate) struct PartInfo {
-    pub name: &'static str,
-    pub index: u32,
-    pub generation: u32,
-    pub at: &'static std::panic::Location<'static>,
+
+// ------------------------------------------------------------------ static lookups (the probe's)
+
+/// Join a path step to a path.
+fn join(path: &str, name: &str) -> String {
+    if path.is_empty() { name.to_string() } else { format!("{path}.{name}") }
 }
-impl Reflect {
-    pub(crate) fn add_part(&mut self, h: bough_core::Handle, name: &'static str, index: u32, at: &'static std::panic::Location<'static>) {
-        self.parts.insert(h.idx, PartInfo { name, index, generation: h.generation, at });
-    }
-    #[inline]
-    pub(crate) fn elem(&mut self, handle: u32, ty: &'static str) {
-        let i = handle as usize;
-        if self.types.len() <= i {
-            self.types.resize(i + 1, "");
+
+/// The reactive cell (a `Signal`, `List`, `Reader`) whose head is at byte `off` of a value of `s`'s type:
+/// its dotted path (`"rows[3].count"`), found in the compile-time schema. Arrays are indexed by offset.
+pub fn signal_path(s: &'static Schema, off: usize) -> Option<String> {
+    fn go(s: &Schema, i: usize, abs: usize, off: usize, path: String) -> Option<String> {
+        let nd = &s.nodes[i];
+        if let Some(h) = nd.head {
+            if abs as isize + h == off as isize {
+                return Some(path);
+            }
         }
-        self.types[i] = ty;
+        if nd.opaque {
+            return None;
+        }
+        match nd.kind {
+            Kind::Struct | Kind::Tuple => {
+                let mut c = i + 1;
+                while c < nd.end as usize {
+                    let ch = &s.nodes[c];
+                    let ca = abs + ch.offset;
+                    let lo = (ca as isize + ch.head.unwrap_or(0).min(0)) as usize;
+                    if off >= lo && off < ca + ch.size.max(1) {
+                        if let Some(p) = go(s, c, ca, off, join(&path, ch.name)) {
+                            return Some(p);
+                        }
+                    }
+                    c = ch.end as usize;
+                }
+                None
+            }
+            Kind::Array if nd.end as usize > i + 1 => {
+                let el = &s.nodes[i + 1];
+                let lo = (abs as isize + el.head.unwrap_or(0).min(0)) as usize;
+                if el.size == 0 || off < lo {
+                    return None;
+                }
+                let k = (off - lo) / el.size;
+                (k < nd.count).then(|| go(s, i + 1, abs + k * el.size, off, format!("{path}[{k}]"))).flatten()
+            }
+            _ => None,
+        }
     }
+    go(s, 0, 0, off, String::new())
+}
+
+/// The struct field of a value of `s`'s type at byte `off` whose type is named `ty`: its dotted path.
+pub fn field_path(s: &'static Schema, off: usize, ty: &str) -> Option<String> {
+    fn go(s: &Schema, i: usize, abs: usize, off: usize, ty: &str, path: String) -> Option<String> {
+        let nd = &s.nodes[i];
+        if abs == off && i != 0 && nd.type_name() == ty {
+            return Some(path);
+        }
+        if nd.opaque || !matches!(nd.kind, Kind::Struct | Kind::Tuple) {
+            return None;
+        }
+        let mut c = i + 1;
+        while c < nd.end as usize {
+            let ch = &s.nodes[c];
+            let ca = abs + ch.offset;
+            if off >= ca && off < ca + ch.size.max(1) {
+                if let Some(p) = go(s, c, ca, off, ty, join(&path, ch.name)) {
+                    return Some(p);
+                }
+            }
+            c = ch.end as usize;
+        }
+        None
+    }
+    go(s, 0, 0, off, ty, String::new())
+}
+
+/// `Debug` of the value at `p`, a live value of `s`'s type (`None` if the type has no `Debug`).
+pub(crate) fn debug_value(s: &'static Schema, p: *const u8) -> Option<String> {
+    // SAFETY: the caller hands a live value of the schema's type; the vtable is that type's `Debug`.
+    s.nodes[0].vt.debug.map(|vt| format!("{:?}", unsafe { &*std::ptr::from_raw_parts::<dyn Debug>(p as *const (), vt) }))
 }
 
 // ------------------------------------------------------------------ the view the inspector reads
@@ -831,6 +876,8 @@ impl<V: crate::app::View> crate::app::App<V> {
     /// Every record in paint preorder with what the runtime knows about it.
     pub fn reflect_records(&self) -> Vec<RecordView> {
         let rt = &self.rt;
+        // the element type of each record: the description walked again (`probe.rs`), nothing stored
+        let w = crate::probe::walk_root(rt, &*self.owner);
         // node by handle (quads and texts carry their record's handle)
         let mut by_handle: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
         for (i, n) in rt.nodes.iter().enumerate() {
@@ -865,7 +912,7 @@ impl<V: crate::app::View> crate::app::App<V> {
                     ink: (!r.ink.is_empty()).then(|| r.ink.to_xyxy()),
                     clip: r.clip,
                     handle: h,
-                    element: rt.reflect.types.get(h as usize).copied().filter(|t| !t.is_empty() && h != 0),
+                    element: w.at_rec.get(pos).filter(|&&i| i != u32::MAX).map(|&i| w.seen[i as usize].ty),
                     layout: lay,
                     style,
                     color,
@@ -880,35 +927,33 @@ impl<V: crate::app::View> crate::app::App<V> {
         fields_of::<V>(&self.owner)
     }
 
-    /// Every live owner whose state reflection reaches: the root, then each embedded view (`embed!`) in
-    /// mount order.
+    /// Every live owner inside the root owner whose state reflection reaches: the root, then each embedded
+    /// view (`embed!`) in paint order (found by walking the description: no registry is kept).
     pub fn reflect_owners(&self) -> Vec<OwnerView> {
-        let mut v = vec![OwnerView { index: 0, type_name: std::any::type_name::<V>(), offset: 0 }];
-        v.extend(self.rt.reflect.owners.iter().enumerate().map(|(i, o)| OwnerView { index: i + 1, type_name: o.type_name, offset: o.base }));
-        v
+        let w = crate::probe::walk_root(&self.rt, &*self.owner);
+        Self::embedded(&w).enumerate().map(|(i, o)| OwnerView { index: i, type_name: o.ty, offset: o.base }).collect()
+    }
+    /// The root and the embedded owners of a walk, in the order `reflect_owners` numbers them.
+    fn embedded(w: &crate::probe::Walk) -> impl Iterator<Item = &crate::probe::OwnerSeen> {
+        w.owners.iter().filter(|o| matches!(o.kind, crate::probe::OwnerKind::Root | crate::probe::OwnerKind::Embedded))
     }
 
     /// The fields of owner `index` (`reflect_owners`), preorder.
     pub fn reflect_owner_fields(&self, index: usize) -> Vec<FieldView> {
-        if index == 0 {
-            return self.reflect_fields();
+        let w = crate::probe::walk_root(&self.rt, &*self.owner);
+        match Self::embedded(&w).nth(index) {
+            // SAFETY: the walk's owner pointer is a live owner of the thunk's type, borrowed for this call.
+            Some(o) => unsafe { (o.fields)(o.ptr) },
+            None => Vec::new(),
         }
-        let o = &self.rt.reflect.owners[index - 1];
-        // SAFETY: the owner was embedded at this `offset_of!`-proven offset of the root owner, as this type.
-        unsafe { (o.fields)((&*self.owner as *const V as *const u8).add(o.base as usize)) }
     }
 
     /// Edit a field of owner `index` from text, as a handler's write in a turn.
     pub fn reflect_set_owner(&mut self, index: usize, path: &str, value: &str) -> bool {
-        if index == 0 {
-            return self.reflect_set(path, value);
-        }
-        let (base, set) = {
-            let o = &self.rt.reflect.owners[index - 1];
-            (o.base, o.set)
-        };
+        let Some((base, set)) = Self::embedded(&crate::probe::walk_root(&self.rt, &*self.owner)).nth(index).map(|o| (o.base, o.set)) else { return false };
         let mut ok = false;
-        // SAFETY: as `reflect_owner_fields`, from the turn's unique borrow of the root owner.
+        // SAFETY: the owner is embedded at this `offset_of!`-proven offset of the root owner, as the thunk's
+        // type; the pointer comes from the turn's unique borrow of the root owner.
         self.turn(|v| ok = unsafe { set((v as *mut V as *mut u8).add(base as usize), path, value) });
         ok
     }

@@ -554,6 +554,8 @@ impl<'a, S: PartialEq + Clone + 'static, T: Send + 'static, V: 'static> crate::e
         unsafe { patch_produce::<S, T>(m.rt, &wire, self.src.sig as *const Signal<S> as *const u8, owner) };
     }
     fn update(self, _m: &mut Mounter<'_, V>) {}
+    /// A producer mounts no record.
+    fn probe(self, _p: &mut crate::probe::Probe<'_, V>) {}
 }
 
 // =============================================================================== boundary
@@ -638,5 +640,11 @@ impl<'a, T: 'static, V: 'static, L: crate::elem::Element<V>, F: crate::elem::Ele
     }
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
+    }
+    /// All three branches are mounted (the hidden ones behind empty clips).
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        self.loading.probe(p);
+        self.failed.probe(p);
+        self.child.probe(p);
     }
 }

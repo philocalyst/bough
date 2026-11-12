@@ -182,6 +182,13 @@ pub struct Wired<'a, T, V> {
     _v: PhantomData<fn(&V)>,
 }
 
+impl<'a, T: 'static, V> Wired<'a, T, V> {
+    /// Reflection (`probe.rs`): where the signal is and its value, with its type's static schema.
+    pub(crate) fn bound_here(&self) -> crate::probe::Bound {
+        crate::probe::Bound { off: self.off, schema: crate::reflect::schema::<T>(), value: &**self.sig as *const T as *const u8 }
+    }
+}
+
 impl<T, V> Clone for Wired<'_, T, V> {
     fn clone(&self) -> Self {
         *self

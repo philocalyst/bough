@@ -392,6 +392,10 @@ impl Input {
     pub fn hovered(&self) -> &[Handle] {
         &self.hover
     }
+    /// The record a press is held on (activation target or drag capture).
+    pub fn pressed_handle(&self) -> Option<Handle> {
+        (self.pressed != 0).then(|| self.acts[self.pressed as usize].handle)
+    }
 }
 
 // =============================================================================== mounting: the ops
@@ -463,6 +467,10 @@ pub trait ActOp<V> {
     /// Kind flags the record gets besides [`KF_INTERACT`].
     const FLAGS: u8 = 0;
     fn install(self, m: &mut Mounter<'_, V>, act: u32);
+    /// Reflection (`probe.rs`): the route this op installs, and the type name of its closure.
+    fn route(&self) -> Option<(crate::probe::Verb, &'static str)> {
+        None
+    }
 }
 
 /// An element with an interaction op on its first record.
@@ -479,10 +487,21 @@ impl<V, E: Element<V>, O: ActOp<V>> Element<V> for On<E, O> {
     fn update(self, m: &mut Mounter<'_, V>) {
         self.0.update(m);
     }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let mark = p.mark();
+        let r = self.1.route();
+        self.0.probe(p);
+        if let (Some(r), Some(s)) = (r, p.seen(mark)) {
+            s.routes.push(r);
+        }
+    }
 }
 
 pub struct Click<F>(pub F);
 impl<V: 'static, F: Fn(&mut V) + Copy + 'static> ActOp<V> for Click<F> {
+    fn route(&self) -> Option<(crate::probe::Verb, &'static str)> {
+        Some((crate::probe::Verb::Click, std::any::type_name::<F>()))
+    }
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         root_owner_only(m, "click");
         m.rt.input.acts[a as usize].click = Some(route_plain::<V, F>(self.0, m.base));
@@ -490,6 +509,9 @@ impl<V: 'static, F: Fn(&mut V) + Copy + 'static> ActOp<V> for Click<F> {
 }
 pub struct Press<F>(pub F);
 impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Press<F> {
+    fn route(&self) -> Option<(crate::probe::Verb, &'static str)> {
+        Some((crate::probe::Verb::Press, std::any::type_name::<F>()))
+    }
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         root_owner_only(m, "press");
         m.rt.input.acts[a as usize].press = Some(route_ev::<V, F>(self.0, m.base));
@@ -497,6 +519,9 @@ impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Press<F> {
 }
 pub struct Hover<F>(pub F);
 impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Hover<F> {
+    fn route(&self) -> Option<(crate::probe::Verb, &'static str)> {
+        Some((crate::probe::Verb::Hover, std::any::type_name::<F>()))
+    }
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         root_owner_only(m, "hover");
         m.rt.input.acts[a as usize].hover = Some(route_ev::<V, F>(self.0, m.base));
@@ -523,6 +548,9 @@ impl<V> ActOp<V> for Focusable {
 }
 pub struct OnKey<F>(pub F);
 impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for OnKey<F> {
+    fn route(&self) -> Option<(crate::probe::Verb, &'static str)> {
+        Some((crate::probe::Verb::Key, std::any::type_name::<F>()))
+    }
     const FLAGS: u8 = KF_FOCUS;
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         root_owner_only(m, "onkey");
@@ -531,6 +559,9 @@ impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for OnKey<F> {
 }
 pub struct Drag<F>(pub F);
 impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Drag<F> {
+    fn route(&self) -> Option<(crate::probe::Verb, &'static str)> {
+        Some((crate::probe::Verb::Drag, std::any::type_name::<F>()))
+    }
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         root_owner_only(m, "drag");
         m.rt.input.acts[a as usize].drag = Some(route_ev::<V, F>(self.0, m.base));
@@ -543,6 +574,9 @@ pub struct Scrolls<'a, V> {
     max: f32,
 }
 impl<V> ActOp<V> for Scrolls<'_, V> {
+    fn route(&self) -> Option<(crate::probe::Verb, &'static str)> {
+        Some((crate::probe::Verb::Scroll, "scrolls"))
+    }
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         root_owner_only(m, "scrolls");
         assert!(m.base == 0, "scrolls inside an embedded view (embed!) is not built yet");
@@ -668,6 +702,9 @@ impl<V, E: Element<V>> Element<V> for NoHit<E> {
     fn update(self, m: &mut Mounter<'_, V>) {
         self.0.update(m);
     }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        self.0.probe(p)
+    }
 }
 
 /// A tooltip: a bubble (rounded box + one line of text) mounted once, pointer-transparent, hidden behind an
@@ -756,6 +793,11 @@ impl<V: 'static, T: Element<V>> Element<V> for Tooltip<T> {
     /// The bubble's state is the tooltip's own (its fade): a re-description steps over it.
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
+    }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        self.trigger.probe(p);
+        p.leaf(crate::probe::Family::Quad, std::any::type_name::<Self>(), "tooltip");
+        p.leaf(crate::probe::Family::Text, std::any::type_name::<Self>(), "text");
     }
 }
 impl<T> Tooltip<T> {
@@ -910,6 +952,10 @@ impl<V: 'static> Element<V> for TextField<'_, V> {
     /// The field edits its signal (state); a re-description steps over it.
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
+    }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let i = p.leaf(crate::probe::Family::Quad, std::any::type_name::<Self>(), "input");
+        p.bind(i, "text", Some(self.sig.bound_here()));
     }
 }
 impl<V: 'static> TextField<'_, V> {

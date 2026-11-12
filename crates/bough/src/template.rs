@@ -363,6 +363,15 @@ impl<V: 'static, C: Element<V>> Element<V> for ScrollY<'_, V, C> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let o = p.open(crate::probe::Family::Quad, std::any::type_name::<Self>(), "scroll");
+        if let Some(s) = p.seen(o.seen()) {
+            s.routes.push((crate::probe::Verb::Scroll, "scroll_y"));
+        }
+        p.bind(o.seen(), "offset", Some(self.sig.bound_here()));
+        self.content.probe(p);
+        p.close(o);
+    }
 }
 impl<V: 'static, C: Element<V>> ScrollY<'_, V, C> {
     fn mount_in(self, m: &mut Mounter<'_, V>) {
@@ -483,6 +492,15 @@ impl<'a, V: 'static, Bg: crate::elem::IntoProp<Color, V>, Ch: Element<V>> Elemen
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let o = p.open(crate::probe::Family::Box, std::any::type_name::<Self>(), "scroll");
+        if let Some(s) = p.seen(o.seen()) {
+            s.routes.push((crate::probe::Verb::Scroll, "scroll"));
+        }
+        p.bind(o.seen(), "offset", Some(self.sig.bound_here()));
+        self.content.probe(p);
+        p.close(o);
+    }
 }
 
 // =============================================================================== wired clips and port lists
@@ -537,6 +555,9 @@ impl<'a, T: 'static, V, F: Fn(&T) -> [f32; 4] + Copy + 'static, C: Element<V>> E
     /// State-driven content: a re-description steps over it.
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
+    }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        self.ch.probe(p)
     }
 }
 impl<'a, T: 'static, V, F: Fn(&T) -> [f32; 4] + Copy + 'static, C: Element<V>> ClipBy<'a, T, V, F, C> {
@@ -726,6 +747,12 @@ impl<V: 'static, C: Element<V>> Element<V> for Offset<'_, V, C> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let o = p.open(crate::probe::Family::Box, std::any::type_name::<Self>(), "offset");
+        p.bind(o.seen(), "offset", Some(self.sig.bound_here()));
+        self.ch.probe(p);
+        p.close(o);
+    }
 }
 impl<V: 'static, C: Element<V>> Offset<'_, V, C> {
     fn mount_in(self, m: &mut Mounter<'_, V>) {
@@ -802,6 +829,11 @@ impl<V: 'static, C: Element<V>> Element<V> for Anchor<C> {
     }
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
+    }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let o = p.open(crate::probe::Family::Box, std::any::type_name::<Self>(), "anchor");
+        self.content.probe(p);
+        p.close(o);
     }
 }
 

@@ -224,6 +224,9 @@ impl<V: 'static> Element<V> for ImageBox {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        p.leaf(crate::probe::Family::Box, std::any::type_name::<Self>(), "image");
+    }
 }
 
 /// A one-line text input in flow, bound two-way to a `Signal<String>` (`text_input(sig!(self.notes))`).
@@ -255,5 +258,9 @@ impl<V: 'static> Element<V> for TextInput<'_, V> {
     }
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
+    }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let i = p.leaf(crate::probe::Family::Box, std::any::type_name::<Self>(), "input");
+        p.bind(i, "text", Some(self.sig.bound_here()));
     }
 }

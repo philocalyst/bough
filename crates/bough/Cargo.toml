@@ -39,6 +39,8 @@ wgpu = ["dep:bough-gpu"]
 sabotage_copy = []
 # Gate sabotage (foreign.rs): placements ignore the element's space; the scroll placement gate must fail with it.
 sabotage_foreign = []
+# Gate mutant (probe.rs): the walk steps one record where an element owns a subtree; tests/probe.rs must fail.
+mutant_probe = []
 
 [dev-dependencies]
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }

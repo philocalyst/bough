@@ -362,6 +362,9 @@ impl<V, E: Element<V>, O: Override<V>> Element<V> for With<E, O> {
     fn dyn_key(&self) -> u64 {
         self.0.dyn_key()
     }
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        self.0.probe(p)
+    }
 }
 impl<E: Styled, O> Styled for With<E, O> {
     fn spec_mut(&mut self) -> &mut Spec {
@@ -429,7 +432,6 @@ where
             return;
         }
         let hd = m.rt.bough.handle_gen(rec.handle);
-        m.rt.reflect.add_part(hd, name, index, self.at);
         // guards: on the part's act (its routes), innermost wrapper first, so dispatch runs the outermost first
         let mut fr = ov;
         while !fr.is_null() {
@@ -448,6 +450,15 @@ where
     fn update(self, m: &mut Mounter<'_, V>) {
         let (ov, name, index) = (m.ov, self.key.name, self.index);
         self.e.restyled(index, &|s| if ov.is_null() { s } else { apply_chain(ov, name, s) }).update(m);
+    }
+    /// Reflection: the part's key, index and source go to the element it marks (nothing was stored at mount).
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let (mark, name, index, at) = (p.mark(), self.key.name, self.index, self.at);
+        self.e.restyled(index, &|s| s).probe(p);
+        if let Some(s) = p.seen(mark) {
+            s.part.get_or_insert((name, index));
+        }
+        p.at(mark, at);
     }
 }
 
@@ -620,10 +631,6 @@ impl<'a, C: crate::app::View, V: 'static> Embed<'a, C, V> {
 impl<'a, C: crate::app::View, V: 'static> Element<V> for Embed<'a, C, V> {
     fn mount(self, m: &mut Mounter<'_, V>) {
         debug_assert_eq!(self.c as *const C as usize, m.owner as usize + self.off as usize, "embed! operand is not a field of the mounted owner");
-        if m.cls == 0 {
-            // reflection: a live owner inside the root owner (`App::reflect_owners`)
-            m.rt.reflect.owners.push(crate::reflect::OwnerInfo { base: m.base + self.off, type_name: std::any::type_name::<C>(), fields: crate::reflect::owner_fields::<C>, set: crate::reflect::owner_set::<C> });
-        }
         let el = self.c.view();
         let mut sub = self.sub(m);
         el.mount(&mut sub);
@@ -636,6 +643,11 @@ impl<'a, C: crate::app::View, V: 'static> Element<V> for Embed<'a, C, V> {
         el.update(&mut sub);
         let (ti, pos, kid) = (sub.ti, sub.pos, sub.kid);
         (m.ti, m.pos, m.kid) = (ti, pos, kid);
+    }
+    /// Reflection: the embedded view is an owner of its own type, met by the walk (no registry is kept).
+    fn probe(self, p: &mut crate::probe::Probe<'_, V>) {
+        let c = self.c;
+        p.embed(c, self.off, |q| c.view().probe(q));
     }
 }
 
@@ -655,23 +667,16 @@ pub struct PartView {
 }
 
 impl<V: crate::app::View> crate::app::App<V> {
-    /// Every live part, in paint order.
+    /// Every live part, in paint order (the description walked again: nothing is recorded at mount).
     pub fn reflect_parts(&self) -> Vec<PartView> {
-        let mut v: Vec<PartView> = self
-            .rt
-            .reflect
-            .parts
+        let w = crate::probe::walk_root(&self.rt, &*self.owner);
+        w.seen
             .iter()
-            .filter_map(|(&idx, p)| {
-                let hd = self.rt.bough.handle_gen(idx);
-                if hd.generation != p.generation {
-                    return None; // the handle was reused by another record
-                }
-                let pos = self.rt.bough.pos_of(hd)?;
-                Some(PartView { name: p.name, index: p.index, handle: idx, pos, source: p.at.to_string() })
+            .filter_map(|s| {
+                let ((name, index), pos) = (s.part?, s.pos?);
+                let handle = w.recs[pos].handle;
+                Some(PartView { name, index, handle, pos, source: s.at.map_or_else(String::new, |a| a.to_string()) })
             })
-            .collect();
-        v.sort_by_key(|p| p.pos);
-        v
+            .collect()
     }
 }
