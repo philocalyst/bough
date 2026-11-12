@@ -30,7 +30,7 @@ impl Canvas {
     pub fn locate(rt: &Rt, cap: u32) -> Canvas {
         let mut found = None;
         for n in rt.nodes.iter() {
-            if n.live && n.kind == NK_BARS && rt.runs[n.run as usize].len == cap {
+            if rt.node_live(n.handle.idx) && n.kind == NK_BARS && rt.runs[n.run as usize].len == cap {
                 assert!(found.is_none(), "two canvases of capacity {cap}");
                 found = Some(Canvas { first: rt.runs[n.run as usize].first, cap, handle: n.handle, space: n.space, ink: [0.0; 4], ink_set: false });
             }

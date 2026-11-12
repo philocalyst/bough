@@ -39,7 +39,7 @@ impl Apply for ApplyOpacity {
             return;
         }
         let old_a = std::mem::replace(&mut n.alpha, *v);
-        let (h, inst, bordered, base) = (n.handle, rt.runs[n.run as usize].first, n.kind == NK_BORDER, n.color);
+        let (h, inst, bordered, base) = (n.handle, n.inst, n.kind == NK_BORDER, n.color);
         let p = rt.inst_mut(inst);
         if bordered {
             p.color2 = mul_alpha(base, *v);
@@ -68,7 +68,7 @@ impl Apply for ApplyTranslate {
         }
         n.tx = tx;
         n.ty = ty;
-        let inst = rt.runs[n.run as usize].first;
+        let inst = n.inst;
         let (x, y) = (n.x + tx, n.y + ty);
         rt.inst_mut(inst).pos = [x, y];
         rt.quad_ink(node);

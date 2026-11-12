@@ -416,7 +416,7 @@ pub(crate) unsafe fn redescribe<V: crate::app::View>(rt: &mut Rt, v: &V, tape: &
     }
     rt.lay.cur = prev;
     // a fixed shape adds nothing outside dynamic parts: the root scope stays empty
-    debug_assert!(scope.nodes.is_empty() && scope.wires.is_empty());
+    debug_assert!(scope.texts.is_empty() && scope.insts.is_empty() && scope.wires.is_empty());
 }
 
 /// Mount an element a re-description steps over (its content is state-driven: templates, scroll views,

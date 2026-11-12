@@ -85,3 +85,24 @@ Self time, teardown excluded (2,609 samples; raw file `runtime/lanes/store/base/
 
 By subtree: element mount 47 % of `App::new` (two fifths of it inside `realloc`), cephal's cold pass 35 %,
 write-back 15 %.
+
+## The signal path (`crates/bough/examples/signal_cost.rs`, the lead's harness; added to the gate cells)
+
+One signal written per turn among N rows, instructions per turn (slope over repeat counts), measured after
+stage 0b (which does not touch the wire path: storage addresses only):
+
+| rows | mode | colour | number | string | idle turn |
+|---:|---|---:|---:|---:|---:|
+| 16 | once | 1,091 | 3,172 | 3,928 | 848 |
+| 64 | once | 3,076 | 886 (*) | (*) | 2,864 |
+| 256 | once | 11,128 | 19,239 | 30,935 | 10,928 |
+| 16 | redescribe | 31,147 | 33,751 | 34,892 | 31,583 |
+| 64 | redescribe | 122,426 | 122,024 | 120,245 | 124,639 |
+| 256 | redescribe | 493,085 | 503,135 | 517,802 | 500,224 |
+
+(*) the slope of these cells is not stable: a digit-count change re-lays the row out in some turns only.
+
+What the table says: an idle turn costs ~43 instructions per row (14 per wired cell: `settle` scans every
+wired cell of the owner for its QUEUED bit), so a colour write is ~240 instructions on top of an O(cells)
+scan; a re-describing owner pays ~1,930 per row per turn because a row bound to signals does not seal.
+Targets (lead): a colour write under 100 instructions end to end, a numeric label write under 400.

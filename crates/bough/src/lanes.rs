@@ -49,7 +49,7 @@ impl<T, V, F> Lanes<'_, T, V, F> {
 fn write_lanes<T, F: Fn(&T, usize) -> Lane>(rt: &mut Rt, node: u32, v: &T, f: F) -> NRect {
     let (first, n, ox, oy, space, s) = {
         let nd = &rt.nodes[node as usize];
-        (rt.runs[nd.run as usize].first as usize, rt.runs[nd.run as usize].len as usize, nd.x, nd.y, nd.space, rt.scale)
+        (nd.inst as usize, rt.runs[nd.run as usize].len as usize, nd.x, nd.y, nd.space, rt.scale)
     };
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     let inst = &mut rt.inst[first..first + n];
@@ -103,7 +103,7 @@ impl<'a, T: 'static, V: 'static, F: Fn(&T, usize) -> Lane + Copy + 'static> Elem
         }
         {
             let n = &mut m.rt.nodes[node as usize];
-            n.run = run;
+            (n.run, n.inst) = (run, first);
             n.space = m.space;
             n.clip = m.clip;
             n.kind = NK_BARS;
@@ -113,9 +113,7 @@ impl<'a, T: 'static, V: 'static, F: Fn(&T, usize) -> Lane + Copy + 'static> Elem
         }
         let ink = write_lanes(m.rt, node, self.sig.get(), self.f);
         m.wire(&self.sig, patch_lanes::<T, F>, node, recipe_of(self.f));
-        let hd = m.rt.bough.new_handle();
-        m.rt.nodes[node as usize].handle = hd;
-        m.scope.nodes.push(node);
+        let hd = m.rt.nodes[node as usize].handle;
         m.scope.runs.push(run);
         m.tape_push(node);
         m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: pay_irun(first, self.n as u32), handle: hd.idx, clip: m.clip });

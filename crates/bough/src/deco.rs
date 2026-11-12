@@ -330,20 +330,17 @@ pub(crate) fn mount_deco<V>(m: &mut Mounter<'_, V>, ins: Instance, x: f32, y: f3
     // the geometry grid (1/256 px): sums exact on the GPU, moved edges compared exactly (rt::quad_geom)
     let (x, y, w, h) = (snap(x), snap(y), snap(w), snap(h));
     let node = m.rt.alloc_node();
-    let run = m.rt.alloc_run(1);
-    m.rt.runs[run as usize].len = 1;
-    let inst = m.rt.runs[run as usize].first;
+    let inst = m.rt.alloc_inst();
     let mut ins = ins;
     ins.pos = [x, y];
     ins.size = [w, h];
     ins.space = m.space;
     *m.rt.inst_mut(inst) = ins;
-    let hd = m.rt.bough.new_handle();
+    let hd = m.rt.nodes[node as usize].handle;
     let ink = m.rt.ink_rect(m.space, x, y, w, h, margin);
     {
         let n = &mut m.rt.nodes[node as usize];
-        n.handle = hd;
-        n.run = run;
+        n.inst = inst;
         n.space = m.space;
         n.clip = m.clip;
         n.kind = NK_DECO;
@@ -353,8 +350,7 @@ pub(crate) fn mount_deco<V>(m: &mut Mounter<'_, V>, ins: Instance, x: f32, y: f3
         n.h = h;
         n.margin = margin;
     }
-    m.scope.nodes.push(node);
-    m.scope.runs.push(run);
+    m.scope.insts.push(inst);
     m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD | KF_NOHIT, payload: inst, handle: hd.idx, clip: m.clip });
     node
 }
@@ -375,7 +371,7 @@ impl Apply for ApplyAngle {
     type P = f32;
     fn apply(rt: &mut Rt, node: u32, v: &f32) {
         let n = &rt.nodes[node as usize];
-        let (h, inst) = (n.handle, rt.runs[n.run as usize].first);
+        let (h, inst) = (n.handle, n.inst);
         let p = rt.inst_mut(inst);
         let old = p.radius;
         if old == *v {
@@ -420,7 +416,7 @@ impl<V: 'static, A: IntoProp<f32, V>> Element<V> for Image<A> {
         let (x, y) = ((m.ox + self.x) * s, (m.oy + self.y) * s);
         let node = mount_deco(m, ins, x, y, wp, hp, margin.max(1) as f32);
         let a = self.angle.lower::<ApplyAngle>(m, node);
-        let inst = m.rt.runs[m.rt.nodes[node as usize].run as usize].first;
+        let inst = m.rt.nodes[node as usize].inst;
         m.rt.inst_mut(inst).radius = a;
     })
     }

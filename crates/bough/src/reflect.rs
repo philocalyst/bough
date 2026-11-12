@@ -786,13 +786,6 @@ impl<V: crate::app::View> crate::app::App<V> {
     /// Every record in paint preorder with what the runtime knows about it.
     pub fn reflect_records(&self) -> Vec<RecordView> {
         let rt = &self.rt;
-        // node by handle (quads and texts carry their record's handle)
-        let mut by_handle: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-        for (i, n) in rt.nodes.iter().enumerate() {
-            if n.live && n.handle.idx != 0 {
-                by_handle.insert(n.handle.idx, i as u32);
-            }
-        }
         rt.bough
             .records()
             .iter()
@@ -804,7 +797,8 @@ impl<V: crate::app::View> crate::app::App<V> {
                     [x, y, w, hh]
                 });
                 let style = lay.map(|_| format!("{:?}", rt.lay.eng.style(h)));
-                let node = by_handle.get(&h).copied();
+                // a node's index is its record's handle index
+                let node = rt.node_live(h).then_some(h);
                 let (color, text) = match node {
                     Some(n) => {
                         let nd = &rt.nodes[n as usize];
@@ -872,8 +866,10 @@ impl<V: crate::app::View> crate::app::App<V> {
 
     /// Set the paint colour of the quad drawn by record `handle` (a paint-only write).
     pub fn reflect_set_color(&mut self, handle: u32, c: crate::color::Color) -> bool {
-        let Some(n) = self.rt.nodes.iter().position(|n| n.live && n.handle.idx == handle && n.run != crate::rt::NONE && n.text == crate::rt::NONE) else { return false };
-        <crate::elem::ApplyBg as crate::elem::Apply>::apply(&mut self.rt, n as u32, &c);
+        if !(self.rt.node_live(handle) && self.rt.nodes[handle as usize].inst != crate::rt::NONE && self.rt.nodes[handle as usize].text == crate::rt::NONE) {
+            return false;
+        }
+        <crate::elem::ApplyBg as crate::elem::Apply>::apply(&mut self.rt, handle, &c);
         true
     }
 }

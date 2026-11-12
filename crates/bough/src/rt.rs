@@ -136,6 +136,8 @@ pub struct StoreCaps {
     pub texts: usize,
     pub wires: usize,
     pub runs: usize,
+    /// Words of the span arena.
+    pub spans: usize,
 }
 
 impl StoreCaps {
@@ -143,7 +145,7 @@ impl StoreCaps {
         // an id per record the pages can hold, twice over (handles of records not inserted yet, of static
         // texts, and of removed records whose ids were not reissued yet)
         let ids = (caps.pages * crate::rt::PAGE_SLOTS * 2).next_power_of_two();
-        StoreCaps { ids, texts: ids, wires: ids * 2, runs: caps.instances }
+        StoreCaps { ids, texts: ids, wires: ids * 2, runs: caps.instances, spans: ids * 16 }
     }
     fn bytes(&self) -> usize {
         let a = |n: usize| n.next_multiple_of(256) + 256;
@@ -153,6 +155,7 @@ impl StoreCaps {
             + a(self.wires * size_of::<Wire>())
             + a(self.ids * size_of::<crate::layout::LInfo>())
             + a(self.ids * 16)
+            + a(self.spans * 4)
             + crate::lay_deep::Deep::column_bytes(self.ids, self.texts)
             + 4096
     }
@@ -226,15 +229,22 @@ pub struct Run {
 }
 
 /// Mutable per-element state that wires patch. Quads and text share the struct (cold fields are small).
+///
+/// **One index space** (round 6, lane `store`): a node's index is its record handle's index, which is also
+/// its layout node id (`Lay::info`, the engine's nodes). The state at index `i` belongs to the element whose
+/// handle is `handle` (index `i`, with its generation): `Rt::node_live` tells a current node from the
+/// leftover of an element whose handle was released.
 pub struct Node {
     pub handle: Handle,
-    /// Instance run (quads, bars, glyph-instance text), or `NONE`.
+    /// The element's instance (a quad's one instance; the first of a run for bars, lanes and
+    /// glyph-instance text), or `NONE`. A wire reaches the instance from the node in one load.
+    pub inst: u32,
+    /// Its instance run (`Rt::runs`) when it owns more than one instance, else `NONE`.
     pub run: u32,
     pub space: u16,
     /// bough-core clip id of the element's record.
     pub clip: u16,
     pub kind: u8,
-    pub live: bool,
     /// Quad: local px x, y(origin), w, h.
     pub x: f32,
     pub y: f32,
@@ -247,16 +257,14 @@ pub struct Node {
     pub margin: f32,
     pub size_px: f32,
     pub line_h: f32,
-    /// Series node (`bars`): memoised samples and the key they were computed for.
-    pub series: Vec<f32>,
+    /// Series node (`bars`): its memoised samples (a span of `Rt::spans`, `series_n` floats) and the key
+    /// they were computed for.
+    pub series: u32,
+    pub series_n: u32,
     pub series_key: u64,
     pub series_ok: bool,
     /// Text state (`Rt::texts` index), or `NONE`.
     pub text: u32,
-    /// Layout node (index into `Rt::lay`) of an element laid out by cephal, else `NONE`.
-    pub lnode: u32,
-    /// Allocation serial: tells a reused node from the one an outside table recorded (`select.rs`).
-    pub serial: u32,
     /// Box operands (`boxops.rs`): paint offset (device px) and opacity.
     pub tx: f32,
     pub ty: f32,
@@ -267,11 +275,11 @@ impl Node {
     fn blank() -> Node {
         Node {
             handle: Handle { idx: 0, generation: 0 },
+            inst: NONE,
             run: NONE,
             space: 0,
             clip: 0,
             kind: 0,
-            live: false,
             x: 0.0,
             y: 0.0,
             y0: 0.0,
@@ -282,12 +290,11 @@ impl Node {
             margin: 0.0,
             size_px: 0.0,
             line_h: 0.0,
-            series: Vec::new(),
+            series: 0,
+            series_n: 0,
             series_key: 0,
             series_ok: false,
             text: NONE,
-            lnode: NONE,
-            serial: 0,
             tx: 0.0,
             ty: 0.0,
             alpha: 1.0,
@@ -332,9 +339,14 @@ pub const HEAD_IDX: u32 = (1 << 30) - 1;
 /// Everything created while mounting one subtree that must be released when it unmounts.
 #[derive(Default)]
 pub struct Scope {
-    pub nodes: Vec<u32>,
     pub wires: Vec<u32>,
+    /// Text states (`Rt::texts`) of the subtree's text elements.
+    pub texts: Vec<u32>,
+    /// Single instances (a quad's) and instance runs (`Rt::runs`: bars, lanes, glyph-instance text).
+    pub insts: Vec<u32>,
     pub runs: Vec<u32>,
+    /// Bar series' sample spans (`Rt::spans` offset, count).
+    pub series: Vec<(u32, u32)>,
     /// Layout roots (groups) created while mounting; removed from the layout engine on release.
     pub lroots: Vec<u32>,
     /// Dynamic parts of a re-describing owner (`describe.rs`), released with their items.
@@ -452,7 +464,11 @@ pub struct Rt {
     pub runs: Col<Run>,
     run_free: Vec<u32>,
     pub nodes: Col<Node>,
-    node_free: Vec<u32>,
+    /// Handles of nodes that were allocated and given back before their record was made (an element that
+    /// turned out static): the next `alloc_node` takes one.
+    spare: Vec<Handle>,
+    /// Variable-length element state (bar series, tapes, line windows): one word arena (`store.rs`).
+    pub spans: crate::store::Spans,
     /// The wire arena and the owner offsets of wired signals: crate-private, because `settle` trusts them
     /// (every offset is an `offset_of!`-proven `Signal<_>` field, every recipe the closure its patch reads).
     pub(crate) wires: Col<Wire>,
@@ -500,7 +516,6 @@ pub struct Rt {
     pub asy: crate::reader::Async,
     pub(crate) pubs: crate::changed::Pubs,
     pub(crate) selects: crate::select::Selects,
-    next_serial: u32,
     /// Pointer, hover, focus, routes (input.rs).
     pub input: crate::input::Input,
     /// Running transitions and the frame clock (transition.rs).
@@ -578,6 +593,7 @@ impl Rt {
         let mut wires: Col<Wire> = store.carve("wires", sc.wires);
         wires.push(Wire { next: 0, dead: true, latest: false, node: 0, head: 0, cls: 0, patch: nop, recipe: [0; 16] });
         let texts = store.carve("texts", sc.texts);
+        let spans = crate::store::Spans::new(store.carve("spans", sc.spans));
         let lay = crate::layout::Lay::new(scale, &mut store, &sc);
         let reflect = crate::reflect::Reflect { types: store.carve("element types", sc.ids) };
         Rt {
@@ -596,7 +612,8 @@ impl Rt {
             runs,
             run_free: Vec::new(),
             nodes,
-            node_free: Vec::new(),
+            spare: Vec::new(),
+            spans,
             wires,
             wire_free: Vec::new(),
             classes: vec![Vec::new()],
@@ -625,7 +642,6 @@ impl Rt {
             asy: Default::default(),
             pubs: Default::default(),
             selects: Default::default(),
-            next_serial: 0,
             input: Default::default(),
             transitions: Default::default(),
             images: Default::default(),
@@ -895,27 +911,54 @@ impl Rt {
         }
     }
     // ------------------------------------------------------------------ nodes and wires
+    /// A new element: a record handle and blank node state at its index (the node id).
     pub fn alloc_node(&mut self) -> u32 {
-        let mut n = Node::blank();
-        n.live = true;
-        self.next_serial = self.next_serial.wrapping_add(1);
-        n.serial = self.next_serial;
-        if let Some(i) = self.node_free.pop() {
-            n.series = std::mem::take(&mut self.nodes[i as usize].series);
-            self.nodes[i as usize] = n;
-            i
-        } else {
-            self.nodes.push(n);
-            (self.nodes.len() - 1) as u32
-        }
+        let h = match self.spare.pop() {
+            Some(h) => h,
+            None => self.bough.new_handle(),
+        };
+        self.node_at(h)
     }
-    pub fn free_node(&mut self, i: u32) {
-        let t = std::mem::replace(&mut self.nodes[i as usize].text, NONE);
-        if t != NONE {
-            self.free_text(t);
+    /// Blank node state for the element whose record handle is `h` (the node id is `h.idx`).
+    pub fn node_at(&mut self, h: Handle) -> u32 {
+        let i = h.idx as usize;
+        let n = Node { handle: h, ..Node::blank() };
+        if i == self.nodes.len() {
+            self.nodes.push(n);
+        } else {
+            while self.nodes.len() <= i {
+                self.nodes.push(Node::blank());
+            }
+            self.nodes[i] = n;
         }
-        self.nodes[i as usize].live = false;
-        self.node_free.push(i);
+        h.idx
+    }
+    /// Give back a node whose record will carry no handle (its element turned out static): the handle is
+    /// kept for the next `alloc_node`.
+    pub fn drop_node(&mut self, i: u32) {
+        let n = &mut self.nodes[i as usize];
+        let h = std::mem::take(&mut n.handle);
+        n.kind = 0;
+        self.spare.push(h);
+    }
+    /// Is the state at node index `i` that of a current element (its handle is the live handle of index `i`)?
+    #[inline]
+    pub fn node_live(&self, i: u32) -> bool {
+        i != 0 && self.nodes.get(i as usize).is_some_and(|n| n.handle.idx == i && n.kind != 0 && self.bough.handle_live(n.handle))
+    }
+    /// `node_live` for an element being mounted (its handle is allocated, its record not inserted yet).
+    #[inline]
+    pub(crate) fn node_pending(&self, i: u32) -> bool {
+        self.node_live(i)
+    }
+    /// One instance (a quad's): a block of the instance column.
+    #[inline]
+    pub fn alloc_inst(&mut self) -> u32 {
+        self.alloc_block(0)
+    }
+    #[inline]
+    pub fn free_inst(&mut self, i: u32) {
+        self.free_block(i, 0);
     }
     pub(crate) fn alloc_text(&mut self, t: crate::text::TextNode) -> u32 {
         if let Some(i) = self.text_free.pop() {
@@ -1086,7 +1129,7 @@ impl Rt {
         if moved == 0 {
             return;
         }
-        let (inst, margin, hd, space, tx, ty) = (self.runs[n.run as usize].first, n.margin, n.handle, n.space, n.tx, n.ty);
+        let (inst, margin, hd, space, tx, ty) = (n.inst, n.margin, n.handle, n.space, n.tx, n.ty);
         let n = &mut self.nodes[node as usize];
         (n.x, n.y, n.w, n.h) = (x, y, w, h);
         // a box translation (boxops' `translate` operand) offsets the drawn box, not the laid-out one
@@ -1180,7 +1223,7 @@ impl Rt {
     /// only the cut and bough-core's O(pages) run removal.
     pub fn release_scope(&mut self, mut s: Scope) {
         self.cut_scope(&mut s);
-        if !(s.nodes.is_empty() && s.runs.is_empty() && s.dyns.is_empty()) {
+        if !(s.texts.is_empty() && s.insts.is_empty() && s.series.is_empty() && s.runs.is_empty() && s.dyns.is_empty()) {
             self.reclaim_q.push(s);
         }
     }
@@ -1214,8 +1257,12 @@ impl Rt {
         while budget > 0 {
             let Some(mut s) = self.reclaim_q.pop() else { break };
             while budget > 0 {
-                if let Some(n) = s.nodes.pop() {
-                    self.free_node(n);
+                if let Some(t) = s.texts.pop() {
+                    self.free_text(t);
+                } else if let Some(i) = s.insts.pop() {
+                    self.free_inst(i);
+                } else if let Some((o, n)) = s.series.pop() {
+                    self.spans.free(o, crate::store::class_of(n as usize));
                 } else if let Some(r) = s.runs.pop() {
                     self.free_run(r);
                 } else if let Some(d) = s.dyns.pop() {
@@ -1225,7 +1272,7 @@ impl Rt {
                 }
                 budget -= 1;
             }
-            if !(s.nodes.is_empty() && s.runs.is_empty() && s.dyns.is_empty()) {
+            if !(s.texts.is_empty() && s.insts.is_empty() && s.series.is_empty() && s.runs.is_empty() && s.dyns.is_empty()) {
                 self.reclaim_q.push(s);
             }
         }
@@ -1362,7 +1409,8 @@ impl Rt {
         // a carved column's bytes are its high-water length (what was touched), not its reservation
         let mut v: Vec<(&'static str, usize, usize)> = Vec::new();
         v.push(("core: bough (pages' directory, prefix, htab, planes)", self.bough.len(), self.bough.heap_bytes()));
-        v.push(("col rt.nodes", self.nodes.len(), self.nodes.len() * size_of::<Node>() + self.nodes.iter().map(|n| n.series.capacity() * 4).sum::<usize>() + self.node_free.capacity() * 4));
+        v.push(("col rt.nodes", self.nodes.len(), self.nodes.len() * size_of::<Node>()));
+        v.push(("col rt.spans (series, tapes, line windows)", self.spans.touched(), self.spans.touched() * 4));
         v.push(("col rt.runs", self.runs.len(), self.runs.len() * size_of::<Run>() + self.run_free.capacity() * 4));
         v.push(("col rt.wires", self.wires.len(), self.wires.len() * size_of::<Wire>() + self.wire_free.capacity() * 4));
         let text_heap = |t: &crate::text::TextNode| {
@@ -1378,7 +1426,7 @@ impl Rt {
         v.push(("col lay.info", self.lay.info.len(), self.lay.info.len() * size_of::<crate::layout::LInfo>()));
         v.extend(self.lay.eng.ledger());
         fn scope_heap(s: &Scope) -> usize {
-            (s.nodes.capacity() + s.wires.capacity() + s.runs.capacity() + s.lroots.capacity() + s.dyns.capacity() + s.lregs.capacity() + s.prods.capacity()) * 4
+            (s.texts.capacity() + s.insts.capacity() + s.wires.capacity() + s.runs.capacity() + s.lroots.capacity() + s.dyns.capacity() + s.lregs.capacity() + s.prods.capacity()) * 4
         }
         let (mut items, mut bytes) = (0usize, 0usize);
         for p in &self.dyns.parts {

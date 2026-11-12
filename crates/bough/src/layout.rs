@@ -818,8 +818,6 @@ impl LeafCtx {
 
 #[derive(Clone, Copy)]
 pub struct LInfo {
-    /// `Rt::nodes` index of the drawable (quad / text), or NONE for a paint-less box.
-    pub rtn: u32,
     pub parent: u32,
     pub space: u16,
     pub clip: u16,
@@ -854,7 +852,6 @@ pub struct LInfo {
 impl LInfo {
     const fn blank() -> LInfo {
         LInfo {
-            rtn: NONE,
             parent: NONE,
             space: 0,
             clip: 0,
@@ -1043,7 +1040,7 @@ impl Rt {
 
     /// The text of layout text node `n` changed (reactive operand): re-shape into the leaf, invalidate it.
     pub fn lay_text_changed(&mut self, n: u32, text: &str) {
-        let lid = self.nodes[n as usize].lnode;
+        let lid = n;
         let ti = self.nodes[n as usize].text;
         {
             let t = &mut self.texts[ti as usize];
@@ -1210,8 +1207,8 @@ impl Rt {
     fn place_quad(&mut self, lid: u32, x: f32, y: f32, w: f32, h: f32) {
         // the bands around the edges that moved (exact on the geometry grid), not old ∪ new
         let li = self.lay.info[lid as usize];
-        debug_assert_eq!(self.nodes[li.rtn as usize].space, li.space);
-        self.quad_geom(li.rtn, x, y, w, h);
+        debug_assert_eq!(self.nodes[lid as usize].space, li.space);
+        self.quad_geom(lid, x, y, w, h);
     }
 
     /// Place a laid-out text node's lines in its box at (x, y) of width `w`: the fast path points one run
@@ -1219,8 +1216,7 @@ impl Rt {
     /// glyph instances. Damage: the old and the new ink.
     fn place_text(&mut self, lid: u32, x: f32, y: f32, w: f32, _h: f32, _reflow: bool) {
         self.lay.stats.text_placed += 1;
-        let li = self.lay.info[lid as usize];
-        let node = li.rtn;
+        let node = lid;
         let ti = self.nodes[node as usize].text;
         let hd = self.nodes[node as usize].handle;
         let (size_px, lh) = {
@@ -1299,7 +1295,7 @@ impl Rt {
                 let t = &mut self.texts[ti as usize];
                 t.ink = ink;
                 t.shape = TShape::Glyphs { run };
-                self.nodes[node as usize].run = run;
+                (self.nodes[node as usize].run, self.nodes[node as usize].inst) = (run, first);
                 self.bough.set_payload_handle(hd, pay_irun(first, cnt.max(1) as u32));
             }
         }
@@ -1472,27 +1468,21 @@ where
         assert!(!X::PAINT || self.draw, "opacity/translate need a painted box (bg, rounded or border)");
         let mut qnode = NONE;
         if self.draw {
-            let node = m.rt.alloc_node();
+            let node = m.rt.node_at(hd);
             let bg = self.bg.lower::<ApplyBg>(m, node);
             let (ins, _kind, margin) = quad_instance(bg, snap(self.radius * s), self.border, s, m.space);
-            let run = m.rt.alloc_run(1);
-            m.rt.runs[run as usize].len = 1;
-            let inst = m.rt.runs[run as usize].first;
+            let inst = m.rt.alloc_inst();
             *m.rt.inst_mut(inst) = ins;
             {
                 let n = &mut m.rt.nodes[node as usize];
-                n.handle = hd;
-                n.run = run;
+                n.inst = inst;
                 n.space = m.space;
                 n.clip = m.clip;
                 n.kind = if self.border.is_some() { NK_BORDER } else { NK_QUAD };
                 n.color = bg.0;
                 n.margin = margin;
-                n.lnode = lid;
             }
-            m.scope.nodes.push(node);
-            m.scope.runs.push(run);
-            m.rt.lay.info[lid as usize].rtn = node;
+            m.scope.insts.push(inst);
             m.rt.lay.info[lid as usize].kind = 1;
             m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_QUAD, payload: inst, handle: hd.idx, clip: m.clip });
             qnode = node;
@@ -1536,17 +1526,17 @@ where
         }
         let li = m.rt.lay.info[lid as usize];
         assert_eq!(self.draw, li.kind == 1, "a re-description cannot add or drop a box's paint (bg/rounded/border)");
-        self.x.refresh(m.rt, lid, li.rtn);
+        self.x.refresh(m.rt, lid, if li.kind == 1 { lid } else { NONE });
         if li.clip != m.clip {
             m.rt.bough.set_clip_run(m.pos, 1, m.clip);
             m.rt.lay.info[lid as usize].clip = m.clip;
         }
         if self.draw {
-            let node = li.rtn;
+            let node = lid;
             let bg = self.bg.value();
             let s = m.rt.scale;
             let (ins, _kind, margin) = quad_instance(bg, self.radius * s, self.border, s, m.space);
-            let inst = m.rt.runs[m.rt.nodes[node as usize].run as usize].first;
+            let inst = m.rt.nodes[node as usize].inst;
             let old = *m.rt.inst_mut(inst);
             if old.radius != ins.radius || old.kind != ins.kind || old.bw != ins.bw || (self.border.is_some() && old.color != ins.color) {
                 let p = m.rt.inst_mut(inst);
@@ -1670,7 +1660,7 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
             ctx.set_text(text, glyphs, &init);
         }
         m.rt.lay.prof.mark(LP_TEXT_SET);
-        let hd = m.rt.bough.new_handle();
+        let hd = m.rt.nodes[node as usize].handle;
         m.rt.reflect.elem(hd.idx, std::any::type_name::<Self>());
         let spec = if self.wrap {
             self.spec
@@ -1704,12 +1694,10 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
             n.color = color.0;
             n.size_px = size_px;
             n.line_h = lh_px;
-            n.handle = hd;
-            n.lnode = lid;
         }
-        m.rt.lay.info[lid as usize].rtn = node;
+        debug_assert_eq!(node, lid);
         m.rt.lay.info[lid as usize].kind = 2;
-        m.scope.nodes.push(node);
+        m.scope.texts.push(ti);
         m.tape_push(lid);
         // provisional: empty ink (never drawn) until the first write-back points the lines at the block
         m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_TEXT, payload: 0, handle: hd.idx, clip: m.clip });
@@ -1730,7 +1718,7 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
             restyle(m.rt, lid, &spec);
             m.rt.lay.info[lid as usize].spec_ix = m.rt.lay.descs.intern(&self.spec);
         }
-        let node = m.rt.lay.info[lid as usize].rtn;
+        let node = lid;
         let ti = m.rt.nodes[node as usize].text;
         let s = m.rt.scale;
         {
