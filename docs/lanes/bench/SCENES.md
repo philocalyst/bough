@@ -44,11 +44,11 @@ footprint and peak resident memory after the phase. `#` lines carry the model an
 
 | scene | model | fan-out (hover) | steady step | transitions |
 |---|---|---|---|---|
-| `sheet` | 10 x 10,000 = 100,000 numeric cells, header, row gutter, totals, selection outline; 240,055 records | column header hover: one `look` signal read by every cell's fill and text colour (200,000 wires; 20,000 change) | a value edit (+ its column total), a selection move, a wheel detent | none of its own (a selection jump) |
+| `sheet` | 10 x 10,000 = 100,000 numeric cells, header, row gutter, totals, selection outline; 240,055 records | column header hover: one `look` signal read by every cell's fill and text colour (200,000 wires; 20,000 change) | a value edit (+ its column total), a selection move, a wheel detent | the selection outline glides (translate transition) |
 | `ide` | 12 tabs, 2,000-entry tree, 3,000-line editor (14,585 token spans), minimap of 3,000 blocks, 528-line terminal, status bar; 30,166 records | hovering `value` highlights its 2,189 occurrences (4,312 identifier spans read one signal) | a character typed; every 6th a terminal line; every 10th a wheel scroll and minimap sync | tab switch under a fading cover, folder expand (height transition), minimap viewport and tree selection glide |
 | `dash` | 200 chart cards (bars, sparklines of 40 quads, trends of 2 x 18 dots, gauges, stacked bars), header, legend; 8,188 records | legend "B" dims every other series in 200 charts (3,484 marks) | a data tick of 20 cards; every 8th a range-button click | card cross-fades (veil opacity), utilisation-bar widths, card ring |
 | `canvas` | 20 clipped frames, 5,000 layered nodes (shadows blur 2-40, gradients, borders, labels, SVG icons, nested group clips, 1,000 component instances), layers panel, inspector; 10,856 records | layers-panel row of component 3 highlights its 200 instances (1,000 wires) | a drag gesture (`on_drag`), selection change, wheel pan | 50 nodes "smart animate" (position, opacity), a frame cross-fade |
-| `chat` | (see its module doc) | | | |
+| `chat` | 200 conversations, 2,000 mounted messages from 12 participants (436 K characters of wrapped text, 274 quotes, 840 reaction pills, 200 images over 8 PNGs), arrivals in a `List`, composer, header; 23,593 records | a participant's header avatar highlights their messages (~830 wires on one of 12 look signals) | a character typed; every 6th a message arrives (list push, scroll glide, sidebar badge); every 12th a send; every 10th a wheel detent | newest message slides in (scroll glide), image fade-in (veil opacity), typing dots, sidebar selection glide |
 
 ## Correctness
 
@@ -78,8 +78,11 @@ scenes pass on the r7/bench tree of 2026-11-12. `tests/defects.rs` holds the rep
 * **Layout.** No wrapping row (the dashboard cannot reflow to fewer columns); `clip_overflow` is not a paint
   clip; a label measures without its edge spaces; flow labels expose no glyph positions (caret x is estimated).
 * **Text.** A text from `.map` is a `String` (an allocation per update); only `.num` formats without one.
-* **Defects** (correctness): nested `clip_by` (repro in `tests/defects.rs`); `clip_by` inside `anchor` mounts
-  without the anchor's origin (reported by the canvas agent, not yet reproduced).
+* **Defects** (correctness; repros in `tests/defects.rs`): nested `clip_by` reads its parent's stale rect after a
+  write (fixed on r7/core); a list row's transition outlives the row and `App::resize` panics with `layout node is
+  in the Bough`; `clip_by` inside `anchor` mounts without the anchor's origin (canvas agent, not reproduced); a
+  scroll offset is not re-clamped when the content gets shorter (chat; blank view after a resize); the image atlas
+  is one 1024 x 1024 texture and panics at the ninth distinct ~200 x 130 pt image (chat).
 * **Capacity.** Labels take glyph slots in blocks of 16 and double as they grow (~32-35 per label measured): a
   scene must size `Caps::glyphs` from its label count or panic at mount; instances stay under the format's 2^18.
 
