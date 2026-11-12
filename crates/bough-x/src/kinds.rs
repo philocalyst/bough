@@ -31,6 +31,7 @@ impl<E: Expr<Out = Color>> Arch for Fill<E> {
     const NAME: &'static str = "fill";
     const STAGE: StageId = E::STAGE;
     const TIMED: bool = E::READS >> U_TIME & 1 != 0;
+    const ENDLESS: bool = !E::RESTS;
     #[inline(always)]
     fn until(&self, u: &U) -> u32 {
         self.0.until(&Cx::of(u))
@@ -64,6 +65,7 @@ impl<const D: u8, V: Expr<Out = i32>, C: Expr<Out = Color>> Arch for Num<D, V, C
     const NAME: &'static str = "num";
     const STAGE: StageId = later(&[V::STAGE, C::STAGE]);
     const TIMED: bool = (V::READS | C::READS) >> U_TIME & 1 != 0;
+    const ENDLESS: bool = !(V::RESTS & C::RESTS);
     #[inline(always)]
     fn until(&self, u: &U) -> u32 {
         self.0.until(&Cx::of(u)).max(self.1.until(&Cx::of(u)))
@@ -128,6 +130,7 @@ impl<C: Expr<Out = Color>> Arch for Label<C> {
     const NAME: &'static str = "label";
     const STAGE: StageId = C::STAGE;
     const TIMED: bool = C::READS >> U_TIME & 1 != 0;
+    const ENDLESS: bool = !C::RESTS;
     #[inline(always)]
     fn until(&self, u: &U) -> u32 {
         self.1.until(&Cx::of(u))
@@ -185,6 +188,7 @@ impl<const DUR: u32, F: Expr<Out = (i32, i32)>, T: Expr<Out = (i32, i32)>, S: Ex
     type Out = (i32, i32);
     type Stage = Frame;
     const READS: u64 = F::READS | T::READS | S::READS | 1 << U_TIME;
+    const RESTS: bool = F::RESTS & T::RESTS & S::RESTS;
     const CODE: &'static Code = &Code::Call("x_glide", &[F::CODE, T::CODE, S::CODE, &Code::U(U_TIME), &Code::Lit(DUR)]);
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> (i32, i32) {
@@ -211,6 +215,7 @@ impl<const DUR: u32, F: Expr<Out = Color>, T: Expr<Out = Color>, S: Expr<Out = u
     type Out = Color;
     type Stage = Frame;
     const READS: u64 = F::READS | T::READS | S::READS | 1 << U_TIME;
+    const RESTS: bool = F::RESTS & T::RESTS & S::RESTS;
     const CODE: &'static Code = &Code::Call("x_tween", &[F::CODE, T::CODE, S::CODE, &Code::U(U_TIME), &Code::Lit(DUR)]);
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> Color {
@@ -245,6 +250,7 @@ impl<const W: i32, C: Expr<Out = Color>, T: Motion> Arch for Outline<W, C, T> {
     const READS: u64 = C::READS | T::READS;
     const MOVES: bool = T::READS != 0;
     const TIMED: bool = (T::READS | C::READS) >> U_TIME & 1 != 0;
+    const ENDLESS: bool = !(T::RESTS & C::RESTS);
     #[inline(always)]
     fn until(&self, u: &U) -> u32 {
         self.1.until(&Cx::of(u)).max(self.0.until(&Cx::of(u)))
