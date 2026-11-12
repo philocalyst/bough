@@ -483,7 +483,9 @@ pub mod kernel {
         if t == NO_TEXEL {
             return 0u32;
         }
-        (get!(ATLAS)[t >> 2u32] >> ((t & 3u32) * 8u32)) & 255u32
+        // bounds by construction: the index is clamped to the atlas's last texel (PROG word 6)
+        let i = min(t, get!(PROG)[6u32]);
+        (get!(ATLAS)[i >> 2u32] >> ((i & 3u32) * 8u32)) & 255u32
     }
 
     #[compute]

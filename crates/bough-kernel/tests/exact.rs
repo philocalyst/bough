@@ -40,18 +40,22 @@ fn executors_agree() {
         h ^= bough_kernel::hash(&spec).rotate_left(seed as u32);
         // every tile, with and without each executor shortcut, on 1 and 4 threads
         for (cut, flat, extra) in [(true, true, 0), (true, true, 3), (false, false, 0), (true, false, 2), (false, true, 1)] {
-            bin.bin(&scene, FW, FH, STRIDE as u32, atlas.w, now, &Damage::All, cut, &mut prog);
+            bin.bin(&scene, FW, FH, STRIDE as u32, &atlas, now, &Damage::All, cut, &mut prog);
             let mut out = vec![0u32; words];
-            let st = cpu::raster(&scene, &prog, &atlas, &mut out, STRIDE, &pool, extra, Opt { flat });
+            let st = cpu::raster(&scene, &prog, &atlas, &mut out, STRIDE, &pool, extra, Opt::flat(flat));
             tiles += st.tiles;
             if let Some((x, y, a, b)) = first_diff(&out, &spec) {
                 panic!("seed {seed} now {now} cut {cut} flat {flat} threads {}: pixel ({x},{y}) fast {a:08x} spec {b:08x}", extra + 1);
             }
         }
+        // the per-tile specification (the oracle large scenes use)
+        let mut out = vec![0u32; words];
+        cpu::reference(&scene, FW, FH, &atlas, now, &mut out, STRIDE, &pool);
+        assert!(first_diff(&out, &spec).is_none(), "seed {seed}: reference != naive");
         // a damaged subset: its tiles equal the specification, every other word is untouched
         let mut r = scenes::Rng(seed + 99);
         let sub: Vec<(u16, u16)> = (0..8u16).flat_map(|y| (0..10u16).map(move |x| (x, y))).filter(|_| r.u(3) == 0).collect();
-        bin.bin(&scene, FW, FH, STRIDE as u32, atlas.w, now, &Damage::Tiles(&sub), true, &mut prog);
+        bin.bin(&scene, FW, FH, STRIDE as u32, &atlas, now, &Damage::Tiles(&sub), true, &mut prog);
         let mut out = vec![0x5a5a_5a5au32; words];
         cpu::raster(&scene, &prog, &atlas, &mut out, STRIDE, &pool, 2, Opt::default());
         let check_subset = |out: &[u32], who: &str| {
@@ -72,7 +76,7 @@ fn executors_agree() {
             g.render(prog.tiles(), words);
             check_subset(g.out(words), "gpu");
             for cut in [true, false] {
-                bin.bin(&scene, FW, FH, STRIDE as u32, atlas.w, now, &Damage::All, cut, &mut prog);
+                bin.bin(&scene, FW, FH, STRIDE as u32, &atlas, now, &Damage::All, cut, &mut prog);
                 g.upload_prog(&prog);
                 g.clear_out(words);
                 g.render(prog.tiles(), words);
@@ -104,7 +108,7 @@ fn gpu_rounding_mutant_is_caught() {
         let scene = scenes::adversarial(seed, FW, FH, 110);
         let mut spec = vec![0u32; words];
         cpu::naive(&scene, FW, FH, &atlas, 0, &mut spec, STRIDE);
-        bin.bin(&scene, FW, FH, STRIDE as u32, atlas.w, 0, &Damage::All, true, &mut prog);
+        bin.bin(&scene, FW, FH, STRIDE as u32, &atlas, 0, &Damage::All, true, &mut prog);
         gpu.upload(&scene, &atlas_px, &prog);
         gpu.clear_out(words);
         gpu.render(prog.tiles(), words);

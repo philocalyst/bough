@@ -75,6 +75,7 @@ dependencies = [
  "block2",
  "bough-core",
  "bough-gpu",
+ "bough-kernel",
  "bough-mem",
  "bough-metal",
  "bough-text",

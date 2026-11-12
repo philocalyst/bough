@@ -57,3 +57,5 @@ name = "runs_check"
 name = "wake"
 [[example]]
 name = "fprobe"
+[[example]]
+name = "iosurf_alias"

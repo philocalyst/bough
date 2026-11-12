@@ -10,6 +10,7 @@ bough-core = { path = "../bough-core" }
 bough-mem = { path = "../bough-mem" }
 bough-text = { path = "../bough-text" }
 bough-metal = { path = "../bough-metal" }
+bough-kernel = { path = "../bough-kernel" }
 rustybuzz = "0.20"
 ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
 libc = "0.2"

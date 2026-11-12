@@ -99,7 +99,8 @@ impl Bench {
         None
     }
     fn bin(&mut self, scene: &Scene, fw: u32, fh: u32, d: &Damage, cut: bool) {
-        self.bin.bin(scene, fw, fh, fw, scenes::ATLAS_W, 0, d, cut, &mut self.prog);
+        let atlas = Atlas { px: &self.atlas, w: scenes::ATLAS_W };
+        self.bin.bin(scene, fw, fh, fw, &atlas, 0, d, cut, &mut self.prog);
     }
 }
 
@@ -131,8 +132,8 @@ fn micro(b: &mut Bench) {
                 mk(i, &mut s);
             }
             b.bin(&s, fw, fh, &Damage::All, false);
-            let (t0, _, i0, _) = b.cpu(&s, 0, Opt { flat: false }, 30);
-            let (t1, _, i1, st) = b.cpu(&s, 0, Opt { flat: true }, 30);
+            let (t0, _, i0, _) = b.cpu(&s, 0, Opt::flat(false), 30);
+            let (t1, _, i1, st) = b.cpu(&s, 0, Opt::flat(true), 30);
             copied = 100.0 * st.rows_copied as f64 / (st.rows_copied + st.rows_shaded) as f64;
             let g = b.gpu(&s, 30, 0).map_or(0.0, |g| g.2);
             v[j] = [t0, i0, t1, i1, g];
@@ -172,14 +173,15 @@ fn scene(b: &mut Bench, name: &str, fw: u32, fh: u32, nodes: usize) {
     for cut in [false, true] {
         let (tb, _, ib) = {
             let (bin, prog) = (&mut b.bin, &mut b.prog);
-            time(10, || bin.bin(&s, fw, fh, fw, scenes::ATLAS_W, 0, &Damage::All, cut, prog))
+            let atlas = Atlas { px: &b.atlas, w: scenes::ATLAS_W };
+            time(10, || bin.bin(&s, fw, fh, fw, &atlas, 0, &Damage::All, cut, prog))
         };
         let (t, _, i, st) = b.cpu(&s, 0, Opt::default(), 10);
         println!("cut={cut}\ttiles {}\tentries/tile {:.2}\tbin {:.0} us {:.0} Kinstr\traster1 {:.0} us {:.0} Kinstr", st.tiles, st.entries as f64 / st.tiles as f64, tb * 1e6, ib / 1e3, t * 1e6, i / 1e3);
     }
     // flat rows (E10)
     for flat in [false, true] {
-        let (t, _, i, st) = b.cpu(&s, 0, Opt { flat }, 10);
+        let (t, _, i, st) = b.cpu(&s, 0, Opt::flat(flat), 10);
         println!("flat={flat}\trows shaded {} copied {} ({:.0} %)\traster1 {:.0} us {:.0} Kinstr", st.rows_shaded, st.rows_copied, 100.0 * st.rows_copied as f64 / (st.rows_copied + st.rows_shaded) as f64, t * 1e6, i / 1e3);
     }
     // the gradient (E5): compact damage of n tiles; one core, some cores, all cores, GPU
@@ -256,7 +258,7 @@ fn hash() {
         let mut spec = vec![0u32; stride * fh as usize];
         cpu::naive(&scene, fw, fh, &atlas, now, &mut spec, stride);
         h ^= bough_kernel::hash(&spec).rotate_left(seed as u32);
-        bin.bin(&scene, fw, fh, stride as u32, atlas.w, now, &Damage::All, true, &mut prog);
+        bin.bin(&scene, fw, fh, stride as u32, &atlas, now, &Damage::All, true, &mut prog);
         let mut out = vec![0u32; stride * fh as usize];
         cpu::raster(&scene, &prog, &atlas, &mut out, stride, &pool, 3, Opt::default());
         bad += (out != spec) as u32;

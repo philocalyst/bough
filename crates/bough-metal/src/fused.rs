@@ -237,7 +237,7 @@ pub struct Surface {
     pub cpu_written: Cell<bool>,
 }
 
-fn make_iosurface(w: usize, h: usize) -> CFRetained<IOSurfaceRef> {
+pub fn make_iosurface(w: usize, h: usize) -> CFRetained<IOSurfaceRef> {
     let keys: [&NSString; 4] = [ns_string!("IOSurfaceWidth"), ns_string!("IOSurfaceHeight"), ns_string!("IOSurfaceBytesPerElement"), ns_string!("IOSurfacePixelFormat")];
     let vals = [NSNumber::new_i32(w as i32), NSNumber::new_i32(h as i32), NSNumber::new_i32(4), NSNumber::new_u32(0x4247_5241)]; // 'BGRA'
     let refs: Vec<&AnyObject> = vals.iter().map(|v| v.as_ref() as &AnyObject).collect();
@@ -1498,6 +1498,56 @@ impl Fused {
         unsafe { s.io.lock(objc2_io_surface::IOSurfaceLockOptions::empty(), std::ptr::null_mut()) };
         s.cpu_written.set(true);
         (s.io.base_address().as_ptr() as *mut u8, s.io.bytes_per_row(), purged)
+    }
+
+    /// The certificate hook (compute lane, round 7; asked for by the gpu and memory handoffs): the pixels of
+    /// these tiles of surface `i` were written without the kernels, so nothing is known about them any more.
+    /// `rows` is the frame's damage (a bit per tile column, per tile row); `full`: every tile. A surface the
+    /// kernels have not touched since its plane was last zeroed needs nothing (`prepare_target` zeroes it at
+    /// first use). Call between `write_begin` and `write_end`.
+    pub fn forget_tiles(&mut self, i: usize, rows: &[u128], full: bool) {
+        let s = &self.surfs[i];
+        if !s.touched.get() {
+            return;
+        }
+        let (tx, ty) = (self.w.div_ceil(32), self.h.div_ceil(32));
+        let p = s.cert.contents().as_ptr() as *mut u8;
+        // SAFETY: the plane is `cert_bytes` long in shared storage; `write_begin` synced the GPU, so no frame
+        // reads or writes it; every index is below tx * ty.
+        unsafe {
+            if full {
+                std::ptr::write_bytes(p, 0, cert_bytes(self.w, self.h));
+                return;
+            }
+            for (y, &r) in rows.iter().enumerate().take(ty) {
+                let mut m = if tx >= 128 { r } else { r & ((1u128 << tx) - 1) };
+                while m != 0 {
+                    let x = m.trailing_zeros() as usize;
+                    m &= m - 1;
+                    std::ptr::write_bytes(p.add((y * tx + x) * 72), 0, 72);
+                }
+            }
+        }
+    }
+
+    /// Surface `i`'s memory for an executor that writes or reads it in place: base address, bytes per row,
+    /// allocation size. Valid while the surface exists (a resize replaces it); lock it (`write_begin`,
+    /// `read_begin`) around CPU access.
+    pub fn surface_mem(&self, i: usize) -> (*mut u8, usize, usize) {
+        let io = &self.surfs[i].io;
+        (io.base_address().as_ptr() as *mut u8, io.bytes_per_row(), io.alloc_size())
+    }
+    /// Lock surface `i` for CPU reads (a scroll copy's source), the GPU done with it.
+    pub fn read_begin(&mut self, i: usize) -> (*const u8, usize) {
+        self.sync();
+        let io = &self.surfs[i].io;
+        // SAFETY: a valid surface, read-locked until `read_end`.
+        unsafe { io.lock(objc2_io_surface::IOSurfaceLockOptions::ReadOnly, std::ptr::null_mut()) };
+        (io.base_address().as_ptr() as *const u8, io.bytes_per_row())
+    }
+    pub fn read_end(&mut self, i: usize) {
+        // SAFETY: locked by `read_begin`.
+        unsafe { self.surfs[i].io.unlock(objc2_io_surface::IOSurfaceLockOptions::ReadOnly, std::ptr::null_mut()) };
     }
 
     /// Unlock surface `i` after `write_begin`.

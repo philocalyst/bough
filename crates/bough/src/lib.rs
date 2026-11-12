@@ -9,6 +9,7 @@ pub mod boxops;
 pub mod changed;
 pub mod color;
 pub mod cpu_raster;
+pub mod kernel_backend;
 pub mod deco;
 pub mod describe;
 pub mod elem;

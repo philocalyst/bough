@@ -169,6 +169,10 @@ pub enum Repair {
     Auto,
     Gpu,
     Cpu,
+    /// The integer kernel (`bough-kernel`): its CPU executors or its GPU executor per frame, chosen by cost;
+    /// exact against each other by construction (kernel_backend.rs). Falls back to `Gpu` for good at the
+    /// first frame holding something that kernel does not draw.
+    Kernel,
 }
 
 impl Repair {
@@ -176,6 +180,7 @@ impl Repair {
         match std::env::var("BOUGH_REPAIR").as_deref() {
             Ok("auto") => Repair::Auto,
             Ok("cpu") => Repair::Cpu,
+            Ok("kernel") => Repair::Kernel,
             _ => Repair::Gpu,
         }
     }
@@ -227,6 +232,8 @@ pub struct App<V: View> {
     pub cpu: crate::cpu_raster::CpuRaster,
     /// `BOUGH_CPU_VERIFY`: compare every CPU-repaired frame with the GPU's full redraw and report (diagnostics).
     cpu_verify: bool,
+    /// `Repair::Kernel`: the integer kernel's executors (kernel_backend.rs), made at the first frame.
+    pub kernel: Option<Box<crate::kernel_backend::KernelBackend>>,
 }
 
 /// Per raster worker started by [`prepare`]: (strikes, glyphs, instructions, ns), for those finished.
@@ -530,6 +537,7 @@ impl<V: View> App<V> {
             repair: Repair::from_env(),
             cpu: crate::cpu_raster::CpuRaster::new(),
             cpu_verify: std::env::var_os("BOUGH_CPU_VERIFY").is_some(),
+            kernel: None,
         }
     }
 
@@ -987,7 +995,8 @@ impl<V: View> App<V> {
             self.surf_stats.purged += 1;
         }
         let age = self.held[i].map(|l| epoch - l);
-        let full = !matches!(age, Some(a) if a as usize <= RING);
+        #[allow(unused_mut)]
+        let mut full = !matches!(age, Some(a) if a as usize <= RING);
         let mut copy = bough_metal::fused::SlotCopy::NONE;
         self.last_full = full;
         if !full {
@@ -1001,9 +1010,46 @@ impl<V: View> App<V> {
         self.last_use[i] = self.frames;
         #[allow(unused_mut)]
         let mut drawn = false;
+        // the kernel backend (kernel_backend.rs): every executor writes the surface's memory in place
+        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+        if self.repair == Repair::Kernel {
+            if let Some(g) = self.gpu.as_mut() {
+                let kb = self.kernel.get_or_insert_with(Default::default);
+                if kb.stage(&self.rt, &self.rows, full) {
+                    let (p, bpr, _) = g.write_begin(i);
+                    let (_, _, alloc) = g.surface_mem(i);
+                    if !copy.is_none() {
+                        let s = (copy.src & 0xff) as usize;
+                        let (sp, sbpr) = g.read_begin(s);
+                        // SAFETY: both surfaces are locked, distinct (`copy_plan`), of the window's size.
+                        unsafe { crate::kernel_backend::KernelBackend::copy(sp, sbpr, p, bpr, copy.rect, copy.dx, copy.dy, self.rt.win_w, self.rt.win_h) };
+                        g.read_end(s);
+                    }
+                    // SAFETY: surface `i` is locked for this thread, `bpr` bytes per row, `alloc` bytes, page
+                    // aligned (an IOSurface), and lives until a resize replaces it (a new address re-wraps).
+                    self.repaired_tiles = unsafe { kb.run(&self.rt, full, p, bpr, alloc, i) };
+                    // nothing is known to the presenter's kernels about what was written (the copy included)
+                    g.forget_tiles(i, &self.rows, full || !copy.is_none());
+                    g.write_end(i);
+                    g.show_held::<PACED>(i);
+                    self.surf_stats.cpu += 1;
+                    drawn = true;
+                } else {
+                    // something this kernel does not draw: the presenter's kernels take over for good. Their
+                    // pixels differ, so every surface is repainted whole at its next use.
+                    kb.stats.refused += 1;
+                    self.repair = Repair::Gpu;
+                    self.held.iter_mut().for_each(|h| *h = None);
+                    self.shown = None;
+                    full = true;
+                    self.last_full = true;
+                    copy = bough_metal::fused::SlotCopy::NONE;
+                }
+            }
+        }
         // the CPU backend (cpu_raster.rs): the damaged tiles written into the surface directly, no GPU work
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
-        if cpu_able && copy.is_none() {
+        if cpu_able && copy.is_none() && !drawn && self.repair != Repair::Gpu {
             let tiles = if full {
                 self.rt.layout.tiles_x() * self.rt.layout.tiles_y()
             } else {
@@ -1191,6 +1237,12 @@ impl<V: View> App<V> {
     /// A from-scratch full redraw of the current retained state (every tile, the same kernels).
     #[cfg(target_os = "macos")]
     pub fn reference_pixels(&mut self) -> Vec<u8> {
+        #[cfg(not(feature = "wgpu"))]
+        if self.repair == Repair::Kernel {
+            if let Some(px) = self.kernel.get_or_insert_with(Default::default).reference(&self.rt) {
+                return px;
+            }
+        }
         let n_dir = self.rt.bough.num_pages() as u32;
         let g = self.gpu.as_mut().unwrap();
         let a = &mut self.rt.text.cache.atlas;

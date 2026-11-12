@@ -207,3 +207,41 @@ Raw: `runtime/lanes/compute/r/scene-*.tsv`. us are minimum of repetitions; "cade
 
 Consequence for the design: the choice is `min` over three estimates that the binner can accumulate per
 frame from per-kind weights (the table above) and the tile count; no framework is needed for it.
+
+### E2 across architectures: CONFIRMED (ilo-prod, Ryzen 7 3700X, Linux x86-64, load 20-23, commit `5c009dede7`)
+
+`BOUGH_EXACT_SEEDS=125 cargo test --release -p bough-kernel --test exact` and `kbench hash` on ilo-prod print
+`spec hash 64bf21a9ea02ff88`, the hash the M3 Pro prints for the same commit, with 0 of 125 scenes differing
+between the specification and the fast executor there. So aarch64 CPU == x86-64 CPU == Apple GPU, byte for
+byte, from one source; the crate built on Linux unmodified (the Metal module is behind `cfg(target_os)`),
+which means the pixel gates' oracle no longer needs a GPU or a Mac.
+(The hash changed from `b06da2304ca40bf6` because the shadow formulation changed between the two commits.)
+
+CPU executor on Zen 2 (same commit, dist profile, busy host; raw output in the lane's runtime notes; kbench's
+instruction columns are 0 on Linux, they read a macOS counter):
+
+| scene, 2560x1600 full frame | 1 core | 8 threads | 16 threads |
+|---|---:|---:|---:|
+| grid | 3.2-4.5 ms | | 0.57 ms |
+| gridtext | 8.9-9.3 ms | 2.1 ms | 1.36-2.6 ms |
+| canvas (5,000 cards) | 420-442 ms | | 45 ms |
+
+Zen 2 is 2-2.5x slower per core than the M3's performance cores on this code, and scales 6.8x (gridtext) to
+9.3x (canvas) on 16 threads. The shape of the curves is the same: a 1-tile gridtext repair is 3 us, waking
+workers for under ~16 tiles loses, the cut takes the canvas from 7.6 s to 0.44 s per frame on one core.
+`perf stat` (user mode, whole kbench run, pinned to one CPU): 42.84 G instructions, 17.6 G cycles (IPC 2.4),
+L1d misses 3.1 % of loads, L2 misses 87.7 M (2 per 1,000 instructions): the executor is not memory bound.
+
+### E9: the GPU kernel can store through a buffer that aliases the surface: CONFIRMED (M3 Pro)
+
+`cargo run --release -p bough-metal --example iosurf_alias`: `newBufferWithBytesNoCopy` accepts an IOSurface's
+base address (page aligned; its allocation is a whole number of pages); a compute kernel that writes words to
+that buffer leaves them, all 32,768 of 32,768, both at the surface's base address and in the texture view the
+presenter makes of the same surface. One run, headless; not checked: a surface that is purgeable-volatile, or
+in use by the window server, while the buffer exists; whether the compositor needs the lock/unlock seed bump
+(the CPU path already does one).
+
+What this deletes: the GPU kernel's texture stores (and with them the "which of four textures" selection that
+was a wgsl-rs gap, the unorm conversion that made the old CPU model's exactness depend on the hardware, and
+the residency-set entry per surface). Both executors now have the same output contract:
+`out[y * stride + x] = bgra`, into the memory the compositor reads.

@@ -66,13 +66,63 @@ pub struct Binner {
     slot: Vec<u32>,
     count: Vec<u32>,
     floor: Vec<u32>,
+    /// The last program's estimated cost on one core, ns (`KIND_NS` summed over tile entries).
+    pub est_cpu_ns: u64,
+}
+
+/// One core's cost of a command on a tile it touches, ns, by kind (kbench micro, M3 Pro, with flat-row
+/// replication; a command rarely covers its whole tile, so these lean high for the per-pixel kinds, which
+/// biases an effect-heavy frame towards the GPU). Index: kind, then for shadows and gradients whether the
+/// cheap form applies (square corners; vertical).
+pub const KIND_NS: [[u32; 2]; 7] = [[10, 10], [100, 100], [100, 100], [190, 190], [1900, 900], [3000, 300], [2500, 2500]];
+
+/// How a frame is executed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Exec {
+    /// The calling thread.
+    Cpu1,
+    /// The calling thread and this many pool workers.
+    CpuN(usize),
+    Gpu,
+}
+
+/// Measured constants of the choice (ns). `gpu_fixed`: a GPU frame's round trip whatever it draws, when the
+/// GPU ran within the last few frames (`warm`) and when it has clocked down; `wake`: getting parked workers
+/// going; the GPU's kernel time per tile and per tile entry.
+pub struct Costs {
+    pub gpu_fixed_warm: u64,
+    pub gpu_fixed_cold: u64,
+    pub gpu_tile: u64,
+    pub gpu_entry: u64,
+    pub wake: u64,
+}
+
+/// M3 Pro, 2026-11-12 (journal E5): 150 us warm and 650 us at a display's cadence; 180 ns per tile and 55 ns
+/// per entry; 30 us to wake workers.
+pub const COSTS: Costs = Costs { gpu_fixed_warm: 150_000, gpu_fixed_cold: 650_000, gpu_tile: 180, gpu_entry: 55, wake: 30_000 };
+
+/// The gradient: the cheapest of one core, `workers` more cores, and the GPU, for a program of `tiles` tiles
+/// and `entries` entries whose one-core estimate is `cpu_ns`. This is the whole scheduler.
+pub fn choose(cpu_ns: u64, tiles: u64, entries: u64, workers: usize, gpu: bool, gpu_warm: bool, c: &Costs) -> Exec {
+    let n = workers as u64 + 1;
+    // bands are tile rows: a small repair has few of them, and the pool never reaches a perfect split
+    let many = c.wake + cpu_ns * 5 / (4 * n);
+    let g = if gpu { (if gpu_warm { c.gpu_fixed_warm } else { c.gpu_fixed_cold }) + c.gpu_tile * tiles + c.gpu_entry * entries } else { u64::MAX };
+    if cpu_ns <= many.min(g) || workers == 0 && cpu_ns <= g {
+        Exec::Cpu1
+    } else if many <= g && workers > 0 {
+        Exec::CpuN(workers)
+    } else {
+        Exec::Gpu
+    }
 }
 
 impl Binner {
     /// Build the tile programs of the damaged tiles of a `fw` x `fh` frame. `cut`: apply the occlusion cut
     /// (identity 2). The input here is the whole command list; in the runtime it is the page cull's output
     /// for the damaged rows.
-    pub fn bin(&mut self, scene: &Scene, fw: u32, fh: u32, stride: u32, aw: u32, now: u32, damage: &Damage, cut: bool, prog: &mut Prog) {
+    pub fn bin(&mut self, scene: &Scene, fw: u32, fh: u32, stride: u32, atlas: &Atlas, now: u32, damage: &Damage, cut: bool, prog: &mut Prog) {
+        let (aw, alim) = (atlas.w, (atlas.px.len() as u32).saturating_sub(1));
         let (tx, ty) = (fw.div_ceil(32) as usize, fh.div_ceil(32) as usize);
         self.slot.clear();
         let nt = match damage {
@@ -100,6 +150,7 @@ impl Binner {
         self.count.resize(nt, 0);
         self.floor.clear();
         self.floor.resize(nt, 0);
+        self.est_cpu_ns = 0;
         let n = scene.len() as u32;
         let span = |c: &Cmd| {
             let x0 = (c.win.x.max(0) as usize) >> 5;
@@ -117,6 +168,7 @@ impl Binner {
             let (x0, y0, x1, y1) = span(&c);
             // An opaque cover: the tile lies inside the core and the core's value is opaque. A transition
             // never cuts (its opacity is a function of time).
+            let ns = KIND_NS[(c.par.x as usize).min(6)][(c.par.x == k::K_SHADOW && c.rad.x == 0 || c.par.x == k::K_GRAD && c.rad.z == 0) as usize] as u64;
             let opaque = cut && h & k::F_ANIM == 0 && (k::opaque(c) || (cfg!(feature = "mutant_cut") && c.pm.w >= k::ONE / 2));
             for y in y0..y1 {
                 for x in x0..x1 {
@@ -131,12 +183,14 @@ impl Binner {
                     } else {
                         self.count[s as usize] += 1;
                     }
+                    // (entries a later cut removes stay in the estimate: it leans high on layered frames)
+                    self.est_cpu_ns += ns;
                 }
             }
         }
         let w = &mut prog.words;
         w.clear();
-        w.extend_from_slice(&[fw, fh, stride, aw, now, nt as u32, 0, 0]);
+        w.extend_from_slice(&[fw, fh, stride, aw, now, nt as u32, alim, 0]);
         w.resize(HDR + 4 * nt, 0);
         let mut off = (HDR + 4 * nt) as u32;
         for (i, &s) in self.slot.iter().enumerate() {
@@ -213,11 +267,20 @@ impl Default for Scratch {
 pub struct Opt {
     /// Copy flat rows from the row above.
     pub flat: bool,
+    /// Fold the tile's whole list at every pixel through `k::shade`, with no core, span or flat row (the
+    /// specification restricted to a tile program; `reference` uses it).
+    pub spec: bool,
 }
 
 impl Default for Opt {
     fn default() -> Self {
-        Opt { flat: true }
+        Opt { flat: true, spec: false }
+    }
+}
+
+impl Opt {
+    pub const fn flat(flat: bool) -> Opt {
+        Opt { flat, spec: false }
     }
 }
 
@@ -249,6 +312,21 @@ fn rows(a: i32, b: i32) -> u32 {
 /// Shade one tile whose commands are `sc.cmds` (paint order) into `dst` (`rows` rows of `stride` words, the
 /// tile's first pixel at `dst[0]`, `cols` columns).
 fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: &mut [u32], stride: usize, cols: usize, nrows: usize, opt: Opt) {
+    if opt.spec {
+        for y in 0..nrows {
+            for x in 0..cols {
+                let (gx, gy) = (ox + x as i32, oy + y as i32);
+                let mut acc = k::splat(0);
+                for c in sc.cmds.iter() {
+                    let t = k::texel(*c, gx, gy, atlas.w);
+                    let cov = if t == k::NO_TEXEL { 0 } else { atlas.px[(t as usize).min(atlas.px.len() - 1)] as u32 };
+                    acc = k::blend(acc, k::shade(*c, gx, gy, cov, now));
+                }
+                dst[y * stride + x] = k::store8(acc);
+            }
+        }
+        return;
+    }
     let all = rows(0, nrows as i32);
     // classify rows first (bitmasks), then shade only the set bits
     let mut same = if opt.flat { all & !1 } else { 0 };
@@ -305,7 +383,7 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
                     if tx < 0 || tx >= c.rad.z {
                         continue;
                     }
-                    let t = atlas.px[base + tx as usize] as u32;
+                    let t = atlas.px[(base + tx as usize).min(atlas.px.len() - 1)] as u32;
                     if t != 0 {
                         let p = &mut row[x as usize];
                         *p = st(k::blend(ld(p), k::scale(c.pm, k::q15(t))));
@@ -542,6 +620,14 @@ pub fn raster(scene: &Scene, prog: &Prog, atlas: &Atlas, out: &mut [u32], stride
     pool.take_stats()
 }
 
+/// The gates' oracle for large scenes: the specification per tile (every pixel folds its tile's whole,
+/// uncut list through `k::shade`), across the pool. Equal to `naive` by identity 1 alone.
+pub fn reference(scene: &Scene, fw: u32, fh: u32, atlas: &Atlas, now: u32, out: &mut [u32], stride: usize, pool: &Pool) {
+    let mut prog = Prog::default();
+    Binner::default().bin(scene, fw, fh, stride as u32, atlas, now, &Damage::All, false, &mut prog);
+    raster(scene, &prog, atlas, out, stride, pool, pool.workers(), Opt { flat: false, spec: true });
+}
+
 /// The specification: every pixel of the frame folds every command of the scene, in order, with no binning,
 /// no cut, no core, no span (identities 1-4 are what make `raster` and the GPU equal to this).
 pub fn naive(scene: &Scene, fw: u32, fh: u32, atlas: &Atlas, now: u32, out: &mut [u32], stride: usize) {
@@ -551,7 +637,7 @@ pub fn naive(scene: &Scene, fw: u32, fh: u32, atlas: &Atlas, now: u32, out: &mut
             let mut acc = k::splat(0);
             for c in &cmds {
                 let t = k::texel(*c, x, y, atlas.w);
-                let cov = if t == k::NO_TEXEL { 0 } else { atlas.px[t as usize] as u32 };
+                let cov = if t == k::NO_TEXEL { 0 } else { atlas.px[(t as usize).min(atlas.px.len() - 1)] as u32 };
                 acc = k::blend(acc, k::shade(*c, x, y, cov, now));
             }
             out[y as usize * stride + x as usize] = k::store8(acc);
