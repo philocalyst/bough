@@ -1,0 +1,9 @@
+host=ilo-prod kernel=6.18.54 date=2026-11-12T12:15:59Z
+cpu=AMD Ryzen 7 3700X 8-Core Processor governor=powersave boost=1
+load_before=11.01 9.66 8.82
+gui-bench=0fd45107d6 + overlay (bough r7/bench 392d870c13) dirty-files=14
+fakeland=71695e7c53
+bough=d4393497a0 (r7/bench-plat: r7/bench 392d870c13 + r7/platform c2c001b1e5) dirty=0
+renderers: bough = CPU executor into wl_shm (one thread); iced, egui, gpui-kit = wgpu on Mesa lavapipe (software Vulkan); compositor = fakeland (pixman)
+command: gui-bench --scenarios sheet,canvas --frameworks bough,iced,egui,gpui-kit (default effort), nice 10, one session, cells in sequence
+load_after=11.46 10.29 9.32
