@@ -1,8 +1,9 @@
 # The expr / raster seam (round 8)
 
-Status: **proposal v0 from the expr lane, 2026-11-12, not yet answered by the raster lane.** It goes to the raster
-lane through the lead. Until it is answered, the expr lane builds on it behind its own reference raster (an oracle,
-not a product), so a change here costs the expr lane one module.
+Status: **v1, 2026-11-12.** Sections 1 to 4 are the expr lane's v0 proposal as sent. The raster lane answered in
+`wt/r8-raster/docs/r8/SEAM.md` section 5 (commit `58b3c09c5f`); the lead decided its eight requests. **Section 6
+is the settled text**: where it differs from sections 1 to 4, section 6 wins. Two points are still open and are
+marked so.
 
 The seam is three things: the expression trait, the column layout, and the uniform block. Each item says what is
 fixed, what is open, and where the proposal departs from `ROUND8.md`.
@@ -102,3 +103,87 @@ struct Page<A> { x0: [i32; 64], y0: [i32; 64], x1: [i32; 64], y1: [i32; 64], rec
    plan of ROUND8 section 6 need it as a type (`Flow` / `Layered` marker on the list call)?
 4. The changed mask plus page bitmasks as the upload protocol: is a page (about 1.3 KiB for `Fill`) the right
    upload unit?
+
+## 5. The raster lane's answers
+
+In `wt/r8-raster/docs/r8/SEAM.md` section 5, not copied here. Its measured constraint: wgsl-rs transpiles tokens,
+so a generic impl is silently dropped from the WGSL; an expression reaches the GPU as (leaf name, operands), the
+leaves being concrete integer functions in a `#[wgsl]` module, and one macro emits `eval` and the code node from
+the same identifier.
+
+## 6. v1: what both lanes build on
+
+### 6.1 Accepted as the raster lane asked
+
+1. **Record words.** A record is whole 32-bit words: every `Rec` operand has `align == 4` and `size % 4 == 0`,
+   and `repr(C)` order is the depth-first order of the type, so word `k` of a record is the `k`-th `Rec` word met
+   walking it. `unsafe trait Words` marks it (zero bytes are valid, no padding).
+2. **Code as data.** `const CODE: &'static Code` on every expression. Consequence, accepted: a Rust closure has no
+   code tree, so `Map<F, _>` is **not** a Frame expression. It is `Turn` stage: evaluated on the CPU for exposed
+   records when a word it reads changes, and its value written into a record word. The finite difference is how
+   the CPU knows which records to re-evaluate, so the derivative costs nothing extra there. A Frame-stage user
+   function is a named zero-sized type forwarding to a `#[wgsl]` leaf.
+3. **Frame-stage arithmetic is integer** (Q8 geometry, Q15 colour and progress). The block may hold any bits, but
+   no Frame expression does float arithmetic. For the sheet this means the scroll offset is an `i32` word and a
+   number drawn while shading is an integer scaled by `10^D` (a total in hundredths), not an `f32`.
+4. **Paints are open and composed.** A record is a value of a `Paint` type; the backend has one generic method
+   (`column<P: Paint>`); `Over<Shadow, Over<RRect, Border>>` is one record. **Damage is
+   `window(old) ∪ window(new)`**, evaluated by the expr lane's delta kernel through the paint's own `window`,
+   which replaces the expr lane's `MOVES` / `offset` pair and makes "a shadow inks outside its rect" the same
+   rule as "a transform moves it".
+5. **Paint-only geometry may be Frame stage.** The rect lanes are the layout's answer and are CPU stage; any
+   paint operand over them (a paint rect, a radius, a clip) may be Frame.
+7. **Raster-owned words.** Words 60 to 63 are `PtrY`, `PtrX`, `Pick`, `Time`. The application reads them and never
+   writes them; the turn-end compare covers only the application's words. Hover is then `Pick` read back, and
+   the CPU hit test in `bough-x` (`store::hit_col`) stays only as the fallback for a CPU-only frame and as the
+   oracle for the pick.
+8. **A space is an index.** `space: u16` per page into a table of `{ origin value, clip }` beside the block.
+   Rows of one clip group are contiguous, so a page has one space. Cost on the expr side: one load per page in
+   the delta kernel.
+* **Order.** No order lane: `z = store.z0 + row * shape_len + col.pos`. `Flow` or `Layered` is a marker type on
+  the list call; `Flow` is checked at compile time against the row's paints (`OUTSET == 0`, `GEOM_READS == 0`).
+* **Memory.** A column is VM-page aligned (16 KiB), a whole number of VM pages, reserved once and committed on
+  demand, and never moves (today `RawCol::grow` reallocates while a shape is being discovered: to be replaced).
+  A turn that writes a page the GPU is still shading: copy-on-write per dirty page, with the per-column page
+  bitmask as the set; owned by the threads lane when it exists.
+
+### 6.2 Accepted in part: request 6, the plan as const data
+
+A list's rows are a `Row` type (a tuple of records), so `Row::PAINTS: &'static [&'static PaintDesc]` is const
+data and the expr lane provides it. To make that true of every store, a fixed shape is described as one row
+value too (`s.row((a, b, [c; 10]))` in place of separate `emit` calls); that also removes the one remaining
+per-record check (a `TypeId` compare per `emit`), leaving one compare per store per pass.
+
+`children: &'static [&'static Descriptor]` for the whole application is **not** available as const data without
+the view having a type that mirrors its tree, which is exactly what description by continuation does not build
+(and what kept types nested in round 7). Two ways to get it, in order of preference:
+
+* the plan's whole-application half is assembled once at start-up from the tree of stores the first mount
+  discovers (each node carrying its const `PAINTS`); the per-archetype half stays const. An archetype first seen
+  later is drawn by the CPU kernel while its GPU function compiles, as already decided;
+* or a component declares `const CHILDREN` (a macro can write it). Not built; say if the start-up form is not
+  enough.
+
+### 6.3 Open: where the traits live
+
+`column<P: Paint>` means the sink's `emit<P: Paint>` must name `Paint`, and `Paint` names `Expr`. The proposal:
+
+```
+bough-expr   (no dependencies; expr lane)   U, lenses, Words, Code, Stage, Expr
+bough-paint  (raster lane)                  ops, op!, Paint, prim!, the kernels, the backends   -> bough-expr
+bough-x      (expr lane)                    pages, stores, sinks, relations, the world          -> bough-paint
+```
+
+`bough-paint/src/expr.rs` already says it is a mirror to be swapped; `bough-expr` is that swap. Until the raster
+lane agrees, `bough-x` keeps a minimal trait of its own (`store::Arch`: `READS`, `changed`, the window) and its
+oracle paint kinds, so nothing in the stores depends on which way this goes.
+
+### 6.4 Open: the expression trait's exact text
+
+The two lanes' traits differ in three places; proposed resolution in each:
+
+| | expr lane (`bough-x/src/expr.rs`) | raster lane (`bough-paint/src/expr.rs`) | v1 |
+|---|---|---|---|
+| stage | `type Stage: Stage`, joined by `Join` impls | `const STAGE: Stage` | both: the type lets a bound refuse a stage (`T::Stage: Cpu`), the const is what `Code` and the plan read |
+| inputs | `eval(&self, u: &U)` | `eval(&self, cx: &Cx)` with `Cx { u, rect }` | the raster's: `Lane` (the record's own rect) is an operand |
+| block words | `Un<L: Lens>` (a named, typed word) | `Uw<const S: usize>` | `Un<L>`, with `Uw<S>` as the untyped form underneath |
