@@ -48,7 +48,9 @@ pub struct MemSurfaces {
 
 const PAGE: usize = 16384;
 
-/// Zeroed page-aligned memory of whole pages.
+/// Zeroed page-aligned memory of whole pages. On unix an anonymous mapping, unmapped when dropped: a window-sized
+/// buffer from the allocator stays dirty in its large-block cache after it is freed (a resize storm left 27 MiB of
+/// freed surfaces charged to the process: lane memory, round 7), a mapping is returned to the system at once.
 struct PageBuf {
     ptr: std::ptr::NonNull<u8>,
     layout: std::alloc::Layout,
@@ -57,16 +59,33 @@ struct PageBuf {
 impl PageBuf {
     fn new(bytes: usize) -> PageBuf {
         let layout = std::alloc::Layout::from_size_align(bytes.max(1).next_multiple_of(PAGE), PAGE).expect("surface size");
-        // SAFETY: a non-zero size; freed with the same layout in `drop`.
-        let p = unsafe { std::alloc::alloc_zeroed(layout) };
-        PageBuf { ptr: std::ptr::NonNull::new(p).unwrap_or_else(|| std::alloc::handle_alloc_error(layout)), layout }
+        #[cfg(unix)]
+        {
+            // SAFETY: a fresh anonymous private mapping of `layout.size()` bytes (zero-filled, page aligned).
+            let p = unsafe { libc::mmap(std::ptr::null_mut(), layout.size(), libc::PROT_READ | libc::PROT_WRITE, libc::MAP_ANON | libc::MAP_PRIVATE, -1, 0) };
+            assert!(p != libc::MAP_FAILED, "surface mapping of {} bytes", layout.size());
+            PageBuf { ptr: std::ptr::NonNull::new(p as *mut u8).expect("mapping"), layout }
+        }
+        #[cfg(not(unix))]
+        {
+            // SAFETY: a non-zero size; freed with the same layout in `drop`.
+            let p = unsafe { std::alloc::alloc_zeroed(layout) };
+            PageBuf { ptr: std::ptr::NonNull::new(p).unwrap_or_else(|| std::alloc::handle_alloc_error(layout)), layout }
+        }
     }
 }
 
 impl Drop for PageBuf {
     fn drop(&mut self) {
-        // SAFETY: allocated in `new` with this layout.
-        unsafe { std::alloc::dealloc(self.ptr.as_ptr(), self.layout) };
+        // SAFETY: mapped (or allocated) in `new` with this size / layout; nothing points into it after the drop.
+        #[cfg(unix)]
+        unsafe {
+            libc::munmap(self.ptr.as_ptr() as *mut libc::c_void, self.layout.size());
+        }
+        #[cfg(not(unix))]
+        unsafe {
+            std::alloc::dealloc(self.ptr.as_ptr(), self.layout)
+        };
     }
 }
 
