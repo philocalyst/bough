@@ -1,0 +1,43 @@
+# host: ilo-prod (Ryzen 7 3700X), taskset 8-15 nice 19; dist; commit 69f1c0da75; load average: 5.43, 7.21, 7.22
+# rows=3000 reps=64 cold=false window=1280x800 device px, DejaVu Sans 14 px from the prepared face
+scene	phase	steps	instr_p50	instr_p95	cycles_p50	tiles_p50	l1d-misses	cache-misses	branch-misses
+rows	mount	16	72324	73860	31472	0	872	112	213
+# rows mount: 14 lines shaped, 37 found again, 6356 bytes of glyph state
+rows	idle	64	43	43	19	0	0	0	0
+rows	hover	64	3603	3603	1113	120	3	0	0
+rows	tint (text colour alone, every line)	64	2015	2015	640	341	3	0	1
+rows	scroll 3 rows	64	4354	4366	1456	960	8	0	4
+rows	scroll a page (24 rows enter)	64	20476	20482	6155	960	42	0	4
+rows	label edit (toggle a suffix on an exposed row)	64	1496	3239	649	28	11	4	2
+rows	value edit (an exposed row's number)	64	1148	1155	425	12	4	0	1
+rows	remove a row then insert one	64	23488	23562	8288	766	1576	1	5
+# rows end: 26 lines shaped, 6169 found again, 8618 bytes of glyph state
+typing	type a character (event, handler, settle)	64	3694	3791	1251	26	11	0	2
+typing	caret move	64	2489	2609	817	1	4	0	1
+# typing end: 32 lines shaped, 62 found again, 9120 bytes of glyph state
+search	type a character (event, handler, settle)	64	924605	924606	383685	26	4209	177	2792
+search	caret move	64	2489	2609	825	1	1	0	1
+search	narrow by a key, widen by a backspace (24 rows re-enter)	64	227290	227290	53009	976	4094	173	18
+# search re-entry: 1 lines shaped during the phase
+# search end: 33 lines shaped, 942 found again, 9182 bytes of glyph state
+# rows=100000 reps=64 cold=false window=1280x800 device px, DejaVu Sans 14 px from the prepared face
+scene	phase	steps	instr_p50	instr_p95	cycles_p50	tiles_p50	l1d-misses	cache-misses	branch-misses
+rows	mount	16	72405	73548	37613	0	837	92	206
+# rows mount: 14 lines shaped, 37 found again, 6356 bytes of glyph state
+rows	idle	64	43	43	16	0	0	0	0
+rows	hover	64	3603	3603	1107	120	2	0	0
+rows	tint (text colour alone, every line)	64	2015	2015	634	341	0	0	1
+rows	scroll 3 rows	64	4354	4360	1441	960	16	0	3
+rows	scroll a page (24 rows enter)	64	20464	20494	6130	960	60	0	3
+rows	label edit (toggle a suffix on an exposed row)	64	1496	3239	611	28	11	1	2
+rows	value edit (an exposed row's number)	64	1148	1149	435	12	1	0	1
+rows	remove a row then insert one	64	314399	314407	152795	766	50070	11341	6
+# rows end: 26 lines shaped, 6169 found again, 8618 bytes of glyph state
+typing	type a character (event, handler, settle)	64	3694	3791	1283	26	1	0	1
+typing	caret move	64	2489	2609	820	1	0	0	1
+# typing end: 32 lines shaped, 62 found again, 9120 bytes of glyph state
+search	type a character (event, handler, settle)	64	30769627	30769632	12477500	26	122346	5187	76566
+search	caret move	64	2489	2609	812	1	0	0	1
+search	narrow by a key, widen by a backspace (24 rows re-enter)	64	7372935	7372936	1717978	976	121956	3790	27
+# search re-entry: 1 lines shaped during the phase
+# search end: 33 lines shaped, 942 found again, 9182 bytes of glyph state

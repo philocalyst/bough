@@ -1,0 +1,11 @@
+# host: ilo-prod (Ryzen 7 3700X), taskset 8-15 nice 19; dist; commit 69f1c0da75; load average: 5.43, 7.21, 7.22
+# font /root/.local/share/fonts/luna-bench/DejaVuSans.ttf; image 26015 bytes; 24 rows + header; REPS=15
+cell	instructions	ns
+image: open the face, shape the frame's lines (memo), numbers by arithmetic	39395	4160
+image: the same, and every glyph's coverage laid into the frame	649424	40301
+no image: read the font file	1099	78291
+no image: shaping tables, file cache warm (SimpleScript::build_cached)	432666	148093
+no image: shaping tables from the font (SimpleScript::build)	21513620	1604205
+no image: construct the shaper (dense tables)	476850	27421
+no image: strike, and rasterise the glyphs the frame uses (cold)	1194580	160584
+no image: shape the frame's lines (table shaper, no memo)	28160	2570

@@ -273,7 +273,140 @@ What the counters say that the instruction counts did not:
    a constant label's mount saves 90 instructions of shaping, not the 3,110 the façade spends: most of that
    was never shaping.
 
-## 7. Next, in order
+## 7. Second pass: text on the new core (after Amendments 5 and 6)
+
+Priorities were reset by the lead: the scoreboard is gui-bench, the `e2e` lane's app has no real text, startup
+must not parse or discover fonts, typing and search are singled out. The branch now sits on `r8/expr`
+`054b83c929` (merged), with `r8/e2e` `249cd1e47f` merged before it.
+
+### 7.1 What was built (commits `df8abc60b0`, `6907f1fe03`, `69f1c0da75`)
+
+* **`crates/bough-face`** (no dependencies, `no_std` + alloc, about 600 lines): a face at a size as a prepared
+  image read in place (`Face::new` is `const`), `Face::shape` (tokens and pens by arithmetic over the bytes:
+  the table shaper's token model with its pair steps deduplicated into row and column classes, ligatures
+  replayed), `Glyphs` (shaped lines as memoised ranges of two shared lanes, 6 bytes per glyph; a line is a
+  two-word `Run`), `Face::spans` (the kernel: coverage rows cut to a clip, the pen rounded by one integer
+  rule), `num::Num` (a number's glyphs and pens by arithmetic, with a least digit count for `{:05}`).
+  `data/DejaVuSans-14.face`: 26,015 bytes, baked on the Mac and, byte for byte the same, on ilo-prod from the
+  benchmark's own font file.
+* **`bough_text::stage::bake`** (and `examples/bake.rs`): the build step. It writes the image from the table
+  shaper's model and the façade's rasteriser. What it does *not* bake is strings: section 7.3 says why.
+* **`bough-x/src/text.rs`**: `Line<C>` (operands: a `Run` and a colour expression) and `Digits<D, P, V, C>`
+  (a `NumArch` with `PAD`), `TextCx` (what a backend reads). `Backend::line` has a default that draws
+  nothing, `NumArch::PAD` defaults to 0, so existing backends compile unchanged. The oracle raster paints both
+  from real coverage when given the faces and lanes.
+* **Scenes and gates**: `scenes/rows.rs` (gui-bench's `rows` and `table` shape) and `scenes/search.rs` (its
+  `typing` and `search` shape: a one-line input with a caret, a filtered list), `tests/text.rs` (five tests:
+  retained == full redraw == immediate == fresh mount over random scripts in mount-once and re-describing
+  mode; typing, deleting and caret moves through the real event path; nothing unexposed is shaped at 100,000
+  rows; re-entering rows and caret moves shape nothing), `--features mutant_line` fails at step 5 (the first
+  form of the scene did not catch it: every colour change of a line coincided with its row's fill changing,
+  so a text-only colour word was added). `crates/bough-text/tests/face.rs` holds the image to the shaper and
+  the rasteriser on 4,000 random Latin-1 and ligature strings at two sizes, refusals included.
+
+What the types decide in `scenes/rows.rs`, none of it written: "Row " and "rows" are shaped once and found
+again; a row's label is shaped when the row is exposed; the index, the value and the count are never shaped;
+every colour is an expression over the block, so hover and the text tint cost no text work at all.
+
+### 7.2 Bounds and results
+
+I did not write predictions of my own before running `text_x`: this pass was built and measured in one go,
+against bounds that others had written first. Those are what the verdicts below refer to:
+
+| id | bound | from |
+|---|---|---|
+| F3 | text on the way to the first frame: no font file opened, under 50 µs for the frame's glyph placement | e2e journal section 2 |
+| F4 | mount by exposure within 10 % between 100 and 100,000 rows | e2e journal section 2 |
+| I5 | typing: handling at most 0.05 ms | ROUND8 Amendment 5, e2e journal section 3 |
+| A6 | rows entering a filtered result: their labels were shaped before, so re-entry shapes nothing | ROUND8 Amendment 6 as relayed by the lead |
+
+`bench/results/r8/text/text_x-{mac,ilo,ilo-cold}.tsv`, `stage_start-{mac,ilo}.tsv`; commit `69f1c0da75`;
+ilo-prod at `taskset -c 8-15 nice -n 19`, load 5 to 7. Below pixels: a step ends at the damage bitmap.
+
+| cell | Mac instructions | ilo-prod instructions / cycles | ilo-prod, every line cold: cycles / L1 misses / L2 misses | verdict |
+|---|---:|---:|---:|---|
+| rows mount, 3,000 rows | 82,870 | 72,324 / 31,472 | 91,651 / 806 / 1,053 | F4 holds |
+| rows mount, 100,000 rows | 83,952 | 72,405 / 37,613 | | F4 holds (1.3 % apart on the Mac, 0.1 % on ilo-prod) |
+| lines shaped at mount; glyph state | 14; 6,356 bytes at both sizes | | | asserted by `nothing_unexposed_is_shaped` |
+| idle | 42 | 43 / 19 | 1,692 / 10 / 44 | |
+| hover a row | 2,720 | 3,603 / 1,113 | 18,583 / 134 / 346 | |
+| text colour alone, every exposed line | 1,700 | 2,015 / 640 | 10,420 / 80 / 192 | no text work: the block compare and the delta |
+| scroll three rows | 3,924 | 4,354 / 1,456 | 19,161 / 127 / 301 | |
+| scroll a page (24 rows enter, 72 records) | 17,703 | 20,476 / 6,155 | 28,895 / 236 / 369 | 740 per row, memo hits included |
+| label edit on an exposed row | 1,378 | 1,496 / 649 | 14,478 / 103 / 322 | one line shaped |
+| value edit on an exposed row | 1,021 | 1,148 / 425 | 11,596 / 78 / 223 | nothing shaped |
+| **type a character** (no filter) | 3,422 | 3,694 / 1,251 | 28,081 / 132 / 481 | I5 holds below pixels: 1,251 cycles warm; with every line cold 28,081 cycles, about 8 µs at this host's clock, against 50 µs |
+| caret move | 2,345 | 2,489 / 817 | 21,725 / 119 / 364 | no memo traffic and no row described (asserted); the cost is the event path and the settle |
+| type a character with the scene's filter, 3,000 / 100,000 items | 833,286 / 27.7 M | 924,605 / 30.8 M | | the filter is this scene's plain scan of every label per key, not text: see below |
+| narrow and widen (24 rows re-enter) | 198,728 | 227,290 | | A6 holds: one line shaped in 64 steps (the empty query); text per re-entering row is a memo hit, about 100 instructions |
+
+Text on the way to the first frame (24 rows and a header; `stage_start`):
+
+| | Mac | ilo-prod |
+|---|---:|---:|
+| **with the image**: shape the frame's lines | 44,546 instructions, 2.0 µs | 39,395, 4.2 µs |
+| with the image: and lay every glyph's coverage into the frame | 563,840, 25 µs | 649,424, 40 µs |
+| without: read the font file | 29 µs | 78 µs |
+| without: shaping tables, file cache warm / built from the font | 163 µs / 1,015 µs | 148 µs / 1,604 µs |
+| without: construct the shaper | 23 µs | 27 µs |
+| without: strike and rasterise the frame's glyphs | 128 µs | 161 µs |
+| without: shape the frame's lines | 1.5 µs | 2.6 µs |
+| **without, in all** (warm / cold), before font discovery | 345 µs / 1.2 ms | 417 µs / 1.87 ms |
+
+F3 holds: 40 µs on ilo-prod with a deliberately plain blit, no system call (the image is a `static`). Font
+discovery, which the façade does twice through a child process (about 18 ms warm, 115 to 150 ms cold: e2e
+journal section 1), is the large term the image removes; parsing and rasterising are 0.4 to 1.9 ms.
+
+### 7.3 What this pass changed or refuted
+
+1. **The build step bakes the face, not the strings.** The brief asked for constant strings shaped at build
+   time. Section 4 measured what that saves: 90 instructions per label. A face baked at a size makes *every*
+   covered string cheap at run time (12 instructions per byte, no font machinery), needs no knowledge of the
+   program's strings, and is what removes the first frame's 0.4 to 1.9 ms and its font discovery. The first
+   frame of the rows scene shapes 14 lines in 2 to 4 µs. A string image on top would save about 1 µs.
+2. **`Num` needed a pad.** `Row 00012` is a constant and a five-digit number; without `P` it would have been
+   a shaped string per row and memo traffic while scrolling. With it, scrolling 100,000 rows shapes nothing.
+3. **Typing is 3,700 instructions on the new core**, of which text is the one line's shaping; the façade's
+   cell is 0.43 ms of handling. The caret is a word of the block.
+4. **Search is not a text problem.** With the labels in the memo a row re-entering the result costs a hit.
+   The 0.9 M (3,000 items) and 31 M (100,000) instructions per key in this scene are its naive filter: a
+   lower-cased substring scan of every label. That is the expr lane's incremental filter to replace; an index
+   on the text side (trigrams over the labels, built off the interaction path) is the other half and is not
+   built.
+5. **The glyph memo's garbage is not collected.** Every keystroke and every label edit leaves a dead run. The
+   lanes grow by 6 bytes per glyph of every distinct line ever shown (9 KiB after the whole `text_x` run).
+   `Glyphs::clear` exists; the policy (clear and re-describe when the lanes pass a budget: one full repaint)
+   is not wired.
+
+### 7.4 Not done in this pass, and where it stands
+
+* **The parley shaper behind the memo** (most real faces miss the table shaper): not built. What the layout
+  lane asked, the worst case of an exact `block(w)` for a dozen exposed rows of uncovered text, from section
+  4's and 5's parley rows on ilo-prod: grafted parley, 303 instructions and 142 cycles per byte to shape plus
+  22,800 instructions and 14,600 cycles per paragraph to break; a dozen 218-byte messages are about 1.1 M
+  instructions, 0.55 M cycles, 0.15 ms. Upstream parley: 2,178 and 899 per byte, about 5.9 M instructions,
+  2.5 M cycles, 0.7 ms. A later re-break of the dozen is 0.27 M instructions.
+* **The structure between no table and a full break table** (segment end pens on the second re-break): not
+  built.
+* **The editor path beyond one line**, selection, `TextState`, IME: not built. The field in `scenes/search.rs`
+  is the façade's default form (a `String`, the caret in plain state).
+* **`text(..)`, `para(..)`, `text_input(..)` as elements over `Element::drive`**: waits for the expr lane's
+  element layer; `scenes/rows.rs` and `scenes/search.rs` are written against the core, as its own fixtures
+  are.
+* The memo of section 3 (`bough_text::stage::memo`) and `bough_face::Glyphs` are two copies of one design;
+  the first carries break tables and the image form, the second is what the core uses. To be folded into one.
+
+## 8. Next, in order
+
+1. The `e2e` lane takes `bough-face` and `bough_x::text` (its backend implements `Backend::line` and reads
+   `NumArch::PAD`); the committed image replaces its hand-built `bough-glyph`.
+2. The raster contract (TEXT-SEAM revision 2) answered by the raster lane.
+3. The glyph memo's collection policy; then the full shaper behind the memo, off the interaction path.
+4. Elements (`text`, `para`, `text_input`) on the expr lane's element layer; `Measure` answered by
+   `block_bytes` for `para`.
+5. The filter index for search; selection and `TextState`.
+
+## 9. The first pass's list of next steps (superseded by section 8)
 
 1. Wire a `Line` record into `bough-x` (worktree copy first, then through the expr lane): a paint whose
    operands are a memo range and a palette; the chat and ide scenes' text on the new core with the layout
