@@ -52,7 +52,12 @@ In-process names (`bough_mem::pmu::Ev::parse`): `instructions`, `cycles`, `branc
 `l1d-misses`, `cache-refs`, `cache-misses`, `dtlb-misses`, `dc-fill-l2`, `dc-fill-ccx`, `dc-fill-dram`,
 `dc-fill-remote`, `raw:0x<config>`; at most three beyond instructions and cycles. Any bough-core example that uses
 `bough_damage_lab::measure` now counts the calling thread on Linux (user mode; `BOUGH_PMU_KERNEL=1` adds the
-kernel), so `trace_bench`, `mark_probe`, `batch_probe`, `cull_stats`, `r6_check` and `cost_r6` run there unchanged.
+kernel), so `trace_bench`, `mark_probe`, `batch_probe`, `cull_stats` and `r6_check` run there unchanged, and
+`core_bench` (examples/bench.rs with `cost_r6`) counts the calling thread on Linux (first full run:
+`bench/results/r7/core_bench.ilo-prod.txt`). bough-text's `pipeline`, `parley_bench` and `parley_probe` run on
+Linux too (`gpu_shape` says it needs Metal; `bench` calls the NEON-only `shape_simd`, so it is aarch64 only). The
+text examples need the font and fontconfig paths the round-6 environment set (`BOUGH_DEJAVU_DIR`, `BOUGH_WORDS`,
+`PKG_CONFIG_PATH`): `/root/work/r7/bench/env.sh` sets them.
 Cross-check [eab3927e34, ilo-prod, load ~20]: `set_ink` at 1e5 records, perf stat slope vs in-process: instructions
 905.3 vs 908.6, cycles 881 vs 878, L1d misses 11.7 vs 10.5-12.7, L2 misses 5.7 vs 6.8-7.4, DRAM refills 0.1 vs
 0.04; run% 100; relative stddev of instructions 0.00 %. Result: `bench/results/r7/pstat-set_ink-1e5.ilo-prod.tsv`.
