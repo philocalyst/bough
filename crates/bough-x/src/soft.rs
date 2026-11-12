@@ -6,6 +6,8 @@
 use crate::expr::U;
 use crate::kinds::{FillArch, LabelArch, NumArch, OutlineArch};
 use crate::sink::{Leaf, List, Row, ScopeOf, Sink, exposed};
+use crate::store::Hov;
+use core::any::TypeId;
 use crate::store::{Arch, Backend, ColRef, Live, Page, Rect, Space, Tiles};
 use core::marker::PhantomData;
 
@@ -49,10 +51,8 @@ fn glyph(b: u8) -> [u8; 5] {
     }
 }
 
-/// `v` with `d` decimals, as bytes.
-pub fn format_num(v: f32, d: u8, out: &mut [u8; 24]) -> usize {
-    let scale = 10i64.pow(d as u32);
-    let n = (v as f64 * scale as f64).round() as i64;
+/// An integer scaled by `10^d`, with `d` decimals, as bytes. Integer arithmetic only.
+pub fn format_num(n: i32, d: u8, out: &mut [u8; 24]) -> usize {
     let (neg, mut m) = (n < 0, n.unsigned_abs());
     let mut tmp = [0u8; 24];
     let mut k = 0;
@@ -145,7 +145,8 @@ impl Backend for Soft {
         col.each(|r, a| {
             self.records += 1;
             let r = r.shift(org);
-            self.text(r, r.and(clip), a.text().bytes(), a.color(u).0)
+            let (b, n) = a.text().bytes();
+            self.text(r, r.and(clip), &b[..n], a.color(u).0)
         });
     }
     fn outline<A: OutlineArch>(&mut self, col: ColRef<'_, A>, u: &U) {
@@ -183,30 +184,34 @@ impl<'s, V> Immediate<'s, V> {
         A::paint(self.soft, ColRef { pages: core::slice::from_ref(&*pg), space: &self.space, live: Live { cap: 1, rows: &rows, nrec: 1 } }, self.u);
     }
 }
-struct Now<'a, 's, V>(&'a mut Immediate<'s, V>, (i32, i32));
-impl<V> Leaf for Now<'_, '_, V> {
-    fn leaf<A: Arch>(&mut self, r: Rect, a: &A) {
-        self.0.one(r.shift(self.1), a)
+struct Now<'a, 'r, 's, V> {
+    im: &'a mut Immediate<'s, V>,
+    rects: &'r [Rect],
+    at: (i32, i32),
+    k: usize,
+}
+impl<V> Leaf<V> for Now<'_, '_, '_, V> {
+    fn leaf<A: Arch>(&mut self, a: &A, _: TypeId, _: Option<Hov>) {
+        self.im.one(self.rects[self.k].shift(self.at), a);
+        self.k += 1;
     }
 }
 impl<'r, 's, V> ScopeOf<'r, V> for Immediate<'s, V> {
     type Scope = Immediate<'r, V>;
 }
 impl<'s, V> Sink<V> for Immediate<'s, V> {
-    fn emit<A: Arch>(&mut self, r: Rect, a: A) {
-        self.one(r, &a)
-    }
-    fn emit_hover<A: Arch, F: Fn(&mut V, &A, bool) + Copy + 'static>(&mut self, r: Rect, a: A, _: F) {
-        self.one(r, &a)
+    fn row<R: Row<V>, L: AsRef<[Rect]>, F: FnOnce() -> (L, R)>(&mut self, f: F) {
+        let (rects, row) = f();
+        row.visit(&mut Now { im: self, rects: rects.as_ref(), at: (0, 0), k: 0 });
     }
     fn scope<F: for<'r> FnOnce(&mut <Self as ScopeOf<'r, V>>::Scope)>(&mut self, space: Space, f: F) {
         let mut sub = Immediate { soft: &mut *self.soft, u: self.u, space, _p: PhantomData };
         f(&mut sub);
     }
-    fn list<R: Row, F: FnMut(usize) -> R>(&mut self, l: &List<'_>, mut f: F) {
+    fn list<R: Row<V>, F: FnMut(usize) -> R>(&mut self, l: &List<'_>, mut f: F) {
         let (lo, hi) = exposed(l, self.space.origin(self.u), self.space.clip);
         for r in lo..hi {
-            f(r as usize).visit(&mut Now(self, (l.x, l.y + r as i32 * l.row_h)));
+            f(r as usize).visit(&mut Now { im: self, rects: l.shape, at: (l.x, l.y + r as i32 * l.row_h), k: 0 });
         }
     }
 }

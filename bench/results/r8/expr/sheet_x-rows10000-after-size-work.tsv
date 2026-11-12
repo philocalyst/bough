@@ -1,0 +1,29 @@
+# host=mileswirht cpu=Apple M3 Pro profile=dist commit=4f54042d54+size-work date=2026-11-12T21:10:57Z load=7.56, 7.49, 9.88
+# rows=10000 cells=100000 reps=32 window=2560x1600 device px
+scene	phase	steps	instr_p50	instr_p95	cycles_p50	tiles_p50
+# model built in 0.27 ms (1636658 instructions): the data, not the UI
+# mounted: 764 records in 32 pages, 41728 bytes of columns, 25.5 us wall
+sheet_x	mount	1	210660	210660	90487	4000
+sheet_x	floor	32	0	0	3	0
+sheet_x	idle	32	74	74	21	0
+sheet_x	hover	32	7117	7117	1319	329
+sheet_x	hover_move	32	8328	8467	1606	705
+sheet_x	theme	32	31189	31189	6555	4000
+sheet_x	edit_exposed	32	1628	1638	386	32
+sheet_x	edit_unexposed	32	1100	1105	220	16
+sheet_x	part_model_edit	32	57	57	43	0
+sheet_x	part_total_word	32	836	841	197	16
+sheet_x	part_delta_total	32	633	638	137	16
+sheet_x	part_diff_only	32	130	130	37	0
+sheet_x	part_journal_only	32	346	346	65	0
+sheet_x	part_mark_cell	32	60	64	10	16
+sheet_x	part_pointer_same	32	666	666	121	0
+sheet_x	select	32	781	800	229	37
+sheet_x	scroll_3_rows	32	5430	5430	910	3600
+sheet_x	scroll_6px	32	1434	1434	254	3600
+sheet_x	scroll_page	32	30114	30114	5192	3600
+sheet_x	insert_row	32	85379	88108	27200	2390
+sheet_x	remove_row	32	85170	88078	26875	2390
+sheet_x	redescribe_idle	32	15958	15958	2373	0
+sheet_x	redescribe_edit	32	16018	16867	2440	0
+# at the end: 764 records in 32 pages, 41728 bytes of columns

@@ -63,42 +63,24 @@ fn script(rows: usize, steps: usize, redescribe: bool) {
             2 => sheet.toggle_theme(),
             3 => {
                 // an exposed cell, or any cell
-                let top = (sheet.u.get::<Scroll>() as i32 / CELL_H) as usize;
+                let top = (sheet.u.get::<Scroll>() / CELL_H) as usize;
                 let r = if rng.below(2) == 0 { (top + rng.below(30)).min(n - 1) } else { rng.below(n) };
                 let (c, v) = (rng.below(COLS), rng.below(1_000_000) as f32 / 100.0);
-                if redescribe {
-                    // opaque state: no journal entry, only the totals follow
-                    let old = core::mem::replace(&mut sheet.rows.items_mut()[r][c], v);
-                    let s = f32::from_bits(sheet.u.w[Sum::BASE + c]) + v - old;
-                    sheet.u.w[Sum::BASE + c] = s.to_bits();
-                } else {
-                    sheet.edit(r, c, v);
-                }
+                if redescribe { sheet.edit_opaque(r, c, v) } else { sheet.edit(r, c, v) }
             }
             4 => sheet.select(rng.below(n * COLS) as u32),
-            5 => sheet.scroll_by(if rng.below(2) == 0 { 132.0 } else { -132.0 }),
-            6 => sheet.scroll_by(rng.below(4000) as f32 - 1500.0),
-            7 => sheet.scroll_by(rng.below(90) as f32 - 40.0),
+            5 => sheet.scroll_by(if rng.below(2) == 0 { 132 } else { -132 }),
+            6 => sheet.scroll_by(rng.below(4000) as i32 - 1500),
+            7 => sheet.scroll_by(rng.below(90) as i32 - 40),
             8 => {
-                let top = (sheet.u.get::<Scroll>() as i32 / CELL_H) as usize;
+                let top = (sheet.u.get::<Scroll>() / CELL_H) as usize;
                 let at = (top + rng.below(36)).min(n);
-                let row = std::array::from_fn(|c| (step * 13 + c) as f32);
-                if redescribe {
-                    sheet.rows.items_mut().insert(at, row);
-                } else {
-                    sheet.insert_row(at, row);
-                }
+                sheet.insert_row(at, std::array::from_fn(|c| (step * 13 + c) as f32), redescribe);
             }
             _ => {
                 if n > 3 {
-                    let top = (sheet.u.get::<Scroll>() as i32 / CELL_H) as usize;
-                    let at = (top + rng.below(36)).min(n - 1);
-                    if redescribe {
-                        sheet.rows.items_mut().remove(at);
-                        sheet.scroll_by(0.0);
-                    } else {
-                        sheet.remove_row(at);
-                    }
+                    let top = (sheet.u.get::<Scroll>() / CELL_H) as usize;
+                    sheet.remove_row((top + rng.below(36)).min(n - 1), redescribe);
                 }
             }
         }

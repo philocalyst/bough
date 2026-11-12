@@ -1,12 +1,13 @@
 //! The driver: one store tree, the block the raster last saw, the damage.
 use crate::expr::U;
-use crate::sink::{Cx, Patch, View, Write};
-use crate::store::{Backend, Space, Store, Tiles};
+use crate::sink::{Cx, Patch, REL_EPOCH, View, Write};
+use core::sync::atomic::Ordering;
+use crate::store::{Backend, Path, Space, Store, Tiles};
 use core::marker::PhantomData;
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 struct Hot {
-    path: Vec<u16>,
+    path: Path,
     col: u32,
     rec: u32,
 }
@@ -18,13 +19,17 @@ pub struct World<B> {
     pub tiles: Tiles,
     /// The words the application uses; the compare stops there.
     nwords: usize,
+    /// The block words that move some list's exposure (scroll offsets), and the relation epoch as of the last
+    /// pass: the two things besides the block that can make the view worth driving.
+    lists: u64,
+    epoch: u32,
     hot: Option<Hot>,
     _b: PhantomData<B>,
 }
 
 impl<B: Backend> World<B> {
     pub fn new(w: i32, h: i32, nwords: usize) -> World<B> {
-        World { root: Store::new(1, Space::root(w, h)), shown: U::default(), tiles: Tiles::new(w, h), nwords, hot: None, _b: PhantomData }
+        World { root: Store::new(1, Space::root(w, h)), shown: U::default(), tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, hot: None, _b: PhantomData }
     }
 
     /// Describe the view for the first time. Only what is exposed comes to exist.
@@ -32,23 +37,39 @@ impl<B: Backend> World<B> {
         self.shown = *v.block();
         self.tiles.mark_all();
         self.root.row_live[0] = 1;
-        let mut cx = Cx { tiles: &mut self.tiles, u: &self.shown, all: true };
+        self.epoch = REL_EPOCH.load(Ordering::Relaxed);
+        let mut cx = Cx { tiles: &mut self.tiles, u: &self.shown, all: true, lists: 0 };
         v.view(&mut Write::<V, B>::new(&mut self.root, &mut cx, true));
+        self.lists = cx.lists;
     }
 
     /// After handlers ran: find what they changed and damage it.
     ///
-    /// The block is compared with the copy the pixels were shaded with; each column that reads a changed word
-    /// differentiates its exposed pages. Then the view is driven once with a sink that enters only lists.
+    /// The block is compared with the copy the pixels were shaded with. If nothing differs and no relation was
+    /// edited, that compare is the whole turn. Otherwise each column that reads a changed word differentiates
+    /// its exposed pages, and the view is driven (with a sink that enters only lists) only if a relation was
+    /// edited or a word that scrolls a list changed.
     #[inline]
     pub fn settle<V: View>(&mut self, v: &V) {
         let u = v.block();
         let ch = self.shown.diff(u, self.nwords);
+        let epoch = REL_EPOCH.load(Ordering::Relaxed);
+        if (ch == 0) & (epoch == self.epoch) {
+            return;
+        }
+        self.changed(v, u, ch, epoch);
+    }
+    #[inline(never)]
+    fn changed<V: View>(&mut self, v: &V, u: &U, ch: u64, epoch: u32) {
         if ch != 0 {
             self.root.delta(&self.shown, u, ch, &mut self.tiles);
         }
-        let mut cx = Cx { tiles: &mut self.tiles, u, all: false };
-        v.view(&mut Patch::<V, B> { st: &mut self.root, cx: &mut cx, sub: 0, _p: PhantomData });
+        if (epoch != self.epoch) | (ch & self.lists != 0) {
+            self.epoch = epoch;
+            let mut cx = Cx { tiles: &mut self.tiles, u, all: false, lists: 0 };
+            v.view(&mut Patch::<V, B> { st: &mut self.root, cx: &mut cx, sub: 0, _p: PhantomData });
+            self.lists |= cx.lists;
+        }
         if ch != 0 {
             self.shown = *u;
         }
@@ -62,8 +83,10 @@ impl<B: Backend> World<B> {
         if ch != 0 {
             self.root.delta(&self.shown, u, ch, &mut self.tiles);
         }
-        let mut cx = Cx { tiles: &mut self.tiles, u, all: true };
+        self.epoch = REL_EPOCH.load(Ordering::Relaxed);
+        let mut cx = Cx { tiles: &mut self.tiles, u, all: true, lists: 0 };
         v.view(&mut Write::<V, B>::new(&mut self.root, &mut cx, false));
+        self.lists |= cx.lists;
         if ch != 0 {
             self.shown = *u;
         }
@@ -72,15 +95,15 @@ impl<B: Backend> World<B> {
     /// The pointer is at (x, y): tell the records it left and entered. Returns whether a handler ran.
     pub fn pointer<V: View>(&mut self, v: &mut V, x: i32, y: i32) -> bool {
         let mut best = None;
-        self.root.hit(&self.shown, x, y, &mut Vec::new(), &mut best);
+        self.root.hit(&self.shown, x, y, &mut Path::default(), &mut best);
         let now = best.map(|(path, col, rec)| Hot { path, col, rec });
         if now == self.hot {
             return false;
         }
-        for (h, on) in [(self.hot.take(), false), (now.clone(), true)] {
+        for (h, on) in [(self.hot.take(), false), (now, true)] {
             let Some(h) = h else { continue };
             let Some(c) = self.root.at(&h.path).and_then(|s| s.cols.get(h.col as usize)) else { continue };
-            if let Some(f) = c.hover {
+            if let Some((f, _)) = c.hover {
                 // SAFETY: `f` was registered by `emit_hover::<A, F>` on this column for the view type `V` this
                 // world is driven with; `rec_ptr` is a record of that column.
                 unsafe { f(v as *mut V as *mut (), c.rec_ptr(h.rec), on) }

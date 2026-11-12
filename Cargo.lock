@@ -352,6 +352,7 @@ dependencies = [
 name = "bough-x"
 version = "0.0.0"
 dependencies = [
+ "bough-expr",
  "bough-mem",
 ]
 
