@@ -137,3 +137,35 @@ pub fn pct(v: &mut Vec<f64>, p: f64) -> f64 {
     let i = ((v.len() - 1) as f64 * p).round() as usize;
     v[i]
 }
+
+fn env_u64(name: &str, cell: &'static std::sync::OnceLock<u64>) -> u64 {
+    *cell.get_or_init(|| std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(0))
+}
+
+/// The quick bench's negative control (`bench/quick`): with `QUICK_INJECT=<n>` every call spins `n` loop
+/// iterations, a known instruction cost inside the caller's measured window (one tick, one turn, one mount) that
+/// the bench's comparison must flag. Called by benchmark drivers only, never by the library. Unset: one cached
+/// load and a branch.
+#[inline(never)]
+pub fn inject() {
+    static N: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let n = env_u64("QUICK_INJECT", &N);
+    let mut i = 0u64;
+    while i < n {
+        i = std::hint::black_box(i + 1);
+    }
+}
+
+/// `QUICK_INJECT_MS=<ms>`: every call spins that much wall time (the negative control of the bench's startup and
+/// shutdown windows). Unset: one cached load and a branch.
+#[inline(never)]
+pub fn inject_ms() {
+    static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let ms = env_u64("QUICK_INJECT_MS", &MS);
+    if ms > 0 {
+        let t = Instant::now();
+        while t.elapsed().as_millis() < ms as u128 {
+            std::hint::spin_loop();
+        }
+    }
+}

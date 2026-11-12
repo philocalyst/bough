@@ -31,13 +31,16 @@ fn main() {
     let t0 = bough_metal::perf::snap();
     let start = std::time::Instant::now();
     let mut warm = (t0.instrs, 0usize, [0u64; 5], 0u64, [0u64; 8]);
+    let mut warm_thread = bough_metal::perf::tinstr();
     let mut frames = 0u64;
     let mut tiles = 0u64;
     for tick in 1..=ticks {
         if tick == 60 {
             warm = (bough_metal::perf::snap().instrs, tick, app.prof.acc, frames, app.rt.lay.prof.acc);
+            warm_thread = bough_metal::perf::tinstr();
         }
         step(&mut app, mode, tick as u64);
+        bough_metal::perf::inject(); // QUICK_INJECT: bench/quick's negative control
         frames += app.frame() as u64;
         tiles += app.repaired_tiles as u64;
         #[cfg(target_os = "macos")]
@@ -50,6 +53,7 @@ fn main() {
         app.gpu.as_mut().unwrap().sync();
     }
     let t1 = bough_metal::perf::snap();
+    let thread = bough_metal::perf::tinstr() - warm_thread;
     let measured = ticks.saturating_sub(60).max(1) as f64;
     let m = app.rt.lists.regs()[0].stats;
     println!("repaired tiles/frame {:.1}", tiles as f64 / frames.max(1) as f64);
@@ -67,6 +71,7 @@ fn main() {
         app.rt.lay.stats.nodes_written,
         app.rt.text.fallbacks,
     );
+    println!("quick_window from=60 to={ticks} instr={} thread={thread}", t1.instrs - warm.0);
     {
         use std::sync::atomic::Ordering::Relaxed;
         println!("measure calls {} wrap runs {} for {} rows mounted", bough::layout::MEASURE_CALLS.load(Relaxed), bough::layout::WRAP_RUNS.load(Relaxed), m.rows_mounted);

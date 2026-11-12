@@ -22,15 +22,18 @@ fn main() {
     }
     let warmup = 120;
     let (mut w0, mut c0) = (bough_metal::perf::snap(), 0u64);
+    let mut w0_thread = bough_metal::perf::tinstr();
     let mut drawn = 0u64;
     for frame in 0..frames {
         if frame == warmup {
             w0 = bough_metal::perf::snap();
+            w0_thread = bough_metal::perf::tinstr();
             c0 = drawn;
         }
         app.turn(|a| {
             a.clock.set(frame as f32 / 120.0);
         });
+        bough_metal::perf::inject(); // QUICK_INJECT: bench/quick's negative control
         drawn += app.frame() as u64;
         #[cfg(target_os = "macos")]
         if render && frame % 120 == 0 {
@@ -42,7 +45,9 @@ fn main() {
         app.gpu.as_mut().unwrap().sync();
     }
     let w1 = bough_metal::perf::snap();
+    let thread = bough_metal::perf::tinstr() - w0_thread;
     let n = frames.saturating_sub(warmup).max(1) as f64;
+    println!("quick_window from={warmup} to={frames} instr={} thread={thread}", w1.instrs - w0.instrs);
     println!(
         "animate: {:.0} instr/frame after {warmup} warm-up, frames drawn {}/{} render={render}, ri_instructions total {}, footprint {:.1} MB",
         (w1.instrs - w0.instrs) as f64 / n,

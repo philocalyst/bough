@@ -26,15 +26,18 @@ fn main() {
     let t0 = bough_metal::perf::snap();
     let start = std::time::Instant::now();
     let mut warm = (t0.instrs, 0usize, [0u64; 5], 0u64);
+    let mut warm_thread = bough_metal::perf::tinstr();
     let mut frames = 0u64;
     let mut tiles = 0u64;
     for tick in 0..ticks {
         if tick == 60 {
             warm = (bough_metal::perf::snap().instrs, tick, app.prof.acc, frames);
+            warm_thread = bough_metal::perf::tinstr();
         }
         if tick > 0 {
             work.tick();
             app.turn(|d| publish(d, &work, mode));
+            bough_metal::perf::inject(); // QUICK_INJECT: bench/quick's negative control
         }
         frames += app.frame() as u64;
         if tick >= 60 {
@@ -51,6 +54,7 @@ fn main() {
         app.gpu.as_mut().unwrap().sync();
     }
     let t1 = bough_metal::perf::snap();
+    let thread = bough_metal::perf::tinstr() - warm_thread;
     let measured = ticks.saturating_sub(60).max(1) as f64;
     println!(
         "{mode:?} render={render}: {:.4} ms/tick, frames presented {frames}/{ticks}, instr/tick (after 60 warm-up ticks) {:.0}, ri_instructions total {}, footprint {:.1} MB, fallbacks {}, wires run {}, text set {}, rows mounted {}, repaired tiles/frame {:.1} (ring {})",
@@ -65,6 +69,7 @@ fn main() {
         tiles as f64 / measured,
         env("BOUGH_RING", 0usize),
     );
+    println!("quick_window from=60 to={ticks} instr={} thread={thread}", t1.instrs - warm.0);
     if phases {
         let n = measured;
         let mut tot = 0.0;

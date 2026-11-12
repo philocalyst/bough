@@ -31,10 +31,17 @@ fn main() {
     let start = std::time::Instant::now();
     let mut frames = 0u64;
     let mut tiles = 0u64;
+    let mut warm = t0.instrs;
+    let mut warm_thread = bough_metal::perf::tinstr();
     for tick in 0..ticks {
+        if tick == 60 {
+            warm = bough_metal::perf::snap().instrs;
+            warm_thread = bough_metal::perf::tinstr();
+        }
         if tick > 0 {
             work.tick();
             app.turn(|l| lab_publish(l, &work, mode));
+            bough_metal::perf::inject(); // QUICK_INJECT: bench/quick's negative control
         }
         frames += app.frame() as u64;
         tiles += app.repaired_tiles as u64;
@@ -53,6 +60,8 @@ fn main() {
         app.gpu.as_mut().unwrap().sync();
     }
     let t1 = bough_metal::perf::snap();
+    let thread = bough_metal::perf::tinstr() - warm_thread;
+    println!("quick_window from=60 to={ticks} instr={} thread={thread}", t1.instrs - warm);
     println!("repaired tiles/frame {:.1}", tiles as f64 / frames.max(1) as f64);
     println!(
         "{mode:?} render={render}: {:.4} ms/tick, frames {frames}/{ticks}, ri_instructions total {}, instr/tick {:.0}, footprint {:.1} MB, fallbacks {}, text shaped {}, rows mounted {}",
