@@ -532,3 +532,51 @@ write through a handle; the handle column; re-pointing) and for sharing page ima
 compaction story for the ordered walk (the bin pass) after heavy churn, which the model does not have. The
 store lane's identity already gives the two properties the rest of this lane's design needs: per-id columns
 that never move, and planes addressable by id. So the order of work should not start with the directory.
+
+**Decision (lead, on these numbers):** the piece table is not built; identity is the store lane's ids. The
+model and its harness stay (`pages_bench dir`). The one case that reopens it: the handle table showing up in
+the mount, fan-out or resize numbers of the standing scenes (its load on writes through a handle, its 24 B a
+record, or its re-pointing on structural edits) at more than about a tenth of a phase.
+
+## B2. One table for derived geometry; the page seal; transitions owned by their scope
+
+**Derived geometry, generalised** (after the first fix, the lead asked for the gaps that can show wrong
+pixels). Each failed first in `tests/geometry_order.rs`, then passed:
+
+| case | what was wrong |
+|---|---|
+| a constant `clip` in a virtual-list row | an absolute rect fixed at mount: the row scrolled, the clip did not (and every newly mounted row took a fresh clip id until the clip column was full) |
+| a tooltip under an `offset` | its clip rect was absolute; the bubble moved, the clip did not |
+| a virtual list or port list under an `offset` or a `clip_by` | the port clip and the rows' spaces were absolute |
+| a keyed `List` port under both | held already (its placement re-reads its space and parent clip) |
+| a scroll view (raw `scroll_y`, or a laid-out `.scroll` box) under an `offset`, with a clip and a nested view in its content | the view kept an absolute origin: its next scroll put the content back where it was mounted |
+
+What exists now instead of four mechanisms (the wired-clip list in mount order, each scroll view's own clip
+list re-cut on scroll, the layout clips' parent-to-children map with its recursive re-cut, tooltip rects moved
+by hand with their view):
+
+* **Every clip that can change is one kind of entry** (`template::WClip`: local edges in a space, the space,
+  the parent clip, hidden or not) in a slab, **scheduled by level** (parent clip's level + 1), released with
+  the scope that mounted it; released clip ids are reused. Writers store inputs only (a wire: the local rect; a
+  layout placement: the box; a tooltip: shown or hidden) and raise a level; `Rt::clips_settle` runs levels in
+  order. Only a constant clip in the root space under a clip that cannot change stays a shared absolute rect.
+* **Spaces nest, so position is carried, not re-derived**: a scroll view's content space, an anchor's, a
+  transformed subtree's and a virtual list's rows' spaces are nested in the space they were mounted in; a view
+  keeps its port origin local to that space. Moving a space (an offset, an outer scroll, a placement) carries
+  everything under it in one walk; nothing keeps an absolute origin that could go stale. `shift_nested`,
+  `view_clips`, `recut`, `clip_kids`, `ScrollView::{clips, nested, tips}` and `Tip::rect` are deleted.
+
+**The page seal** (for the compute lane's staged commands): `Bough::page_seal_at(pos)` and `page_seals()`
+give `(page id, generation)`; the generation moves on any write to the page's columns, on a paint write to one
+of its records once projected, and on text content (`seal_touch`, called by the three text write paths). What
+it does not cover is stated in its doc comment: clip rects and space origins, which a consumer keys on
+separately. Paint order is the directory's, never part of a seal. Test: `bough-core/tests/dirty.rs`
+(passes on the Mac's ilo-prod twin: x86-64, `cargo test -p bough-core --lib --tests`).
+
+**Transitions** (the bench lane's second defect): `Transitions.items` was a grow-only vector keyed by element
+id; unmounting a row killed its wires and not its transitions, so a running one kept restyling a dead layout
+node (the panic in `App::resize`) and would have animated whatever element was next given that id. Now a
+transition belongs to the `Scope` that mounted its element (`Scope::trans`), is released with it, and its slot
+is reused; the frame clock takes a transition out of its slot while its applier runs, so an applier that
+unmounts elements can release the very transition being stepped. This is also the shape a kernel-evaluated
+transition needs: the record owns it. Tests: `tests/transition_owner.rs`.
