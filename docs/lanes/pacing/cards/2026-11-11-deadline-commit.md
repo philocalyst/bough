@@ -39,3 +39,21 @@ measurement:     A = frame-per-event, B = X4 latch, C = this card, one ABC-inter
 stop conditions: latency or G1 missed -> REJECTED with numbers; X4 latch kept or not by its own numbers.
 do not revisit:  as X4's card.
 ```
+
+## Amendment 1 (variants tried; recorded before the confirmation batch)
+
+Built as frozen (v1, commit 4ba07a1) and measured with frame-per-event (A) and X4's latch (B) in batches `abc1` and
+`final1`. Three variants were tried and are recorded, not kept:
+
+* v2 (6495d3c): a frame the GPU finished after its vsync went back to the mailbox for the next deadline, and a
+  frame finding every surface held reclaimed the queued publication's surface. Measured worse (`abc1`, 5 runs:
+  gaps up to 220 ms); reverted.
+* v3 (49d761e): a two-slot mailbox (commit the newest *finished* frame at the deadline). Its second held surface
+  exhausted the 4-surface ring (751 ring-wait notes in one smoke run, 112 commits/s); reverted.
+* D (698d427): input animations drawn at X4's latch instead of the link callback. Better scroll latency than v1
+  (p50 8.5-9.2 vs 12.2-12.5 ms) but worse discrete input (p50 6.2-8.8 vs 4.3-7.5 ms) in `final1`; kept selectable
+  in frame-log builds (`BOUGH_PACE=deadline-latch`), not the default.
+
+Change for the confirmation batch: a burst's second frame starts pacing at once on the phase the link last
+reported (extrapolated over at most 1 s) instead of waiting for the link's first callback (`final1` counted
+~3 immediate commits at each burst start, over the refresh count in the typing window).

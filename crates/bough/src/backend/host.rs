@@ -390,8 +390,8 @@ struct Pacer {
     /// Otherwise (X4) frames wait for the latch. Frame-log builds choose with `BOUGH_PACE=deadline|latch|
     /// deadline-tick`.
     deadline: bool,
-    /// Deadline mode: input animations are stepped and drawn at the latch (sampled for their vsync), not at
-    /// the link callback (`deadline-tick`).
+    /// Deadline mode: input animations are stepped and drawn at the latch (`deadline-latch`, measured worse for
+    /// discrete input), not at the link callback (the default).
     anim_at_latch: bool,
     /// The caret-blink timer: armed only while a field is focused (otherwise it would wake an idle window
     /// twice a second), and whether it is armed.
@@ -424,7 +424,7 @@ impl Pacer {
         }
         let pace = if fl::ON { std::env::var("BOUGH_PACE").unwrap_or_default() } else { String::new() };
         let deadline = pace != "latch";
-        let anim_at_latch = pace != "deadline-tick";
+        let anim_at_latch = pace == "deadline-latch";
         Pacer {
             q: RefCell::new(pace::InputQueue::new()),
             pending: Cell::new(false),
@@ -566,6 +566,15 @@ impl Pacer {
             // the link runs to give the presenter the refresh phase.
             if a.has_damage() {
                 let burst = now - self.last_present.get() < 2.0 * self.period.get();
+                if burst && !self.link_on.get() {
+                    // a burst begins: pace from this frame on, on the phase the link last reported
+                    // (extrapolated over at most a second) until its first callback refreshes it
+                    if let Some(t) = self.last_target.get().filter(|t| now - t < 1.0) {
+                        let p = self.period.get();
+                        let next = t + ((now - t) / p).ceil().max(0.0) * p;
+                        a.set_refresh(next, p, 3.0 * p);
+                    }
+                }
                 self.present(app, &mut a, trim);
                 if burst {
                     self.start_link(link);
