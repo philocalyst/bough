@@ -516,6 +516,11 @@ impl<V, E: Element<V>, O: ActOp<V>> Element<V> for On<E, O> {
 }
 
 pub struct Click<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
+impl<R, F> Click<R, F> {
+    pub fn new(f: F) -> Self {
+        Click(f, std::marker::PhantomData)
+    }
+}
 impl<V: 'static, R: 'static, F: Fn(&mut R) + Copy + 'static> ActOp<V> for Click<R, F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         let own = receiver::<V, R>(m, "on_click");
@@ -526,6 +531,11 @@ impl<V: 'static, R: 'static, F: Fn(&mut R) + Copy + 'static> ActOp<V> for Click<
     }
 }
 pub struct Press<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
+impl<R, F> Press<R, F> {
+    pub fn new(f: F) -> Self {
+        Press(f, std::marker::PhantomData)
+    }
+}
 impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for Press<R, F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         let own = receiver::<V, R>(m, "on_press");
@@ -536,6 +546,11 @@ impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for P
     }
 }
 pub struct Hover<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
+impl<R, F> Hover<R, F> {
+    pub fn new(f: F) -> Self {
+        Hover(f, std::marker::PhantomData)
+    }
+}
 impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for Hover<R, F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         let own = receiver::<V, R>(m, "on_hover");
@@ -587,6 +602,11 @@ impl<V> ActOp<V> for Focusable {
     fn refresh(self, _: &mut Mounter<'_, V>, _: u32) {}
 }
 pub struct OnKey<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
+impl<R, F> OnKey<R, F> {
+    pub fn new(f: F) -> Self {
+        OnKey(f, std::marker::PhantomData)
+    }
+}
 impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for OnKey<R, F> {
     const FLAGS: u8 = KF_FOCUS;
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
@@ -598,6 +618,11 @@ impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for O
     }
 }
 pub struct Drag<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
+impl<R, F> Drag<R, F> {
+    pub fn new(f: F) -> Self {
+        Drag(f, std::marker::PhantomData)
+    }
+}
 impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for Drag<R, F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
         let own = receiver::<V, R>(m, "on_drag");
