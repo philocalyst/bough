@@ -1291,7 +1291,7 @@ impl Rt {
                     };
                     self.inst[(first + i as u32) as usize] = ins;
                 }
-                let ink = if cnt == 0 { NRect::EMPTY } else { self.ink_rect(space, x0, y0, x1 - x0, y1 - y0, 1.0) };
+                let ink = if cnt == 0 { bough_core::nrect::WRect::EMPTY } else { self.ink_rect(space, x0, y0, x1 - x0, y1 - y0, 1.0) };
                 let t = &mut self.texts[ti as usize];
                 t.ink = ink;
                 t.shape = TShape::Glyphs { run };
@@ -1302,7 +1302,7 @@ impl Rt {
         self.lay.prof.mark(LP_TEXT_EMIT);
         let ink = self.texts[ti as usize].ink;
         self.bough.damage_rect(old_ink);
-        self.bough.set_ink_handle(hd, ink);
+        self.bough.set_ink_handle_wide(hd, ink);
         self.lay.prof.mark(LP_TEXT_COPY);
     }
 }
@@ -1679,7 +1679,7 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
             oy: 0.0,
             space: m.space,
             handle: hd,
-            ink: NRect::EMPTY,
+            ink: bough_core::nrect::WRect::EMPTY,
             shape: TShape::None,
             per_glyph: false,
             num,
