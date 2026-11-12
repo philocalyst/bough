@@ -240,6 +240,26 @@ impl Images {
         r
     }
 
+    /// An uncached `w` x `h` rect (transparent) whose pixels its owner rewrites (`write`): a foreign
+    /// element's sampled content (foreign.rs).
+    pub(crate) fn reserve(&mut self, w: u32, h: u32) -> [u16; 4] {
+        let (x, y) = self.alloc(w, h);
+        [x as u16, y as u16, w as u16, h as u16]
+    }
+
+    /// Overwrite rect `uv` (from `reserve`) with `px` (premultiplied RGBA, `w * h * 4` bytes); its rows are
+    /// uploaded before the next frame that draws.
+    pub(crate) fn write(&mut self, uv: [u16; 4], px: &[u8]) {
+        let [x, y, w, h] = uv.map(|v| v as u32);
+        assert_eq!(px.len(), (w * h * 4) as usize, "pixels of the reserved size");
+        for row in 0..h {
+            let d = ((y + row) * IMG_W + x) as usize * 4;
+            self.px[d..d + w as usize * 4].copy_from_slice(&px[(row * w * 4) as usize..((row + 1) * w * 4) as usize]);
+        }
+        let (a, b) = self.dirty.unwrap_or((y, y + h));
+        self.dirty = Some((a.min(y), b.max(y + h)));
+    }
+
     /// An SVG document rasterised (resvg) to `w` x `h` px, its viewBox fitted as SVG does by default.
     pub fn svg(&mut self, svg: &str, w: u32, h: u32) -> [u16; 4] {
         let key = hash(svg.as_bytes());

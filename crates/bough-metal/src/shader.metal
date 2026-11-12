@@ -1385,6 +1385,12 @@ static half4 f_shade_x(threadgroup const FRec& r, float2 c, texture2d<float> atl
         float4 c0 = img.read(uint2(a0)), c1 = img.read(uint2(a1));
         float cov = clamp(0.5 - f_sd(c, r.b, r.radius) * (r.xs != 0.0 ? r.xs : 1.0), 0.0, 1.0);
         return half4(mix(c0, c1, f) * cov); }
+    case 7: {
+        // a foreign record's hole (bough foreign.rs, mode Under): only its coverage (a rounded box, scaled by the
+        // colour's alpha); `fs_tile` applies it as destination-out, so what was painted before the record is
+        // removed and the surface is transparent there, and what is painted after it lies over the hole
+        float cov = clamp(0.5 - f_sd(c, r.b, r.radius) * (r.xs != 0.0 ? r.xs : 1.0), 0.0, 1.0);
+        return half4(0.0h, 0.0h, 0.0h, half(cov) * r.pm.a); }
     default:
         return r.pm * half(clamp(f_shadow(p, hs, max(r.bw, 1e-3), r.radius), 0.0, 1.0));
     }
@@ -1437,7 +1443,8 @@ static bool f_stage_rec(device const FInst& in, float2 off, float4 cl, uint2 o, 
     r.cv = in.kind == 2 ? r.pm2 : r.pm;
     cover = !xf && in.kind == 0 && (in.color >> 24) == 255u && qa.x <= float(o.x) + 0.5 && qa.y <= float(o.y) + 0.5
             && qb.x > float(o.x) + 31.5 && qb.y > float(o.y) + 31.5;
-    return qa.x < qb.x && qa.y < qb.y;
+    // kind 8: a record with geometry and no pixels (a foreign record composited above the surface)
+    return in.kind != 8 && qa.x < qb.x && qa.y < qb.y;
 }
 
 static bool f_stage_glyph(device const uchar* pool, device const FHdr& h, uint run, uint slot, float4 cl, thread FRec& r) {
@@ -1545,9 +1552,11 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
                 for (uint j = 0; j < 4; j++) acc[j] = cv + acc[j] * (1.0h - cv.a);
                 continue;
             }
+            // kind 7 (a foreign record's hole) is destination-out: its shade is (0, 0, 0, coverage)
+            half keep = rr.kind == 7 ? 0.0h : 1.0h;
             for (uint j = 0; j < 4; j++) {
                 half4 sh = f_shade_x(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas, img);
-                acc[j] = sh + acc[j] * (1.0h - sh.a);
+                acc[j] = sh * keep + acc[j] * (1.0h - sh.a);
             }
         }
     }

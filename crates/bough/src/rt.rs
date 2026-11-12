@@ -96,6 +96,9 @@ pub const REC_QUAD: u8 = 1;
 pub const REC_TEXT: u8 = 2;
 /// A paint-less layout box (its record carries the layout structure; empty ink, no payload).
 pub const REC_BOX: u8 = 3;
+/// A foreign element (foreign.rs): content composited by the host under or over the surface, or sampled; its
+/// payload is one instance (the hole, nothing, or the sampled image).
+pub const REC_FOREIGN: u8 = 4;
 
 /// Node kinds (`Node::kind`).
 pub const NK_QUAD: u8 = 1;
@@ -451,6 +454,8 @@ pub struct Rt {
     pub transitions: crate::transition::Transitions,
     /// Icons, rotated images and gradient ramps (deco.rs), uploaded before a frame that wrote them.
     pub images: crate::deco::Images,
+    /// Foreign elements and the window's foreign host (foreign.rs).
+    pub foreign: crate::foreign::Foreigns,
     /// The mounted owner (boxed by `App`, never moves): what a layout placement hook needs to mount the rows
     /// of a list whose port it moved.
     pub(crate) owner: *const u8,
@@ -560,6 +565,7 @@ impl Rt {
             input: Default::default(),
             transitions: Default::default(),
             images: Default::default(),
+            foreign: Default::default(),
             owner: std::ptr::null(),
             _region: region,
         }

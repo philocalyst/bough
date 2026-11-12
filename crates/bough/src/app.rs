@@ -723,6 +723,10 @@ impl<V: View> App<V> {
 
     /// The publication policy is chosen by the turn's source at compile time (`PACED`), never per frame.
     pub fn frame_as<const PACED: bool>(&mut self) -> bool {
+        // foreign elements (foreign.rs): their placements go to the host, their content changes become damage
+        if self.rt.foreign.live != 0 {
+            self.rt.foreign_sync();
+        }
         let core = !self.rt.bough.plane(0).is_clear();
         let paint = !self.rt.paint.plane(0).is_clear();
         if !core && !paint {

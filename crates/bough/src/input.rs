@@ -992,6 +992,13 @@ impl<V: View> App<V> {
     /// instead (capture: no hit test).
     pub fn pointer_move(&mut self, x: f32, y: f32) {
         self.sync_pub();
+        if self.rt.input.pressed == 0 && self.foreign_capture(crate::foreign::Pointer::Move, x, y) {
+            // over a capturing foreign element: the host has it; bough's hover chain is left
+            if !self.rt.input.hover.is_empty() {
+                self.pointer_leave();
+            }
+            return;
+        }
         let (px, py) = self.dev(x, y);
         self.rt.input.pointer = Some((px, py));
         let pa = self.rt.input.pressed;
@@ -1122,6 +1129,9 @@ impl<V: View> App<V> {
     /// runs, and a drag route captures the pointer.
     pub fn pointer_down(&mut self, x: f32, y: f32, button: Button) {
         self.sync_pub();
+        if self.foreign_capture(crate::foreign::Pointer::Down, x, y) {
+            return;
+        }
         let (px, py) = self.dev(x, y);
         self.rt.input.pointer = Some((px, py));
         self.update_hover(px, py, x, y);
@@ -1168,6 +1178,9 @@ impl<V: View> App<V> {
     /// its chain that has one).
     pub fn pointer_up(&mut self, x: f32, y: f32, button: Button) {
         self.sync_pub();
+        if self.rt.input.pressed == 0 && self.foreign_capture(crate::foreign::Pointer::Up, x, y) {
+            return;
+        }
         let pa = std::mem::replace(&mut self.rt.input.pressed, 0);
         let dragging = std::mem::replace(&mut self.rt.input.dragging, false);
         let (px, py) = self.dev(x, y);

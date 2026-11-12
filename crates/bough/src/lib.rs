@@ -12,6 +12,7 @@ pub mod deco;
 pub mod describe;
 pub mod elem;
 pub mod entity;
+pub mod foreign;
 pub mod input;
 pub mod inspect;
 pub mod lanes;
@@ -41,6 +42,7 @@ pub mod prelude {
     pub use crate::color::{rgb, Color};
     pub use crate::elem::{each, Element, IntoProp};
     pub use crate::entity::{Entities, Entity};
+    pub use crate::foreign::{foreign, ForeignHost, ForeignSignal, Hit, Mode, Placement, Plane, Pointer};
     pub use crate::list::{List, Slot};
     pub use crate::listview::list;
     pub use crate::reader::{boundary, Reader, Request};

@@ -273,6 +273,67 @@ impl Bough {
         c
     }
 
+    /// The first record after `pos` in paint order whose visible ink meets `r` (records with empty ink never
+    /// do): is anything painted over this rectangle of record `pos`? Found as [`Bough::hit_cell`] finds its
+    /// obstacles: page summaries 64 at a time, then group summaries, then record inks, starting at the slot
+    /// after `pos`. A foreign record (bough `foreign.rs`) asks this to learn whether a layer placed above the
+    /// surface would hide content painted after it.
+    pub fn first_over(&self, pos: usize, r: NRect) -> Option<usize> {
+        let r = r.intersect(self.ring.window).canon();
+        if r.is_empty() || pos >= self.total {
+            return None;
+        }
+        let (d0, s0) = self.locate(pos);
+        let n = self.d_ptr.len();
+        let t = Thresh::of_rect(r);
+        let mut b = d0;
+        while b < n {
+            let cnt = (n - b).min(64);
+            // SAFETY: b + cnt <= n = d_ink.len(); cnt <= 64.
+            let mut pm = unsafe { lt_mask(self.d_ink.as_ptr().add(b), cnt, t) };
+            while pm != 0 {
+                let d = b + pm.trailing_zeros() as usize;
+                pm &= pm - 1;
+                let p = self.page(d);
+                let from = if d == d0 { s0 + 1 } else { 0 };
+                if p.is_xf() {
+                    // a transformed page: its records' transformed bounding boxes
+                    for s in from..self.d_len[d] as usize {
+                        if self.visible_in(p, s).intersects(r) {
+                            return Some(self.start_of(d) + s);
+                        }
+                    }
+                    continue;
+                }
+                let tp = t.shift_lanes(p.offl);
+                // SAFETY: gink is 8 rects.
+                let mut gm = unsafe { lt8(p.gink.as_ptr(), tp) } & (!0u32 << (from / GROUP));
+                while gm != 0 {
+                    let g = gm.trailing_zeros() as usize;
+                    gm &= gm - 1;
+                    let vis;
+                    let ink: *const NRect = if p.cgroups & (1 << g) != 0 {
+                        vis = self.group_visible(p, g);
+                        vis.as_ptr()
+                    } else {
+                        // SAFETY: group g is 8 rects of the ink column.
+                        unsafe { p.ink.as_ptr().add(g * GROUP) }
+                    };
+                    // SAFETY: 8 rects.
+                    let mut rm = unsafe { lt8(ink, tp) };
+                    if g == from / GROUP {
+                        rm &= !0u32 << (from % GROUP);
+                    }
+                    if rm != 0 {
+                        return Some(self.start_of(d) + g * GROUP + rm.trailing_zeros() as usize);
+                    }
+                }
+            }
+            b += 64;
+        }
+        None
+    }
+
     /// Is a hit cell computed at epoch `since` still valid? Only if no core damage since then (that
     /// epoch included: conservative) touches its tiles. Every geometry, structure, clip and scroll change
     /// marks its old and new support in the ring, so this is the whole invalidation.

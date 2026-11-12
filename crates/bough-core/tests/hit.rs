@@ -299,3 +299,30 @@ fn tab_order_equals_the_oracle() {
         }
     }
 }
+
+/// `first_over` (what a foreign record asks: is anything painted over this rectangle of mine?) equals a scan
+/// of the later records' visible inks, across random trees and edits.
+#[test]
+fn first_over_equals_the_oracle() {
+    let win = NRect::new(0, 0, W, H);
+    let mut found = 0;
+    for seed in 0..12u64 {
+        let mut t = T::new(900 + seed);
+        t.build(700);
+        for round in 0..6 {
+            let v = snapshot(&t.b);
+            for _ in 0..300 {
+                let pos = t.rng.usize_below(v.len());
+                let r = rand_rect(&mut t.rng);
+                let rw = r.intersect(win).canon();
+                let want = if rw.is_empty() { None } else { (pos + 1..v.len()).find(|&j| !v[j].vis.is_empty() && v[j].vis.intersects(rw)) };
+                assert_eq!(t.b.first_over(pos, r), want, "seed {seed} round {round} pos {pos} rect {r:?}");
+                found += want.is_some() as u32;
+            }
+            for _ in 0..4 {
+                t.edit();
+            }
+        }
+    }
+    assert!(found > 1000, "the sample exercises covered rectangles ({found})");
+}
