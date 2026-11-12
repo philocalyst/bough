@@ -16,8 +16,7 @@ Documents this lane owns:
 
 Provenance unless a line says otherwise: the shared M3 Pro (aarch64, macOS 15.6), `nice -n 15`,
 `CARGO_BUILD_JOBS=2`, toolchain nightly-2026-10-17, profile `dist`. Unit: instructions retired on the calling
-thread (`bough_mem::pmu`). ilo-prod is reserved; cache and branch-miss columns are empty until the lead frees
-it.
+thread (`bough_mem::pmu`). ilo-prod was reserved when the lane started and freed during it (Amendment 3): section 5 has its counters.
 
 ## 0. Baselines (recorded by round 7; not re-measured here)
 
@@ -85,3 +84,205 @@ archetype for animated size (B5), the exactness gate for quarter-pixel positioni
   `TEXT-API.md` written against the façade's idiom after Amendment 2 arrived (the first plan, an API in the
   core's own terms, was dropped). The layout lane's `Measure` proposal accepted with amendments
   (`TEXT-SEAM.md` part A). Fast-forwarded to `0e0ec02e9e` at the lead's instruction.
+
+## 3. What was built (commits `414016c59d`, `9ebb8a9d89`)
+
+`crates/bough-text/src/stage/` (about 900 lines), measured and gated by `examples/stage_bench.rs`, compared
+with parley by `examples/stage_parley.rs`. Not wired into `bough-x` or the façade: this is phase A.
+
+* `memo.rs`: shaping memoised by (font, text). Open addressing over 64-byte buckets of eight (tag, offset)
+  slots; an entry is a six-word header followed by its key bytes, placed so a short entry does not straddle a
+  line; glyphs are ranges of two shared lanes in font units (`gid: u16`, `x: i32`, so one entry serves every
+  size). No pointers anywhere, so the memo is also an `Image`: `to_image` writes it, `Image::new` checks a
+  header and reads it in place. The key is a `const fn`.
+* `brk.rs`: `block(w)` in two forms, both returning (lines, widest, `[lo, hi)`): `block_bytes` reads the pen
+  lane and the text and stores nothing; `block` runs over a break table (`build`: separators classified eight
+  bytes at a time into a bitmask, only edges visited). `guess` is the O(1) estimate.
+* `flow.rs`: a growing text; `doc.rs`: a document as blocks of lines under two lanes of prefix sums;
+  `digits.rs`: the k-th glyph and pen of a number by integer arithmetic, and the font check; `line.rs`: the
+  two glyph forms and a reference kernel for each.
+
+Gates (all in the bench; the run stops at the first failure): a memo hit's glyphs are the shaper's; the break
+table by bitmask equals the glyph-by-glyph walk (every message, and texts with leading, trailing and double
+spaces, lengths around 8, a hard break); `block_bytes` == `block` over the table == the walk, with the same
+line starts, at 52 widths; the interval is exact and tight at both ends (the breaks hold at `lo` and at
+`hi - 1` and differ at `lo - 1` and at `hi`); a text appended six bytes at a time equals the text shaped and
+broken whole; every image lookup equals the build's; both glyph forms emit the same boxes and cover the same
+pixels; digit glyph ids equal the shaper's for 300,000 formatted numbers. Mutants, each stopping the run at a
+gate: `STAGE_MUTANT=hi` and `lo` (an interval one unit too wide), `join` (an append that restarts at the
+appended bytes, losing the pair step across the join). Two unit tests (`Doc` against a `Vec<String>` over
+20,000 random edits; digits against `format!`).
+
+## 4. Results against the predictions
+
+`bench/results/r8/text/stage-mac.tsv` (Arial, the façade's default face on macOS) and `stage-mac-dejavu.tsv`;
+M3 Pro, `dist`, load average 12 to 20, instructions of the calling thread, median of five batches, bracket
+subtracted. Corpora: the chat scene's 2,000 message bodies (436,280 characters; mean 218 bytes, 39 words, 2.46
+lines at the 1280 pt window) and the ide scene's 3,000 code lines, from the scenes' own generators. Glyph
+raster is in none of these numbers.
+
+| id | cell | measured | prediction | verdict |
+|---|---|---:|---|---|
+| T1 | hit, key hashed at the call, 8 / 16 / 32 / 64 / 256 bytes | 112 / 129 / 166 / 234 / 456 | 60 + 0.6 per byte | missed by about 1.7x; about 100 + 1.4 per byte |
+| T1 | hit, key known | 82 / 90 / 107 / 139 / 147 | | |
+| T1 | hit over re-shaping (193 / 234 / 350 / 563 / 1,898) | 0.58 / 0.55 / 0.47 / 0.42 / 0.24 | kill above 1 at 16 bytes | not killed (the first version was at 0.93 to 1.01: its key assembled bytes one at a time, 6.6 instructions per byte; now one load and one widening multiply per 8 bytes) |
+| T1 | miss over shaping (12.1 against 7.8 per byte) | 1.55 | at most 1.15 | missed: copying the lanes, the entry, the hash and the probe are 4.3 per byte |
+| T1 | dependent lines to the glyph range | 2 by construction (bucket, entry with inline key) | 2 | holds; as misses: section 5 |
+| T2 | `block` at a new width, no table / over a table / the walk | 374 / 198 / 448 per paragraph | at most 150 | missed (2.5x and 1.3x); not killed (600) |
+| T2 | 1 px sweep: paragraphs outside their interval per step | 2.1 % (0.2 % change height) | under 5 % | holds |
+| T2 | 1 px sweep: cost of a step for 2,000 paragraphs | 41,500 (no table); 27,700 (table) | under 30,000 | missed without the table, held with it |
+| T2 | the r7 harness's sweep (69 pt per step) | 78.7 % outside; 908,000 per step | none written | intervals do nothing at that step size; the step costs `block` for nearly every paragraph |
+| T2b | `guess`: total extent error at 2000 / 2560 / 3200 px windows | -1.7 % / -0.7 % / -0.3 % | under 3 % | holds |
+| T2b | `guess`: rows exact / within one line | 93 to 98 % / 100 % | 90 % within one | holds; the running mean of the first 15 rows gets 19 to 38 % of rows exact and 37 to 71 % within one (its total is as good: +1.3 %, +0.1 %, -1.7 %) |
+| T2c | break bytes per character | 2.155 (table); 0 (no table) | at most 2 | table form missed by 8 %; moot for byte-shaped text |
+| T3 | glyph and pen per digit | 19.2 | at most 25 | holds (33.6 before the per-record part was hoisted) |
+| T3 | arithmetic equals the shaper on the formatted string | glyph ids always; pens only where the face does not kern digits | equal in every face with fixed, kern-free digits | **killed as written**, see below |
+| T4 | append of 6 bytes at 1 / 10 / 100 KiB | 715 / 700 / 693 | 25 per byte + 300 = 450 | flat in length (holds); 1.6x the constant (missed) |
+| T4 | the same through `set` with a plain `String` | 1,993 / 6,524 / 52,807 | compare at most 0.05 per existing byte | missed 10x: the compare is 0.52 per byte |
+| T5 | one character typed, 1,000 / 300,000 lines | 1,202 / 1,257 (Arial); 1,548 / 1,626 (DejaVu) | at most 1,500, within 10 % | holds for Arial; 3 to 8 % over the bound on DejaVu (lines with ligatures take the token path); size dependence 4.6 to 5 % |
+| T5 | newline (split and join, both halves re-shaped) | 657 / 844 | at most 3,000 | holds; 28 % dearer at 300,000 lines (the suffix adds over the prefix lanes) |
+| T6 | constant label at mount: image lookup, key known | 77 | at most 40 | missed (1.9x); kill 200 not reached; shaping the same labels costs 168 |
+| T6 | does `key()` of a literal fold | 49.0 with a `const` key, 49.0 with `key("..")` inline | folds | holds |
+| T6 | opening the image | 95 instructions | header check only | holds |
+| G1 | kernel setup per glyph, placed / shaped | 12.3 / 21.1 (ratio 0.58) | placed at least 15 % cheaper | holds, and the criterion was the wrong one, see below |
+| S1 | chat, 20 exposed messages (4,727 characters, 54 line records) | 94,600 cold, 65,600 warm | at most 100,000 | holds (with a break table it was 160,000 to 235,000: missed, and the reason the table was removed) |
+| S1 | size-only measure of the other 1,980 | 4.02 M keeping nothing; 5.90 M through the memo warm, 7.47 M cold | at most 6 M | holds keeping nothing; missed through a cold memo |
+| S2 | ide, 130 line records (2,486 characters) | 132,400 cold, 98,000 warm (Arial); 172,600 / 127,300 (DejaVu) | at most 150,000 | holds on Arial, missed on DejaVu |
+
+"Cold" is a fresh memo per pass: growth and the kernel's first touch of its memory are inside the cell, as
+they are at a process's first paint. "Warm" is the same memo cleared. The difference (about a third) is not
+text work and is what a mapped image removes.
+
+### Against parley on the same strings
+
+`bench/results/r8/text/parley-mac.tsv`: DejaVu Sans 26 px, the twin driver of `tests/common/twin.rs`, retained
+layouts with allocations reused. "Upstream" is unmodified parley 0.11.1; gpui-ce pins 0.12 and adds its own
+caches, clones and per-call O(document) work on top (section 0), none of which is in these numbers, and
+gpui-ce itself was not built. Parley does more than the staged path (itemisation, bidi, fallback, line
+metrics, alignment); the staged path here covers only what the table shaper covers.
+
+| cell | upstream parley | grafted parley (round 7) | staged (DejaVu) |
+|---|---:|---:|---:|
+| shape and break a chat message, per byte | 1,968 | 273 | 12.1 (miss) + 419 per paragraph (`block`) |
+| re-break one paragraph at a new width | 18,708 | 18,709 | 419 (and only when its interval ends) |
+| 20 exposed messages from nothing | 9.49 M | 1.37 M | 94,800 |
+| append 6 bytes at 1 KiB / 10 KiB | 2.55 M / 20.1 M | 328,000 / 2.55 M | 711 / 706 |
+| 130 one-line texts from nothing | 7.14 M | 2.22 M | 172,600 |
+
+### What the measurements changed
+
+1. **The break table is gone for byte-shaped text.** Building it cost 12 instructions per byte, more than
+   shaping (7.8), and it was 60 % of a paragraph's first measure. The pen lane already is the prefix sum a
+   line search needs, so `block_bytes` reads pens and text and stores nothing. It costs more per call than
+   the table form (374 against 198) and nothing to build; the table pays for itself only after about 15
+   re-breaks of the same paragraph. The table stays as the general form (non-byte clusters, hard breaks, a
+   line-break machine's opportunities) and as the oracle. A label never builds one in either form.
+2. **Tabular is a definition, not an equality.** Arial's digits share an advance but the face kerns "11" by
+   152 units, so 5.2 % of numbers set by the shaper differ from the cell (by up to 608 units, 7.7 px at 26 px,
+   for runs of ones). A tabular number must not do that; `.tabular()` therefore *means* "digits on the cell,
+   no kerning among digits, point and minus", and equals the shaper only in faces that do not kern them. A
+   number that is not tabular needs the 12 x 12 kern table per pair: still arithmetic, CPU stage because its
+   width moves. Of the seven macOS faces checked, only Arial has a cell under the table shaper: SF and Georgia
+   have proportional digits (they need `tnum` through the full shaper, or a synthesised cell), Menlo's digits
+   are under a contextual rule, and Helvetica, Times New Roman and Verdana have no simple-script table at all.
+3. **The table shaper covers few real faces.** Item 2's last sentence generalises: on this Mac the fast path
+   exists for Arial and DejaVu and for none of the system UI faces. So the general path (the vendored
+   parley's shaper) is what most applications' text will take, at 273 instructions per byte grafted or 1,968
+   upstream, and there the memo is worth 100x per hit, not 2x. The façade's round-5 finding ("a shaped-string
+   cache costs more than re-shaping") is true only inside the table shaper's coverage.
+4. **The line record should name the memo's own lanes.** G1's prediction held (the placed form's kernel setup
+   is 9 instructions per glyph cheaper) and was beside the point: producing the placed form costs 31 per glyph
+   at every mount, re-break and size (S1: 247,000 against 94,600), setup is under 5 % of painting a glyph
+   even with a naive blit, and the shaped form is 6 bytes per glyph, size-independent and position-independent
+   (so a constant string's glyphs can be rodata). Recommended to the raster lane: the shaped form, with the
+   pixel position computed where the glyph is binned (TEXT-SEAM B is to be revised accordingly). The number
+   still missing is the GPU's cost of that multiply and slot load per glyph per tile.
+5. **A plain `String` that grows costs a compare of the whole old text** (0.52 instructions per byte: 53,000
+   at 100 KiB) before the append's 700. An append-aware source (`TextState`, or the relation journal of a
+   list of lines) does not. This is the one place where "state is plain fields, the framework compares" has a
+   cost proportional to the size of the state; it is small in wall time and stated here so it is a choice.
+
+## 5. Counters on ilo-prod
+
+`bench/results/r8/text/stage-ilo-miss.tsv`, `stage-ilo-fill.tsv`, `parley-ilo.tsv`: ilo-prod (Ryzen 7 3700X,
+Zen 2), `taskset -c 8-15 nice -n 19`, `dist`, commit `9ebb8a9d89`, DejaVu Sans, load average 3 to 8 (shared
+host). Counters of the calling thread in groups of three events (`BOUGH_PMU`); on Zen 2 `cache-misses` are L2
+misses and there is no last-level-cache event. The shaper has no vector kernel on x86-64 (the NEON kernel is
+aarch64 only), so shaping is 14.8 instructions per byte there against 7.8 on the Mac. The three mutants stop
+at their gates there too. Per unit of the cell (per text, paragraph, step, append or the whole cell):
+
+| cell | instructions | cycles | L1d misses | L2 misses | branch misses |
+|---|---:|---:|---:|---:|---:|
+| memo hit, hashed, 16 bytes | 144 | 71 | 4.0 | 0.1 | 0.0 |
+| memo hit, key known, 16 bytes | 90 | 42 | 1.7 | 0.0 | 0.0 |
+| re-shape, 16 bytes | 332 | 129 | 2.2 | 0.0 | 0.0 |
+| memo hit, hashed, 256 bytes | 483 | 282 | 12.7 | 0.0 | 0.1 |
+| re-shape, 256 bytes | 3,616 | 848 | 5.4 | 0.0 | 1.0 |
+| `block` at a new width, no table, per paragraph | 466 | 397 | 12.2 | 5.4 | 6.5 |
+| `block` over a table, per paragraph | 259 | 139 | 5.2 | 0.4 | 1.7 |
+| the walk over a table, per paragraph | 530 | 162 | 5.5 | 0.1 | 2.5 |
+| 1 px sweep step, 2,000 paragraphs (2.2 % re-broken, no table) | 53,940 | 40,082 | 1,189 | 579 | 472 |
+| append 6 bytes at 1 / 10 / 100 KiB | 688 / 686 / 683 | 261 / 314 / 375 | 1.7 / 4.2 / 4.1 | 0.1 / 0.5 / 0.5 | 2.7 / 2.3 / 2.9 |
+| `set` with a `String` at 100 KiB | 14,582 | 8,238 | 3,325 | 43 | 4.6 |
+| type one character, 1,000 / 300,000 lines | 1,817 / 1,890 | 938 / 725 | 13.3 / 0.8 | 0.5 / 0.0 | 6.0 / 5.6 |
+| constant label from the image, key known | 83 | 22 | 0.2 | 0.0 | 0.0 |
+| kernel setup per glyph, placed / shaped | 12.2 / 25.8 | 4.1 / 9.7 | 0.2 / 0.2 | 0.0 / 0.0 | 0.0 / 0.1 |
+| chat, 20 exposed messages, cold / warm | 113,981 / 98,375 | 36,488 / 44,064 | 2,319 / 1,386 | 3.5 / 76 | 55 / 46 |
+| chat, size-only measure of 1,980 messages | 7.19 M | 3.27 M | 14,507 | 2,075 | 20,351 |
+| ide, 130 line records, cold / warm | 155,203 / 132,455 | 60,307 / 68,428 | 3,462 / 1,971 | 110 / 79 | 72 / 38 |
+| parley upstream: re-break one paragraph | 22,799 | 13,914 | 120 | 38 | 45 |
+| parley upstream: 20 exposed messages | 10.37 M | 3.37 M | 19,955 | 333 | 12,069 |
+| parley grafted: 20 exposed messages | 1.45 M | 0.79 M | 12,019 | 646 | 4,493 |
+| parley upstream / grafted: append 6 bytes at 10 KiB | 22.4 M / 2.87 M | 8.27 M / 1.54 M | 111,242 / 13,537 | 6,515 / 1,991 | 25,837 / 9,403 |
+
+What the counters say that the instruction counts did not:
+
+* **The no-table `block` loses on the memory hierarchy.** Per re-broken paragraph it takes 12 L1 misses, 5.4
+  L2 misses and 6.5 branch mispredictions (it touches the text and the pen lane at scattered places and its
+  byte scans end unpredictably) against 5 L1 misses, 0.4 L2 misses and 1.7 mispredictions for the table form
+  (five sequential lines), and 397 cycles against 139. Section 4's item 1 stands for a paragraph's *first*
+  measure and for memory; for a paragraph that is re-broken repeatedly the table is 2.9x cheaper in cycles and
+  pays for its build (about 2,300 cycles) after nine re-breaks. Under ROUND8's cost model (chained lines
+  first) the right structure is in between and is not built: the end pens of segments alone (4 bytes per
+  word, sequential), made the second time a paragraph's interval ends.
+* A memo hit is 2 to 5 L1 misses in a working set a little over L1's size and no L2 miss; the two dependent
+  lines of the design are what is being paid.
+* The sweep step is miss-bound (0.74 instructions per cycle): of its 579 L2 misses about 240 are the 44
+  re-broken paragraphs and the rest is the bench's own per-paragraph bookkeeping read at random.
+* `set` at 100 KiB costs 3,325 L1 misses per append: the compare walks the whole text through the cache.
+* Document size does not show in typing: 1,817 against 1,890 instructions, and fewer misses at 300,000 lines.
+
+## 6. Refuted or failed, in one place
+
+1. Own: a break table as the cached form of a paragraph (TEXT-SEAM A1 as first written). Dearer to build than
+   shaping; removed for byte-shaped text.
+2. Own: T3 as written (arithmetic equals the shaper). False in a face that kerns digits.
+3. Own: G1's criterion (kernel setup) as the thing that decides the glyph form.
+4. Own: "no break table" as the whole answer. It wins the first measure and the memory; on ilo-prod it loses
+   every later re-break by 2.9x in cycles and 13x in L2 misses (section 5).
+5. Own predictions missed: T1 hit (1.7x) and miss ratio (1.55 against 1.15); T2 `block` (2.5x without the
+   table); T2c (the table's bytes); T4's constant (1.6x) and the compare (10x); T6 (1.9x); S1 through a cold
+   memo; S2 on DejaVu; T5's bound on DejaVu.
+6. Own: the first key function (byte-assembled) made a hit as dear as shaping; `#[cold]` on the memo's miss
+   path made the path that *is* first paint compile for size.
+7. Brief: "a number write should be a word". True of a tabular number in a box whose size does not depend on
+   it (the expr lane's `Num` already measures it: the exposed edit, 1,566 instructions of settle). Not true of
+   a proportional number, whose width feeds layout: that one is a Turn-stage loop over digits.
+8. Brief: "constant strings shaped at build time into glyph-instance columns in rodata". The lookup is built
+   and measured (77 instructions, the key folds); **the build step that produces the image is not built**, and
+   a constant label's mount saves 90 instructions of shaping, not the 3,110 the façade spends: most of that
+   was never shaping.
+
+## 7. Next, in order
+
+1. Wire a `Line` record into `bough-x` (worktree copy first, then through the expr lane): a paint whose
+   operands are a memo range and a palette; the chat and ide scenes' text on the new core with the layout
+   lane's `Measure` answered by `block_bytes`. This is what moves the shared objective.
+2. The general path: the vendored parley's shaper behind the same memo for text the table refuses, off the
+   interaction path (threads lane), with the break opportunities as a bitmask lane.
+3. The build step for the image (run the first mount at build, write the memo, `include_bytes!`), with the
+   layout lane's shapes and the expr lane's columns if they take the same route (ROUND8 reformulation 3).
+4. The raster seam: revise B2 to the shaped form, agree binning by sub-range, then quarter-pixel variants and
+   the exactness gate on both executors.
+5. `TextState`, the selection scope and hit testing (TEXT-API order 3 and 4), on line records.
+6. Atlas residency by exposure; the scalable archetype for animated size.
