@@ -189,7 +189,7 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
     // one item of look-ahead (insertion detection below)
     let mut pending: Option<E> = None;
     loop {
-        // OPUS EXPERIMENT (IDEAS-OPUS.md, finding A1): the hot path (an item described exactly as retained)
+        // (docs/lanes/core/IDEAS-OPUS.md, finding A1a, taken by lane store) The hot path (an item described exactly as retained)
         // runs in its own loop, where `e` has one source (`items.next()`), so it is never merged with the
         // look-ahead slot and never copied into it. Only a mismatch leaves this loop.
         let e = match pending.take() {
@@ -200,6 +200,9 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
                     if k < old.len() && old[k].key == e.dyn_key() && sealed_as(&old[k], &e, &seals, &m.rt.lay.descs, cx).0 {
                         m.pos += old[k].nrec as usize;
                         m.kid += old[k].nkid as usize;
+                        if old[k].last_kid != 0 {
+                            m.prev = old[k].last_kid;
+                        }
                         k += 1;
                         continue;
                     }

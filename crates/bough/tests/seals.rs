@@ -98,9 +98,21 @@ fn sealed_rows_equal_a_fresh_mount_after_every_change() {
 /// Run alone: `BOUGH_SEAL_MUTANT=1 cargo test --release -p bough --test seals -- a_seal_that_ignores_text`.
 #[test]
 fn a_seal_that_ignores_text_is_caught() {
-    if std::env::var_os("BOUGH_SEAL_MUTANT").is_none() {
+    if std::env::var_os("BOUGH_SEAL_MUTANT").is_none_or(|v| v == "int") {
         return;
     }
     let e = run().expect_err("the mutant passed the gate");
     assert!(e.contains("relabel 5"), "caught at the wrong step: {e}");
+}
+
+/// The negative control of integer operands (an integer label is sealed as the integer, not as its text):
+/// with `BOUGH_SEAL_MUTANT=int` a changed row id inside a sealed row is missed and the gate says so.
+/// Run alone: `BOUGH_SEAL_MUTANT=int cargo test --release -p bough --test seals -- a_seal_that_ignores_integers`.
+#[test]
+fn a_seal_that_ignores_integers_is_caught() {
+    if std::env::var_os("BOUGH_SEAL_MUTANT").is_none_or(|v| v != "int") {
+        return;
+    }
+    let e = run().expect_err("the mutant passed the gate");
+    assert!(e.contains("renumber 2"), "caught at the wrong step: {e}");
 }
