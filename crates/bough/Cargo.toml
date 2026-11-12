@@ -54,6 +54,9 @@ sabotage_views = ["bough-metal/sabotage_views"]
 sabotage_blend = []
 # cephal's query counters (`cephal::compute::stats`), for the layout probes in the cost examples.
 cephal-stats = ["cephal/stats"]
+# Negative controls of cephal's shape memo (lane layout, round 7): tests/lay_diff.rs must fail with either.
+cephal-mutant-memo-served = ["cephal/mutant-memo-served"]
+cephal-mutant-memo-shape = ["cephal/mutant-memo-shape"]
 
 [dev-dependencies]
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }

@@ -102,7 +102,9 @@ fn run<S: Scene>() {
     }
     let ls = app.rt.lay.stats;
     println!(
-        "mount\tinstr={mount}\tlay_nodes={}\tlabels/texts={}\tmeasure={}\twb_visited={}\twb_written={}\t{}",
+        "mount\tinstr={mount}\tcompute={}\twriteback={}\tlay_nodes={}\tlabels/texts={}\tmeasure={}\twb_visited={}\twb_written={}\t{}",
+        app.rt.lay.prof.acc[bough::layout::LP_COMPUTE],
+        app.rt.lay.prof.acc[bough::layout::LP_WRITE],
         app.rt.lay.info.iter().filter(|l| l.live).count(),
         app.rt.texts.len(),
         bough::layout::MEASURE_CALLS.load(Relaxed) - m0,

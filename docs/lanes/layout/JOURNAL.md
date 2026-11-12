@@ -57,6 +57,13 @@ What happens at those two steps (from `lay_probe` and cephal's counters, identic
   lane's `3ae78a4966` (merged into `round6` at `2db93d2120`) a laid-out one-line text is a retained label placed by
   moving its origin (`place_label`), about 700 per written node. That is the whole difference between 569 M and 96 M.
 
+**For the user: the ragged columns are CSS-correct.** Under CSS's `min-width: auto` (bough's default for flex
+items, round-6 decision 6) a flex item's automatic minimum is its content's min-content width, so a fixed-width
+gutter whose content is narrower than its width shrinks when its row overflows, by as much as its own content allows,
+and rows whose row numbers have fewer digits shrink further. A browser lays the scene's markup out the same way. The
+sheet's author avoids it in one line: `div().w(GUTTER).shrink(0.0)` (or `.min_w(GUTTER)`) on the gutter; the row then
+overflows on the right and no cell moves.
+
 So the 14x steps were the write-back of a layout change that really moves every cell, at a per-label placement cost
 that no longer exists on the integrated base; on `round6` they are 2.7x (step 7) and 3.7x (step 18) their
 neighbours. What is left of them is: (a) the cells moving at all, which a rigid-move write-back (core's

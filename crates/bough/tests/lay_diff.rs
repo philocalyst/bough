@@ -186,6 +186,27 @@ fn tree(r: &mut Rng) -> Tree {
     let mut root = node_spec(r, true);
     root.col = r.chance(3, 4);
     let n = 1 + r.below(6);
+    if r.chance(1, 2) {
+        // repeated subtrees (round 7, the shape memo): the boxes are copies of one or two templates
+        // whose leaves repeat too, so equal subtrees share answers until edits make them differ
+        let tpl: Vec<Mid> = (0..1 + r.below(2))
+            .map(|_| {
+                let mut m = mid(r);
+                let l = m.kids[0].clone();
+                for k in m.kids.iter_mut().skip(1) {
+                    if r.chance(1, 2) {
+                        *k = l.clone();
+                    }
+                }
+                m
+            })
+            .collect();
+        let n = 2 + r.below(10);
+        return Tree {
+            root,
+            mids: (0..n).map(|i| tpl[i as usize % tpl.len()].clone()).collect(),
+        };
+    }
     Tree {
         root,
         mids: (0..n).map(|_| mid(r)).collect(),
@@ -489,6 +510,7 @@ fn incremental_layout_equals_fresh_over_random_trees_and_edits() {
     let (seeds, steps) = (env("LAY_DIFF_SEEDS", 120), env("LAY_DIFF_STEPS", 25));
     let start = env("LAY_DIFF_SEED_START", 1);
     let mut cases = 0;
+    let mut memo_hits = 0;
     for seed in start..start + seeds {
         let mut r = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         let size = (r.pick(&[320.0, 500.0, 800.0]), r.pick(&[240.0, 600.0]));
@@ -515,6 +537,8 @@ fn incremental_layout_equals_fresh_over_random_trees_and_edits() {
             check(&app, size, &format!("seed {seed} step {step} ({what})"));
             cases += 1;
         }
+        memo_hits += app.rt.lay.eng.memo.hits;
     }
-    eprintln!("lay_diff: {cases} edits checked");
+    eprintln!("lay_diff: {cases} edits checked, {memo_hits} answers from the shape memo");
+    assert!(memo_hits > 0 || std::env::var_os("CEPHAL_NO_MEMO").is_some(), "the shape memo was never used: the test does not exercise it");
 }

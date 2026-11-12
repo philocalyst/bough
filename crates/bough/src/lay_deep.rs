@@ -22,6 +22,7 @@ use crate::layout::{FxBuild, LeafCtx, Spec, SpecKey};
 use bough_text::pool::GlyphPool;
 use bough_core::{Bough, Handle};
 use cephal::compute::block::BlockContext;
+use cephal::compute::memo::{Memo, ShapeTable, MAX_SHAPE_CHILDREN, NO_SHAPE, SHAPE_UNSET};
 use cephal::compute::plan::StylePlan;
 use cephal::owned::StyleTable;
 use cephal::schedule::{Incremental, Scheduler, META_MASK};
@@ -51,13 +52,17 @@ struct DNode {
     cache: NodeCache,
     /// Index of its text state in `Deep::ctxs` (`NOCTX`: none).
     ctx: u32,
+    /// Its layout parent (`NOCTX`: a group root or detached).
+    parent: u32,
+    /// Its subtree's shape for cephal's shape memo (`SHAPE_UNSET` until asked; see `Deep::shape_at`).
+    shape: u32,
 }
 
 const NOCTX: u32 = u32::MAX;
 
 impl DNode {
     fn blank() -> DNode {
-        DNode { style: 0, flags: 0, live: false, root: false, hgen: 0, nkids: 0, kids: 0, kclass: 0, touched: 0, layout: Layout::ZERO, cache: NodeCache::default(), ctx: NOCTX }
+        DNode { style: 0, flags: 0, live: false, root: false, hgen: 0, nkids: 0, kids: 0, kclass: 0, touched: 0, layout: Layout::ZERO, cache: NodeCache::default(), ctx: NOCTX, parent: NOCTX, shape: SHAPE_UNSET }
     }
 }
 
@@ -80,6 +85,10 @@ pub struct Deep {
     ctx_free: Vec<u32>,
     /// The containers' children arrays (`DNode::kids`).
     spans: crate::store::Spans,
+    /// Interned subtree shapes and the answers equal shapes share (cephal's `compute::memo`). Styles
+    /// are never released here (`spec_ids` keeps them), so a style id always means the same style.
+    shapes: ShapeTable,
+    pub memo: Memo,
 }
 
 #[inline(always)]
@@ -167,6 +176,64 @@ impl Deep {
             spans: crate::store::Spans::new(store.carve("layout children", ids * 4)),
             orphans: Vec::new(),
             recycled: Vec::new(),
+            shapes: ShapeTable::default(),
+            memo: Memo::new(),
+        }
+    }
+
+    /// The shape of node `i`'s subtree for the shape memo, interned on first use: its style and its
+    /// children's shapes. No shape (its answers are not shared): measured text, an out-of-flow box,
+    /// a box that generates none, a grid, more than `MAX_SHAPE_CHILDREN` children, or any of these
+    /// below it. A one-line label is a sized leaf: its style holds its size.
+    fn shape_at(&mut self, i: u32) -> u32 {
+        let s = self.n[i as usize].shape;
+        if s != SHAPE_UNSET {
+            return s;
+        }
+        let nd = &self.n[i as usize];
+        let st = self.styles.get(nd.style);
+        let measured = nd.ctx != NOCTX && self.ctxs[nd.ctx as usize].user.is_none();
+        let n = nd.nkids as usize;
+        let mut ok = !measured
+            && !st.position.is_out_of_flow()
+            && !st.generates_no_box()
+            && st.display != Display::Grid
+            && (n == 0 || matches!(st.display, Display::Flex | Display::Block | Display::FlowRoot))
+            && n <= MAX_SHAPE_CHILDREN;
+        if ok {
+            for k in 0..n {
+                let c = self.spans.words(self.n[i as usize].kids, n)[k];
+                ok &= self.shape_at(c) != NO_SHAPE;
+            }
+        }
+        let shape = if ok {
+            let style = self.n[i as usize].style;
+            let key = &mut self.shapes.key;
+            key.clear();
+            key.push(style);
+            key.push(n as u32);
+            let nd = &self.n[i as usize];
+            for &c in self.spans.words(nd.kids, n) {
+                key.push(self.n[c as usize].shape);
+            }
+            self.shapes.intern_key()
+        } else {
+            NO_SHAPE
+        };
+        self.n[i as usize].shape = shape;
+        shape
+    }
+
+    /// Node `i`'s style, children or content changed: its shape and every ancestor's are unknown.
+    #[inline]
+    fn reset_shapes_up(&mut self, mut i: u32) {
+        loop {
+            let nd = &mut self.n[i as usize];
+            nd.shape = SHAPE_UNSET;
+            if nd.parent == NOCTX {
+                return;
+            }
+            i = nd.parent;
         }
     }
 
@@ -209,6 +276,7 @@ impl Deep {
         let keep = self.n[n as usize].flags & !META_MASK;
         self.n[n as usize].style = style;
         self.n[n as usize].flags = meta_bits(&self.styles, style, measured) | keep;
+        self.reset_shapes_up(n);
     }
 
     /// Restyle node `n` (a re-description changed its spec) and invalidate it.
@@ -218,6 +286,9 @@ impl Deep {
         self.n[n as usize].style = style;
         self.n[n as usize].flags = meta_bits(&self.styles, style, measured) | keep;
         self.n[n as usize].cache.clear();
+        // (the negative control keeps the old shape: lay_diff must fail)
+        #[cfg(not(feature = "cephal-mutant-memo-shape"))]
+        self.reset_shapes_up(n);
         self.invalidate(b, n);
     }
 
@@ -255,6 +326,8 @@ impl Deep {
         nd.touched = 0;
         nd.layout = Layout::ZERO;
         nd.cache.clear();
+        nd.parent = NOCTX;
+        nd.shape = SHAPE_UNSET;
         let old = std::mem::replace(&mut nd.ctx, ci);
         if old != NOCTX {
             self.orphans.push(old);
@@ -299,6 +372,8 @@ impl Deep {
         nd.touched = 0;
         nd.layout = Layout::ZERO;
         nd.cache.clear();
+        nd.parent = NOCTX;
+        nd.shape = SHAPE_UNSET;
         let old = std::mem::replace(&mut nd.ctx, ci);
         if old != NOCTX {
             self.orphans.push(old);
@@ -339,6 +414,8 @@ impl Deep {
         let p = &mut self.n[parent as usize];
         self.spans.words_mut(p.kids, n + 1)[n] = child;
         p.nkids += 1;
+        self.n[child as usize].parent = parent;
+        self.reset_shapes_up(parent);
     }
     /// Double the children span of `parent` (its children move to a span of the next class; the old one
     /// goes back to its class's list).
@@ -375,6 +452,7 @@ impl Deep {
         let len = nd.nkids as usize;
         self.spans.words_mut(nd.kids, len).copy_within(at + del..len, at);
         nd.nkids = (len - del) as u32;
+        self.reset_shapes_up(n);
         self.invalidate(b, n);
     }
     /// Rotate the last `k` children of `n` to index `at` (items mounted at the end, then placed).
@@ -383,6 +461,7 @@ impl Deep {
         let len = nd.nkids as usize;
         if k > 0 && at + k < len {
             self.spans.words_mut(nd.kids, len)[at..].rotate_right(k);
+            self.reset_shapes_up(n);
         }
     }
 
@@ -406,6 +485,7 @@ impl Deep {
         if old != NOCTX {
             self.orphans.push(old);
         }
+        self.reset_shapes_up(n);
     }
 
     pub fn ctx_mut(&mut self, n: u32) -> Option<&mut LeafCtx> {
@@ -466,6 +546,7 @@ impl Deep {
     }
 
     pub fn layout(&mut self, b: &Bough, root: u32, avail: Size<AvailableSpace>) {
+        self.memo.trim();
         self.generation = self.generation.wrapping_add(1).max(1);
         self.changed.clear();
         let root_query_changed = self.last_root != Some((root, avail));
@@ -541,6 +622,8 @@ impl Deep {
                     layout: Layout::ZERO,
                     cache: NodeCache::default(),
                     ctx: x.ctx,
+                    parent: x.parent,
+                    shape: x.shape,
                     });
                 }
                 c
@@ -563,6 +646,13 @@ impl Deep {
             orphans: Vec::new(),
             recycled: Vec::new(),
             spans: self.spans.clone_owned(),
+            shapes: self.shapes.clone(),
+            // the reference a cold layout gives: computed without the memo
+            memo: {
+                let mut m = Memo::new();
+                m.enabled = false;
+                m
+            },
         };
         cold.layout(b, root, avail);
         let mut out = Vec::new();
@@ -716,6 +806,14 @@ impl LayoutTree for DView<'_> {
     fn measure_ignores_available_height(&self) -> bool {
         true
     }
+    #[inline]
+    fn shape(&mut self, node: NodeId) -> u32 {
+        self.d.shape_at(ix(node) as u32)
+    }
+    #[inline]
+    fn memo(&mut self) -> Option<&mut Memo> {
+        Some(&mut self.d.memo)
+    }
     fn set_absolute_context(&mut self, node: NodeId, context: AbsoluteContext) {
         if self.speculation > 0 {
             return;
@@ -762,13 +860,14 @@ impl CacheAccess for DView<'_> {
 
 impl Incremental for DView<'_> {
     fn parent(&self, node: NodeId) -> Option<NodeId> {
-        let i = ix(node) as u32;
-        if self.d.n[i as usize].root {
+        let nd = &self.d.n[ix(node)];
+        if nd.root {
             return None;
         }
-        let r = self.r();
-        let p = self.b.parent(r.pos(i))?;
-        Some(nid(self.b.record(p).handle))
+        // the layout parent is kept at `append` (a group's structure is the Bough's depth column, which
+        // the debug build checks)
+        debug_assert_eq!(Some(nd.parent), self.b.parent(self.r().pos(ix(node) as u32)).map(|p| self.b.record(p).handle), "layout parent column");
+        (nd.parent != NOCTX).then(|| nid(nd.parent))
     }
     fn depth(&self, node: NodeId) -> u32 {
         // a node removed while queued (a list row) answers depth 0: the scheduler re-files it there and
