@@ -331,6 +331,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-x"
+version = "0.0.0"
+dependencies = [
+ "bough-mem",
+]
+
+[[package]]
 name = "bough-zgui"
 version = "0.0.0"
 dependencies = [
