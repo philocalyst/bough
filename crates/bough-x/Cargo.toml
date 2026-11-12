@@ -23,5 +23,5 @@ mutant_moves = []
 mutant_sweep = []
 # a reader of the published half does not check the epoch after reading
 mutant_torn = []
-# publish copies nothing: the published half goes stale
+# publish forgets every other column page: the published half goes stale
 mutant_publish = []

@@ -2,10 +2,11 @@
 //! and addressed by offsets only (threads lane, round 8; `docs/lanes/threads/JOURNAL.md` section 3).
 //!
 //! ```text
-//! base   shared   head, the dirty bitmap, the ranges it names, the motion of columns in motion
+//! base   shared   head, the dirty bitmap, the ranges it names
 //!        W        the working half: what the turn thread reads and writes
 //!        F        the published half: what a frame and every other reader reads; written only by `publish`
-//! half   plan     one 64-byte entry per column, in paint order
+//! half   plan     one 64-byte entry per column; a column's number is its index here and never changes
+//!        order    the column numbers in paint order
 //!        spaces   clip, base and scroll word of every space
 //!        live     the live words of every store
 //!        columns  pages, packed
@@ -35,13 +36,13 @@ pub const MAX_RANGES: usize = 16384;
 
 const HEAD: usize = 0;
 const DIRTY: usize = 4 << 10;
-const MOTION: usize = 8 << 10;
 const RANGES: usize = 32 << 10;
 /// Where the working half starts.
 const HALVES: usize = 256 << 10;
 
 const PLAN: usize = 0;
-const SPACES: usize = MAX_COLS * 64;
+const ORDER: usize = MAX_COLS * 64;
+const SPACES: usize = ORDER + (MAX_COLS * 2).next_multiple_of(4096);
 const SPACE_STRIDE: usize = 32;
 const LIVE: usize = SPACES + MAX_SPACES * SPACE_STRIDE;
 /// Where columns start in a half, in lines.
@@ -49,7 +50,8 @@ const COLS: u32 = ((LIVE + MAX_LIVE * 8) / LINE) as u32;
 
 // The fixed ranges: the plan in chunks of 64 entries, the spaces in chunks of 128, the live words by line.
 const R_PLAN: u32 = 0;
-const R_SPACES: u32 = R_PLAN + (MAX_COLS / 64) as u32;
+const R_ORDER: u32 = R_PLAN + (MAX_COLS / 64) as u32;
+const R_SPACES: u32 = R_ORDER + (MAX_COLS / 512) as u32;
 const R_LIVE: u32 = R_SPACES + (MAX_SPACES / 128) as u32;
 /// The first range that is a column page.
 const R_PAGES: u32 = R_LIVE + (MAX_LIVE / 8) as u32;
@@ -57,12 +59,16 @@ const R_PAGES: u32 = R_LIVE + (MAX_LIVE / 8) as u32;
 pub const MAGIC: u64 = u64::from_le_bytes(*b"boughx01");
 
 /// The delta kernel of a column: the damage of a change of the block, over the column's exposed pages.
-pub type DeltaFn = unsafe fn(Half, &Entry, &mut Motion, &U, &U, &mut Tiles);
+pub type DeltaFn = unsafe fn(Half, &Entry, &U, &U, &mut Tiles);
+/// The bound in `Time` of a column whose records read it: until when some live record is in motion, and the box
+/// they stay inside until then.
+pub type ActiveFn = unsafe fn(Half, &Entry, &U) -> (u32, Rect);
 /// The paint kernel of a column for one backend type.
 pub type PaintFn = unsafe fn(Half, &Entry, &U, *mut ());
 
 /// One column, as every pass meets it: one cache line. The page a pass wants is reached from here in one
-/// dependent load, and the entries of a scene are contiguous in paint order.
+/// dependent load, and the entries of a scene are contiguous. A column's number (its index in the plan) is
+/// fixed when it is created: it names the column in a pick id and in the list of sweeps.
 #[repr(C, align(64))]
 pub struct Entry {
     /// The block words a record of this column reads.
@@ -81,6 +87,7 @@ pub struct Entry {
     /// Row slots of its store.
     pub cap: u32,
     pub space: u16,
+    /// [`TIMED`]: its records read `Time`.
     pub flags: u16,
     /// The dirty-range id of page 0.
     pub rid: u32,
@@ -88,14 +95,7 @@ pub struct Entry {
 }
 const _: () = assert!(size_of::<Entry>() == 64);
 
-/// A column in motion (its records read `Time`): until when, and the box, in the store's space, the moving
-/// records stay inside until then. Not part of a half: only the turn thread reads it.
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct Motion {
-    pub until: u32,
-    pub sweep: Rect,
-}
+pub const TIMED: u16 = 1;
 
 #[repr(C)]
 pub struct Head {
@@ -113,8 +113,10 @@ pub struct Head {
     pub wasted: u32,
     /// Publishes so far, times two; odd while one is copying.
     pub epoch: AtomicU32,
-    /// A column was created since the plan was last put in paint order.
+    /// A column was created since the order was last written.
     pub unordered: u32,
+    /// The block words some column reads.
+    pub reads: u64,
     /// The block words that move some space (scroll offsets).
     pub scrolls: u64,
     /// Which words of the dirty bitmap have a bit set.
@@ -178,6 +180,9 @@ impl Arena {
         // the fixed ranges
         for c in 0..(MAX_COLS / 64) as u32 {
             ar.set_range(R_PLAN + c, ((PLAN / LINE) as u32 + c * 64, 64));
+        }
+        for c in 0..(MAX_COLS / 512) as u32 {
+            ar.set_range(R_ORDER + c, ((ORDER / LINE) as u32 + c * 16, 16));
         }
         for c in 0..(MAX_SPACES / 128) as u32 {
             ar.set_range(R_SPACES + c, ((SPACES / LINE) as u32 + c * 64, 64));
@@ -258,13 +263,6 @@ impl Ar {
         unsafe { (*(self.base.add(HEAD) as *const Head)).epoch.load(Ordering::Acquire) }
     }
     #[inline(always)]
-    #[allow(clippy::mut_from_ref)]
-    pub fn motion(&self, col: usize) -> &mut Motion {
-        debug_assert!(col < MAX_COLS);
-        // SAFETY: `col < MAX_COLS` entries of 20 bytes fit between MOTION and RANGES; turn thread only.
-        unsafe { &mut *(self.base.add(MOTION) as *mut Motion).add(col) }
-    }
-    #[inline(always)]
     fn set_range(&self, id: u32, r: (u32, u32)) {
         assert!((id as usize) < MAX_RANGES, "the scene has more than {MAX_RANGES} column pages");
         // SAFETY: `id < MAX_RANGES` pairs of words fit between RANGES and HALVES.
@@ -280,7 +278,7 @@ impl Ar {
     pub fn dirty(&self, id: u32) {
         debug_assert!(id < self.head().nranges);
         let w = id as usize >> 6;
-        // SAFETY: `id < MAX_RANGES` bits fit between DIRTY and MOTION.
+        // SAFETY: `id < MAX_RANGES` bits fit between DIRTY and RANGES.
         unsafe { *(self.base.add(DIRTY) as *mut u64).add(w) |= 1 << (id & 63) };
         self.head().sum[w >> 6] |= 1 << (w & 63);
     }
@@ -293,11 +291,15 @@ impl Ar {
         self.dirty(R_PLAN + col / 64)
     }
     #[inline(always)]
+    pub fn dirty_order(&self, k: u32) {
+        self.dirty(R_ORDER + k / 512)
+    }
+    #[inline(always)]
     pub fn dirty_space(&self, ix: u16) {
         self.dirty(R_SPACES + ix as u32 / 128)
     }
 
-    /// A new column entry (not yet in paint order).
+    /// A new column: its number.
     pub fn new_col(&self) -> u32 {
         let h = self.head();
         assert!((h.ncols as usize) < MAX_COLS, "the scene has more than {MAX_COLS} columns");
@@ -356,9 +358,12 @@ impl Ar {
                     let id = (wi * 64) as u32 + m.trailing_zeros();
                     m &= m - 1;
                     let (at, n) = self.range(id);
-                    // SAFETY: a registered range lies inside a half (`new_span` checked it against
-                    // `half_len`; the fixed ranges are below COLS); W and F do not overlap.
-                    unsafe { core::ptr::copy_nonoverlapping(w.add(at as usize * LINE), f.add(at as usize * LINE), n as usize * LINE) };
+                    // the mutant publishes the plan and forgets every other column page
+                    if cfg!(not(feature = "mutant_publish")) || id < R_PAGES || id % 2 == 0 {
+                        // SAFETY: a registered range lies inside a half (`new_span` checked it against
+                        // `half_len`; the fixed ranges are below COLS); W and F do not overlap.
+                        unsafe { core::ptr::copy_nonoverlapping(w.add(at as usize * LINE), f.add(at as usize * LINE), n as usize * LINE) };
+                    }
                     lines += n;
                 }
             }
@@ -367,6 +372,20 @@ impl Ar {
         lines
     }
 
+    /// The number of columns, read from any thread (a reader bounds it and trusts nothing it finds).
+    #[inline(always)]
+    pub fn ncols_racy(&self) -> u32 {
+        // SAFETY: a plain word of the head, read without forming a reference.
+        unsafe { (&raw const (*(self.base.add(HEAD) as *const Head)).ncols).read_volatile() }
+    }
+    /// Whether `len` bytes from line `line` of a half lie inside the half: what a reader checks before it
+    /// follows an offset it read without the epoch's protection.
+    #[inline(always)]
+    pub fn in_half(&self, line: u32, len: usize) -> bool {
+        // SAFETY: `half_len` is written once, before any handle is shared.
+        let half = unsafe { (*(self.base.add(HEAD) as *const Head)).half_len } as usize;
+        (line as usize * LINE).checked_add(len).is_some_and(|end| end <= half)
+    }
     /// Read the published half from any thread, without blocking the turn thread and without writing anything
     /// shared: `f` runs on F and its answer stands only if no publish ran meanwhile; otherwise it runs again.
     /// `f` must tolerate torn bytes (copy plain words out; follow no pointer and index nothing unchecked).
@@ -409,6 +428,12 @@ impl Half {
         // SAFETY: the caller's contract; entries below `ncols` were written whole by `Store::seal`.
         unsafe { core::slice::from_raw_parts(self.p.add(PLAN) as *const Entry, n) }
     }
+    /// The column numbers in paint order.
+    #[inline(always)]
+    pub fn order(&self) -> *mut u16 {
+        // SAFETY: `MAX_COLS` numbers after the plan.
+        unsafe { self.p.add(ORDER) as *mut u16 }
+    }
     #[inline(always)]
     pub fn space(&self, ix: u16) -> *mut Space {
         debug_assert!((ix as usize) < MAX_SPACES);
@@ -432,5 +457,5 @@ impl Half {
         self.p
     }
 }
-const _: () = assert!(size_of::<Space>() <= SPACE_STRIDE && size_of::<Motion>() == 20 && size_of::<Head>() <= DIRTY);
-const _: () = assert!(MOTION + MAX_COLS * 20 <= RANGES && RANGES + MAX_RANGES * 8 <= HALVES && DIRTY + MAX_RANGES / 8 <= MOTION);
+const _: () = assert!(size_of::<Space>() <= SPACE_STRIDE && size_of::<Head>() <= DIRTY);
+const _: () = assert!(RANGES + MAX_RANGES * 8 <= HALVES && DIRTY + MAX_RANGES / 8 <= RANGES && MAX_COLS <= 4096);

@@ -28,6 +28,11 @@ fn check(tag: &str, step: usize, sheet: &Sheet, world: &mut World<Soft>, retaine
     let mut full = Soft::new(W, H);
     world.paint(&mut full);
     assert!(retained.px == full.px, "{tag} step {step}: retained != full redraw ({} pixels)", diff(&retained.px, &full.px));
+    // what a frame reads: the published half, after a publish, is the working half
+    world.publish();
+    let mut front = Soft::new(W, H);
+    world.paint_front(&world.shown, &mut front);
+    assert!(front.px == full.px, "{tag} step {step}: published half != working half ({} pixels)", diff(&front.px, &full.px));
     let mut now = Soft::new(W, H);
     sheet.view(&mut Immediate::new(&mut now, &world.shown));
     assert!(full.px == now.px, "{tag} step {step}: stores != immediate ({} pixels)", diff(&full.px, &now.px));

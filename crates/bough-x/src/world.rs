@@ -1,5 +1,5 @@
 //! The driver: one store tree, the block the raster last saw, the damage.
-use crate::expr::{APP_WORDS, U, U_TIME};
+use crate::expr::{APP_WORDS, HOT, U, U_PTR_X, U_PTR_Y, U_TIME};
 use crate::sink::{Cx, Patch, REL_EPOCH, View, Write};
 use core::sync::atomic::Ordering;
 use crate::arena::{Ar, Arena};
@@ -14,8 +14,7 @@ struct Hot {
 }
 
 pub struct World<B> {
-    /// The scene's memory. Declared before `root` only for reading order: `root` holds handles into it and
-    /// neither's drop touches the other.
+    /// The scene's memory; `root` and `ar` are handles into it.
     _arena: Arena,
     pub ar: Ar,
     pub root: Store,
@@ -28,8 +27,6 @@ pub struct World<B> {
     /// pass: the two things besides the block that can make the view worth driving.
     lists: u64,
     epoch: u32,
-    /// Some column is in motion: frames damage without turns until it rests.
-    moving: bool,
     hot: Option<Hot>,
     _b: PhantomData<B>,
 }
@@ -41,7 +38,7 @@ impl<B: Backend> World<B> {
     pub fn new(w: i32, h: i32, nwords: usize) -> World<B> {
         let arena = Arena::new(RESERVE);
         let ar = arena.ar();
-        World { _arena: arena, ar, root: Store::new(ar, 1, Space::root(w, h)), shown: U::default(), tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, moving: false, hot: None, _b: PhantomData }
+        World { _arena: arena, ar, root: Store::new(ar, 1, Space::root(w, h)), shown: U::default(), tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, hot: None, _b: PhantomData }
     }
 
     /// The application's block with the words the raster owns (time, pointer, pick) as the world has them.
@@ -66,17 +63,31 @@ impl<B: Backend> World<B> {
         let mut cx = Cx { ar: self.ar, tiles: &mut self.tiles, u: &self.shown, all: true, lists: 0 };
         v.view(&mut Write::<V, B>::new(&mut self.root, &mut cx, true));
         self.lists = cx.lists;
+        self.root.resweep(&self.shown, &mut self.tiles);
         self.ordered();
     }
 
-    /// A frame at time `now`. Time advancing is not a turn: nothing is compared or evaluated. If some record
-    /// is in motion, the box it moves in is damaged (one mark per column in motion).
+    /// A frame at time `now`. Time advancing is not a turn: nothing is compared, no record is evaluated and no
+    /// store is visited. Each sweep (a column with records in motion) is one mark.
     #[inline]
     pub fn tick(&mut self, now: u32) {
         self.shown.w[U_TIME] = now;
-        if self.moving {
-            self.moving = store::tick(self.ar, &self.shown, now, &mut self.tiles);
+        if !self.tiles.sweeps.is_empty() {
+            self.tiles.tick(now, &self.shown);
         }
+    }
+
+    /// The pointer is at (x, y), for the records whose paint reads the pointer words. If none does (the
+    /// usual case: hover goes through the pick and a handler) this is two stores.
+    #[inline]
+    pub fn pointer_words(&mut self, x: i32, y: i32) {
+        let ch = ((self.shown.w[U_PTR_X] != x as u32) as u64) << U_PTR_X | ((self.shown.w[U_PTR_Y] != y as u32) as u64) << U_PTR_Y;
+        if ch & self.ar.head().reads != 0 {
+            let mut u = self.shown;
+            (u.w[U_PTR_X], u.w[U_PTR_Y]) = (x as u32, y as u32);
+            store::delta(self.ar, &self.shown, &u, ch, &mut self.tiles);
+        }
+        (self.shown.w[U_PTR_X], self.shown.w[U_PTR_Y]) = (x as u32, y as u32);
     }
 
     /// After handlers ran: find what they changed and damage it.
@@ -87,7 +98,7 @@ impl<B: Backend> World<B> {
     /// edited or a word that scrolls a list changed.
     #[inline]
     pub fn settle<V: View>(&mut self, v: &V) {
-        let ch = self.shown.diff(v.block(), self.nwords);
+        let ch = self.shown.diff(v.block(), self.nwords) & !HOT;
         let epoch = REL_EPOCH.load(Ordering::Relaxed);
         if (ch == 0) & (epoch == self.epoch) {
             return;
@@ -98,7 +109,7 @@ impl<B: Backend> World<B> {
     fn changed<V: View>(&mut self, v: &V, ch: u64, epoch: u32) {
         let u = &self.block(v);
         if ch != 0 {
-            self.moving |= store::delta(self.ar, &self.shown, u, ch, &mut self.tiles);
+            store::delta(self.ar, &self.shown, u, ch, &mut self.tiles);
         }
         if (epoch != self.epoch) | (ch & self.lists != 0) {
             self.epoch = epoch;
@@ -116,14 +127,17 @@ impl<B: Backend> World<B> {
     /// with the columns as it goes. The same `view` code as mount.
     pub fn redescribe<V: View>(&mut self, v: &V) {
         let u = &self.block(v);
-        let ch = self.shown.diff(u, self.nwords);
+        let ch = self.shown.diff(u, self.nwords) & !HOT;
         if ch != 0 {
-            self.moving |= store::delta(self.ar, &self.shown, u, ch, &mut self.tiles);
+            store::delta(self.ar, &self.shown, u, ch, &mut self.tiles);
         }
         self.epoch = REL_EPOCH.load(Ordering::Relaxed);
         let mut cx = Cx { ar: self.ar, tiles: &mut self.tiles, u, all: true, lists: 0 };
         v.view(&mut Write::<V, B>::new(&mut self.root, &mut cx, false));
         self.lists |= cx.lists;
+        if self.root.timed {
+            self.root.resweep(u, &mut self.tiles);
+        }
         self.ordered();
         if ch != 0 {
             self.shown = *u;
@@ -151,7 +165,7 @@ impl<B: Backend> World<B> {
         true
     }
 
-    /// Keep the plan in paint order: a pass that created a column leaves it appended.
+    /// Keep the paint order: a pass that created a column leaves it to be written.
     #[inline(always)]
     fn ordered(&mut self) {
         if self.ar.head().unordered != 0 {
@@ -173,8 +187,8 @@ impl<B: Backend> World<B> {
         self.ar.publish()
     }
 
-    /// Paint from the published half with block `u`: what a frame does. `u` is the block that was current at
-    /// the publish.
+    /// Paint from the published half with block `u` (the block that was current at the publish): what a
+    /// frame does.
     pub fn paint_front(&self, u: &crate::expr::U, b: &mut B) {
         // SAFETY: as `paint`; the published half is written only by `publish`, which takes `&mut self`.
         unsafe { store::paint(self.ar.front(), self.ar.head().ncols as usize, u, b) }

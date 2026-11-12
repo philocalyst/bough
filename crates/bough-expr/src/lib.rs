@@ -177,6 +177,75 @@ macro_rules! lens {
     };
 }
 
+/// Device pixels, half open.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Rect {
+    pub x0: i32,
+    pub y0: i32,
+    pub x1: i32,
+    pub y1: i32,
+}
+impl Rect {
+    /// A box no record leaves: what an unbounded motion sweeps (cut to the space's clip by whoever marks it).
+    pub const EVERYWHERE: Rect = Rect { x0: -(1 << 28), y0: -(1 << 28), x1: 1 << 28, y1: 1 << 28 };
+    #[inline(always)]
+    pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Rect {
+        Rect { x0: x, y0: y, x1: x + w, y1: y + h }
+    }
+    #[inline(always)]
+    pub fn shift(self, d: (i32, i32)) -> Rect {
+        Rect { x0: self.x0 + d.0, y0: self.y0 + d.1, x1: self.x1 + d.0, y1: self.y1 + d.1 }
+    }
+    #[inline(always)]
+    pub fn and(self, o: Rect) -> Rect {
+        Rect { x0: self.x0.max(o.x0), y0: self.y0.max(o.y0), x1: self.x1.min(o.x1), y1: self.y1.min(o.y1) }
+    }
+    #[inline(always)]
+    pub fn or(self, o: Rect) -> Rect {
+        Rect { x0: self.x0.min(o.x0), y0: self.y0.min(o.y0), x1: self.x1.max(o.x1), y1: self.y1.max(o.y1) }
+    }
+    #[inline(always)]
+    pub fn empty(self) -> bool {
+        self.x0 >= self.x1 || self.y0 >= self.y1
+    }
+    #[inline(always)]
+    pub fn hits(self, o: Rect) -> bool {
+        self.x0 < o.x1 && o.x0 < self.x1 && self.y0 < o.y1 && o.y0 < self.y1
+    }
+    #[inline(always)]
+    pub fn area(self) -> i64 {
+        (self.x1 - self.x0) as i64 * (self.y1 - self.y0) as i64
+    }
+}
+
+/// The words the raster owns, by name. An expression may read them; the application never writes them.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Time;
+impl Lens for Time {
+    type T = u32;
+    const SLOT: usize = U_TIME;
+}
+#[derive(Clone, Copy, PartialEq)]
+pub struct PtrX;
+impl Lens for PtrX {
+    type T = i32;
+    const SLOT: usize = U_PTR_X;
+}
+#[derive(Clone, Copy, PartialEq)]
+pub struct PtrY;
+impl Lens for PtrY {
+    type T = i32;
+    const SLOT: usize = U_PTR_Y;
+}
+#[derive(Clone, Copy, PartialEq)]
+pub struct Pick;
+impl Lens for Pick {
+    type T = u32;
+    const SLOT: usize = U_PICK;
+}
+/// The hot words: they change every frame or every pointer event, so they are never part of a turn's compare.
+pub const HOT: u64 = 0xf << 60;
 // ---- record words ------------------------------------------------------------------------------------------
 
 /// A value whose bytes are whole 32-bit words with no padding and no invalid bit pattern: a record can be read
@@ -366,6 +435,16 @@ pub trait Expr: Words {
     const CODE: &'static Code;
     fn eval(&self, cx: &Cx) -> Self::Out;
 
+    /// The bound of this expression in `Time`: the value of `Time` from which on the expression no longer
+    /// changes with time alone, under the other words of this block. 0: it is at rest now. `u32::MAX`: never.
+    /// An expression that reads `Time` and says nothing is never at rest; a combinator forwards to its
+    /// operands. This is what lets a frame cost nothing: time is never differentiated, its readers say when
+    /// they stop.
+    #[inline(always)]
+    fn until(&self, _cx: &Cx) -> u32 {
+        if Self::READS >> U_TIME & 1 != 0 { u32::MAX } else { 0 }
+    }
+
     /// Apply a Rust function that captures nothing. What varies per record belongs in a `Rec` operand. The
     /// result is CPU stage: it is re-evaluated for exposed records when a word it reads changes.
     #[inline(always)]
@@ -545,6 +624,10 @@ where
         let f: F = unsafe { core::mem::zeroed() };
         f(self.0.eval(cx))
     }
+    #[inline(always)]
+    fn until(&self, cx: &Cx) -> u32 {
+        self.0.until(cx)
+    }
 }
 
 // Tuples of operands, for a `map` of several arguments.
@@ -560,6 +643,10 @@ where
     fn eval(&self, cx: &Cx) -> Self::Out {
         (self.0.eval(cx), self.1.eval(cx))
     }
+    #[inline(always)]
+    fn until(&self, cx: &Cx) -> u32 {
+        self.0.until(cx).max(self.1.until(cx))
+    }
 }
 impl<A: Expr, B: Expr, C: Expr> Expr for (A, B, C)
 where
@@ -572,6 +659,10 @@ where
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> Self::Out {
         (self.0.eval(cx), self.1.eval(cx), self.2.eval(cx))
+    }
+    #[inline(always)]
+    fn until(&self, cx: &Cx) -> u32 {
+        self.0.until(cx).max(self.1.until(cx)).max(self.2.until(cx))
     }
 }
 
