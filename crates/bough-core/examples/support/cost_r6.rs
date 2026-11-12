@@ -593,6 +593,56 @@ fn handles(rs: &[RecordInit], ov: u64) {
     }
 }
 
+/// Page-splitting inserts at one place, the directory's adversarial case: 256 inserts of 64 records
+/// at the front, each timed. `insert64-front-worst` is the dearest of them (a rebalance of the widest
+/// window it needed, or the directory growing), `insert64-front-amortised` their mean.
+fn overflow(rs: &[RecordInit], ov: u64) {
+    if !want("insert64-front-worst") && !want("insert64-front-amortised") {
+        return;
+    }
+    let n = rs.len();
+    let new: Vec<_> = (0..64)
+        .map(|i| RecordInit::new(1, NRect::new(2, 2, 14, 14), 1, (n + i) as u32))
+        .collect();
+    let (mut worst, mut mean) = (Vec::new(), Vec::new());
+    let mut pages = 0;
+    let count = 256;
+    for _ in 0..SAMPLES {
+        let mut b = build(rs);
+        pages = b.num_pages();
+        settle(&b);
+        let (mut total, mut max) = (0u64, 0u64);
+        for _ in 0..count {
+            let one = timed(|| b.insert_run(black_box(1), black_box(&new)), 1, ov);
+            total += one;
+            max = max.max(one);
+        }
+        b.check_invariants();
+        worst.push(max);
+        mean.push(total / count as u64);
+    }
+    emit(
+        n,
+        "ordered-wide",
+        "insert64-front-worst",
+        64,
+        pages,
+        1,
+        &worst,
+        count,
+    );
+    emit(
+        n,
+        "ordered-wide",
+        "insert64-front-amortised",
+        64,
+        pages,
+        1,
+        &mean,
+        count,
+    );
+}
+
 fn negative_control() {
     let rs = records(1000, false, false);
     let b = build(&rs);
@@ -671,6 +721,7 @@ pub fn run(spatial_only: bool) {
         queries(&rs, false, ov);
         queries(&records(n, false, true), true, ov);
         handles(&rs, ov);
+        overflow(&rs, ov);
         eprintln!("finished core N={n}");
     }
 }
