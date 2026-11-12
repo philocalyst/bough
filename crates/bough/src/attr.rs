@@ -84,3 +84,28 @@ macro_rules! span_from {
         let _ = $t;
     }};
 }
+
+/// `span_mark!` / `span_from!` for a stretch nested in another span (read only with `BOUGH_ATTR_NEST`).
+#[macro_export]
+#[doc(hidden)]
+macro_rules! span_mark_nested {
+    () => {{
+        #[cfg(feature = "attr")]
+        let __m = if $crate::attr::on::level() >= 1 { $crate::attr::on::now() } else { 0 };
+        #[cfg(not(feature = "attr"))]
+        let __m = 0u64;
+        __m
+    }};
+}
+#[macro_export]
+#[doc(hidden)]
+macro_rules! span_from_nested {
+    ($i:expr, $t:expr) => {{
+        #[cfg(feature = "attr")]
+        if $crate::attr::on::level() >= 1 {
+            $crate::attr::on::add($i, $t);
+        }
+        #[cfg(not(feature = "attr"))]
+        let _ = $t;
+    }};
+}

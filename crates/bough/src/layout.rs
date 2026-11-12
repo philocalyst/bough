@@ -1622,12 +1622,7 @@ where
         let mut spec = self.spec;
         m.rt.reflect.elem(hd.idx, std::any::type_name::<Self>());
         // size operands: the box is created with their initial values, the spec kept for later restyles
-        let lid = if X::SIZE {
-            let lid = m.rt.lay.eng.add(hd, &spec, s, None);
-            lid
-        } else {
-            m.rt.lay.eng.add(hd, &spec, s, None)
-        };
+        let lid = crate::span!(12 + crate::attr::NEST, m.rt.lay.eng.add(hd, &spec, s, None));
         let parent = attach(m, lid);
         m.rt.lay.last_box = lid;
         assert!(!X::PAINT || self.draw, "opacity/translate need a painted box (bg, rounded or border)");
@@ -1805,9 +1800,11 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
         let s = m.rt.scale;
         let node = m.rt.alloc_node();
         m.pending_num = None;
+        let t_ops = crate::span_mark_nested!();
         let init = self.s.lower(m, node);
         let num = m.pending_num.take();
         let color = self.color.lower::<crate::boxops::ApplyTextColor>(m, node);
+        crate::span_from_nested!(11, t_ops);
         let size_px = self.size * s;
         let lh_px = self.lh * s;
         let strike = m.rt.text.strike(size_px);
@@ -1834,7 +1831,7 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
         // One line: a retained label (`text.rs`), the representation every one-line text has: its box is
         // sized by its text, a write-back moves its origin, a new value patches it. Wrapped text, and one
         // line the label kernel does not cover, is a shaped leaf state (`LeafCtx`) the layout measures.
-        let label = if self.wrap { None } else { m.rt.build_label(ti) };
+        let label = if self.wrap { None } else { crate::span!(14 + crate::attr::NEST, m.rt.build_label(ti)) };
         let (spec, ctx, payload) = match label {
             Some(payload) => {
                 m.rt.texts[ti as usize].base_off = m.rt.text.baseline(size_px, lh_px);
@@ -1857,7 +1854,7 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
             }
         };
         m.rt.lay.prof.mark(LP_TEXT_SET);
-        let lid = m.rt.lay.eng.add(hd, &spec, s, ctx);
+        let lid = crate::span!(13 + crate::attr::NEST, m.rt.lay.eng.add(hd, &spec, s, ctx));
         let _parent = attach(m, lid);
         if payload != 0 {
             // the described spec is kept (by index): the label's box is re-sized from it when its text changes

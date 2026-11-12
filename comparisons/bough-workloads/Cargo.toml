@@ -19,6 +19,8 @@ libc = "0.2"
 bough-metal = { path = "../../crates/bough-metal" }
 
 [features]
+# bough's attribution spans (core lane): instrumented, never a result.
+attr = ["bough/attr"]
 default = ["sheet", "ide", "dash", "canvas", "chat"]
 # One feature per scene, so a scene can be built alone (`--no-default-features --features ide`) while another
 # is being edited.

@@ -283,6 +283,7 @@ impl<V: View> App<V> {
     /// region is heap memory and `frame` stops after the tile list (the RENDER=0 shape).
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn new(view: V, cfg: Config, gpu: bool) -> App<V> {
+        let t_attr = crate::span_mark!();
         let t_mount = std::time::Instant::now();
         #[cfg(target_os = "macos")]
         let i_mount = bough_metal::fused::thread_instructions();
@@ -373,20 +374,30 @@ impl<V: View> App<V> {
         let once = cfg.mount_once;
         let ptr = &*owner as *const V;
         rt.owner = ptr as *const u8;
-        {
+        // attribution of the mount (feature `attr`): 16 Rt::new and the presenter, 17 the mount walk (the
+        // description, elements, text, wires), 18 the records' insert, 19 the first layout flush (compute:
+        // `lay.prof`), 15 the settle and second flush
+        crate::span_from!(16, t_attr);
+        crate::span!(17, {
             let el = owner.view();
             let tp: *mut Vec<u32> = if once { std::ptr::null_mut() } else { &mut tape };
             let mut m = Mounter { rt: &mut rt, owner: ptr, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None, cls: 0, tape: tp, ti: 0, pos: 0, kid: 0, keep: false };
             el.mount(&mut m);
-        }
-        rt.bough.insert_run(0, &recs);
+        });
+        crate::span!(18, rt.bough.insert_run(0, &recs));
         // layout groups of the first mount (list regions mount their first rows between its passes)
-        rt.lay_flush();
+        #[cfg(feature = "attr")]
+        if std::env::var_os("BOUGH_ATTR_MOUNT").is_some() {
+            rt.lay.prof.enable(); // compute / write-back of the flush (two counter reads each, not per node)
+        }
+        crate::span!(19, rt.lay_flush());
         let mut owner = owner;
         // wires queued while mounting (a producer's first request flips its reader to pending)
         // SAFETY: the owner just mounted, uniquely borrowed here.
+        let t_attr = crate::span_mark!();
         unsafe { rt.settle(&mut *owner as *mut V as *const u8) };
         rt.lay_flush();
+        crate::span_from!(15, t_attr);
         drop(scope); // the root scope lives as long as the app: nothing of it is ever released
         let mut startup = Startup { mount_ns: t_mount.elapsed().as_nanos() as u64, ..Startup::default() };
         #[cfg(target_os = "macos")]
@@ -408,6 +419,20 @@ impl<V: View> App<V> {
             f.set_layout(rt.layout);
             startup.gpu_wait_ns = t.elapsed().as_nanos() as u64;
             metal = Some(f);
+        }
+        #[cfg(feature = "attr")]
+        if std::env::var_os("BOUGH_ATTR_MOUNT").is_some() {
+            let ovh = bough_metal::perf::tinstr_overhead();
+            let t = crate::attr::on::take();
+            for (i, name) in [(16usize, "Rt::new + presenter"), (17, "mount walk (description, elements, text, wires)"), (18, "insert_run"), (19, "first lay_flush"), (15, "settle + second lay_flush")] {
+                eprintln!("  mount attr: {name:50} {:>14}", t[i].0.saturating_sub(t[i].1 * ovh));
+            }
+            for (i, name) in [(11usize, "  text operands lowered (2 wires, the number formatted)"), (14, "  label built (shaping, glyph slots)"), (13, "  layout node added: text leaf"), (12, "  layout node added: box")] {
+                if t[i].1 != 0 {
+                    eprintln!("  mount attr: {name:50} {:>14}  ({} spans)", t[i].0.saturating_sub(t[i].1 * ovh), t[i].1);
+                }
+            }
+            eprintln!("  mount attr: layout prof (compute, write, text set, text emit, text copy...): {:?}", rt.lay.prof.acc);
         }
         let ty = rt.tiles_y;
         App {
