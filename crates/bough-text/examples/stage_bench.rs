@@ -11,7 +11,6 @@
 //! Every cell is preceded by its gate: the fast path's answer equals the reference's, or the run stops.
 //! `STAGE_MUTANT=hi|lo|join` breaks one mechanism on purpose (an interval one unit too wide at either end; an
 //! append that restarts at the appended bytes): each must stop the run at a gate.
-use bough_mem::pmu;
 use bough_text::atlas::GlyphCache;
 use bough_text::stage::brk::{self, Block, Brk};
 use bough_text::stage::digits::{self, Cell};
@@ -22,161 +21,9 @@ use bough_text::stage::memo::{self, Image, Memo};
 use bough_text::{GlyphRun, Shaper, SimpleScript};
 use std::hint::black_box;
 
-// ---- the scenes' generators (r7/bench) ----------------------------------------------------------------------
-
-struct Rng(u64);
-impl Rng {
-    fn new(seed: u64) -> Rng {
-        Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
-    }
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() % n.max(1) as u64) as usize
-    }
-}
-
-const SYL: [&str; 28] = ["ka", "lo", "mi", "ra", "te", "su", "no", "vi", "da", "pe", "ru", "ha", "bo", "ni", "fe", "za", "qui", "tra", "len", "mar", "dor", "sel", "an", "or", "ex", "il", "pon", "ver"];
-
-fn sentence(rng: &mut Rng, n: usize) -> String {
-    let mut s = String::with_capacity(n * 7);
-    for i in 0..n {
-        if i > 0 {
-            s.push(' ');
-        }
-        let at = s.len();
-        for _ in 0..1 + rng.below(3) {
-            s.push_str(SYL[rng.below(SYL.len())]);
-        }
-        if i == 0 {
-            s[at..at + 1].make_ascii_uppercase();
-        }
-    }
-    s.push('.');
-    s
-}
-
-/// The chat scene's 2,000 message bodies (`Chat::build`, seed 0xc4a7), consuming the generator as it does.
-fn chat_messages(n: usize) -> Vec<String> {
-    let mut rng = Rng::new(0xc4a7);
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let _author = rng.below(12);
-        let words = 12 * (1 + rng.below(6)) - rng.below(8).min(9);
-        out.push(sentence(&mut rng, words.max(3)));
-        if i > 3 && rng.below(100) < 14 {
-            let _ = rng.below(i.min(8));
-        }
-        if rng.below(100) < 20 {
-            for _ in 0..1 + rng.below(3) {
-                let _ = (rng.below(8), rng.below(9));
-            }
-        }
-    }
-    out
-}
-
-const VOCAB: [&str; 24] = ["value", "state", "index", "buffer", "result", "config", "item", "node", "count", "self", "len", "name", "path", "data", "text", "range", "cursor", "key", "next", "size", "offset", "event", "frame", "slot"];
-const NUMS: [&str; 10] = ["0", "1", "2", "4", "8", "16", "42", "100", "1024", "0.5"];
-const STRS: [&str; 6] = ["\"ok\"", "\"main\"", "\"id\"", "\"/tmp\"", "\"error\"", "\"title\""];
-const CMT_A: [&str; 4] = ["// compute", "// TODO:", "// note:", "// fixme:"];
-const CMT_B: [&str; 4] = [" the next", " flush the", " cached", " reset"];
-const CMT_C: [&str; 4] = [" value", " buffer", " state", " index"];
-
-/// The ide scene's code lines (`gen_line`, seed 0x1de): each line as (text, token class per byte).
-fn ide_lines(n: usize) -> Vec<(String, Vec<u8>)> {
-    let mut rng = Rng::new(0x1de);
-    let ident = |rng: &mut Rng| (1u8, VOCAB[if rng.below(100) < 50 { 0 } else { 1 + rng.below(VOCAB.len() - 1) }]);
-    (0..n)
-        .map(|i| {
-            let mut t: Vec<(u8, &str)> = Vec::new();
-            let _indent = rng.below(4);
-            if i % 16 == 3 {
-                t.extend([(1, VOCAB[0]), (5, " += "), (3, NUMS[rng.below(10)]), (5, ";")]);
-            } else {
-                match rng.below(13) {
-                    0 => t.extend([(0, "let "), ident(&mut rng), (5, " = "), ident(&mut rng), (5, "("), (3, NUMS[rng.below(10)]), (5, ");")]),
-                    1 => t.extend([(0, "if "), ident(&mut rng), (5, " > "), (3, NUMS[rng.below(10)]), (5, " {")]),
-                    2 => t.extend([(0, "fn "), ident(&mut rng), (5, "("), ident(&mut rng), (5, ": "), ident(&mut rng), (5, ") {")]),
-                    3 => t.extend([(4, CMT_A[rng.below(4)]), (4, CMT_B[rng.below(4)]), (4, CMT_C[rng.below(4)])]),
-                    4 => t.extend([(0, "return "), ident(&mut rng), (5, ";")]),
-                    5 => t.extend([ident(&mut rng), (5, "."), ident(&mut rng), (5, "("), (2, STRS[rng.below(6)]), (5, ");")]),
-                    6 => t.extend([(0, "match "), ident(&mut rng), (5, " {")]),
-                    7 => t.extend([ident(&mut rng), (5, " => "), (2, STRS[rng.below(6)]), (5, ",")]),
-                    8 => t.extend([(0, "use "), ident(&mut rng), (5, "::"), ident(&mut rng), (5, ";")]),
-                    9 => t.extend([(0, "for "), ident(&mut rng), (0, " in "), (3, NUMS[rng.below(10)]), (5, ".."), ident(&mut rng), (5, " {")]),
-                    10 => t.extend([(0, "while "), ident(&mut rng), (5, " < "), ident(&mut rng), (5, " {")]),
-                    11 => t.extend([ident(&mut rng), (5, " += "), (3, NUMS[rng.below(10)]), (5, ";")]),
-                    _ => t.extend([(0, "let mut "), ident(&mut rng), (5, " = "), (2, STRS[rng.below(6)]), (5, ";")]),
-                }
-            }
-            let (mut s, mut c) = (String::new(), Vec::new());
-            for (class, text) in t {
-                s.push_str(text);
-                c.extend(std::iter::repeat_n(class, text.len()));
-            }
-            (s, c)
-        })
-        .collect()
-}
-
-// ---- counters ----------------------------------------------------------------------------------------------
-
-struct Meter {
-    names: Vec<&'static str>,
-}
-
-impl Meter {
-    fn new() -> Meter {
-        let names: Vec<&'static str> = pmu::sample_events().iter().map(|e| e.name()).collect();
-        let mut head = String::from("cell\tunit");
-        for n in &names {
-            head.push('\t');
-            head.push_str(n);
-        }
-        println!("{head}\tnote");
-        Meter { names }
-    }
-    /// `f` run `reps` times per batch, five batches: the median per call, per `div` units of work.
-    fn cell(&self, name: &str, unit: &str, reps: usize, div: f64, note: &str, mut f: impl FnMut()) -> f64 {
-        let n = self.names.len();
-        let mut rows: Vec<Vec<f64>> = Vec::new();
-        for _ in 0..5 {
-            let o0 = pmu::sample();
-            let o1 = pmu::sample();
-            let a = pmu::sample();
-            for _ in 0..reps {
-                f();
-            }
-            let b = pmu::sample();
-            let (d, o) = (b.since(&a), o1.since(&o0));
-            rows.push((0..n).map(|i| d.v[i].saturating_sub(o.v[i]) as f64 / reps as f64 / div).collect());
-        }
-        let mut line = format!("{name}\t{unit}");
-        let mut first = 0.0;
-        for i in 0..n {
-            let mut col: Vec<f64> = rows.iter().map(|r| r[i]).collect();
-            col.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            if i == 0 {
-                first = col[2];
-            }
-            line.push_str(&format!("\t{:.1}", col[2]));
-        }
-        println!("{line}\t{note}");
-        first
-    }
-    fn fact(&self, name: &str, unit: &str, v: f64, note: &str) {
-        let mut line = format!("{name}\t{unit}\t{v:.3}");
-        for _ in 1..self.names.len() {
-            line.push('\t');
-        }
-        println!("{line}\t{note}");
-    }
-}
+#[path = "common/stage.rs"]
+mod common;
+use common::{chat_messages, ide_lines, Meter, NUMS, STRS, VOCAB};
 
 fn font() -> (Vec<u8>, String) {
     let cands = [std::env::var("BOUGH_FONT").ok(), Some("/System/Library/Fonts/Supplemental/Arial.ttf".into()), Some("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".into()), Some("/usr/share/fonts/TTF/DejaVuSans.ttf".into())];
@@ -635,9 +482,11 @@ fn t4(m: &Meter, sh: &Shaper, msgs: &[String], w: i32) {
 fn t5(m: &Meter, sh: &Shaper, code: &[(String, Vec<u8>)]) {
     let mut run = GlyphRun::default();
     for n in [1_000usize, 300_000] {
-        let mut d = Doc::from_lines((0..n).map(|i| code[i % code.len()].0.as_str()));
-        // the same place in a block at both sizes (blocks are built 48 lines long)
+        // the same place in a block and the same lines under the caret at both sizes (blocks are built 48
+        // lines long), so that what differs between the two rows is the document's size alone
         let mid = (n / 2 / 48) * 48;
+        let shift = code.len() - mid % code.len();
+        let mut d = Doc::from_lines((0..n).map(|i| code[(i + shift) % code.len()].0.as_str()));
         let mut k = 0usize;
         m.cell(&format!("t5.type.{n}"), "instr/key", 2_000, 1.0, "one character into a line near the middle: find the line, storage splice, re-shape of that line; prediction at most 1,500", || {
             let line = mid + (k * 7) % 50;
@@ -755,16 +604,25 @@ fn lit(v: memo::View<'_>, s: &'static str) -> u32 {
 
 // ---- G1: the two glyph forms -------------------------------------------------------------------------------
 
-fn strike_for(sh: &Shaper, font: &[u8], size: f32, upem: u16) -> (GlyphCache, Strike) {
+/// A strike with a slot for every glyph the shaper produces for `texts` (ligatures included) and for ASCII.
+fn strike_for<'a>(sh: &Shaper, font: &[u8], size: f32, upem: u16, texts: impl Iterator<Item = &'a str>) -> (GlyphCache, Strike) {
     let mut cache = GlyphCache::new(font);
     let sid = cache.strike(size);
-    let gids = (0x20u8..0x7f).map(|c| sh.script.gid[c as usize]);
-    let st = Strike::build(&mut cache, sid, upem, gids);
+    let mut gids: Vec<u16> = (0x20u8..0x7f).map(|c| sh.script.gid[c as usize]).collect();
+    let mut run = GlyphRun::default();
+    for t in texts {
+        if sh.shape_into(t, 1.0, &mut run) {
+            gids.extend_from_slice(&run.gid);
+        }
+    }
+    gids.sort_unstable();
+    gids.dedup();
+    let st = Strike::build(&mut cache, sid, upem, gids.into_iter());
     (cache, st)
 }
 
 fn g1(m: &Meter, sh: &Shaper, font: &[u8], code: &[(String, Vec<u8>)], upem: u16) {
-    let (cache, st) = strike_for(sh, font, 24.0, upem);
+    let (cache, st) = strike_for(sh, font, 24.0, upem, code.iter().map(|c| c.0.as_str()));
     let mut memo = Memo::new(64);
     let offs: Vec<u32> = code.iter().map(|(l, _)| memo.get(0, sh, l).unwrap()).collect();
     let ents: Vec<memo::Ent> = offs.iter().map(|&o| memo.view().ent(o)).collect();
@@ -845,7 +703,7 @@ fn g1(m: &Meter, sh: &Shaper, font: &[u8], code: &[(String, Vec<u8>)], upem: u16
 // ---- S1, S2: the text side of first paint ------------------------------------------------------------------
 
 fn scenes(m: &Meter, sh: &Shaper, font: &[u8], msgs: &[String], code: &[(String, Vec<u8>)], w: i32, upem: u16) {
-    let (_cache, st) = strike_for(sh, font, 26.0, upem);
+    let (_cache, st) = strike_for(sh, font, 26.0, upem, msgs.iter().map(|s| s.as_str()));
     let mut keep = Memo::new(4096);
     let mut sum = 0u64;
     let exposed = &msgs[msgs.len() - 20..];
