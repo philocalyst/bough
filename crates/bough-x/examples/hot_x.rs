@@ -10,7 +10,7 @@
 //!   BOUGH_PMU=..   up to three more events for the in-process counters (Linux)
 //!   CELLS=1        print the cell names and exit
 //!
-//! Output: `scene  cell  evict_kb  reps  <event>_p50 ...  <event>_max ...  tiles_p50`, counted on the calling
+//! Output: `scene  cell  evict_kb  reps  <event>_p50 ...  <event>_max ...  tiles_p50  wall_ns_p50  wall_ns_max`, counted on the calling
 //! thread with the bracket's own cost subtracted. Under `perf stat` or `perf record` the same loop runs and the
 //! table is still printed; perf's counts then include set-up and the eviction walk, which the script removes
 //! with the `floor` cell and a slope.
@@ -156,7 +156,7 @@ fn main() {
     let names: Vec<&str> = evs.iter().map(|e| e.name()).collect();
     println!("# rows={rows} cells={} window={W}x{H} evict_kb={evict_kb} reps={reps}", rows * COLS);
     println!(
-        "scene\tcell\tevict_kb\treps{}{}\ttiles_p50",
+        "scene\tcell\tevict_kb\treps{}{}\ttiles_p50\twall_ns_p50\twall_ns_max",
         names.iter().map(|e| format!("\t{e}_p50")).collect::<String>(),
         names.iter().map(|e| format!("\t{e}_max")).collect::<String>()
     );
@@ -169,7 +169,7 @@ fn main() {
         world.save(&image).expect("writing the image");
         Bed { world, sheet, soft: Soft::new(W, H), rows, image }
     };
-    let mut wall = vec![0u8; evict_kb * 1024];
+    let mut buf = vec![0u8; evict_kb * 1024];
     for &(name, _, f) in CELLS {
         if only.as_deref().is_some_and(|o| o != name) {
             continue;
@@ -180,13 +180,17 @@ fn main() {
             bed.world.tiles.clear();
         }
         let mut got: Vec<([u64; pmu::MAX], u32)> = Vec::with_capacity(reps);
+        let mut wall: Vec<u64> = Vec::with_capacity(reps);
         for k in 0..reps {
             if evict_kb != 0 {
-                evict(&mut wall);
+                evict(&mut buf);
             }
+            let t0 = std::time::Instant::now();
             let a = pmu::sample();
             f(&mut bed, k);
             let d = pmu::sample().since(&a);
+            // wall time includes the two counter reads (a system call each on Linux): a floor of its own
+            wall.push(t0.elapsed().as_nanos() as u64);
             let tiles = bed.world.tiles.count();
             bed.world.tiles.clear();
             let mut v = d.v;
@@ -209,7 +213,8 @@ fn main() {
         }
         let mut t: Vec<u32> = got.iter().map(|g| g.1).collect();
         t.sort();
-        println!("{line}\t{}", t[t.len() / 2]);
+        wall.sort();
+        println!("{line}\t{}\t{}\t{}", t[t.len() / 2], wall[wall.len() / 2], wall[wall.len() - 1]);
     }
     std::fs::remove_file(&bed.image).ok();
 }

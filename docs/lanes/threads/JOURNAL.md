@@ -143,3 +143,117 @@ repetitions so each operation starts with that level cold). Warm misses say what
 evicted runs count the lines an operation touches (L1 misses after L1 eviction) and how many of them are
 chained (cycles after L3 eviction divided by a DRAM fill is a lower bound on the dependent ones). An input
 arrives after other code has run, so the cold numbers are the ones that predict interaction latency.
+
+## 4. What was built (2026-11-12; commits `2347684e44`, `0f436a0574`, `81da84ea75` and the one adding this section)
+
+Amendments 2 to 5 arrived while this was being built. Nothing here appears in author code (amendment 2): the
+arena, publishing, the image and the measurement cells are all under `World`. Amendment 5 moved the image to
+the front; it is built for columns.
+
+1. **`crates/bough-x/src/arena.rs`**: the scene in one reserved mapping: a shared part, a working half W, a
+   published half F, both of one layout, addressed by offsets only. The plan (one 64-byte entry per column,
+   indexed by a column number that never changes), the paint order, the spaces, the live words and the column
+   pages are all in a half. `docs/r8/ARENA.md` is the description offered to the other lanes.
+2. **Passes over the plan** (`store::delta`, `paint`, `stats`): the store tree is only what the sink uses to
+   find sites. The expr lane's store at `8af3f228d0` (hot words, sweeps) was ported onto it by hand.
+3. **Publishing**: the sink notes what it writes as dirty ranges; `publish` copies them W to F under an epoch;
+   `Ar::read` is the optimistic reader. Design section 3.3 changed while building: not two alternating copies
+   but a fixed working half and a fixed published half. The copy is the same; no site pointer or kernel has
+   to know which copy is current, and on a discrete GPU the published half need not exist on the CPU.
+4. **The image**: `World::save`, `World::open`, `World::adopt` (`docs/r8/IMAGE.md`).
+5. **Measurement**: `examples/hot_x.rs`, `bench/r8/perf/hot.sh`, `hot_merge.py`, `bench/r8/remote/mini.sh`,
+   `docs/lanes/threads/MEASURE.md`; both remotes set up (`/root/work/r8/threads`, `/home/miles/work/r8/threads`).
+
+Not built: workers of any kind, the static split decision as code, product columns and their landing, the
+chat scene, the pixel section of the image, per-page versions for readers (the epoch alone is used).
+
+## 5. Results against the predictions
+
+Hosts: **mothership** (Xeon E-2236, load 1, user-mode counters, `dist`, pinned to CPU 3), the host to believe
+for cycles and wall time; **ilo-prod** (Ryzen 7 3700X, load 5 to 14, pinned to CPU 9); the Mac for instructions
+only. Files: `bench/results/r8/threads/`. Sheet, 10,000 rows, 764 records exposed. x86-64 and aarch64
+instruction counts are not comparable with each other.
+
+### The A/B: store tree walk (`9466480f5d`) against the plan (`81da84ea75`), mothership, per repetition
+
+| cell | level | tree: instr | cycles | L1 fills | LLC miss | plan: instr | cycles | L1 fills | LLC miss |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| idle turn | warm | 50 | 24 | 0 | 0 | 48 | 8 | 0 | 0 |
+| hover a header | warm | 10,381 | 3,180 | 20 | 0 | 10,238 | 3,194 | 2 | 0 |
+| theme | warm | 36,168 | 11,477 | 449 | 0 | 36,094 | 11,961 | 411 | 0 |
+| edit an exposed cell | warm | 2,220 | 822 | 5 | 0 | 2,164 | 842 | 12 | 0 |
+| scroll three rows | warm | 6,561 | 2,390 | 28 | 0 | 7,173 | 2,859 | 103 | 0 |
+| scroll a page | warm | 43,455 | 15,387 | 287 | 0 | 44,187 | 16,043 | 353 | 0 |
+| mount (user mode) | warm | 123,496 | 60,059 | 3,673 | 0 | 86,823 | 50,850 | 1,156 | 0 |
+| hover a header | L1 cold | 10,381 | 3,668 | 196 | 0 | 10,238 | 5,313 | 203 | 0 |
+| hover a header | L3 cold | 10,381 | 12,245 | 212 | 470 | 10,238 | 12,342 | 214 | 473 |
+| theme | L3 cold | 36,168 | 25,106 | 575 | 980 | 36,094 | 23,117 | 551 | 919 |
+| edit an exposed cell | L3 cold | 2,220 | 7,547 | 141 | 336 | 2,164 | 8,769 | 140 | 318 |
+| scroll a page | L3 cold | 43,455 | 23,985 | 475 | 846 | 44,187 | 25,519 | 506 | 906 |
+| full frame (reference raster) | warm | 8,719,438 | 9,432,215 | 536,027 | 615,824 | 8,719,204 | 9,442,120 | 535,561 | 615,434 |
+
+Branch misses, warm, plan: idle 0, hover 3, theme 3, edit 1, scroll a page 15, mount 151, full frame 6,593.
+Wall time, plan, warm / L3 cold: idle 7 ns / 43 ns; hover 213 ns / 2.9 us; re-describe 1.5 us / 3.9 us; full
+frame 2.12 ms / 2.30 ms.
+
+### Verdicts
+
+| id | verdict |
+|---|---|
+| M1 | **Partly.** One script runs unchanged on three hosts and produced every table above. The perf stat cross-check (`-x`) has not been run, so "the two methods agree within 5 %" is untested. Flamegraphs: see section 6. |
+| C1 | **Holds**, and the expr lane found the same independently (its SEAM section 9): five dependent loads through the store tree for the sheet's cells. |
+| C2 | **Holds.** Two dependent loads at any nesting (read in the code: `World.ar` is in `World`; the entry's address is base plus a constant; the page is `entry.pages`). Hover and theme instructions are lower (-1.4 %, -0.2 %). Not asked by the prediction and worse: scroll three rows +9 % instructions and +20 % cycles (dirty notes for 22 sites and the live words on every list pass that writes a row). |
+| C3 | **Hover holds** (2 L1 fills, 3 branch misses warm). **Theme killed**: 411 L1 fills warm, predicted under 8. The prediction forgot that the pages a theme switch differentiates (about 100 KiB) do not fit a 32 KiB L1; they are served from L2 (2 L2 load misses), which is the level they stay in. Nothing is wrong on the path; the number to watch for theme is L2 misses. |
+| C4 | **First half holds, second half killed.** Cold is the real cost: hover is 3,194 cycles warm and 12,342 with L3 cold (3.9x); an edit 842 and 8,769 (10x). But the plan does not make it cheaper: 12,245 against 12,342 cycles, 470 against 473 lines from DRAM, 212 against 214 L1 fills. Three fewer chained metadata lines are invisible beside about 210 data lines and the path's own code, which the eviction also makes cold. A cold hover's cycles over its DRAM fills is about 19 cycles a line: the misses already overlap almost completely. **So "chained lines from a state write" is not what an interaction on this core pays for**, and ROUND8's budget of two is met without it mattering. What a cold turn pays for is its footprint: lines of pages differentiated and lines of code. Reducing that means differentiating fewer pages (the expr lane's dictionary form: hover differentiates ten pages to change two) and smaller kernels, not shorter chains. |
+| T3 | **Holds except the retry rate.** Hover and theme cost nothing more (no column written, nothing published). A reader thread over 2,000,000 publishes saw no torn scene on the Mac and on ilo-prod; `mutant_torn` saw 381,982. Retries were 0.2 to 0.9 per read, not under 1 %: the test publishes back to back (about 1.4 million a second), so a reader is interrupted most of the time by construction; at a frame rate the same reader would retry about once in 10,000 reads. The prediction should have named the publish rate. Not measured: the writer's instructions with and without a reader (they share no written line but the epoch, written twice per publish). |
+| I1 | **Killed, as section 1.5 expected.** Mapping is 0.62x of mounting in wall time (25.5 against 41.3 us), not under a fifth; map and adopt is as much as mount. In user instructions mapping is 11x cheaper (7,620 against 86,398), but both are system-call time. The corruption half holds: 3,000 corruptions on ilo-prod, 762 refused, 252 repaired, 1,986 harmless, none out of bounds. The saving for the sheet is about 15 us. See `IMAGE.md` section 4 for where an image would matter (the first frame's pixels: 2.1 ms). |
+| T1, T2, T4, T5 | **Not run**: no worker exists yet. T5's turn cost is visible already: scroll a page is 44,187 instructions and 16,043 cycles (4.5 us) whatever the row count, and `scroll_far` (every row new, a jump of 100 windows) is the same. |
+
+### What the numbers say about threads, before any is built
+
+The full frame through the reference raster is 9.4 million cycles (2.1 ms), 536,000 L1 fills and 616,000 lines
+from DRAM; the largest turn is 16,000 cycles. Three orders of magnitude. Every turn of this scene fits in
+L2 warm and costs single microseconds cold. So section 1.2 stands with numbers: nothing in the turn is worth a
+fork, and parallelism belongs to the frame (pixels) and to products that do not exist yet in this scene. The
+frame's 616,000 DRAM lines for 4 million pixels (16 MB) is the surface being written: ownership has to be
+stated for the surface, as section 1.3 said. That is the next experiment (T2), and it needs the raster lane's
+kernels rather than the oracle.
+
+## 6. Flamegraphs
+
+`hot.sh -f` on ilo-prod: `perf record -e cycles:u --call-graph dwarf` records and `perf script` prints stacks
+(checked by hand). The first run of the script produced no drawings: inferno was not on the host and
+`nix shell nixpkgs#inferno` had to fetch nixpkgs first; the script now builds it once (`nix build`) or takes
+`INFERNO=<dir>`. A second run was started (`/root/work/r8/threads/out/flame`); whether its files exist is in
+the hand-over note at the end of this journal.
+
+## 7. Refuted or failed, in one place
+
+1. Own: C4's second half and I1 (above). The chain is not the cost; the image of columns is not worth much.
+2. Own: C3 for theme (L1 is 32 KiB on both x86 hosts).
+3. Own: T3's retry rate (the prediction did not name a publish rate).
+4. Own design, section 3.3: alternating halves. Replaced by fixed W and F while building (no pointer changes
+   hands; nothing has to track which copy is current).
+5. Own: `setsid nohup` from an `rx.sh` script to start a remote job (it never started; the bench lane's
+   `bg.sh` is the way). A group of six events on mothership is not counted; three are.
+6. Own: the first hot_x cells for the image measured an image saved at set-up against a state later cells had
+   scrolled, so "adopt" there includes a repair of 3,670 tiles. It is labelled; the same-state cost is the
+   test's (no damage, no page written).
+7. The lead's request for column bases computable from the table index: not built, with the reason and the
+   measurement in `ARENA.md` section 2. Open for agreement.
+8. Mount on the Mac got more expensive with the arena (165,744 -> 289,624 instructions including the
+   kernel's): a mapping per world and its first-touch faults. In user mode on x86 it got cheaper (123,496 ->
+   86,823). Wall on the quiet host: 41 us. Not chased.
+
+## 8. Next, in order
+
+1. Agree `ARENA.md` with expr and raster through the lead (the computable-base point; who calls `publish`;
+   what a frame is handed). Until then both lanes are editing `store.rs`: expr should take this branch's
+   store rather than build its own flat table.
+2. For e2e: the pixel section and a `wl_shm` pool made from the image's file (IMAGE.md 4.1), once e2e says what
+   its first-commit path accepts; `Arena` over memory it did not reserve (IMAGE.md 5).
+3. The frame on workers, on the raster lane's kernels: bands of the surface owned by workers, the published
+   half read by all; T1 (wake latency, the static split decision as a `const fn`) and T2 (bands against pages)
+   on mothership.
+4. Products and their landing (design 3.4), with the chat scene; T4.
+5. `hot.sh -x` once, to close M1; kernel-mode counts for the start-up cells on ilo-prod (root).

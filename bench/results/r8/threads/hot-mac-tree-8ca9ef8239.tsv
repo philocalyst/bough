@@ -1,0 +1,52 @@
+# host=mileswirht os=Darwin 24.6.0 arch=arm64
+# cpu=Apple M3 Pro cores=11 mem=36GiB
+# load=5.21 8.53 9.34
+# commit=8ca9ef8239 date=2026-11-12T21:29:08Z rustc=1.101.0-nightly_5d8fec066_2026-10-16
+# binary=hot_x profile=dist sha256=490053ad5ffe7f48 bytes=515888
+# hot.sh cpu_pin=none l1d=128KiB l2=16384KiB l3=0KiB evict=2x fill_cycles=350 reps=64 (cold levels at most 64)
+scene	cell	level	evict_kb	reps	instr	cycles	br_miss	l1_miss	l2_miss	fill_l2	fill_l3	fill_dram	dtlb_miss	instr_max	cycles_max	chain_lb
+sheet	floor	warm	0	64	4	0								4	396	
+sheet	idle	warm	0	64	50	15								54	500	0.8
+sheet	hover	warm	0	64	7079	1308								7083	2097	8.9
+sheet	hover_word	warm	0	64	6362	1120								6366	1263	8.8
+sheet	theme	warm	0	64	31223	6559								31227	6735	17.3
+sheet	edit_exposed	warm	0	64	1622	340								1645	702	6.5
+sheet	edit_unexposed	warm	0	64	1094	225								1103	453	3.1
+sheet	insert_remove	warm	0	64	85351	25404								93044	35826	40.3
+sheet	scroll_6px	warm	0	64	1419	250								1423	452	2.8
+sheet	scroll_3_rows	warm	0	64	5408	1049								5412	1578	13.1
+sheet	scroll_page	warm	0	64	30062	5352								39430	25728	19.8
+sheet	scroll_far	warm	0	64	30136	5433								30957	5674	20.7
+sheet	redescribe_idle	warm	0	64	15970	2542								15974	2775	14.5
+sheet	mount	warm	0	64	165744	38696								166780	41627	54.8
+sheet	frame_full	warm	0	64	5143489	3582845								5269390	4753945	4209.2
+sheet	floor	l1	256	64	4	14								4	105	
+sheet	idle	l1	256	64	50	50								54	224	0.8
+sheet	hover	l1	256	64	7079	1550								11881	5857	8.9
+sheet	hover_word	l1	256	64	6362	1375								6367	1969	8.8
+sheet	theme	l1	256	64	31223	7599								31228	7983	17.3
+sheet	edit_exposed	l1	256	64	1622	637								1646	894	6.5
+sheet	edit_unexposed	l1	256	64	1094	436								1103	573	3.1
+sheet	insert_remove	l1	256	64	85315	27129								87975	28228	40.3
+sheet	scroll_6px	l1	256	64	1419	410								1424	562	2.8
+sheet	scroll_3_rows	l1	256	64	5408	1509								5412	1787	13.1
+sheet	scroll_page	l1	256	64	30062	6502								57865	49387	19.8
+sheet	scroll_far	l1	256	64	30136	6590								30958	7124	20.7
+sheet	redescribe_idle	l1	256	64	15970	2868								15975	3155	14.5
+sheet	mount	l1	256	64	165744	37607								166781	39161	54.8
+sheet	frame_full	l1	256	64	5143490	4346885								5271459	5929946	4209.2
+sheet	floor	l2	32768	64	4	350								5	1270	
+sheet	idle	l2	32768	64	50	295								55	3149	0.8
+sheet	hover	l2	32768	64	7078	4417								7084	11478	8.9
+sheet	hover_word	l2	32768	64	6362	4217								6366	10565	8.8
+sheet	theme	l2	32768	64	31223	12597								31228	20965	17.3
+sheet	edit_exposed	l2	32768	64	1622	2622								1645	6166	6.5
+sheet	edit_unexposed	l2	32768	64	1094	1309								1103	4417	3.1
+sheet	insert_remove	l2	32768	64	85315	39512								87975	49912	40.3
+sheet	scroll_6px	l2	32768	64	1419	1246								6244	17072	2.8
+sheet	scroll_3_rows	l2	32768	64	5408	5642								15041	25856	13.1
+sheet	scroll_page	l2	32768	64	30062	12294								47763	88263	19.8
+sheet	scroll_far	l2	32768	64	30136	12672								30958	15023	20.7
+sheet	redescribe_idle	l2	32768	64	15970	7627								15974	11667	14.5
+sheet	mount	l2	32768	64	165744	57861								166780	77384	54.8
+sheet	frame_full	l2	32768	64	5143490	5056053								5440609	6090382	4209.2

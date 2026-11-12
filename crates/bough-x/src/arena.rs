@@ -167,6 +167,9 @@ pub struct Head {
     pub size: [i32; 2],
     /// The block the published half was shaded with.
     pub shown: [u32; 64],
+    /// What follows the half in the file, as (byte offset in the file, bytes): 0 the first frame's pixels,
+    /// 1 glyph columns, 2 layout shapes, 3 spare. Reserved: nothing writes or reads them yet.
+    pub sections: [[u64; 2]; 4],
     /// Replaying the allocations of a mapped image (`World::adopt`): requests are answered from these cursors
     /// and checked against what the image holds. `bad`: the view asked for something else than the image has.
     pub adopt: u32,
@@ -613,6 +616,7 @@ impl Ar {
         c[0] ^= h.wasted as u64;
         eat(c.as_ptr() as *const u8, size_of_val(&c));
         eat(h.shown.as_ptr() as *const u8, 256);
+        eat(h.sections.as_ptr() as *const u8, 64);
         let w = self.work();
         eat(w.entry(0) as *const u8, (h.ncols as usize).min(MAX_COLS) * 64);
         eat(w.order() as *const u8, ((h.ncols as usize).min(MAX_COLS) * 2).next_multiple_of(8));

@@ -65,7 +65,14 @@ if [ "$(uname)" = Linux ]; then
     s=$(kib "$(cat "$i/size")")
     case $(cat "$i/level") in 1) L1=$s ;; 2) L2=$s ;; 3) L3=$s ;; esac
   done
-  GROUPS_="branch-misses,l1d-misses,cache-misses dc-fill-l2,dc-fill-ccx,dc-fill-dram dtlb-misses"
+  if grep -q GenuineIntel /proc/cpuinfo; then
+    # Intel (mothership, Coffee Lake): the generic cache events are last-level-cache requests and misses; L2
+    # misses of retired loads are a raw event. `event=alias` renames a column.
+    GROUPS_="branch-misses,l1d-misses,raw:0x10d1=l2-load-misses cache-refs=llc-refs,cache-misses=llc-misses,dtlb-misses"
+  else
+    GROUPS_="branch-misses,l1d-misses,cache-misses dc-fill-l2,dc-fill-ccx,dc-fill-dram dtlb-misses"
+  fi
+  [ -n "${HOT_GROUPS:-}" ] && GROUPS_=$HOT_GROUPS
   FILL_CYCLES=${FILL_CYCLES:-300}
 else
   PIN=""
@@ -85,9 +92,14 @@ for lv in $LEVELS; do
   g=0
   for grp in $GROUPS_; do
     g=$(( g + 1 ))
-    pmu=$grp; [ "$grp" = none ] && pmu=""
+    pmu=$(echo "$grp" | tr ',' '\n' | sed 's/=.*//' | paste -sd, -); [ "$grp" = none ] && pmu=""
+    # column renames for this group: `event=alias` (a raw event prints as `raw`)
+    ren=""
+    for ev in $(echo "$grp" | tr ',' ' '); do
+      case $ev in *=*) n=${ev%%=*}; a=${ev#*=}; case $n in raw:*) n=raw ;; esac; ren="$ren -e s/\t${n}_p50/\t${a}_p50/ -e s/\t${n}_max/\t${a}_max/" ;; esac
+    done
     for cell in $CELLS_; do
-      env OP="$cell" REPS="$reps" EVICT_KB="$kb" BOUGH_PMU="$pmu" $PIN "$BIN" 2>>"$T/err" | sed "s/^/$name\t$g\t/" >> "$T/raw"
+      env OP="$cell" REPS="$reps" EVICT_KB="$kb" BOUGH_PMU="$pmu" $PIN "$BIN" 2>>"$T/err" | sed $ren -e "s/^/$name\t$g\t/" >> "$T/raw"
     done
   done
 done
@@ -95,57 +107,12 @@ done
 {
   "$HERE/identity.sh" "$BIN"
   echo "# hot.sh cpu_pin=${PIN:-none} l1d=${L1}KiB l2=${L2}KiB l3=${L3}KiB evict=2x fill_cycles=$FILL_CYCLES reps=$R (cold levels at most 64)"
-  python3 - "$T/raw" "$FILL_CYCLES" <<'PY'
-import sys
-raw, fill = sys.argv[1], float(sys.argv[2])
-hdr, rows, order = None, {}, []
-for line in open(raw):
-    f = line.rstrip('\n').split('\t')
-    if len(f) < 4 or f[2].startswith('#'):
-        continue
-    level, _, body = f[0], f[1], f[2:]
-    if body[0] == 'scene':
-        hdr = body
-        continue
-    if hdr is None or len(body) != len(hdr):
-        continue
-    key = (body[1], level)
-    if key not in rows:
-        rows[key] = {}
-        order.append(key)
-    for h, v in zip(hdr, body):
-        rows[key].setdefault(h, v)
-cols = ['instructions_p50', 'cycles_p50', 'branch-misses_p50', 'l1d-misses_p50', 'cache-misses_p50',
-        'dc-fill-l2_p50', 'dc-fill-ccx_p50', 'dc-fill-dram_p50', 'dtlb-misses_p50', 'instructions_max', 'cycles_max']
-names = ['instr', 'cycles', 'br_miss', 'l1_miss', 'l2_miss', 'fill_l2', 'fill_l3', 'fill_dram', 'dtlb_miss', 'instr_max', 'cycles_max']
-print('\t'.join(['scene', 'cell', 'level', 'evict_kb', 'reps'] + names + ['chain_lb']))
-def num(r, c):
-    try:
-        return float(r.get(c, ''))
-    except ValueError:
-        return None
-for (cell, level) in order:
-    r = rows[(cell, level)]
-    warm = rows.get((cell, 'warm'), {})
-    floor = rows.get(('floor', level), {})
-    out = [r.get('scene', ''), cell, level, r.get('evict_kb', ''), r.get('reps', '')]
-    for c in cols:
-        v, fl = num(r, c), num(floor, c)
-        # the floor cell's count is what an empty repetition costs at this level (the first touch of the
-        # harness's own lines after the walk); subtract it from every other cell
-        if v is not None and fl is not None and cell != 'floor' and not c.endswith('_max'):
-            v = max(v - fl, 0.0)
-        out.append('' if v is None else f'{v:.0f}')
-    cold = rows.get((cell, 'l3'), rows.get((cell, 'l2'), {}))
-    fcold = rows.get(('floor', 'l3'), rows.get(('floor', 'l2'), {}))
-    fwarm = rows.get(('floor', 'warm'), {})
-    a, b, fa, fb = num(cold, 'cycles_p50'), num(warm, 'cycles_p50'), num(fcold, 'cycles_p50'), num(fwarm, 'cycles_p50')
-    if None in (a, b, fa, fb) or cell == 'floor':
-        out.append('')
-    else:
-        out.append(f'{max(((a - fa) - (b - fb)) / fill, 0.0):.1f}')
-    print('\t'.join(out))
-PY
+  cp "$T/raw" "$OUT/raw.tsv"
+  if command -v python3 >/dev/null && python3 -c 1 2>/dev/null; then
+    python3 "$HERE/hot_merge.py" "$T/raw" "$FILL_CYCLES"
+  else
+    echo "# no python3 here: fold $OUT/raw.tsv with bench/r8/perf/hot_merge.py RAW $FILL_CYCLES on another host"
+  fi
   [ -s "$T/err" ] && { echo "# stderr of the runs:"; sed 's/^/#   /' "$T/err" | sort | uniq -c | head -20; }
 } > "$OUT/hot.tsv"
 cat "$OUT/hot.tsv"
@@ -184,13 +151,21 @@ PY
 fi
 
 if [ "$FLAME" = 1 ] && [ "$(uname)" = Linux ]; then
-  inf() { if command -v inferno-flamegraph >/dev/null; then "$@"; else nix shell nixpkgs#inferno -c "$@"; fi; }
+  # inferno: on PATH, or in $INFERNO (a directory), or built once by nix (the first build fetches nixpkgs)
+  if ! command -v inferno-flamegraph >/dev/null; then
+    [ -n "${INFERNO:-}" ] || INFERNO=$(nix build --no-link --print-out-paths nixpkgs#inferno 2>/dev/null)/bin
+    PATH=$PATH:$INFERNO
+  fi
+  command -v inferno-flamegraph >/dev/null || { echo "hot: no inferno (set INFERNO=<dir with inferno-flamegraph>)" >&2; FLAME=0; }
+fi
+if [ "$FLAME" = 1 ] && [ "$(uname)" = Linux ]; then
+  inf() { "$@"; }
   for cell in $CELLS_; do
     [ "$cell" = floor ] && continue
-    # about two seconds of the cell: repetitions from its warm cycles (3.6e9 cycles a second, roughly)
+    # about a second of the cell: repetitions from its warm cycles
     cyc=$(awk -F'\t' -v c="$cell" '$2==c && $3=="warm" {print $7}' "$OUT/hot.tsv" | head -1)
-    n=$(python3 -c "print(max(2000, min(20000000, int(7e9 / max(float('${cyc:-1000}' or 1000), 50)))))")
-    env OP="$cell" REPS="$n" $PIN perf record -q -F 19997 --call-graph dwarf,16384 -o "$T/$cell.data" -- "$BIN" > /dev/null 2>>"$T/err"
+    n=$(python3 -c "print(max(2000, min(20000000, int(3e9 / max(float('${cyc:-1000}' or 1000), 50)))))")
+    env OP="$cell" REPS="$n" $PIN perf record -q -e cycles:u -F 4999 --call-graph dwarf,8192 -o "$T/$cell.data" -- "$BIN" > /dev/null 2>>"$T/err"
     perf script -i "$T/$cell.data" 2>/dev/null | inf inferno-collapse-perf > "$T/$cell.folded" 2>/dev/null
     inf inferno-flamegraph --title "$(basename "$BIN") $cell ($n repetitions)" "$T/$cell.folded" > "$OUT/$cell.svg" 2>/dev/null
     cp "$T/$cell.folded" "$OUT/$cell.folded"
