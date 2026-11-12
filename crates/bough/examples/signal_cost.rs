@@ -28,7 +28,7 @@ impl View for Rows {
     fn view(&self) -> impl Element<Self> + '_ {
         let line = move |i: usize| {
             row((
-                text(sig!(self.count).at(i).num(|n| *n as f32, NumFmt::new("", "", 0))).w(64.0),
+                text(sig!(self.count).at(i).num(|n| *n as f32, NumFmt::new("", None, ""))).w(64.0),
                 text(sig!(self.name).at(i).map(|n| format!("Row label {n}"))),
             ))
             .w(960.0)
