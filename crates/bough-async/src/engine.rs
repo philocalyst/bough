@@ -16,7 +16,8 @@
 use crate::time::{with_timers, Timers};
 use std::any::Any;
 use std::async_iter::AsyncIterator;
-use std::collections::{HashMap, VecDeque};
+use crate::addr::AddrMap as HashMap;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -138,6 +139,8 @@ pub struct Stats {
 // ------------------------------------------------------------------------------------------------- wakers
 
 struct Bell {
+    /// Something rang since the engine last looked: the only test an idle turn makes.
+    rung: AtomicBool,
     woken: Mutex<Vec<(u32, u32)>>,
     ring: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
@@ -156,6 +159,7 @@ impl Wake for FWaker {
     fn wake_by_ref(self: &Arc<Self>) {
         if self.armed.swap(false, Ordering::AcqRel) {
             self.bell.woken.lock().unwrap().push((self.id, self.generation));
+            self.bell.rung.store(true, Ordering::Release);
             if let Some(r) = self.bell.ring.lock().unwrap().as_ref() {
                 r();
             }
@@ -249,6 +253,8 @@ pub struct Engine {
     held: HashMap<usize, u32>,
     /// Source cell -> how many live questions read it.
     sourced: HashMap<usize, u32>,
+    /// Subject cell -> how many questions about it are in the air.
+    nloading: HashMap<usize, u32>,
     /// The publication the current turn's loud questions join (None: none yet).
     group: Option<u32>,
     /// Questions with answers to land outside any publication.
@@ -259,6 +265,12 @@ pub struct Engine {
     nflights: u32,
     npubs: u32,
     nevery: u32,
+    /// A publication may have become ready (a member answered, left, or its group closed): `step` looks.
+    pubs_dirty: bool,
+    /// Scratch buffers kept across turns (a landing allocates no bookkeeping).
+    scratch_woken: Vec<(u32, u32)>,
+    scratch_ids: Vec<u32>,
+    scratch_later: Vec<u32>,
     /// Cells newly held / released, and `about` cells whose loading status changed: the façade drains them.
     pub hold_out: Vec<usize>,
     pub release_out: Vec<usize>,
@@ -284,7 +296,7 @@ impl Drop for Engine {
 impl Engine {
     pub fn new() -> Engine {
         Engine {
-            bell: Arc::new(Bell { woken: Mutex::new(Vec::new()), ring: Mutex::new(None) }),
+            bell: Arc::new(Bell { rung: AtomicBool::new(false), woken: Mutex::new(Vec::new()), ring: Mutex::new(None) }),
             timers: Box::default(),
             flights: Vec::new(),
             fgen: Vec::new(),
@@ -296,14 +308,19 @@ impl Engine {
             afree: Vec::new(),
             pubs: Vec::new(),
             pfree: Vec::new(),
-            held: HashMap::new(),
-            sourced: HashMap::new(),
+            held: HashMap::default(),
+            sourced: HashMap::default(),
+            nloading: HashMap::default(),
             group: None,
             alone: Vec::new(),
             acts_ready: Vec::new(),
             nflights: 0,
             npubs: 0,
             nevery: 0,
+            pubs_dirty: false,
+            scratch_woken: Vec::new(),
+            scratch_ids: Vec::new(),
+            scratch_later: Vec::new(),
             hold_out: Vec::new(),
             release_out: Vec::new(),
             status_out: Vec::new(),
@@ -340,9 +357,25 @@ impl Engine {
     pub fn quiet(&self) -> bool {
         self.nflights == 0 && self.npubs == 0 && self.nevery == 0 && self.alone.is_empty() && self.acts_ready.is_empty()
     }
+    /// Is there anything for `step` to land now? (Futures may be pending; this asks whether any answered.)
+    #[inline]
+    pub fn has_work(&self) -> bool {
+        self.pubs_dirty || !self.alone.is_empty() || !self.acts_ready.is_empty() || self.group.is_some()
+    }
     /// Flights rung and not yet polled.
     pub fn woken(&self) -> bool {
         !self.bell.woken.lock().unwrap().is_empty()
+    }
+    /// Did anything ring (a flight's waker, or `ring_now`) since the last call? Clears it. Admission happens only
+    /// then: with any number of futures pending and none awake, a turn costs this swap.
+    #[inline]
+    pub fn take_rung(&self) -> bool {
+        self.bell.rung.load(Ordering::Relaxed) && self.bell.rung.swap(false, Ordering::AcqRel)
+    }
+    /// Ring the bell from the engine's own side: the clock moved (a host timer at `next_wake`, a test's
+    /// `advance`), so deadlines may have passed.
+    pub fn ring_now(&self) {
+        self.bell.rung.store(true, Ordering::Release);
     }
     pub fn flights(&self) -> usize {
         self.flights.iter().filter(|f| f.is_some()).count()
@@ -360,7 +393,7 @@ impl Engine {
     }
     /// Is `cell` the subject of a question in the air?
     pub fn loading(&self, cell: usize) -> bool {
-        self.qs.iter().any(|q| q.q.is_some() && q.about == cell && q.loading)
+        self.nloading.get(&cell).is_some_and(|&n| n > 0)
     }
 
     // --------------------------------------------------------------------------------------------- flights
@@ -449,8 +482,12 @@ impl Engine {
                         }
                     }
                 }
-                if q.pubn.is_none() && !self.alone.contains(&qi) {
-                    self.alone.push(qi);
+                if q.pubn.is_none() {
+                    if !self.alone.contains(&qi) {
+                        self.alone.push(qi);
+                    }
+                } else {
+                    self.pubs_dirty = true;
                 }
             }
             FOwner::A(ai, seq) => {
@@ -479,14 +516,17 @@ impl Engine {
     pub fn poll(&mut self, now: Duration) -> bool {
         self.timers.advance(now);
         // `every`: quiet re-asks that are due
-        let due: Vec<u32> = (0..self.qs.len() as u32).filter(|&i| self.qs[i as usize].q.is_some() && self.qs[i as usize].due.is_some_and(|d| d <= now)).collect();
-        for qi in due {
-            let q = &mut self.qs[qi as usize];
-            q.due = q.opts.every.map(|e| now + e);
-            self.reask(qi);
+        if self.nevery != 0 {
+            let due: Vec<u32> = (0..self.qs.len() as u32).filter(|&i| self.qs[i as usize].q.is_some() && self.qs[i as usize].due.is_some_and(|d| d <= now)).collect();
+            for qi in due {
+                let q = &mut self.qs[qi as usize];
+                q.due = q.opts.every.map(|e| now + e);
+                self.reask(qi);
+            }
         }
-        let woken = std::mem::take(&mut *self.bell.woken.lock().unwrap());
-        for (id, g) in woken {
+        let mut woken = std::mem::take(&mut self.scratch_woken);
+        std::mem::swap(&mut woken, &mut *self.bell.woken.lock().unwrap());
+        for &(id, g) in &woken {
             if self.fgen.get(id as usize) != Some(&g) {
                 continue; // dropped (and maybe reused) since it rang
             }
@@ -494,7 +534,9 @@ impl Engine {
             let r = self.poll_flight(id);
             self.deliver(owner, r);
         }
-        !self.alone.is_empty() || !self.acts_ready.is_empty() || self.ready_pub().is_some()
+        woken.clear();
+        self.scratch_woken = woken;
+        self.has_work()
     }
 
     // --------------------------------------------------------------------------------------------- questions
@@ -543,7 +585,7 @@ impl Engine {
         if q.asked.as_ref().is_some_and(|a| qq.same(&*input, &**a)) {
             return; // the same question is in the air (or its answer is staged)
         }
-        if q.shown.as_ref().is_some_and(|s| qq.same(&*input, &**s)) {
+        if !cfg!(feature = "sabotage_no_net") && q.shown.as_ref().is_some_and(|s| qq.same(&*input, &**s)) {
             if q.asked.is_none() {
                 return; // idle, and its answer is the one shown
             }
@@ -620,6 +662,12 @@ impl Engine {
         if q.loading != on {
             q.loading = on;
             if q.about != 0 {
+                let n = self.nloading.entry(q.about).or_default();
+                if on {
+                    *n += 1;
+                } else {
+                    *n -= 1;
+                }
                 self.status_out.push(q.about);
             }
         }
@@ -700,6 +748,7 @@ impl Engine {
     /// Leave its publication (a netted, dropped or now-quiet question).
     fn leave(&mut self, qi: u32) {
         if let Some(p) = self.qs[qi as usize].pubn.take() {
+            self.pubs_dirty = true;
             if let Some(pb) = self.pubs[p as usize].as_mut() {
                 pb.members.retain(|&m| m != qi);
             }
@@ -795,6 +844,7 @@ impl Engine {
     /// The current turn's publication is complete in membership.
     pub fn close_group(&mut self) {
         if let Some(g) = self.group.take() {
+            self.pubs_dirty = true;
             if let Some(p) = self.pubs[g as usize].as_mut() {
                 p.open = false;
             }
@@ -836,54 +886,80 @@ impl Engine {
     pub fn step(&mut self) -> Step {
         // the questions fired by the settle that followed the previous step form their own publication
         self.close_group();
-        if let Some(p) = self.ready_pub() {
+        if let Some(p) = if self.pubs_dirty { self.ready_pub() } else { None } {
             self.stats.commits += 1;
-            let mut members = std::mem::take(&mut self.pubs[p as usize].as_mut().unwrap().members);
+            let mut members = std::mem::take(&mut self.scratch_ids);
+            std::mem::swap(&mut members, &mut self.pubs[p as usize].as_mut().unwrap().members);
             members.sort_by_key(|&m| self.qs[m as usize].seq);
-            // quiet members still in the air leave (a publication with no loud member left is released)
-            let (members, out): (Vec<u32>, Vec<u32>) = members.into_iter().partition(|&m| self.member_ready(m));
-            for m in out {
-                self.qs[m as usize].pubn = None;
+            // quiet members still in the air leave (a publication with no loud member left is released); the
+            // first phase lands the members whose answers feed other questions (a cascade can only start from
+            // them), the second the others (`end_commit`)
+            let mut later = std::mem::take(&mut self.scratch_later);
+            let mut feed = 0;
+            for i in 0..members.len() {
+                let m = members[i];
+                if !self.member_ready(m) {
+                    self.qs[m as usize].pubn = None;
+                } else if cfg!(feature = "sabotage_one_phase") || self.feeds(m) {
+                    members[feed] = m;
+                    feed += 1;
+                } else {
+                    later.push(m);
+                }
             }
-            // first phase: the members whose answers feed other questions (a cascade can only start from them)
-            let (feed, later): (Vec<u32>, Vec<u32>) = members.into_iter().partition(|&m| self.feeds(m));
+            members.truncate(feed);
             let pb = self.pubs[p as usize].as_mut().unwrap();
             pb.open = true;
-            pb.later = later;
+            std::mem::swap(&mut pb.later, &mut later);
+            self.scratch_later = later;
             // a cascade fired by the landings joins this publication: it is the turn's group while committing
             self.group = Some(p);
-            for m in feed {
+            for &m in &members {
                 self.qs[m as usize].pubn = None;
                 self.land_q(m);
             }
+            members.clear();
+            self.scratch_ids = members;
             return Step::Committing(p);
         }
         if !self.alone.is_empty() {
-            let mut list = std::mem::take(&mut self.alone);
+            let mut list = std::mem::take(&mut self.scratch_ids);
+            std::mem::swap(&mut list, &mut self.alone);
             list.sort_by_key(|&m| self.qs[m as usize].seq);
             let mut landed = false;
-            for m in list {
+            for &m in &list {
                 if self.qs[m as usize].q.is_none() || self.qs[m as usize].pubn.is_some() {
                     continue;
                 }
                 // an answer computed from a held cell's intent must not show before that cell does: it waits in
                 // the publication that holds the cell
-                if let Some(p) = self.holder_of(m) {
-                    self.enter(m, p);
-                    continue;
+                if !cfg!(feature = "sabotage_no_enter") {
+                    if let Some(p) = self.holder_of(m) {
+                        self.enter(m, p);
+                        continue;
+                    }
                 }
                 self.land_q(m);
                 landed = true;
             }
+            list.clear();
+            self.scratch_ids = list;
             if landed {
                 return Step::Landed;
             }
             return self.step();
         }
-        if !self.acts_ready.is_empty() {
-            for ai in std::mem::take(&mut self.acts_ready) {
+        if self.acts_ready.is_empty() {
+            // nothing was ready: publications stay as they are until a member answers or leaves
+            self.pubs_dirty = false;
+        } else {
+            let mut list = std::mem::take(&mut self.scratch_ids);
+            std::mem::swap(&mut list, &mut self.acts_ready);
+            for &ai in &list {
                 self.land_a(ai);
             }
+            list.clear();
+            self.scratch_ids = list;
             return Step::Landed;
         }
         Step::Idle
@@ -892,10 +968,10 @@ impl Engine {
     fn land_q(&mut self, qi: u32) {
         let q = &mut self.qs[qi as usize];
         let Some(qq) = q.q.as_ref() else { return };
-        let items: Vec<Out> = q.staged.drain(..).collect();
-        if items.is_empty() && !q.done {
+        if q.staged.is_empty() && !q.done {
             return;
         }
+        let n = q.staged.len();
         let owner = q.owner;
         // the input these answers answer is the one shown from now on
         if q.done {
@@ -904,12 +980,12 @@ impl Engine {
             q.shown = Some(qq.clone_input(&**a));
         }
         let mut first = q.first;
-        let n = items.len();
         q.first &= n == 0;
         let done = q.done;
         // landings write cells (the façade's settle follows); the question table is not touched meanwhile
         let qq: *const dyn Question = &**q.q.as_ref().unwrap();
-        for v in items {
+        for _ in 0..n {
+            let Some(v) = self.qs[qi as usize].staged.pop_front() else { break };
             self.stats.landed += 1;
             // SAFETY: the question is alive (checked above) and nothing below drops it before the loop ends;
             // the owner is the live owner it was mounted for.
@@ -1038,15 +1114,14 @@ impl Engine {
             let Some(land) = a.land.as_ref() else { return };
             let land: *const dyn Landing = &**land;
             let Some(front) = a.runs.front_mut() else { return };
-            let items: Vec<Out> = front.items.drain(..).collect();
             let done = front.done;
-            if done {
-                a.runs.pop_front();
-            }
-            for v in items {
+            while let Some(v) = self.acts[ai as usize].runs.front_mut().and_then(|r| r.items.pop_front()) {
                 self.stats.landed += 1;
                 // SAFETY: mounted (checked above); the landing does not reach the engine.
                 unsafe { (*land).land(v) };
+            }
+            if done {
+                self.acts[ai as usize].runs.pop_front();
             }
             if !done {
                 return;

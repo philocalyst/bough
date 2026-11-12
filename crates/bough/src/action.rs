@@ -268,6 +268,7 @@ pub(crate) fn mount_actions<V: 'static>(m: &mut Mounter<'_, V>) {
             assert!(t == f.parent, "an Action's `then` names a handler of another type than the struct holding the action");
         }
         let parent = unsafe { owner.add(f.parent_off as usize) };
+        m.rt.async_on = true;
         let aid = m.rt.asks.engine.add_action(Box::new(ALand { cell, parent, owner: owner as usize, cls: m.cls }));
         let node = m.rt.asks.acts.len() as u32;
         m.rt.asks.acts.push(ActSlot { cell, aid, owner: owner as usize, cls: m.cls });

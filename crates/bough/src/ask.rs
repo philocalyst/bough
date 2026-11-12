@@ -16,7 +16,7 @@ use bough_async::{Engine, Out, QId, QOpts, Question, Step, Work};
 use std::any::Any;
 use std::async_iter::AsyncIterator;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use bough_async::addr::AddrMap as HashMap;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
@@ -39,6 +39,10 @@ pub struct Asks {
     pub inert: bool,
     /// This runtime's identity in the thread's pre-image table.
     pub(crate) id: u64,
+    /// A pre-image may have been kept this turn (set by settle from the write log).
+    pub(crate) kept_turn: bool,
+    /// Scratch for the engine's decisions (kept across turns: applying them allocates nothing).
+    scratch: [Vec<usize>; 3],
 }
 
 fn next_id() -> u64 {
@@ -48,7 +52,7 @@ fn next_id() -> u64 {
 
 impl Default for Asks {
     fn default() -> Self {
-        Asks { engine: Engine::new(), q_cells: Vec::new(), cells: HashMap::new(), acts: Vec::new(), fake: None, start: Instant::now(), inert: false, id: next_id() }
+        Asks { engine: Engine::new(), q_cells: Vec::new(), cells: HashMap::default(), acts: Vec::new(), fake: None, start: Instant::now(), inert: false, id: next_id(), kept_turn: false, scratch: Default::default() }
     }
 }
 
@@ -90,17 +94,19 @@ impl Rt {
         if e.hold_out.is_empty() && e.release_out.is_empty() && e.status_out.is_empty() {
             return;
         }
-        let holds = std::mem::take(&mut e.hold_out);
-        let releases = std::mem::take(&mut e.release_out);
-        let status = std::mem::take(&mut e.status_out);
-        for c in holds {
+        let [mut holds, mut releases, mut status] = std::mem::take(&mut self.asks.scratch);
+        let e = &mut self.asks.engine;
+        std::mem::swap(&mut holds, &mut e.hold_out);
+        std::mem::swap(&mut releases, &mut e.release_out);
+        std::mem::swap(&mut status, &mut e.status_out);
+        for &c in &holds {
             let h = head_at(c);
             h.set(h.get() | HELD);
             keep::held(c);
             crate::signal::queue_quiet(h);
             self.touch(c);
         }
-        for c in releases {
+        for &c in &releases {
             let h = head_at(c);
             // while still held: a release during a description swaps intent back into the cell first
             keep::release(c);
@@ -108,7 +114,7 @@ impl Rt {
             crate::signal::queue_quiet(h);
             self.touch(c);
         }
-        for c in status {
+        for &c in &status {
             let on = self.asks.engine.loading(c);
             let h = head_at(c);
             let v = h.get();
@@ -119,6 +125,10 @@ impl Rt {
                 self.touch(c);
             }
         }
+        holds.clear();
+        releases.clear();
+        status.clear();
+        self.asks.scratch = [holds, releases, status];
     }
 
     fn touch(&mut self, c: usize) {
@@ -189,7 +199,8 @@ impl Rt {
     /// # Safety
     /// As `settle_async`.
     pub(crate) unsafe fn admit_async(&mut self, root: *const u8) -> bool {
-        if self.asks.engine.quiet() {
+        // wake-driven: nothing rang (no waker, no clock), nothing to admit, whatever is pending
+        if !self.async_on || !self.asks.engine.take_rung() {
             return false;
         }
         let now = self.asks.now();
@@ -203,8 +214,7 @@ impl Rt {
 
     /// After a handler: the refreshes it asked for, then (after its settle) the turn's publication is complete in
     /// membership and what is ready lands.
-    pub(crate) fn take_refreshes(&mut self) {
-        let r = crate::signal::REFRESH.with(|r| std::mem::take(&mut *r.borrow_mut()));
+    pub(crate) fn take_refreshes(&mut self, r: Vec<usize>) {
         for c in r {
             self.asks.engine.refresh(c);
         }
@@ -216,8 +226,11 @@ impl Rt {
     /// # Safety
     /// As `settle_async`.
     pub(crate) unsafe fn finish_async(&mut self, root: *const u8) -> bool {
+        if !self.async_on {
+            return false;
+        }
         self.asks.engine.close_group();
-        if self.asks.engine.quiet() {
+        if !self.asks.engine.has_work() {
             return false;
         }
         unsafe { self.pump_async(root) }
@@ -270,11 +283,14 @@ pub trait Source<V> {
     fn cells(&self, out: &mut Vec<SrcCell>);
     /// The input from the owner's cells (kept by the question for its life).
     fn reader(self) -> Box<dyn Fn(*const u8) -> Self::In>;
+    /// Its part of the question's seal: the offsets of its cells.
+    fn seal_cells<SS: crate::seal::Sealer>(&self, s: &mut SS);
 }
 
 impl<V> Source<V> for () {
     type In = ();
     fn cells(&self, _: &mut Vec<SrcCell>) {}
+    fn seal_cells<SS: crate::seal::Sealer>(&self, _: &mut SS) {}
     fn reader(self) -> Box<dyn Fn(*const u8)> {
         Box::new(|_| ())
     }
@@ -282,6 +298,9 @@ impl<V> Source<V> for () {
 
 impl<'a, T: Clone + PartialEq + 'static, V> Source<V> for Wired<'a, T, V> {
     type In = T;
+    fn seal_cells<SS: crate::seal::Sealer>(&self, s: &mut SS) {
+        s.word(self.off);
+    }
     fn cells(&self, out: &mut Vec<SrcCell>) {
         out.push(SrcCell { head: self.sig as *const Signal<T> as usize, off: self.off, keep: keep::fns::<T>() });
     }
@@ -294,6 +313,9 @@ impl<'a, T: Clone + PartialEq + 'static, V> Source<V> for Wired<'a, T, V> {
 
 impl<'a, T: Clone + 'static, V, S: Clone + PartialEq + 'static, F: Fn(&T) -> S + Copy + 'static> Source<V> for WMap<'a, T, V, F> {
     type In = S;
+    fn seal_cells<SS: crate::seal::Sealer>(&self, s: &mut SS) {
+        s.word(self.w.off);
+    }
     fn cells(&self, out: &mut Vec<SrcCell>) {
         out.push(SrcCell { head: self.w.sig as *const Signal<T> as usize, off: self.w.off, keep: keep::fns::<T>() });
     }
@@ -307,6 +329,10 @@ impl<'a, T: Clone + 'static, V, S: Clone + PartialEq + 'static, F: Fn(&T) -> S +
 
 impl<V, A: Source<V>, B: Source<V>> Source<V> for (A, B) {
     type In = (A::In, B::In);
+    fn seal_cells<SS: crate::seal::Sealer>(&self, s: &mut SS) {
+        self.0.seal_cells(s);
+        self.1.seal_cells(s);
+    }
     fn cells(&self, out: &mut Vec<SrcCell>) {
         self.0.cells(out);
         self.1.cells(out);
@@ -319,6 +345,11 @@ impl<V, A: Source<V>, B: Source<V>> Source<V> for (A, B) {
 
 impl<V, A: Source<V>, B: Source<V>, C: Source<V>> Source<V> for (A, B, C) {
     type In = (A::In, B::In, C::In);
+    fn seal_cells<SS: crate::seal::Sealer>(&self, s: &mut SS) {
+        self.0.seal_cells(s);
+        self.1.seal_cells(s);
+        self.2.seal_cells(s);
+    }
     fn cells(&self, out: &mut Vec<SrcCell>) {
         self.0.cells(out);
         self.1.cells(out);
@@ -355,6 +386,10 @@ where
     F: for<'r> Fn((&'r TA, &'r TB)) -> S + 'static,
 {
     type In = S;
+    fn seal_cells<SS: crate::seal::Sealer>(&self, s: &mut SS) {
+        s.word(self.s.0.off);
+        s.word(self.s.1.off);
+    }
     fn cells(&self, out: &mut Vec<SrcCell>) {
         out.push(SrcCell { head: self.s.0.sig as *const Signal<TA> as usize, off: self.s.0.off, keep: keep::fns::<TA>() });
         out.push(SrcCell { head: self.s.1.sig as *const Signal<TB> as usize, off: self.s.1.off, keep: keep::fns::<TB>() });
@@ -610,6 +645,7 @@ impl<V: 'static, S: Source<V>, W: Starts<S::In>, L: Land<W::O>> Element<V> for A
         let mut opts = self.opts;
         opts.lands_into = L::INTO && opts.lands_into;
         let q = QImpl { read, w: self.w, land: self.land, owner: owner as usize, cls };
+        m.rt.async_on = true;
         let qid = m.rt.asks.engine.mount(Box::new(q), owner, cells.iter().map(|c| c.head).collect(), self.about, opts);
         let qi = qid.0 as usize;
         if m.rt.asks.q_cells.len() <= qi {
@@ -636,7 +672,15 @@ impl<V: 'static, S: Source<V>, W: Starts<S::In>, L: Land<W::O>> Element<V> for A
             m.rt.apply_async();
         }
     }
+    /// A mounted question is not re-described (its closures and cells are fixed at mount): a re-description
+    /// steps over it, so its seal is its cells (the same question in the same place seals equal).
     fn update(self, _m: &mut Mounter<'_, V>) {}
+    #[inline(always)]
+    fn seal<SS: crate::seal::Sealer>(&self, s: &mut SS) {
+        s.word(0x4153_4b21);
+        self.src.seal_cells(s);
+        s.word(self.about as u32);
+    }
 }
 
 // =============================================================================== status operands

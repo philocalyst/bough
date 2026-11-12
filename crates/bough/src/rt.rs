@@ -506,8 +506,12 @@ pub struct Rt {
     /// publications for `View::changed` (`changed.rs`).
     pub(crate) eviews: Vec<crate::entity::EView>,
     pub asy: crate::reader::Async,
-    /// Questions, actions and their engine (`ask.rs`, `action.rs`, crate `bough-async`).
-    pub asks: crate::ask::Asks,
+    /// Questions, actions and their engine (`ask.rs`, `action.rs`, crate `bough-async`), boxed: a turn of an app
+    /// without async touches none of it, and inline it would push the hot fields after it past one-instruction
+    /// offsets (measured: +9 instructions per idle turn).
+    pub asks: Box<crate::ask::Asks>,
+    /// A question, an action or a producer was ever mounted: until then a turn asks nothing of async.
+    pub(crate) async_on: bool,
     pub(crate) pubs: crate::changed::Pubs,
     pub(crate) selects: crate::select::Selects,
     next_serial: u32,
@@ -649,6 +653,7 @@ impl Rt {
             eviews: Vec::new(),
             asy: Default::default(),
             asks: Default::default(),
+            async_on: false,
             pubs: Default::default(),
             selects: Default::default(),
             next_serial: 0,
@@ -1242,12 +1247,15 @@ impl Rt {
                 self.wires[i as usize].head = 0;
                 self.wire_free.push(i);
             } else {
-                // re-read: a question running first may have just put this source on hold
-                if head.get() & crate::signal::HELD == 0 || w.group < G_PLAIN {
-                    self.ctr.wires_run += 1;
-                    // SAFETY: the wire was installed for this cell's type and the owner's type.
-                    unsafe { (w.patch)(self, &w, sig, owner) };
+                // re-read: a question running first may have just put this source on hold. The chain is in group
+                // order, so a held cell's plain wires are all after this point: none of them runs, none is walked
+                // (a hold costs its questions and status wires, not its sinks).
+                if head.get() & crate::signal::HELD != 0 && w.group == G_PLAIN {
+                    break;
                 }
+                self.ctr.wires_run += 1;
+                // SAFETY: the wire was installed for this cell's type and the owner's type.
+                unsafe { (w.patch)(self, &w, sig, owner) };
                 prev = i;
             }
             i = w.next;

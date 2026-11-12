@@ -295,6 +295,13 @@ pub struct AsyncStats {
     pub commits: u64,
 }
 
+impl Async {
+    /// A cohort holds a source now.
+    pub(crate) fn holding(&self) -> bool {
+        self.cohort.as_ref().is_some_and(|c| !c.held.is_empty())
+    }
+}
+
 impl Default for Async {
     fn default() -> Self {
         Async { exec: Exec::Manual(VecDeque::new()), done: Arc::default(), cohort: None, producers: Vec::new(), rescan: false, committed: Vec::new(), settle_owners: Vec::new(), bounds: Vec::new(), stats: AsyncStats::default() }
@@ -592,6 +599,7 @@ impl<'a, S: PartialEq + Clone + 'static, T: Send + 'static, V: 'static> crate::e
         // producer names an `offset_of!`-proven `Reader<T>` of `V`.
         let w = unsafe { m.wire_cell(self.src.sig.head(), self.src.off, patch_produce::<S, T>, pi, [0; 16]) };
         m.rt.make_question(w);
+        m.rt.async_on = true;
         // the source keeps a pre-image of its first write of a turn: a description reads it while held (round 7)
         let h = self.src.sig.head();
         crate::signal::keep::register(h as *const _ as usize, crate::signal::keep::fns::<S>(), m.rt.asks.id);

@@ -511,12 +511,29 @@ impl<V: View> App<V> {
         self.prof.reset();
         self.rt.pubs.clear();
         self.rt.admit();
+        if self.rt.async_on {
+            return self.turn_async(f);
+        }
+        // an app that never mounted a question, an action or a producer: the turn as it always was
+        f(&mut self.owner);
         let owner = &mut *self.owner as *mut V as *const u8;
-        // async completions (answers, actions) land first, each settled (ask.rs)
         // SAFETY: the owner is the mounted view; every wire was installed from a `sig!` proof for it.
+        unsafe { self.rt.settle(owner) };
+        self.effects();
+        self.redescribe();
+        self.prof.mark(PH_UPDATE);
+        self.rt.lay_flush();
+        self.prof.mark(PH_TEXT);
+    }
+
+    /// `turn` for an app with async: what rang lands first, each settled (ask.rs); then the handler and the rest.
+    #[inline(never)]
+    fn turn_async(&mut self, f: impl FnOnce(&mut V)) {
+        let owner = &mut *self.owner as *mut V as *const u8;
+        // SAFETY: as in `turn`.
         unsafe { self.rt.admit_async(owner) };
         f(&mut self.owner);
-        self.after_handler();
+        self.after_handler_async();
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
         self.prof.mark(PH_TEXT);
@@ -547,24 +564,50 @@ impl<V: View> App<V> {
     /// The part of every turn after its handler: the refreshes it asked for, settle, the turn's questions
     /// published together (what is ready lands), `changed`, re-description (reading held cells' shown values),
     /// and whatever the description mounted that answered at once.
+    #[inline(always)]
     pub(crate) fn after_handler(&mut self) {
+        if !self.rt.async_on {
+            // an app that never mounted a question, an action or a producer: the turn as it was (this path is
+            // inlined into `turn`; the async one is a call, so its size costs this path nothing)
+            let owner = &mut *self.owner as *mut V as *const u8;
+            // SAFETY: as in `turn`.
+            unsafe { self.rt.settle(owner) };
+            self.effects();
+            self.redescribe();
+            return;
+        }
+        self.after_handler_async();
+    }
+
+    #[inline(never)]
+    fn after_handler_async(&mut self) {
         let owner = &mut *self.owner as *mut V as *const u8;
-        self.rt.take_refreshes();
+        // the refreshes the handler asked for (`Signal::refresh`), then its settle. (Folding this read into
+        // `settle`'s own access to the write log was tried: it made `settle` cost apps without async 30 more
+        // instructions a turn, measured.)
+        let r = crate::signal::LOG.with(|l| if l.asked.replace(false) { crate::signal::take_refreshes(l) } else { Vec::new() });
+        if !r.is_empty() {
+            self.rt.take_refreshes(r);
+        }
         // SAFETY: as in `turn`.
         unsafe { self.rt.settle(owner) };
         unsafe { self.rt.finish_async(owner) };
         self.effects();
         self.redescribe();
-        // a description mounts and releases questions (scopes): what that made ready lands now, before the frame
-        for _ in 0..4 {
-            // SAFETY: as above.
-            if !unsafe { self.rt.finish_async(owner) } {
-                break;
+        if self.rt.async_on {
+            // a description mounts and releases questions (scopes): what that made ready lands now, before the frame
+            for _ in 0..4 {
+                // SAFETY: as above.
+                if !unsafe { self.rt.finish_async(owner) } {
+                    break;
+                }
+                self.effects();
+                self.redescribe();
             }
-            self.effects();
-            self.redescribe();
+            if crate::signal::LOG.with(|l| l.kept.replace(false)) {
+                crate::signal::keep::end_turn();
+            }
         }
-        crate::signal::keep::end_turn();
     }
 
     /// `f` on the state as the screen shows it: every held cell reads its kept (shown) value. For oracles: a
@@ -613,6 +656,7 @@ impl<V: View> App<V> {
     pub fn advance(&mut self, d: std::time::Duration) {
         let now = self.rt.asks.now() + d;
         self.rt.asks.fake = Some(now);
+        self.rt.asks.engine.ring_now();
         self.turn(|_| {});
     }
     /// Turns until no flight has rung (bounded): what is ready lands, streams step one item per turn.
@@ -665,18 +709,29 @@ impl<V: View> App<V> {
     }
 
     /// Describe the view again and patch the retained records (`describe.rs`); not when mounted once.
+    #[inline(always)]
     pub(crate) fn redescribe(&mut self) {
         if !self.once {
-            // a description reads what the screen shows: held cells' kept values are swapped in around it
-            let swap = crate::signal::keep::any();
-            if swap {
-                crate::signal::keep::swap_held(true, self.rt.asks.id);
+            if self.rt.async_on {
+                return self.redescribe_shown();
             }
             // SAFETY: the tape was recorded by this owner's mount at the start of the Bough.
             unsafe { crate::describe::redescribe(&mut self.rt, &*self.owner, &mut self.tape) };
-            if swap {
-                crate::signal::keep::swap_held(false, self.rt.asks.id);
-            }
+        }
+    }
+
+    /// `redescribe` for an app with async: a description reads what the screen shows, so held cells' kept values
+    /// are swapped in around it. Out of line: its size must not cost the turns of apps without async.
+    #[inline(never)]
+    fn redescribe_shown(&mut self) {
+        let swap = (self.rt.asks.engine.held_cells() > 0 || self.rt.asy.holding()) && crate::signal::keep::any();
+        if swap {
+            crate::signal::keep::swap_held(true, self.rt.asks.id);
+        }
+        // SAFETY: the tape was recorded by this owner's mount at the start of the Bough.
+        unsafe { crate::describe::redescribe(&mut self.rt, &*self.owner, &mut self.tape) };
+        if swap {
+            crate::signal::keep::swap_held(false, self.rt.asks.id);
         }
     }
 

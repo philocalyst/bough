@@ -6,3 +6,12 @@ license.workspace = true
 description = "bough's async core, platform-independent: flights polled on the UI thread, the clock, workers, and the publication engine (questions, holds, publications, actions)"
 
 [dependencies]
+
+[features]
+# Gate sabotage: each breaks one rule of the engine; tests/model.rs must fail with every one of them.
+# A commit lands every member at once (no second phase): a cascade shows its other members early.
+sabotage_one_phase = []
+# A quiet answer whose source is held lands at once instead of waiting in the holder.
+sabotage_no_enter = []
+# Back to the shown input does not net: the old request stays and the hold with it.
+sabotage_no_net = []

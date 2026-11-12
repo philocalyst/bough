@@ -168,13 +168,36 @@ impl<T: 'static> Signal<T> {
     /// `about`), with the same input and holding nothing: stale-while-revalidate, a retry. Takes effect when the
     /// handler's turn settles.
     pub fn refresh(&mut self) {
-        REFRESH.with(|r| r.borrow_mut().push(self as *const Self as usize));
+        let a = self as *const Self as usize;
+        LOG.with(|l| {
+            let n = l.refresh_n.get() as usize;
+            if n < REFRESH_CAP {
+                l.refresh_at[n].set(a);
+            } else {
+                REFRESH_SPILL.with(|s| s.borrow_mut().push(a));
+            }
+            l.refresh_n.set(n as u32 + 1);
+            l.asked.set(true);
+        });
     }
 }
 
+/// Refreshes held in the write log's thread-local (no destructor there: an access to it stays a plain load).
+pub(crate) const REFRESH_CAP: usize = 8;
+
 thread_local! {
-    /// Cells whose questions a handler asked to re-ask (`Signal::refresh`), taken by the turn's settle.
-    pub(crate) static REFRESH: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Refreshes past `REFRESH_CAP` in one turn.
+    pub(crate) static REFRESH_SPILL: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Take the refreshes asked since the last call (inside a `LOG.with` the settle already makes).
+pub(crate) fn take_refreshes(l: &WriteLog) -> Vec<usize> {
+    let n = l.refresh_n.replace(0) as usize;
+    let mut v: Vec<usize> = l.refresh_at[..n.min(REFRESH_CAP)].iter().map(|c| c.get()).collect();
+    if n > REFRESH_CAP {
+        REFRESH_SPILL.with(|s| v.append(&mut s.borrow_mut()));
+    }
+    v
 }
 
 impl<T: PartialEq> Signal<T> {
@@ -216,6 +239,14 @@ pub(crate) const LOG_CAP: usize = 32;
 pub(crate) struct WriteLog {
     pub n: Cell<u32>,
     pub epoch: Cell<u32>,
+    /// A refresh was asked since the runtime last looked (`Signal::refresh`), and the cells: read by the settle's
+    /// own access to this thread-local, so a turn without one pays a load.
+    pub asked: Cell<bool>,
+    pub refresh_n: Cell<u32>,
+    pub refresh_at: [Cell<usize>; REFRESH_CAP],
+    /// A head with `KEEP` or `HELD` was logged since the runtime last looked: a pre-image may need dropping at the
+    /// end of the turn.
+    pub kept: Cell<bool>,
     /// Runtimes alive on this thread: with one, an address that is not its root owner's can be dropped.
     pub live: Cell<u32>,
     pub at: [Cell<usize>; LOG_CAP],
@@ -223,7 +254,7 @@ pub(crate) struct WriteLog {
 
 thread_local! {
     pub(crate) static LOG: WriteLog = const {
-        WriteLog { n: Cell::new(0), epoch: Cell::new(0), live: Cell::new(0), at: [const { Cell::new(0) }; LOG_CAP] }
+        WriteLog { n: Cell::new(0), epoch: Cell::new(0), asked: Cell::new(false), refresh_n: Cell::new(0), refresh_at: [const { Cell::new(0) }; REFRESH_CAP], kept: Cell::new(false), live: Cell::new(0), at: [const { Cell::new(0) }; LOG_CAP] }
     };
 }
 
@@ -232,6 +263,7 @@ thread_local! {
 fn log(addr: usize, h: u32) {
     if h & (KEEP | HELD) != 0 {
         keep::capture(addr);
+        LOG.with(|l| l.kept.set(true));
     }
     LOG.with(|l| {
         let n = l.n.get() as usize;
@@ -280,7 +312,7 @@ pub(crate) fn queue_quiet(head: &Cell<u32>) {
 pub(crate) mod keep {
     use std::any::Any;
     use std::cell::{Cell, RefCell};
-    use std::collections::HashMap;
+    use bough_async::addr::AddrMap as HashMap;
 
     /// Clone a cell's value; swap a cell's value with a kept one. Monomorphised per cell type.
     #[derive(Clone, Copy)]

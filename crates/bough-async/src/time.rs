@@ -5,7 +5,8 @@
 //! registers its deadline with the engine that polls it (through a thread-local set only while the engine
 //! polls); it is a UI-thread timer and panics if polled anywhere else.
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use crate::addr::AddrMap as HashMap;
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};

@@ -8,7 +8,9 @@
 //!
 //! The application: `a`, `b` written by "handlers"; questions `d1 = f1(a)` and `d2 = f2(a)` (one source, so
 //! one publication), `d3 = f3(d1)` (a cascade), `d4 = f4(b)` deferred (holds nothing), `ds = stream(a)` (a
-//! stream: two items per input). Answers encode their input, so the oracle can check them.
+//! stream: two items per input), `d5 = f5(a, b)` (two sources), `d6` asked every 7 ms with no input (quiet
+//! re-asks), and an action whose runs (inputs 0, 1, 2, ... in the order sent) land in a log. Answers encode
+//! their input, so the oracle can check them.
 //!
 //! Oracle, after every turn ("frame"):
 //! * F-1: a loud question's destination, if answered, is its function of the *shown* source (`d1 == f1(a)`
@@ -38,7 +40,9 @@ const D2: usize = 4;
 const D3: usize = 5;
 const D4: usize = 6;
 const DS: usize = 7;
-const NCELL: usize = 8;
+const D5: usize = 8;
+const D6: usize = 9;
+const NCELL: usize = 10;
 
 fn f1(x: Val) -> Val {
     x.map(|x| x * 10 + 1)
@@ -55,6 +59,9 @@ fn f4(x: Val) -> Val {
 /// Stream item `k` (0, 1) for input x.
 fn fs(x: Val, k: i64) -> Val {
     x.map(|x| x * 100 + 50 + k)
+}
+fn f5(a: Val, b: Val) -> Val {
+    Some(a? * 1000 + b? * 100 + 5)
 }
 
 // ============================================================================================ gates
@@ -130,6 +137,10 @@ fn resolve(i: usize) {
             "f2" => f2(gt.input),
             "f3" => f3(gt.input),
             "f4" => f4(gt.input),
+            // f5's gate carries the pair encoded as a * 10 + b
+            "f5" => gt.input.and_then(|p| f5(Some(p / 10), Some(p % 10))),
+            "f6" => Some(600),
+            "act" => gt.input,
             _ => fs(gt.input, gt.k),
         };
         gt.answer = Some(v);
@@ -156,6 +167,9 @@ struct World {
     wires: Vec<Vec<QId>>,
     /// A destination has been landed into since its question was (re)mounted.
     landed: [bool; NCELL],
+    /// The action: inputs sent, in order, and answers landed, in order.
+    sent: Vec<i64>,
+    acted: Vec<i64>,
 }
 
 impl World {
@@ -230,10 +244,75 @@ impl Question for MQ {
     }
 }
 
+/// `d5 = f5(a, b)`: two sources.
+struct MQ2;
+impl Question for MQ2 {
+    unsafe fn input(&self, owner: *mut u8) -> Out {
+        let w = unsafe { &*(owner as *const World) };
+        Box::new((w.vals[A], w.vals[B]))
+    }
+    fn same(&self, a: &dyn Any, b: &dyn Any) -> bool {
+        a.downcast_ref::<(Val, Val)>() == b.downcast_ref::<(Val, Val)>()
+    }
+    fn clone_input(&self, a: &dyn Any) -> Out {
+        Box::new(*a.downcast_ref::<(Val, Val)>().unwrap())
+    }
+    fn start(&self, input: &dyn Any) -> Work {
+        let (a, b) = *input.downcast_ref::<(Val, Val)>().unwrap();
+        let g = open_gate("f5", a.zip(b).map(|(a, b)| a * 10 + b), 0);
+        Work::once(GateFut(g))
+    }
+    unsafe fn land(&self, owner: *mut u8, out: Out, _first: bool) {
+        let w = unsafe { &mut *(owner as *mut World) };
+        w.landed[D5] = true;
+        w.write(D5, *out.downcast::<Val>().unwrap());
+    }
+    fn is_stream(&self) -> bool {
+        false
+    }
+}
+
+/// `d6`, asked every 7 ms with no input.
+struct MQ6;
+impl Question for MQ6 {
+    unsafe fn input(&self, _owner: *mut u8) -> Out {
+        Box::new(())
+    }
+    fn same(&self, _: &dyn Any, _: &dyn Any) -> bool {
+        true
+    }
+    fn clone_input(&self, _: &dyn Any) -> Out {
+        Box::new(())
+    }
+    fn start(&self, _: &dyn Any) -> Work {
+        let g = open_gate("f6", Some(6), 0);
+        Work::once(GateFut(g))
+    }
+    unsafe fn land(&self, owner: *mut u8, out: Out, _first: bool) {
+        let w = unsafe { &mut *(owner as *mut World) };
+        w.write(D6, *out.downcast::<Val>().unwrap());
+    }
+    fn is_stream(&self) -> bool {
+        false
+    }
+}
+
+/// The action's landing: answers append to `acted`.
+struct ALog(*mut World);
+impl bough_async::Landing for ALog {
+    unsafe fn land(&self, out: Out) {
+        let w = unsafe { &mut *self.0 };
+        w.acted.push(out.downcast::<Val>().unwrap().unwrap());
+    }
+    unsafe fn finished(&self) {}
+}
+
 struct Harness {
     e: Engine,
     w: Box<World>,
     qs: [Option<QId>; 5],
+    q5: QId,
+    act: bough_async::AId,
     now: Duration,
     log: Vec<String>,
 }
@@ -243,10 +322,22 @@ const SPECS: [(&str, usize, usize, bool, bool); 5] = [("f1", A, D1, true, false)
 impl Harness {
     fn new() -> Harness {
         GATES.with(|g| g.borrow_mut().clear());
-        let mut w = Box::new(World { vals: [None; NCELL], keep: HashSet::new(), held: HashSet::new(), kept: HashMap::new(), turn_pre: Vec::new(), queued: Vec::new(), wires: vec![Vec::new(); NCELL], landed: [false; NCELL] });
+        let mut w = Box::new(World { vals: [None; NCELL], keep: HashSet::new(), held: HashSet::new(), kept: HashMap::new(), turn_pre: Vec::new(), queued: Vec::new(), wires: vec![Vec::new(); NCELL], landed: [false; NCELL], sent: Vec::new(), acted: Vec::new() });
         w.vals[A] = Some(0);
         w.vals[B] = Some(0);
-        let mut h = Harness { e: Engine::new(), w, qs: [None; 5], now: Duration::ZERO, log: Vec::new() };
+        let mut e = Engine::new();
+        let owner = &mut *w as *mut World as *mut u8;
+        let q5 = e.mount(Box::new(MQ2), owner, vec![A, B], D5, QOpts { hold: true, every: None, lands_into: true });
+        let act = e.add_action(Box::new(ALog(owner as *mut World)));
+        let mut h = Harness { e, w, qs: [None; 5], q5, act, now: Duration::ZERO, log: Vec::new() };
+        h.w.wires[A].push(q5);
+        h.w.wires[B].push(q5);
+        h.w.keep.insert(A);
+        h.w.keep.insert(B);
+        h.e.first(q5);
+        let q6 = h.e.mount(Box::new(MQ6), owner, vec![], D6, QOpts { hold: false, every: Some(Duration::from_millis(7)), lands_into: true });
+        h.e.first(q6);
+        h.drain_out();
         for i in 0..5 {
             h.mount(i);
         }
@@ -279,7 +370,7 @@ impl Harness {
             self.w.wires[src].retain(|&x| x != q);
             self.e.revoke(q);
             // KEEP stays while another holding question sources the cell
-            let still = (0..5).any(|j| j != i && self.qs[j].is_some() && SPECS[j].1 == src && SPECS[j].3);
+            let still = (0..5).any(|j| j != i && self.qs[j].is_some() && SPECS[j].1 == src && SPECS[j].3) || src == A || src == B;
             if !still {
                 self.w.keep.remove(&src);
             }
@@ -399,6 +490,12 @@ impl Harness {
         if self.qs[4].is_some() && s(DS).is_some() && s(DS) != fs(s(A), 0) && s(DS) != fs(s(A), 1) {
             fail(format!("ds {:?} beside a {:?}", s(DS), s(A)));
         }
+        if w.landed[D5] && s(D5).is_some() && s(D5) != f5(s(A), s(B)) {
+            fail(format!("d5 {:?} beside a {:?} b {:?}", s(D5), s(A), s(B)));
+        }
+        if !w.sent.starts_with(&w.acted) {
+            fail(format!("action answers {:?} out of the order sent {:?}", w.acted, w.sent));
+        }
         if w.held.len() != self.e.held_cells() {
             fail(format!("façade holds {} cells, engine {}", w.held.len(), self.e.held_cells()));
         }
@@ -411,7 +508,7 @@ impl Harness {
             }
         }
         // latest wins: at most one live gate per question (a stream has one per item, one at a time)
-        for q in ["f1", "f2", "f3", "f4", "fs"] {
+        for q in ["f1", "f2", "f3", "f4", "fs", "f5", "f6"] {
             let n = GATES.with(|g| g.borrow().iter().filter(|x| x.q == q && !x.done && !x.dropped).count());
             if n > 1 {
                 fail(format!("{n} live requests of {q}"));
@@ -451,6 +548,8 @@ impl Harness {
         if self.qs[4].is_some() {
             assert_eq!(v(DS), fs(v(A), 1), "{ctx}: ds after drain\n{}", self.log.join("\n"));
         }
+        assert_eq!(v(D5), f5(v(A), v(B)), "{ctx}: d5 after drain\n{}", self.log.join("\n"));
+        assert_eq!(w.acted, w.sent, "{ctx}: every action run landed, in order");
     }
 
     /// Apply op `op` (see `OPS`).
@@ -511,6 +610,21 @@ impl Harness {
                     w.write(B, Some(1 - b));
                 });
             }
+            9 => {
+                let k = self.w.sent.len() as i64;
+                self.log.push(format!("run action {k}"));
+                self.w.sent.push(k);
+                let g = open_gate("act", Some(k), 0);
+                self.e.run(self.act, Work::once(GateFut(g)));
+                self.drain_out();
+                self.settle_and_pump();
+                self.end_turn();
+            }
+            10 => {
+                self.log.push("advance 5 ms".into());
+                self.now += Duration::from_millis(4);
+                self.idle_turn();
+            }
             _ => {
                 self.log.push("idle".into());
                 self.idle_turn();
@@ -519,7 +633,7 @@ impl Harness {
     }
 }
 
-const OPS: u8 = 10;
+const OPS: u8 = 12;
 
 struct Rng(u64);
 impl Rng {
@@ -561,7 +675,7 @@ fn random_schedules() {
 fn exhaustive() {
     let depth = env("BOUGH_MODEL_DEPTH", 5) as u32;
     // ops: a := 0..2, b := 0, resolve the first / last pending, refresh, unmount/remount, both
-    let alphabet: [(u8, usize); 9] = [(0, 0), (1, 0), (2, 0), (3, 0), (5, 0), (5, usize::MAX), (6, 0), (7, 0), (8, 0)];
+    let alphabet: [(u8, usize); 11] = [(0, 0), (1, 0), (2, 0), (3, 0), (5, 0), (5, usize::MAX), (6, 0), (7, 0), (8, 0), (9, 0), (10, 0)];
     let n = alphabet.len() as u64;
     let total = n.pow(depth);
     let shard = env("BOUGH_MODEL_SHARD", 0);
@@ -596,8 +710,8 @@ fn cascade_holds_the_selection_until_the_author_lands() {
     h.turn(|w| w.write(A, Some(2)));
     h.check("asked 2");
     assert!(h.w.held.contains(&A));
-    // answer f1(2) and f2(2): the cascade asks f3(21); `a` stays held, d1 shows 1
-    for q in ["f1", "f2"] {
+    // answer f1(2), f2(2) and f5(2, 0): the cascade asks f3(21); `a` stays held, d1 shows 1
+    for q in ["f1", "f2", "f5"] {
         let i = pending_gates().into_iter().find(|&i| GATES.with(|g| g.borrow()[i].q == q)).unwrap();
         resolve(i);
         h.idle_turn();
