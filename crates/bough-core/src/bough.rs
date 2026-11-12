@@ -1472,18 +1472,25 @@ impl Bough {
             self.total += k;
             return;
         }
-        if flags == 0 {
+        if flags & (F_XF | F_WIDE) == 0 {
+            // a plain page takes records inside the domain that fit its frame; a far page takes any that
+            // fit its frame and keep its frame rule (blank records, the next rows of its column)
             let mut rel = core::mem::take(&mut self.rel_scratch);
             rel.clear();
             let p = self.page(d);
+            let mut u = if flags == 0 { WRect::EMPTY } else { p.abs_wide(p.union_ink()) };
             for (i, r) in recs.iter().enumerate() {
                 let w = wide.map_or(WRect::from(r.ink.canon()), |w| w[i]);
                 match p.rel_of(w) {
-                    Some(ink) if w.in_domain() => rel.push(RecordInit { ink, ..*r }),
+                    Some(ink) if flags != 0 || w.in_domain() => {
+                        rel.push(RecordInit { ink, ..*r });
+                        u = u.union(w);
+                    }
                     _ => break,
                 }
             }
-            let fits = rel.len() == k;
+            let off = p.off;
+            let fits = rel.len() == k && (flags == 0 || (0..2).all(|a| off[a].abs() <= 32767 || u.is_empty() || u.0[a] > COORD_MAX || u.0[a + 2] < COORD_MIN));
             if fits {
                 if l + k <= CAP {
                     self.insert_in_page(d, s, &rel);
@@ -1520,14 +1527,17 @@ impl Bough {
         let mut off = [0i32; 2];
         for a in 0..2 {
             let (lo, hi) = (u.0[a], u.0[a + 2]);
-            let (min, max) = (hi - COORD_MAX, lo - COORD_MIN);
+            // offsets that put both edges in 16 bits; on an axis where the union is not wholly beyond the
+            // domain the offset itself must be in 16 bits too
+            let (mut min, mut max) = (hi - COORD_MAX, lo - COORD_MIN);
+            if !(lo > COORD_MAX || hi < COORD_MIN) {
+                (min, max) = (min.max(-32767), max.min(32767));
+            }
             if min > max {
                 return None;
             }
-            off[a] = 0.clamp(min, max);
-            if off[a].abs() > 32767 && !(lo > COORD_MAX || hi < COORD_MIN) {
-                return None;
-            }
+            // the middle of the union, so later records on either side (the next rows of a column) still fit
+            off[a] = (lo + (hi - lo) / 2).clamp(min, max);
         }
         Some((off, F_FAR))
     }
@@ -2180,11 +2190,16 @@ impl Bough {
                         uo = uo.union(old_d);
                         un = un.union(new_d);
                     }
-                    None => {
-                        self.fix_chunks(d0, d + 1);
-                        let (o, w, np) = self.translate_exact(d, 0, l, dx, dy);
-                        (uo, un, pages) = (uo.union(o), un.union(w), np);
-                    }
+                    None => match self.translate_far(d, dx, dy) {
+                        // a page with its own frame whose frame stays valid: its offset moves, like a
+                        // plain page's
+                        Some((o, w)) => (uo, un) = (uo.union(o), un.union(w)),
+                        None => {
+                            self.fix_chunks(d0, d + 1);
+                            let (o, w, np) = self.translate_exact(d, 0, l, dx, dy);
+                            (uo, un, pages) = (uo.union(o), un.union(w), np);
+                        }
+                    },
                 }
             } else {
                 let p = self.page_mut(d);
@@ -2300,6 +2315,34 @@ impl Bough {
         }
     }
 
+    /// A whole page that is plain or far (not transformed, not wide) moves by `(dx, dy)`, in i32: its
+    /// offset moves if the frame rule still holds afterwards (the offset in 16 bits on every axis where
+    /// the page is not wholly beyond the domain). `None`: the page must choose its frame again. The
+    /// block summary is left to the caller's `fix_chunks` over the run.
+    #[inline]
+    fn translate_far(&mut self, d: usize, dx: i32, dy: i32) -> Option<(NRect, NRect)> {
+        let p = self.page_mut(d);
+        if p.flags & (F_XF | F_WIDE) != 0 {
+            return None;
+        }
+        let uo = p.abs_wide(p.union_ink());
+        if uo.is_empty() {
+            // nothing drawn here: nothing moves (the offset stays where a plain page may have it)
+            return Some((NRect::EMPTY, NRect::EMPTY));
+        }
+        let un = uo.translate(dx, dy);
+        let no = [p.off[0] + dx, p.off[1] + dy];
+        let valid = (0..2).all(|a| no[a].abs() <= 32767 || un.0[a] > COORD_MAX || un.0[a + 2] < COORD_MIN);
+        if !valid {
+            return None;
+        }
+        p.set_off(no[0], no[1]);
+        p.flags = if un.in_domain() { 0 } else { F_FAR };
+        let v = un.to_nrect();
+        self.d_ink[d] = v;
+        Some((uo.to_nrect(), v))
+    }
+
     /// The exact path of a translation: slots `[s, s + n)` of page `d` (not transformed) move by
     /// `(dx, dy)` in i32. A whole far page whose frame stays valid only moves its offset; anything else
     /// is rewritten from the exact rects (`reencode`: the frame is chosen again, the page cut if it must
@@ -2307,27 +2350,6 @@ impl Bough {
     /// of directory pages the page became.
     #[inline(never)]
     fn translate_exact(&mut self, d: usize, s: usize, n: usize, dx: i32, dy: i32) -> (NRect, NRect, usize) {
-        let l = self.d_len[d] as usize;
-        let (flags, off) = { let p = self.page(d); (p.flags, p.off) };
-        if s == 0 && n == l && flags & F_WIDE == 0 {
-            let p = self.page(d);
-            let uo = p.abs_wide(p.union_ink());
-            if uo.is_empty() {
-                // nothing drawn here: nothing moves (the offset stays where a plain page may have it)
-                return (NRect::EMPTY, NRect::EMPTY, 1);
-            }
-            let un = uo.translate(dx, dy);
-            let no = [off[0] + dx, off[1] + dy];
-            let valid = (0..2).all(|a| no[a].abs() <= 32767 || un.0[a] > COORD_MAX || un.0[a + 2] < COORD_MIN);
-            if valid {
-                let p = self.page_mut(d);
-                p.set_off(no[0], no[1]);
-                p.flags = if un.in_domain() { 0 } else { F_FAR };
-                self.d_ink[d] = un.to_nrect();
-                self.fix_chunks(d, d + 1);
-                return (uo.to_nrect(), un.to_nrect(), 1);
-            }
-        }
         let mut rects = self.page_rects(d);
         let (mut uo, mut un) = (WRect::EMPTY, WRect::EMPTY);
         for r in &mut rects[s..s + n] {
@@ -2529,6 +2551,39 @@ impl Bough {
     /// and the new ink (both whole: no symmetric-difference refinement out here).
     #[inline(never)]
     fn set_ink_exact(&mut self, d: usize, s: usize, ink: WRect, damage: bool) {
+        // A page with a frame of its own (or a plain page taking its first ink outside the domain): when
+        // the new ink fits the frame and the frame rule still holds, this is the same store as on a plain
+        // page, with the absolute forms made in i32.
+        let p = self.page_mut(d);
+        if p.flags & (F_XF | F_WIDE) == 0 {
+            if let Some(rel) = p.rel_of(ink) {
+                let (old_rel, id) = (p.ink[s], p.clip[s]);
+                if old_rel == rel {
+                    return;
+                }
+                let old = p.abs_wide(old_rel);
+                p.ink[s] = rel;
+                p.regroup(s / GROUP);
+                let u = p.abs_wide(p.union_ink());
+                let off = p.off;
+                let valid = (0..2).all(|a| off[a].abs() <= 32767 || u.is_empty() || u.0[a] > COORD_MAX || u.0[a + 2] < COORD_MIN);
+                if valid {
+                    p.flags = if u.in_domain() && off[0].abs() <= 32767 && off[1].abs() <= 32767 { 0 } else { F_FAR };
+                    let od = self.d_ink[d];
+                    self.d_ink[d] = u.to_nrect();
+                    self.chunk_update(d, od);
+                    if damage {
+                        let (o, w) = (self.clipped(old.to_nrect(), id), self.clipped(ink.to_nrect(), id));
+                        self.ring.add(o);
+                        self.ring.add(w);
+                    }
+                    return;
+                }
+                // the frame rule broke: put the ink back and let the page choose its frame again
+                p.ink[s] = old_rel;
+                p.regroup(s / GROUP);
+            }
+        }
         let mut rects = self.page_rects(d);
         if rects[s] == ink {
             return;

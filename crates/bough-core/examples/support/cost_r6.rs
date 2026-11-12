@@ -643,6 +643,98 @@ fn overflow(rs: &[RecordInit], ov: u64) {
     );
 }
 
+/// Content beyond the 16-bit pixel domain (the store lane's attack on the exact-coordinate work): rows
+/// of 32 px, five records each, mounted blank and then given their inks through handles, as a layout
+/// write-back does. `writeback-row` is the whole write-back per row; `far-set-ink` moves the last row's
+/// first record by a pixel and back; `far-scroll` scrolls the whole column by 3 px. A far row must cost
+/// what a near one does: rows from 1,024 on are outside the domain.
+pub fn far(ov: u64) {
+    use bough_core::WRect;
+    for rows in [1000usize, 3000, 10_000, 100_000] {
+        if std::env::var("R6_MAX_N")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .is_some_and(|max| rows > max)
+        {
+            continue;
+        }
+        let rect = |row: usize, k: usize| {
+            WRect::new(
+                8 + 40 * k as i32,
+                32 * row as i32,
+                44 + 40 * k as i32,
+                32 * row as i32 + 30,
+            )
+        };
+        let n = 1 + rows * 5;
+        let (mut wb, mut si, mut sc) = (Vec::new(), Vec::new(), Vec::new());
+        let mut pages = 0;
+        for _ in 0..SAMPLES {
+            let mut b = Bough::new(SIDE, SIDE);
+            b.insert_run(0, &[RecordInit::new(0, NRect::EMPTY, 1, 0)]);
+            let mut recs = Vec::with_capacity(n);
+            let mut hs = Vec::with_capacity(n);
+            for i in 1..n {
+                let h = b.new_handle();
+                hs.push(h);
+                recs.push(RecordInit {
+                    handle: h.idx,
+                    ..RecordInit::new(1, NRect::EMPTY, 1, i as u32)
+                });
+            }
+            b.insert_run(1, &recs);
+            b.next_epoch();
+            settle(&b);
+            wb.push(timed(
+                || {
+                    for (i, &h) in hs.iter().enumerate() {
+                        b.set_ink_handle_edges_wide(h, rect(i / 5, i % 5), 15, 2);
+                    }
+                },
+                1,
+                ov,
+            ));
+            pages = b.num_pages();
+            b.check_invariants();
+            for (i, _) in hs.iter().enumerate().step_by(997) {
+                assert_eq!(b.ink_wide_at(1 + i), rect(i / 5, i % 5));
+            }
+            let (h, r0) = (hs[n - 6], rect(rows - 1, 0));
+            let r1 = WRect::new(r0.0[0] + 1, r0.0[1], r0.0[2] + 1, r0.0[3]);
+            let mut i = 0usize;
+            si.push(timed(
+                || {
+                    black_box(
+                        b.set_ink_handle_wide(black_box(h), if i & 1 == 0 { r1 } else { r0 }),
+                    );
+                    i += 1;
+                },
+                1024,
+                ov,
+            ));
+            sc.push(timed(
+                || {
+                    b.scroll_run(
+                        1,
+                        n - 1,
+                        0,
+                        if i & 1 == 0 { -3 } else { 3 },
+                        NRect::new(0, 0, SIDE, SIDE),
+                    );
+                    i += 1;
+                },
+                64,
+                ov,
+            ));
+            b.check_invariants();
+        }
+        let per_row: Vec<u64> = wb.iter().map(|v| v / rows as u64).collect();
+        emit(rows, "rows32", "writeback-row", 5, pages, 1, &per_row, 0);
+        emit(rows, "rows32", "far-set-ink", 1, pages, 1024, &si, 0);
+        emit(rows, "rows32", "far-scroll", n - 1, pages, 64, &sc, 0);
+    }
+}
+
 fn negative_control() {
     let rs = records(1000, false, false);
     let b = build(&rs);
@@ -668,6 +760,10 @@ pub fn run(spatial_only: bool) {
     );
     negative_control();
     println!("n,shape,operation,k,pages,batch,sample,instructions,instructions_per_op,output");
+    if !spatial_only && std::env::var("R6_FAR").is_ok() {
+        far(ov);
+        return;
+    }
     for n in [1000, 10000, 100000, 1000000] {
         if std::env::var("R6_MAX_N")
             .ok()
