@@ -25,31 +25,50 @@ pub unsafe trait Surfaces {
 }
 
 /// Offscreen surfaces in plain memory: what `App::new(.., gpu: true)` draws into where no GPU presenter exists, so
-/// pixel tests (`presented_pixels` against `reference_pixels`) run on every platform. Never in use.
+/// pixel tests (`presented_pixels` against `reference_pixels`) run on every platform. Never in use. Each surface is
+/// page aligned and a whole number of pages, as a window's buffers are, so a GPU executor that imports a
+/// surface's memory (bough-kernel's Vulkan `wrap`) runs under the same tests.
 pub struct MemSurfaces {
     w: u32,
     h: u32,
-    bufs: Vec<Vec<u8>>,
+    bufs: Vec<Option<PageBuf>>,
     /// Frames presented, and the damaged tiles they named (diagnostics).
     pub presents: u64,
     pub damaged_tiles: u64,
 }
 
-impl MemSurfaces {
-    pub fn new(w: u32, h: u32, n: usize) -> MemSurfaces {
-        MemSurfaces { w, h, bufs: (0..n).map(|_| Vec::new()).collect(), presents: 0, damaged_tiles: 0 }
-    }
-    fn ensure(&mut self, i: usize) {
-        let n = self.w as usize * 4 * self.h as usize;
-        if self.bufs[i].len() != n {
-            // a surface owns no memory until first drawn (as an IOSurface)
-            self.bufs[i] = vec![0; n];
-        }
+const PAGE: usize = 16384;
+
+/// Zeroed page-aligned memory of whole pages.
+struct PageBuf {
+    ptr: std::ptr::NonNull<u8>,
+    layout: std::alloc::Layout,
+}
+
+impl PageBuf {
+    fn new(bytes: usize) -> PageBuf {
+        let layout = std::alloc::Layout::from_size_align(bytes.max(1).next_multiple_of(PAGE), PAGE).expect("surface size");
+        // SAFETY: a non-zero size; freed with the same layout in `drop`.
+        let p = unsafe { std::alloc::alloc_zeroed(layout) };
+        PageBuf { ptr: std::ptr::NonNull::new(p).unwrap_or_else(|| std::alloc::handle_alloc_error(layout)), layout }
     }
 }
 
-// SAFETY: each surface is its own heap buffer of `h` rows of `4 w` bytes, owned here and reached only through
-// `pixels`; it is reallocated only by `resize` (and lazily at first use).
+impl Drop for PageBuf {
+    fn drop(&mut self) {
+        // SAFETY: allocated in `new` with this layout.
+        unsafe { std::alloc::dealloc(self.ptr.as_ptr(), self.layout) };
+    }
+}
+
+impl MemSurfaces {
+    pub fn new(w: u32, h: u32, n: usize) -> MemSurfaces {
+        MemSurfaces { w, h, bufs: (0..n).map(|_| None).collect(), presents: 0, damaged_tiles: 0 }
+    }
+}
+
+// SAFETY: each surface is its own allocation of at least `h` rows of `4 w` bytes, owned here and reached only
+// through `pixels`; it is reallocated only by `resize` (and created at first use).
 unsafe impl Surfaces for MemSurfaces {
     fn count(&self) -> usize {
         self.bufs.len()
@@ -61,8 +80,10 @@ unsafe impl Surfaces for MemSurfaces {
         false
     }
     fn pixels(&mut self, i: usize) -> (*mut u8, usize) {
-        self.ensure(i);
-        (self.bufs[i].as_mut_ptr(), self.w as usize * 4)
+        let n = self.w as usize * 4 * self.h as usize;
+        // a surface owns no memory until first drawn (as an IOSurface)
+        let b = self.bufs[i].get_or_insert_with(|| PageBuf::new(n));
+        (b.ptr.as_ptr(), self.w as usize * 4)
     }
     fn present(&mut self, _: usize, damage: &[u128], full: bool) {
         self.presents += 1;
@@ -71,7 +92,7 @@ unsafe impl Surfaces for MemSurfaces {
     fn resize(&mut self, w: u32, h: u32) {
         (self.w, self.h) = (w, h);
         for b in &mut self.bufs {
-            *b = Vec::new();
+            *b = None;
         }
     }
 }
