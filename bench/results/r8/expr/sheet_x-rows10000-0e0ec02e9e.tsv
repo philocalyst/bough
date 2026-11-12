@@ -1,0 +1,30 @@
+# rows=10000 cells=100000 reps=32 window=2560x1600 device px
+scene	phase	steps	instr_p50	instr_p95	cycles_p50	tiles_p50
+# model built in 0.10 ms (1551577 instructions): the data, not the UI
+# mounted: 764 records in 32 pages, 41728 bytes of columns, 24.4 us wall
+sheet_x	mount	1	193592	193592	85948	4000
+sheet_x	floor	32	0	0	1	0
+sheet_x	idle	32	55	55	15	0
+sheet_x	hover	32	7104	7104	1308	329
+sheet_x	hover_move	32	8315	8454	1639	705
+sheet_x	theme	32	31203	31203	6576	4000
+sheet_x	edit_exposed	32	1611	1621	381	32
+sheet_x	edit_unexposed	32	1083	8544	538	16
+sheet_x	part_model_edit	32	57	57	39	0
+sheet_x	part_total_word	32	820	825	184	16
+sheet_x	part_delta_total	32	649	654	142	16
+sheet_x	part_diff_only	32	160	160	37	0
+sheet_x	part_journal_only	32	358	358	70	0
+sheet_x	part_mark_cell	32	59	63	7	16
+sheet_x	part_pointer_same	32	665	727	103	0
+sheet_x	select	32	773	773	122	0
+sheet_x	frame_in_motion	8	631	631	136	2520
+sheet_x	frame_at_rest	32	6	6	0	0
+sheet_x	scroll_3_rows	32	5408	5408	1051	3600
+sheet_x	scroll_6px	32	1419	1419	261	3600
+sheet_x	scroll_page	32	30062	30062	5347	3600
+sheet_x	insert_row	32	85340	104925	27571	2390
+sheet_x	remove_row	32	85134	89265	27428	2390
+sheet_x	redescribe_idle	32	15975	15975	2563	0
+sheet_x	redescribe_edit	32	16035	16869	2629	0
+# at the end: 764 records in 32 pages, 41728 bytes of columns
