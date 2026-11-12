@@ -160,6 +160,14 @@ impl Layout {
     }
 }
 
+/// Bytes of a surface's certificate plane: one 72-byte `FCert` per 32 px tile.
+fn cert_bytes(w: usize, h: usize) -> usize {
+    w.div_ceil(32) * h.div_ceil(32) * 72
+}
+
+/// `SlotCopy::src` bit: the copy leaves the destination's band certificates as they are (kernel timing).
+pub const CERT_FROZEN: u32 = 0x100;
+
 /// Bytes of a frame slot's header (`FSlot`): the three dispatches' indirect args, target, rows, the copy.
 pub const SLOT_HDR: usize = 64;
 
@@ -217,6 +225,10 @@ const _: () = assert!(size_of::<Instance>() == 48);
 pub struct Surface {
     pub io: CFRetained<IOSurfaceRef>,
     pub tex: Tex,
+    /// The surface's row certificates (`FCert` in shader.metal): per 32 x 4 px band a colour and a mask of
+    /// its rows known to hold it; zero = nothing known. Written by the kernels with the pixels; zeroed here whenever the pixels may have changed
+    /// without them (a trim, a purge).
+    cert: Retained<ProtocolObject<dyn MTLBuffer>>,
     /// Written at least once (an untouched IOSurface owns no pages).
     pub touched: Cell<bool>,
     /// Marked purgeable-volatile by a calm trim (made non-volatile before the next draw).
@@ -294,6 +306,24 @@ impl Warm {
 
 // ------------------------------------------------------------------ the frame stream's encoder
 
+/// The three pipelines of one generation of the kernels (`fs_bin`, `fs_tile`, `fs_copy`): the presenter's own,
+/// or the frozen original ones the gates compare against (`oracle.metal`).
+struct Psos {
+    bin: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    tile: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    copy: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+}
+
+impl Psos {
+    fn new(device: &Dev, lib: &ProtocolObject<dyn MTLLibrary>) -> Psos {
+        let pso = |name: &NSString| {
+            let f = lib.newFunctionWithName(name).expect("kernel");
+            device.newComputePipelineStateWithFunction_error(&f).expect("compute pso")
+        };
+        Psos { bin: pso(ns_string!("fs_bin")), tile: pso(ns_string!("fs_tile")), copy: pso(ns_string!("fs_copy")) }
+    }
+}
+
 /// What encoding a frame needs, shared by the main thread and the publisher thread (which keeps the stream
 /// armed, so no encode or commit runs on the input thread): the stream queue and event, the region, both
 /// pipelines, the slot offsets, and the arming state behind one lock (two threads never arm overlapping
@@ -302,9 +332,7 @@ struct Kern {
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     ev: Retained<ProtocolObject<dyn MTLSharedEvent>>,
     pool: Retained<ProtocolObject<dyn MTLBuffer>>,
-    pso_bin: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    pso_tile: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    pso_copy: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    psos: Psos,
     slots: [std::sync::atomic::AtomicU32; 3],
     batch: std::sync::atomic::AtomicUsize,
     /// Mirror of `arm.armed_upto` for a lock-free "already armed?" test.
@@ -326,6 +354,11 @@ impl Kern {
     /// region and the slot offset (everything else is in the bind table). `indirect`: the dispatch sizes come
     /// from the slot (pre-armed frames); otherwise `nrows` / `ntiles`.
     fn encode(&self, cmd: &ProtocolObject<dyn MTLCommandBuffer>, k: usize, nrows: u32, ntiles: u32, indirect: bool) {
+        self.encode_with(&self.psos, cmd, k, nrows, ntiles, indirect);
+    }
+
+    /// `encode` through the pipelines `psos` (the presenter's own, or the oracle's).
+    fn encode_with(&self, psos: &Psos, cmd: &ProtocolObject<dyn MTLCommandBuffer>, k: usize, nrows: u32, ntiles: u32, indirect: bool) {
         let slot = self.slots[k].load(Relaxed);
         let enc = cmd.computeCommandEncoder().expect("compute encoder");
         let offs = [slot, 0];
@@ -334,10 +367,10 @@ impl Kern {
             enc.setBytes_length_atIndex(NonNull::new(offs.as_ptr() as *mut _).unwrap(), 8, 1);
             // the scroll copy (0 threadgroups without one): disjoint from the tiles the repair writes, so no
             // barrier orders it against the tile pass
-            enc.setComputePipelineState(&self.pso_copy);
+            enc.setComputePipelineState(&psos.copy);
             let tgc = MTLSize { width: 32, height: 8, depth: 1 };
             enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, slot as usize + 32, tgc);
-            enc.setComputePipelineState(&self.pso_bin);
+            enc.setComputePipelineState(&psos.bin);
             let tg = MTLSize { width: 256, height: 1, depth: 1 };
             if indirect {
                 enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, slot as usize, tg);
@@ -345,7 +378,7 @@ impl Kern {
                 enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: nrows as usize, height: 1, depth: 1 }, tg);
             }
             enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
-            enc.setComputePipelineState(&self.pso_tile);
+            enc.setComputePipelineState(&psos.tile);
             let tg2 = MTLSize { width: 16, height: 16, depth: 1 };
             if indirect {
                 enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(&self.pool, slot as usize + 12, tg2);
@@ -594,6 +627,11 @@ pub struct Fused {
     last_main: usize,
     /// Column views (`new_views`): `None` when every column is a range of the one region buffer.
     views: Option<Views>,
+    /// The frozen original kernels (`oracle.metal`), compiled at the first reference render.
+    oracle: Option<Psos>,
+    /// `BOUGH_AB` set: time the kernels against the oracle's at draws 60, 120 and 180 (`ab_probe`).
+    ab: bool,
+    ab_draw: u32,
 }
 
 /// The GPU's views of the region's columns: per column a no-copy buffer over its used prefix, per mask group
@@ -620,6 +658,8 @@ struct FBind {
     /// The same 4 surfaces as read handles (the scroll copy's source); appended (round 3c), table = 216 B.
     r: [u64; 4],
     img: u64,
+    /// Each surface's band certificates (GPU addresses), appended in round 6: the table fills the header.
+    cert: [u64; 4],
 }
 const _: () = assert!(size_of::<FHdr>() <= FBIND_OFF && FBIND_OFF + size_of::<FBind>() <= HDR_BYTES);
 
@@ -635,9 +675,7 @@ pub struct GpuPrep {
     device: Dev,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     aux: Retained<ProtocolObject<dyn MTLCommandQueue>>,
-    pso_bin: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    pso_tile: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    pso_copy: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    psos: Psos,
     res: Option<PrepRes>,
     /// Instructions the building thread retired (thread_selfcounts) and its wall time.
     pub instructions: u64,
@@ -672,19 +710,13 @@ impl GpuPrep {
         let queue = device.newCommandQueue().expect("queue");
         let aux = device.newCommandQueue().expect("aux queue");
         let lib = crate::gpu::load_library(&device);
-        let pso = |name: &NSString| {
-            let f = lib.newFunctionWithName(name).expect("kernel");
-            device.newComputePipelineStateWithFunction_error(&f).expect("compute pso")
-        };
-        let pso_bin = pso(ns_string!("fs_bin"));
-        let pso_tile = pso(ns_string!("fs_tile"));
-        let pso_copy = pso(ns_string!("fs_copy"));
+        let psos = Psos::new(&device, &lib);
         let res = dims.map(|(w, h, surfaces, bin_cap)| {
             let (atlas, bins, counts) = Fused::new_bins(&device, h, bin_cap);
             let surfs = (0..surfaces.clamp(1, MAX_SURFACES)).map(|_| Fused::new_surface(&device, w, h)).collect();
             ((w, h, surfaces, bin_cap), atlas, bins, counts, surfs)
         });
-        GpuPrep { device, queue, aux, pso_bin, pso_tile, pso_copy, res, instructions: thread_instructions() - i0, nanos: t0.elapsed().as_nanos() as u64 }
+        GpuPrep { device, queue, aux, psos, res, instructions: thread_instructions() - i0, nanos: t0.elapsed().as_nanos() as u64 }
     }
 }
 
@@ -756,7 +788,7 @@ impl Fused {
     }
 
     fn with_pool(prep: GpuPrep, src: PoolSrc, w: usize, h: usize, scale: f64, surfaces: usize, bin_cap: u32) -> Fused {
-        let GpuPrep { device, queue, aux, pso_bin, pso_tile, pso_copy, res, .. } = prep;
+        let GpuPrep { device, queue, aux, psos, res, .. } = prep;
         let mut views = None;
         let (pool, region_len, pool_keep) = match src {
             PoolSrc::Alloc(len) => (device.newBufferWithLength_options(len, MTLResourceOptions::StorageModeShared).expect("region buffer"), len, None),
@@ -787,9 +819,7 @@ impl Fused {
             queue: queue.clone(),
             ev: device_ev.clone(),
             pool: pool.clone(),
-            pso_bin: pso_bin.clone(),
-            pso_tile: pso_tile.clone(),
-            pso_copy,
+            psos,
             slots: Default::default(),
             batch: std::sync::atomic::AtomicUsize::new(16),
             armed: AtomicU64::new(0),
@@ -838,6 +868,9 @@ impl Fused {
             pending: None,
             last_main: NONE_SURF,
             views,
+            oracle: None,
+            ab: std::env::var_os("BOUGH_AB").is_some(),
+            ab_draw: 0,
         };
         // the residency set is what makes the bind table's resources reachable (encoders bind nothing else)
         {
@@ -899,7 +932,9 @@ impl Fused {
         d.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
         d.setStorageMode(MTLStorageMode::Shared);
         let tex = device.newTextureWithDescriptor_iosurface_plane(&d, &io, 0).expect("iosurface texture");
-        Surface { io, tex, touched: Cell::new(false), volatile: Cell::new(false), cpu_written: Cell::new(false) }
+        // zero-filled by Metal (nothing known), and no page of it is touched until the surface is drawn
+        let cert = device.newBufferWithLength_options(cert_bytes(w, h), MTLResourceOptions::StorageModeShared).expect("band certificates");
+        Surface { io, tex, cert, touched: Cell::new(false), volatile: Cell::new(false), cpu_written: Cell::new(false) }
     }
 
     /// The region's memory (the shared buffer's contents) and its length, plus a keep-alive handle.
@@ -1057,6 +1092,7 @@ impl Fused {
             counts: self.counts.gpuAddress(),
             r: [rid(&self.surfs[0].tex), rid(&self.surfs[1 % n].tex), rid(&self.surfs[2 % n].tex), rid(&self.surfs[3 % n].tex)],
             img: rid(self.img.as_ref().unwrap_or(&self.atlas)),
+            cert: [self.surfs[0].cert.gpuAddress(), self.surfs[1 % n].cert.gpuAddress(), self.surfs[2 % n].cert.gpuAddress(), self.surfs[3 % n].cert.gpuAddress()],
         };
         // SAFETY: the bind table lies inside the reserved header (const-asserted); the GPU is idle.
         unsafe { (self.pool_ptr.add(FBIND_OFF) as *mut FBind).write(b) };
@@ -1177,6 +1213,7 @@ impl Fused {
         if let Some(r) = &self.resid {
             for s in old.iter().filter(|s| s.touched.get()) {
                 r.removeAllocation(ProtocolObject::from_ref(&*s.tex));
+                r.removeAllocation(ProtocolObject::from_ref(&*s.cert));
             }
             r.removeAllocation(ProtocolObject::from_ref(&*old_bins));
             r.removeAllocation(ProtocolObject::from_ref(&*old_counts));
@@ -1292,7 +1329,12 @@ impl Fused {
         }
         if !s.touched.get() {
             s.touched.set(true);
+            // first use, or back from a trim (its pixels may be gone): nothing is known about them
+            // SAFETY: the plane is `cert_bytes` long, in shared storage, and no frame that names this
+            // surface is pending (it was not in the residency set).
+            unsafe { std::ptr::write_bytes(s.cert.contents().as_ptr() as *mut u8, 0, cert_bytes(self.w, self.h)) };
             if let Some(r) = &self.resid {
+                r.addAllocation(ProtocolObject::from_ref(&*s.cert));
                 r.addAllocation(ProtocolObject::from_ref(&*s.tex));
                 r.commit();
                 self.stats.resident_surfaces += 1;
@@ -1336,6 +1378,7 @@ impl Fused {
             if s.touched.get() {
                 if let Some(r) = &self.resid {
                     r.removeAllocation(ProtocolObject::from_ref(&*s.tex));
+                    r.removeAllocation(ProtocolObject::from_ref(&*s.cert));
                     r.commit();
                     self.stats.resident_surfaces -= 1;
                 }
@@ -1376,6 +1419,9 @@ impl Fused {
         unsafe { (*(self.pool_ptr as *mut FHdr)).n_dir = n_dir };
         // the slot names the target; the pre-encoded frame names none
         debug_assert!(copy.is_none() || (copy.src as usize != target && self.surfs[copy.src as usize].touched.get()));
+        if self.ab {
+            self.ab_probe(target, rows, full, n_dir, copy);
+        }
         let (nt, _) = self.write_slot(k, target as u32, rows, full, copy);
         self.release(k, nt);
         if self.publish {
@@ -1538,25 +1584,63 @@ impl Fused {
         read_io(&self.surfs[i].io, self.w, self.h)
     }
 
-    /// A from-scratch full redraw of the current region through the same kernels into a private surface.
+    /// The frozen original kernels (the shader as of the round-6 base, `oracle.metal`), compiled on first use.
+    /// They read the same region, slots and bind table: every layout change since is an append.
+    fn oracle(&mut self) {
+        if self.oracle.is_none() {
+            let src = NSString::from_str(include_str!("oracle.metal"));
+            let lib = self.device.newLibraryWithSource_options_error(&src, None).expect("oracle msl compile");
+            self.oracle = Some(Psos::new(&self.device, &lib));
+        }
+    }
+
+    /// A from-scratch full redraw of the current region into a private surface, through the presenter's
+    /// kernels AND through the original ones (`oracle.metal`): the two must agree byte for byte (a panic
+    /// otherwise), so a gate that compares a retained frame with this compares it with the original raster,
+    /// and no mechanism added to the kernels can hide a dropped or reordered entry in both of its own renders.
     pub fn reference_pixels(&mut self, n_dir: u32) -> Vec<u8> {
+        let ours = self.full_redraw(n_dir, false);
+        let orig = self.full_redraw(n_dir, true);
+        if ours != orig {
+            let n = ours.chunks(4).zip(orig.chunks(4)).filter(|(a, b)| a != b).count();
+            let first = ours.chunks(4).zip(orig.chunks(4)).position(|(a, b)| a != b).unwrap();
+            panic!("the kernels' full redraw differs from the original kernels' in {n} pixels (first at {}, {})", first % self.w, first / self.w);
+        }
+        orig
+    }
+
+    /// The original kernels' full redraw alone (the independent raster oracle).
+    pub fn oracle_pixels(&mut self, n_dir: u32) -> Vec<u8> {
+        self.full_redraw(n_dir, true)
+    }
+
+    fn full_redraw(&mut self, n_dir: u32, oracle: bool) -> Vec<u8> {
         self.sync();
+        if oracle {
+            self.oracle();
+        }
         if self.scratch.is_none() {
             self.scratch = Some(Self::new_surface(&self.device, self.w, self.h));
         }
         unsafe { (*(self.pool_ptr as *mut FHdr)).n_dir = n_dir };
         // the scratch surface takes the bind table's target 0 for this one render (the GPU is idle)
         let s = self.scratch.as_ref().unwrap().tex.clone();
+        let sc = self.scratch.as_ref().unwrap().cert.clone();
         if let Some(r) = &self.resid {
             r.addAllocation(ProtocolObject::from_ref(&*s));
+            r.addAllocation(ProtocolObject::from_ref(&*sc));
             r.commit();
         }
-        // SAFETY: the bind table lies inside the reserved header; the GPU is idle (synced above).
-        unsafe { (*(self.pool_ptr.add(FBIND_OFF) as *mut FBind)).t[0] = rid(&s) };
+        // SAFETY: the bind table lies inside the reserved header; the GPU is idle (synced above). The scratch
+        // surface brings its own certificate plane: surface 0's describes surface 0's pixels, not these.
+        unsafe {
+            (*(self.pool_ptr.add(FBIND_OFF) as *mut FBind)).t[0] = rid(&s);
+            (*(self.pool_ptr.add(FBIND_OFF) as *mut FBind)).cert[0] = sc.gpuAddress();
+        }
         let (nt, nr) = self.write_slot(2, 0, &[], true, &SlotCopy::NONE);
         loop {
             let cmd = self.aux.commandBuffer().expect("command buffer");
-            self.encode(&cmd, 2, nr, nt, false);
+            self.kern.encode_with(if oracle { self.oracle.as_ref().unwrap() } else { &self.kern.psos }, &cmd, 2, nr, nt, false);
             cmd.commit();
             cmd.waitUntilCompleted();
             // a row bin overflowed (frames drawn by another backend never grew them): grow and render again
@@ -1570,12 +1654,16 @@ impl Fused {
             unsafe { *(self.counts.contents().as_ptr() as *mut u32).add(ty) = 0 };
             self.replace_bins(need.next_power_of_two().max(self.bin_cap * 2));
             // SAFETY: the bind table lies inside the reserved header; the GPU is idle (drained by the growth).
-            unsafe { (*(self.pool_ptr.add(FBIND_OFF) as *mut FBind)).t[0] = rid(&s) };
+            unsafe {
+                (*(self.pool_ptr.add(FBIND_OFF) as *mut FBind)).t[0] = rid(&s);
+                (*(self.pool_ptr.add(FBIND_OFF) as *mut FBind)).cert[0] = sc.gpuAddress();
+            }
             self.write_slot(2, 0, &[], true, &SlotCopy::NONE);
         }
         self.write_binds();
         if let Some(r) = &self.resid {
             r.removeAllocation(ProtocolObject::from_ref(&*s));
+            r.removeAllocation(ProtocolObject::from_ref(&*sc));
             r.commit();
         }
         read_io(&self.scratch.as_ref().unwrap().io, self.w, self.h)
@@ -1588,7 +1676,16 @@ impl Fused {
     /// `copy`: a scroll copy first (RESULTS §15; `SlotCopy::NONE` for none).
     #[allow(clippy::too_many_arguments)]
     pub fn bench_frames(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32, reps: usize, debug: u32, copy: &SlotCopy) -> f64 {
+        self.bench_frames_with(false, target, rows, full, n_dir, reps, debug, copy)
+    }
+
+    /// `bench_frames` through the presenter's kernels or the original ones (`oracle`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn bench_frames_with(&mut self, oracle: bool, target: usize, rows: &[u128], full: bool, n_dir: u32, reps: usize, debug: u32, copy: &SlotCopy) -> f64 {
         self.sync();
+        if oracle {
+            self.oracle();
+        }
         self.prepare_target(target);
         // SAFETY: header fields `n_dir`, `debug`; the GPU is idle (synced above).
         unsafe {
@@ -1596,18 +1693,131 @@ impl Fused {
             (*(self.pool_ptr as *mut FHdr)).debug = debug;
         }
         if !copy.is_none() {
-            self.prepare_target(copy.src as usize);
+            self.prepare_target((copy.src & 3) as usize);
         }
         let (nt, nr) = self.write_slot(2, target as u32, rows, full, copy);
         let cmd = self.aux.commandBuffer().expect("command buffer");
         for _ in 0..reps {
-            self.encode(&cmd, 2, nr, nt, false);
+            self.kern.encode_with(if oracle { self.oracle.as_ref().unwrap() } else { &self.kern.psos }, &cmd, 2, nr, nt, false);
         }
         cmd.commit();
         cmd.waitUntilCompleted();
         // SAFETY: as above; the GPU is idle again.
         unsafe { (*(self.pool_ptr as *mut FHdr)).debug = 0 };
         (cmd.GPUEndTime() - cmd.GPUStartTime()) * 1e3 / reps as f64
+    }
+
+    /// Kernel A/B on the frame about to be drawn (`BOUGH_AB`, draws 60 / 120 / 180): the presenter's kernels
+    /// against the original ones, interleaved in alternating order, 100 back-to-back frames each (the GPU
+    /// saturated: its clock is steady, so the ratio holds under load); whole frame and repair without the
+    /// scroll copy. The two retained results must be the same bytes.
+    #[cold]
+    fn ab_probe(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32, copy: &SlotCopy) {
+        self.ab_draw += 1;
+        if ![60, 120, 180].contains(&self.ab_draw) {
+            return;
+        }
+        let tiles: u32 = if full { self.lay.tiles_x() * self.lay.tiles_y() } else { rows.iter().map(|r| r.count_ones()).sum() };
+        eprintln!("AB frame={} size={}x{} full={} tiles={} copy={}", self.ab_draw, self.w, self.h, full, tiles, !copy.is_none() && !full);
+        if std::env::var_os("BOUGH_AB_BANDS").is_some() && !copy.is_none() && !full {
+            self.band_stats(target, rows, copy);
+        }
+        // The target's certificates as the frame finds them: restored before every run of the presenter's
+        // kernels, and frozen during the timed repetitions, so each repetition decides as the real frame does.
+        let cb = cert_bytes(self.w, self.h);
+        // SAFETY: the plane is `cb` bytes of shared storage; the GPU is idle (the caller synced).
+        let saved = unsafe { std::slice::from_raw_parts(self.surfs[target].cert.contents().as_ptr() as *const u8, cb) }.to_vec();
+        let frozen = SlotCopy { src: copy.src | CERT_FROZEN, ..*copy };
+        let cycles: usize = std::env::var("BOUGH_AB").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 1).unwrap_or(6);
+        for cycle in 0..cycles {
+            let mut cases = vec![(false, "whole"), (true, "whole"), (false, "repair"), (true, "repair")];
+            if cycle % 2 != 0 {
+                cases.reverse();
+            }
+            for (oracle, name) in cases {
+                let cp = if name == "whole" { &frozen } else { &SlotCopy::NONE };
+                self.sync();
+                // SAFETY: as above.
+                unsafe { std::ptr::copy_nonoverlapping(saved.as_ptr(), self.surfs[target].cert.contents().as_ptr() as *mut u8, cb) };
+                let ms = self.bench_frames_with(oracle, target, rows, full, n_dir, 100, 0, cp);
+                eprintln!("AB_TIME frame={} cycle={} k={} case={} us={:.3}", self.ab_draw, cycle, if oracle { "ref" } else { "new" }, name, ms * 1e3);
+            }
+        }
+        self.bench_frames_with(true, target, rows, full, n_dir, 1, 0, copy);
+        let a = read_io(&self.surfs[target].io, self.w, self.h);
+        // The frame as the stream will draw it: the target holds it when the probe returns. Every band the
+        // frame writes already holds the frame's pixels (the renders above), so whichever of skip, fill and
+        // move the restored certificates select leaves the frame, and the certificates the copy stores are
+        // true of it.
+        // SAFETY: as above.
+        unsafe { std::ptr::copy_nonoverlapping(saved.as_ptr(), self.surfs[target].cert.contents().as_ptr() as *mut u8, cb) };
+        self.bench_frames_with(false, target, rows, full, n_dir, 1, 0, copy);
+        let b = read_io(&self.surfs[target].io, self.w, self.h);
+        let bad = a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| x != y).count();
+        eprintln!("AB_PIXEL frame={} different_pixels={}", self.ab_draw, bad);
+        // `BOUGH_AB_LOOSE`: a timing experiment that is not meant to be exact (a floor, a disabled stage)
+        assert!(bad == 0 || std::env::var_os("BOUGH_AB_LOOSE").is_some(), "the kernels' retained frame differs from the original kernels'");
+    }
+
+    /// Measurement (`BOUGH_AB_BANDS`): of the blocks the scroll copy moves (undamaged tiles, block wholly
+    /// inside the copy rect), how many are one colour in the source at `p - d` and already that colour in the
+    /// target as it stands (the copy could skip them), one colour in the source only (a fill), or neither.
+    #[cold]
+    fn band_stats(&mut self, target: usize, rows: &[u128], copy: &SlotCopy) {
+        let dst = read_io(&self.surfs[target].io, self.w, self.h);
+        let src = read_io(&self.surfs[copy.src as usize].io, self.w, self.h);
+        let px = |b: &[u8], x: i32, y: i32| -> [u8; 4] { b[(y as usize * self.w + x as usize) * 4..][..4].try_into().unwrap() };
+        let [x0, y0, x1, y1] = copy.rect;
+        // what the certificates know: rows (32 px of a tile) certified in the source / in the target as it stands
+        let cb = cert_bytes(self.w, self.h);
+        let tx = self.w.div_ceil(32);
+        // SAFETY: both planes are `cb` bytes of shared storage; the GPU is idle.
+        let (cs, cd) = unsafe { (std::slice::from_raw_parts(self.surfs[(copy.src & 3) as usize].cert.contents().as_ptr() as *const u8, cb), std::slice::from_raw_parts(self.surfs[target].cert.contents().as_ptr() as *const u8, cb)) };
+        let row = |c: &[u8], x: i32, y: i32| -> Option<[u8; 8]> {
+            let e = &c[((y as usize >> 5) * tx + (x as usize >> 5)) * 72..][..72];
+            let b = (y as usize >> 2) & 7;
+            (e[64 + b] >> (y & 3) & 1 != 0).then(|| e[b * 8..b * 8 + 8].try_into().unwrap())
+        };
+        let (mut known_src, mut known_dst, mut rows_n, mut truth) = (0u32, 0u32, 0u32, 0u32);
+        for y in y0..y1 {
+            for x in ((x0 + 31) & !31..x1 & !31).step_by(32) {
+                rows_n += 1;
+                known_src += row(cs, x, y).is_some() as u32;
+                known_dst += row(cd, x, y).is_some() as u32;
+                let c = px(&src, x, y);
+                truth += (x..x + 32).all(|xx| px(&src, xx, y) == c) as u32;
+            }
+        }
+        eprintln!("AB_CERT frame={} d=({}, {}) rect={:?} rows={} src_certified={:.3} dst_certified={:.3} src_truly_one_colour={:.3}", self.ab_draw, copy.dx, copy.dy, copy.rect, rows_n, known_src as f64 / rows_n as f64, known_dst as f64 / rows_n as f64, truth as f64 / rows_n as f64);
+        for (bw, bh) in [(32, 32), (32, 16), (32, 8), (32, 4), (16, 4), (32, 1)] {
+            let (mut skip, mut fill, mut mv) = (0u32, 0u32, 0u32);
+            for ty in (y0 >> 5)..((y1 + 31) >> 5) {
+                for tx in (x0 >> 5)..((x1 + 31) >> 5) {
+                    if rows.get(ty as usize).copied().unwrap_or(0) >> tx & 1 != 0 {
+                        continue;
+                    }
+                    for by in (ty * 32..ty * 32 + 32).step_by(bh) {
+                        for bx in (tx * 32..tx * 32 + 32).step_by(bw) {
+                            let (ex, ey) = (bx + bw as i32, by + bh as i32);
+                            if bx < x0 || by < y0 || ex > x1 || ey > y1 {
+                                mv += 1;
+                                continue;
+                            }
+                            let c = px(&src, bx - copy.dx, by - copy.dy);
+                            let src_const = (by..ey).all(|y| (bx..ex).all(|x| px(&src, x - copy.dx, y - copy.dy) == c));
+                            let dst_const = (by..ey).all(|y| (bx..ex).all(|x| px(&dst, x, y) == c));
+                            match (src_const, dst_const) {
+                                (true, true) => skip += 1,
+                                (true, false) => fill += 1,
+                                _ => mv += 1,
+                            }
+                        }
+                    }
+                }
+            }
+            let n = (skip + fill + mv).max(1) as f64;
+            eprintln!("AB_BANDS frame={} block={}x{} skip={:.3} fill={:.3} copy={:.3} blocks={}", self.ab_draw, bw, bh, skip as f64 / n, fill as f64 / n, mv as f64 / n, skip + fill + mv);
+        }
     }
 
     /// Did a row bin overflow in the last frame and stay unrepaired? (tests: always false after a sync, since

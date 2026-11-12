@@ -42,6 +42,10 @@ sabotage_views = ["bough-metal/sabotage_views"]
 # Gate sabotage (lane memory, round 6): the CPU backend blends with two roundings instead of one half FMA; every
 # pixel gate run with BOUGH_REPAIR=cpu must fail with it.
 sabotage_blend = []
+# Gate mutants of the presenter's row certificates (bough-metal): each must fail a scroll pixel gate.
+mutant_cert_skip = ["bough-metal/mutant_cert_skip"]
+mutant_cert_stale = ["bough-metal/mutant_cert_stale"]
+mutant_cert_tile = ["bough-metal/mutant_cert_tile"]
 
 [dev-dependencies]
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }
