@@ -85,6 +85,8 @@ pub mod kernel {
     /// Word 0 flag: the command is a transition. The next slot holds its end state; word 3 of this slot is
     /// the start time and word 3 of the next is (duration << 2 | ease), times in presenter ticks.
     pub const F_ANIM: u32 = 0x10000u32;
+    /// A shadow's corners use the arc's distance profile when radius >= SHADOW_ARC x blur width.
+    pub const SHADOW_ARC: i32 = 3i32;
     pub const NO_TEXEL: u32 = 0xFFFFFFFFu32;
 
     /// A staged command. `par` = (kind, isqrt shift, aux0, aux1); `rad` = (radius, border width, aux2, aux3):
@@ -189,13 +191,15 @@ pub mod kernel {
         let inner = min(cov(d + c.rad.y()), outer);
         scale(c.pm, outer - inner) + scale(c.pm2, inner)
     }
-    /// A two-stop linear gradient (`pm` to `pm2`, both premultiplied) in a rounded box.
-    pub fn sh_grad(c: Cmd, cx: i32, cy: i32) -> Vec4u {
+    /// A two-stop linear gradient (`pm` to `pm2`, both premultiplied) in a rounded box: its colour.
+    pub fn grad_color(c: Cmd, cx: i32, cy: i32) -> Vec4u {
         let px = (cx - ((c.b.x() + c.b.z()) >> 1u32)) >> 4u32;
         let py = (cy - ((c.b.y() + c.b.w()) >> 1u32)) >> 4u32;
         let t = clamp(((px * c.rad.z() + py * c.rad.w()) >> 15u32) + 16384i32, 0i32, 32768i32) as u32;
-        let col = scale(c.pm, ONE - t) + scale(c.pm2, t);
-        scale(col, cov(sd(cx, cy, c.b, c.rad.x(), c.par.y())))
+        scale(c.pm, ONE - t) + scale(c.pm2, t)
+    }
+    pub fn sh_grad(c: Cmd, cx: i32, cy: i32) -> Vec4u {
+        scale(grad_color(c, cx, cy), cov(sd(cx, cy, c.b, c.rad.x(), c.par.y())))
     }
 
     /// The blur kernel is the quadratic B-spline (three box blurs of width w; variance w^2 / 4, so w = two
@@ -216,47 +220,91 @@ pub mod kernel {
         let c = max(u - 128i32, 0i32);
         ((a * a - 3i32 * b * b + 3i32 * c * c) as u32) >> 2u32
     }
-    /// An offset `t` (Q8 px) in units of the blur width (Q8), saturated to the kernel's support.
+    /// An offset `t` (Q8 px) in units of the blur width (Q8; `inv` = ceil(2^24 / w)). At 1.5 w and beyond it
+    /// is exactly +-384, where the CDF is exactly 0 or ONE: saturation does not depend on a rounding.
     pub fn in_w(t: i32, w: i32, inv: i32) -> i32 {
-        let lim = w + (w >> 1u32) + 1i32;
-        (clamp(t, -lim, lim) * inv) >> 16u32
+        let lim = w + (w >> 1u32);
+        if t >= lim {
+            return 384i32;
+        }
+        if t <= -lim {
+            return -384i32;
+        }
+        (t * inv) >> 16u32
     }
     /// The blurred interval [-h, h] seen from `p`: CDF(p + h) - CDF(p - h).
     pub fn span3(p: i32, h: i32, w: i32, inv: i32) -> u32 {
         cdf3(in_w(p + h, w, inv)) - cdf3(in_w(p - h, w, inv))
     }
-    /// Coverage of the blurred rounded box `c.b` at (cx, cy). A square-cornered box is separable and exact
-    /// for this kernel; a rounded one integrates the blurred chord over four rows of the kernel's support
-    /// (Evan Wallace's construction with the spline in place of the Gaussian).
+    /// What rounding one corner removes from the square-cornered shadow, seen from (qx, qy) (the point
+    /// mirrored into that corner's quadrant; the box is [-hx, hx] x [-hy, hy]). The kernel has compact
+    /// support, so this is exactly 0 unless the point is within 1.5 w of the corner's r x r square; inside,
+    /// the sliver between the square corner and the arc is integrated over four of its rows.
+    pub fn corner3(c: Cmd, qx: i32, qy: i32, hx: i32, hy: i32) -> u32 {
+        let r = c.rad.x();
+        let w = c.rad.y();
+        let inv = c.rad.z();
+        let k = c.par.y();
+        let lim = w + (w >> 1u32);
+        if qx <= hx - r - lim || qy <= hy - r - lim {
+            return 0u32;
+        }
+        let lo = max(hy - r, qy - lim);
+        let hi = min(hy, qy + lim);
+        if hi <= lo {
+            return 0u32;
+        }
+        // four-point Gauss-Legendre over [lo, hi]: half-width in units of w (Q8), nodes and weights in Q15
+        let half = (hi - lo) >> 1u32;
+        let mid = lo + half;
+        let hu = ((half * inv) >> 16u32) as u32;
+        let rr = (r as u32) >> k;
+        let right = cdf3(in_w(qx - hx, w, inv));
+        let mut v = 0u32;
+        let mut i = 0u32;
+        while i < 4u32 {
+            let node = select(11140i32, 28218i32, (i & 1u32) == 1u32);
+            let wt = select(21369u32, 11399u32, (i & 1u32) == 1u32);
+            let off = (half * node) >> 15u32;
+            let y = select(mid - off, mid + off, i >= 2u32);
+            let d = min(((y - (hy - r)) as u32) >> k, rr);
+            let xs = hx - r + ((isqrt(rr * rr - d * d) << k) as i32);
+            let chord = cdf3(in_w(qx - xs, w, inv)) - right;
+            v += (mul15(mul15(chord, pdf3(in_w(qy - y, w, inv))), wt) * hu) >> 8u32;
+            i += 1u32;
+        }
+        v
+    }
+    /// Coverage of the blurred rounded box `c.b` at (cx, cy): the square-cornered box's shadow, which is
+    /// separable and exact for this kernel, minus the four corner corrections. Away from the corners (most
+    /// of a shadow) it is a product of two 1-D profiles: constant along rows inside the box's straight
+    /// sides, and exactly ONE in its interior.
     pub fn shadow(c: Cmd, cx: i32, cy: i32) -> u32 {
         let hx = (c.b.z() - c.b.x()) >> 1u32;
         let hy = (c.b.w() - c.b.y()) >> 1u32;
         let px = cx - (c.b.x() + hx);
         let py = cy - (c.b.y() + hy);
+        let sep = mul15(span3(px, hx, c.rad.y(), c.rad.z()), span3(py, hy, c.rad.y(), c.rad.z()));
         let r = c.rad.x();
-        let w = c.rad.y();
-        let inv = c.rad.z();
-        if r == 0i32 {
-            return mul15(span3(px, hx, w, inv), span3(py, hy, w, inv));
+        let lim = c.rad.y() + (c.rad.y() >> 1u32);
+        // no corner within the kernel's reach (always, for a square-cornered box)
+        if r == 0i32 || abs(px) <= hx - r - lim || abs(py) <= hy - r - lim {
+            return sep;
         }
-        let k = c.par.y();
-        let lim = w + (w >> 1u32);
-        let lo = clamp(-lim, py - hy, py + hy);
-        let hi = clamp(lim, py - hy, py + hy);
-        let step = (hi - lo) >> 2u32;
-        let su = ((step * inv) >> 16u32) as u32;
-        let rr = (r as u32) >> k;
-        let mut v = 0u32;
-        let mut y = lo + (step >> 1u32);
-        let mut i = 0u32;
-        while i < 4u32 {
-            let delta = min((max(abs(py - y) - (hy - r), 0i32) as u32) >> k, rr);
-            let curved = hx - r + ((isqrt(rr * rr - delta * delta) << k) as i32);
-            v += (mul15(span3(px, curved, w, inv), pdf3(in_w(y, w, inv))) * su) >> 8u32;
-            y += step;
-            i += 1u32;
+        // a blur narrow against the radius sees the arc as a straight edge: the profile of the distance
+        if r >= c.rad.y() * SHADOW_ARC {
+            // ... less the first-order effect of its curvature, density(u) w / (8 r) (`rad.w` = 2^15 w / (8 r)),
+            // weighted by how far into the corner's square the point is, in blur widths (beside the square
+            // the nearest edge is straight)
+            let u = in_w(-sd(cx, cy, c.b, r, c.par.y()), c.rad.y(), c.rad.z());
+            let edge = cdf3(u);
+            let qx = max(cx - c.b.z(), c.b.x() - cx) + r;
+            let qy = max(cy - c.b.w(), c.b.y() - cy) + r;
+            let on_arc = (clamp(in_w(min(qx, qy), c.rad.y(), c.rad.z()), 0i32, 256i32) as u32) << 7u32;
+            return min(sep, edge - min(edge, mul15(mul15(pdf3(u), c.rad.w() as u32), on_arc)));
         }
-        min(v, ONE)
+        let corr = corner3(c, px, py, hx, hy) + corner3(c, -px, py, hx, hy) + corner3(c, px, -py, hx, hy) + corner3(c, -px, -py, hx, hy);
+        sep - min(sep, corr)
     }
     pub fn sh_shadow(c: Cmd, cx: i32, cy: i32) -> Vec4u {
         scale(c.pm, shadow(c, cx, cy))
@@ -309,8 +357,10 @@ pub mod kernel {
     /// A user node: the user's function returns a premultiplied Q15 colour for a point in the box's own
     /// frame (Q8 from its top-left corner); the kernel clips it to the node's rounded box.
     pub fn sh_user(c: Cmd, cx: i32, cy: i32, now: u32) -> Vec4u {
-        let col = user_shade(c.par.z(), cx - c.b.x(), cy - c.b.y(), c.b.z() - c.b.x(), c.b.w() - c.b.y(), now, c.pm, c.pm2);
-        scale(col, cov(sd(cx, cy, c.b, c.rad.x(), c.par.y())))
+        scale(user_color(c, cx, cy, now), cov(sd(cx, cy, c.b, c.rad.x(), c.par.y())))
+    }
+    pub fn user_color(c: Cmd, cx: i32, cy: i32, now: u32) -> Vec4u {
+        user_shade(c.par.z(), cx - c.b.x(), cy - c.b.y(), c.b.z() - c.b.x(), c.b.w() - c.b.y(), now, c.pm, c.pm2)
     }
 
     // ---- transitions: a command is two states and a clock; the kernel evaluates it at the presenter's `now` ----
@@ -357,12 +407,34 @@ pub mod kernel {
             pm2: mix4u(a.pm2, b.pm2, t),
         }
     }
-    /// What `shade` returns at every pixel of `c.core`.
-    pub fn core_value(c: Cmd) -> Vec4u {
-        if c.par.x() == K_BORDER {
+    /// What `shade` returns at a pixel of `c.core` (where coverage is exactly ONE): the command's colour
+    /// there, with no distance evaluated.
+    pub fn core_shade(c: Cmd, x: i32, y: i32, now: u32) -> Vec4u {
+        let kind = c.par.x();
+        if kind == K_BORDER {
             return c.pm2;
         }
+        if kind == K_GRAD {
+            return grad_color(c, x * 256i32 + 128i32, y * 256i32 + 128i32);
+        }
+        if kind == K_USER {
+            return user_color(c, x * 256i32 + 128i32, y * 256i32 + 128i32, now);
+        }
         c.pm
+    }
+    /// The command's core is opaque (it replaces whatever is beneath: the occlusion cut's condition).
+    pub fn opaque(c: Cmd) -> bool {
+        let kind = c.par.x();
+        if kind == K_BORDER {
+            return c.pm2.w() == ONE;
+        }
+        if kind == K_GRAD {
+            return c.pm.w() == ONE && c.pm2.w() == ONE;
+        }
+        if kind == K_USER || kind == K_GLYPH {
+            return false;
+        }
+        c.pm.w() == ONE
     }
 
     // ---- the GPU composition: one workgroup per scheduled tile, 16 x 16 invocations x 2 x 2 pixels ----
@@ -438,11 +510,10 @@ pub mod kernel {
             let c = load_at(get!(PROG)[off + i], now);
             if x + 1i32 >= c.win.x() && x < c.win.z() && y + 1i32 >= c.win.y() && y < c.win.w() {
                 if x >= c.core.x() && x + 1i32 < c.core.z() && y >= c.core.y() && y + 1i32 < c.core.w() {
-                    let cv = core_value(c);
-                    a0 = blend(a0, cv);
-                    a1 = blend(a1, cv);
-                    a2 = blend(a2, cv);
-                    a3 = blend(a3, cv);
+                    a0 = blend(a0, core_shade(c, x, y, now));
+                    a1 = blend(a1, core_shade(c, x + 1i32, y, now));
+                    a2 = blend(a2, core_shade(c, x, y + 1i32, now));
+                    a3 = blend(a3, core_shade(c, x + 1i32, y + 1i32, now));
                 } else {
                     a0 = blend(a0, shade(c, x, y, fetch(c, x, y, aw), now));
                     a1 = blend(a1, shade(c, x + 1i32, y, fetch(c, x + 1i32, y, aw), now));

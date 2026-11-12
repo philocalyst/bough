@@ -117,7 +117,7 @@ impl Binner {
             let (x0, y0, x1, y1) = span(&c);
             // An opaque cover: the tile lies inside the core and the core's value is opaque. A transition
             // never cuts (its opacity is a function of time).
-            let opaque = cut && h & k::F_ANIM == 0 && k::core_value(c).w >= if cfg!(feature = "mutant_cut") { k::ONE / 2 } else { k::ONE };
+            let opaque = cut && h & k::F_ANIM == 0 && (k::opaque(c) || (cfg!(feature = "mutant_cut") && c.pm.w >= k::ONE / 2));
             for y in y0..y1 {
                 for x in x0..x1 {
                     let s = self.slot[y * tx + x];
@@ -260,7 +260,7 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
         let kind = c.par.x;
         let flat = if kind == k::K_SOLID {
             win
-        } else if kind == k::K_RRECT || kind == k::K_BORDER || (kind == k::K_GRAD && c.rad.w == 0) {
+        } else if kind == k::K_RRECT || kind == k::K_BORDER || kind == k::K_SHADOW || (kind == k::K_GRAD && c.rad.w == 0) {
             if cfg!(feature = "mutant_flat") { win } else { rows(c.core.y - oy, c.core.w - oy) & win }
         } else {
             0
@@ -280,7 +280,8 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
             continue;
         }
         let kind = c.par.x;
-        let cv = k::core_value(*c);
+        // the core's colour where it is one colour (solid, rounded, border, shadow)
+        let cv = if kind == k::K_BORDER { c.pm2 } else { c.pm };
         let cz = if cfg!(feature = "mutant_core") { c.core.z + 1 } else { c.core.z };
         let (cx0, cx1) = ((c.core.x - ox).clamp(x0, x1), (cz - ox).clamp(x0, x1));
         let mut m = rows(c.win.y - oy, c.win.w - oy) & need;
@@ -315,8 +316,9 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
             // a box kind: edge pixels through the kernel, the core as one span
             let (a, b) = if gy >= c.core.y && gy < c.core.w && cx0 < cx1 { (cx0, cx1) } else { (x1, x1) };
             let cy = gy * 256 + 128;
+            let px0 = |xa: i32| (ox + xa) * 256 + 128;
             let edge = |r: &mut [[u16; 4]], xa: i32| {
-                let cx0 = (ox + xa) * 256 + 128;
+                let cx0 = px0(xa);
                 match kind {
                     k::K_RRECT => {
                         for (i, p) in r.iter_mut().enumerate() {
@@ -347,7 +349,22 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
             };
             edge(&mut row[x0 as usize..a as usize], x0);
             if a < b {
-                over(&mut row[a as usize..b as usize], cv);
+                let mid = &mut row[a as usize..b as usize];
+                match kind {
+                    // a vertical gradient is one colour per row
+                    k::K_GRAD if c.rad.z == 0 => over(mid, k::grad_color(*c, px0(a), cy)),
+                    k::K_GRAD => {
+                        for (i, p) in mid.iter_mut().enumerate() {
+                            *p = st(k::blend(ld(p), k::grad_color(*c, px0(a) + i as i32 * 256, cy)));
+                        }
+                    }
+                    k::K_USER => {
+                        for (i, p) in mid.iter_mut().enumerate() {
+                            *p = st(k::blend(ld(p), k::user_color(*c, px0(a) + i as i32 * 256, cy, now)));
+                        }
+                    }
+                    _ => over(mid, cv),
+                }
                 edge(&mut row[b as usize..x1 as usize], b);
             }
         }

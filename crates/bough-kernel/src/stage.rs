@@ -95,7 +95,9 @@ pub fn shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, sigma: f32, color: u3
     let ext = bw + bw / 2 + 256;
     let win = window([p0[0] - ext, p0[1] - ext], [p1[0] + ext, p1[1] + ext], clip)?;
     let r = q8(radius).clamp(0, (p1[0] - p0[0]).min(p1[1] - p0[1]) / 2);
-    Some(cmd(k::K_SHADOW, shift(r), win, EMPTY, [p0[0], p0[1], p1[0], p1[1]], [r, bw, (1 << 24) / bw, 0], [0; 2], k::premul(color), k::splat(0)))
+    // interior: both 1-D profiles saturate and no corner is within reach (2 units for the centre's rounding)
+    let cr = core(p0, p1, bw + bw / 2 + r + 2, win);
+    Some(cmd(k::K_SHADOW, shift(r), win, cr, [p0[0], p0[1], p1[0], p1[1]], [r, bw, ((1 << 24) + bw - 1) / bw, if r > 0 { ((bw as i64 * 32768) / (8 * r as i64)).min(32768) as i32 } else { 0 }], [0; 2], k::premul(color), k::splat(0)))
 }
 /// A two-stop linear gradient at `angle` (radians, CSS: 0 = to top, clockwise) in a rounded box.
 pub fn grad(x: f32, y: f32, w: f32, h: f32, radius: f32, angle: f32, c0: u32, c1: u32, clip: &Clip) -> Option<Cmd> {
@@ -105,14 +107,14 @@ pub fn grad(x: f32, y: f32, w: f32, h: f32, radius: f32, angle: f32, c0: u32, c1
     let (dx, dy) = (angle.sin(), -angle.cos());
     let len = ((w * dx).abs() + (h * dy).abs()).max(1.0);
     let s = (1u32 << 26) as f32 / len;
-    Some(cmd(k::K_GRAD, shift(r), win, EMPTY, [p0[0], p0[1], p1[0], p1[1]], [r, 0, (dx * s).round() as i32, (dy * s).round() as i32], [0; 2], k::premul(c0), k::premul(c1)))
+    Some(cmd(k::K_GRAD, shift(r), win, core(p0, p1, r.max(128) + CORE_SLACK, win), [p0[0], p0[1], p1[0], p1[1]], [r, 0, (dx * s).round() as i32, (dy * s).round() as i32], [0; 2], k::premul(c0), k::premul(c1)))
 }
 /// A user shader node `id` (`fx::user_shade`) in a rounded box, with two colours for it to use.
 pub fn user(x: f32, y: f32, w: f32, h: f32, radius: f32, id: u32, c0: u32, c1: u32, clip: &Clip) -> Option<Cmd> {
     let (p0, p1) = edges(x, y, w, h);
     let win = window([p0[0] - 256, p0[1] - 256], [p1[0] + 256, p1[1] + 256], clip)?;
     let r = q8(radius).clamp(0, (p1[0] - p0[0]).min(p1[1] - p0[1]) / 2);
-    Some(cmd(k::K_USER, shift(r), win, EMPTY, [p0[0], p0[1], p1[0], p1[1]], [r, 0, 0, 0], [id, 0], k::premul(c0), k::premul(c1)))
+    Some(cmd(k::K_USER, shift(r), win, core(p0, p1, r.max(128) + CORE_SLACK, win), [p0[0], p0[1], p1[0], p1[1]], [r, 0, 0, 0], [id, 0], k::premul(c0), k::premul(c1)))
 }
 
 /// A command list as words: what the GPU's buffer holds and what the CPU executors decode.
