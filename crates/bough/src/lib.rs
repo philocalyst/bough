@@ -1,4 +1,4 @@
-#![feature(type_info, ptr_metadata, rustc_attrs, const_trait_impl, const_cmp, arbitrary_self_types_pointers)]
+#![feature(type_info, ptr_metadata, rustc_attrs, const_trait_impl, const_cmp, arbitrary_self_types_pointers, f16, stdarch_neon_f16)]
 #![allow(internal_features)]
 //! bough: the public façade over bough-core (records, damage), bough-text (shaping into the glyph pool),
 //! cephal (layout) and bough-metal's fused presenter. One region holds everything the GPU reads
@@ -8,6 +8,7 @@ pub mod backend;
 pub mod boxops;
 pub mod changed;
 pub mod color;
+pub mod cpu_raster;
 pub mod deco;
 pub mod describe;
 pub mod elem;

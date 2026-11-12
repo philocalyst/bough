@@ -221,6 +221,8 @@ pub struct Surface {
     pub touched: Cell<bool>,
     /// Marked purgeable-volatile by a calm trim (made non-volatile before the next draw).
     pub volatile: Cell<bool>,
+    /// Written by the CPU (`write_begin`) at least once: its pages exist although the GPU never drew it.
+    pub cpu_written: Cell<bool>,
 }
 
 fn make_iosurface(w: usize, h: usize) -> CFRetained<IOSurfaceRef> {
@@ -897,7 +899,7 @@ impl Fused {
         d.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
         d.setStorageMode(MTLStorageMode::Shared);
         let tex = device.newTextureWithDescriptor_iosurface_plane(&d, &io, 0).expect("iosurface texture");
-        Surface { io, tex, touched: Cell::new(false), volatile: Cell::new(false) }
+        Surface { io, tex, touched: Cell::new(false), volatile: Cell::new(false), cpu_written: Cell::new(false) }
     }
 
     /// The region's memory (the shared buffer's contents) and its length, plus a keep-alive handle.
@@ -1263,6 +1265,20 @@ impl Fused {
         true
     }
 
+    /// Surface `i` non-volatile again (true if the system purged it meanwhile: its contents are gone), without
+    /// touching the residency set (a CPU-repaired frame must not cause GPU work).
+    pub fn make_nonvolatile(&mut self, i: usize) -> bool {
+        let s = &self.surfs[i];
+        if !s.volatile.get() {
+            return false;
+        }
+        let mut old = 0u32;
+        // SAFETY: a valid surface; 0 = kIOSurfacePurgeableNonVolatile.
+        unsafe { s.io.set_purgeable(0, &mut old) };
+        s.volatile.set(false);
+        old == 2
+    }
+
     /// Make surface `i` ready to be drawn: non-volatile again (returns true if the system purged it, so its
     /// contents are gone) and, on first use, part of the residency set.
     pub fn prepare_target(&mut self, i: usize) -> bool {
@@ -1314,15 +1330,18 @@ impl Fused {
         let mut n = 0;
         for i in 0..self.surfs.len() {
             let s = &self.surfs[i];
-            if !want(i) || s.volatile.get() || !s.touched.get() || s.io.is_in_use() {
+            if !want(i) || s.volatile.get() || !(s.touched.get() || s.cpu_written.get()) || s.io.is_in_use() {
                 continue;
             }
-            if let Some(r) = &self.resid {
-                r.removeAllocation(ProtocolObject::from_ref(&*s.tex));
-                r.commit();
-                self.stats.resident_surfaces -= 1;
+            if s.touched.get() {
+                if let Some(r) = &self.resid {
+                    r.removeAllocation(ProtocolObject::from_ref(&*s.tex));
+                    r.commit();
+                    self.stats.resident_surfaces -= 1;
+                }
             }
             s.touched.set(false);
+            s.cpu_written.set(false);
             let mut old = 0u32;
             if unsafe { s.io.set_purgeable(1, &mut old) } == 0 {
                 s.volatile.set(true);
@@ -1415,6 +1434,37 @@ impl Fused {
         self.prev_frame_at = t;
     }
 
+    /// Surface `i` for the CPU to write (`CpuRaster`, lane memory round 6): the GPU done with it, non-volatile
+    /// again, locked. Returns its base address and bytes per row, and whether the system purged it while volatile
+    /// (its contents are gone: the caller repaints it whole). Pair with `write_end`.
+    pub fn write_begin(&mut self, i: usize) -> (*mut u8, usize, bool) {
+        self.sync();
+        let s = &self.surfs[i];
+        let mut purged = false;
+        if s.volatile.get() {
+            let mut old = 0u32;
+            // SAFETY: a valid surface; 0 = kIOSurfacePurgeableNonVolatile.
+            unsafe { s.io.set_purgeable(0, &mut old) };
+            s.volatile.set(false);
+            purged = old == 2;
+        }
+        // SAFETY: a valid surface, locked for writing until `write_end`; the GPU finished every frame (`sync`).
+        unsafe { s.io.lock(objc2_io_surface::IOSurfaceLockOptions::empty(), std::ptr::null_mut()) };
+        s.cpu_written.set(true);
+        (s.io.base_address().as_ptr() as *mut u8, s.io.bytes_per_row(), purged)
+    }
+
+    /// Unlock surface `i` after `write_begin`.
+    pub fn write_end(&mut self, i: usize) {
+        // SAFETY: locked by `write_begin`.
+        unsafe { self.surfs[i].io.unlock(objc2_io_surface::IOSurfaceLockOptions::empty(), std::ptr::null_mut()) };
+    }
+
+    /// Has the process's GPU queue run work since it was made (the driver's per-queue block exists)?
+    pub fn gpu_used(&self) -> bool {
+        self.stats.gpu_frames > 0 || self.bin_growths > 0
+    }
+
     /// Put surface `i` on screen without any GPU work (it already holds the current state).
     pub fn show_held<const PACED: bool>(&mut self, i: usize) {
         self.stats.ca_only += 1;
@@ -1504,10 +1554,25 @@ impl Fused {
         // SAFETY: the bind table lies inside the reserved header; the GPU is idle (synced above).
         unsafe { (*(self.pool_ptr.add(FBIND_OFF) as *mut FBind)).t[0] = rid(&s) };
         let (nt, nr) = self.write_slot(2, 0, &[], true, &SlotCopy::NONE);
-        let cmd = self.aux.commandBuffer().expect("command buffer");
-        self.encode(&cmd, 2, nr, nt, false);
-        cmd.commit();
-        cmd.waitUntilCompleted();
+        loop {
+            let cmd = self.aux.commandBuffer().expect("command buffer");
+            self.encode(&cmd, 2, nr, nt, false);
+            cmd.commit();
+            cmd.waitUntilCompleted();
+            // a row bin overflowed (frames drawn by another backend never grew them): grow and render again
+            let ty = self.lay.tiles_y() as usize;
+            // SAFETY: `counts` holds ty + 1 u32s in shared storage; the GPU is idle (waited).
+            let need = unsafe { *(self.counts.contents().as_ptr() as *const u32).add(ty) };
+            if need == 0 {
+                break;
+            }
+            // SAFETY: as above.
+            unsafe { *(self.counts.contents().as_ptr() as *mut u32).add(ty) = 0 };
+            self.replace_bins(need.next_power_of_two().max(self.bin_cap * 2));
+            // SAFETY: the bind table lies inside the reserved header; the GPU is idle (drained by the growth).
+            unsafe { (*(self.pool_ptr.add(FBIND_OFF) as *mut FBind)).t[0] = rid(&s) };
+            self.write_slot(2, 0, &[], true, &SlotCopy::NONE);
+        }
         self.write_binds();
         if let Some(r) = &self.resid {
             r.removeAllocation(ProtocolObject::from_ref(&*s));

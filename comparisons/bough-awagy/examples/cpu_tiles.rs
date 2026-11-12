@@ -34,8 +34,27 @@ struct Rec {
     q: [f32; 4],
     b: [f32; 4],
     pm: [f16; 4],
+    pm2: [f16; 4],
+    cv: [f16; 4],
+    core: [f32; 4],
     uv: [u16; 2],
-    glyph: bool,
+    /// 0 solid, 1 rounded, 2 border, 3 glyph
+    kind: u8,
+    radius: f32,
+    bw: f32,
+}
+
+/// The variable steps of the model (`Variant`): each is tried both ways.
+#[derive(Clone, Copy, Debug)]
+struct Var {
+    /// the blend `sh + acc * (1 - a)` as one half FMA
+    fused: bool,
+    /// the store: round to nearest even (else floor(v * 255 + 0.5))
+    rtne: bool,
+    /// the border's `pm * h1 + pm2 * h2`: one FMA on the first product (else two products and an add)
+    border_fma: bool,
+    /// `length` in f_sd: sqrt of the f32 dot (else hypot in f64, rounded)
+    sqrt32: bool,
 }
 
 fn unpack(c: u32) -> [f16; 4] {
@@ -108,7 +127,19 @@ impl<V: View> Model<'_, V> {
                         let qa = [(p0[0] - 1.0).clamp(cl[0], cl[2]), (p0[1] - 1.0).clamp(cl[1], cl[3])];
                         let qb = [(p0[0] - 1.0 + (size[0] + 2.0)).clamp(cl[0], cl[2]), (p0[1] - 1.0 + (size[1] + 2.0)).clamp(cl[1], cl[3])];
                         if qa[0] < qb[0] && qa[1] < qb[1] {
-                            out.push(Rec { q: [qa[0], qa[1], qb[0], qb[1]], b: [p0[0], p0[1], p0[0] + size[0], p0[1] + size[1]], pm: premul(rh.color), uv: [en.uv[0], en.uv[1]], glyph: true });
+                            let pm = premul(rh.color);
+                            out.push(Rec {
+                                q: [qa[0], qa[1], qb[0], qb[1]],
+                                b: [p0[0], p0[1], p0[0] + size[0], p0[1] + size[1]],
+                                pm,
+                                pm2: [0.0; 4],
+                                cv: pm,
+                                core: [0.0; 4],
+                                uv: [en.uv[0], en.uv[1]],
+                                kind: 3,
+                                radius: 0.0,
+                                bw: 0.0,
+                            });
                         }
                     }
                 }
@@ -117,7 +148,7 @@ impl<V: View> Model<'_, V> {
             let (i0, n) = if p & PAY_IRUN != 0 { (p & 0x3FFFF, ((p >> 18) & 0xFFF) + 1) } else { (p, 1) };
             for i in i0..i0 + n {
                 let q = &self.app.rt.inst[i as usize];
-                if q.kind != 0 && q.kind != 3 {
+                if q.kind > 3 {
                     return SKIP;
                 }
                 let off = self.space(q.space)?;
@@ -133,21 +164,58 @@ impl<V: View> Model<'_, V> {
                 let qa = [(p0[0] - m).clamp(cl[0], cl[2]), (p0[1] - m).clamp(cl[1], cl[3])];
                 let qb = [(p1[0] + m).clamp(cl[0], cl[2]), (p1[1] + m).clamp(cl[1], cl[3])];
                 if qa[0] < qb[0] && qa[1] < qb[1] {
-                    out.push(Rec { q: [qa[0], qa[1], qb[0], qb[1]], b: [p0[0], p0[1], p1[0], p1[1]], pm: premul(q.color), uv: [q.uv[0], q.uv[1]], glyph: q.kind == 3 });
+                    let (pm, pm2) = (premul(q.color), premul(q.color2));
+                    // f_stage_rec: the radius clamped to the box (CSS); the core where coverage is whole
+                    let rad = q.radius.min(0.5 * q.size[0].min(q.size[1]));
+                    let k = if q.kind == 1 { rad.max(0.5) + 1.0 } else { rad.max(0.5 + q.bw) + 1.0 };
+                    let cb = [(p0[0] + k).max(qa[0]), (p0[1] + k).max(qa[1]), (p1[0] - k).min(qb[0]), (p1[1] - k).min(qb[1])];
+                    let core = match q.kind {
+                        0 => [qa[0], qa[1], qb[0], qb[1]],
+                        3 => [0.0; 4],
+                        _ => cb,
+                    };
+                    let cv = if q.kind == 2 { pm2 } else { pm };
+                    out.push(Rec { q: [qa[0], qa[1], qb[0], qb[1]], b: [p0[0], p0[1], p1[0], p1[1]], pm, pm2, cv, core, uv: [q.uv[0], q.uv[1]], kind: q.kind, radius: rad, bw: q.bw });
                 }
             }
         }
         Some(out)
     }
 
-    /// `f_shade` for kinds 0 and 3 at pixel centre `c`.
-    fn shade(&self, r: &Rec, c: [f32; 2]) -> [f16; 4] {
+    /// `f_sd`: the signed distance from `c` to the rounded box `b` (radius `r`).
+    fn sd(c: [f32; 2], b: [f32; 4], r: f32, v: Var) -> f32 {
+        let q = [(c[0] - b[2]).max(b[0] - c[0]) + r, (c[1] - b[3]).max(b[1] - c[1]) + r];
+        let (mx, my) = (q[0].max(0.0), q[1].max(0.0));
+        // shader.metal (round 6): precise::sqrt(fma(m.y, m.y, m.x * m.x)); `sqrt32 = false`: the old two-rounding dot
+        let len = if v.sqrt32 { my.mul_add(my, mx * mx).sqrt() } else { (mx * mx + my * my).sqrt() };
+        len + q[0].max(q[1]).min(0.0) - r
+    }
+
+    /// `f_shade` for kinds 0-3 at pixel centre `c`.
+    fn shade(&self, r: &Rec, c: [f32; 2], v: Var) -> [f16; 4] {
         let z = [0.0 as f16; 4];
         if !(c[0] >= r.q[0] && c[0] < r.q[2] && c[1] >= r.q[1] && c[1] < r.q[3]) {
             return z;
         }
-        if !r.glyph {
-            return r.pm;
+        match r.kind {
+            0 => return r.pm,
+            1 => {
+                let d = Self::sd(c, r.b, r.radius, v);
+                let cov = (0.5 - d).clamp(0.0, 1.0) as f16;
+                return r.pm.map(|x| x * cov);
+            }
+            2 => {
+                let d = Self::sd(c, r.b, r.radius, v);
+                let outer = (0.5 - d).clamp(0.0, 1.0);
+                let inner = (0.5 - (d + r.bw)).clamp(0.0, 1.0);
+                let (h1, h2) = ((outer - inner).max(0.0) as f16, inner as f16);
+                let mut o = [0.0 as f16; 4];
+                for i in 0..4 {
+                    o[i] = if v.border_fma { (r.pm[i] as f64 * h1 as f64 + (r.pm2[i] * h2) as f64) as f16 } else { r.pm[i] * h1 + r.pm2[i] * h2 };
+                }
+                return o;
+            }
+            _ => {}
         }
         let t = [c[0] - r.b[0], c[1] - r.b[1]];
         let mut cov: f16 = 0.0;
@@ -163,14 +231,21 @@ impl<V: View> Model<'_, V> {
     }
 
     /// The tile's BGRA bytes under one choice of the two unspecified steps.
-    fn tile(&self, recs: &[Rec], o: [i32; 2], fused: bool, rtne: bool) -> Vec<u8> {
+    fn tile(&self, recs: &[Rec], o: [i32; 2], v: Var) -> Vec<u8> {
+        let (fused, rtne) = (v.fused, v.rtne);
         let mut px = vec![0u8; 32 * 32 * 4];
         for y in 0..32 {
             for x in 0..32 {
                 let c = [(o[0] + x) as f32 + 0.5, (o[1] + y) as f32 + 0.5];
+                // the thread's 2 x 2 block (`blk`: its first and last pixel centres)
+                let b0 = [(o[0] + (x & !1)) as f32 + 0.5, (o[1] + (y & !1)) as f32 + 0.5];
+                let blk = [b0[0], b0[1], b0[0] + 1.0, b0[1] + 1.0];
                 let mut acc = [0.0 as f16; 4];
                 for r in recs {
-                    let sh = self.shade(r, c);
+                    if r.q[0] > blk[2] || r.q[2] <= blk[0] || r.q[1] > blk[3] || r.q[3] <= blk[1] {
+                        continue;
+                    }
+                    let sh = if blk[0] >= r.core[0] && blk[2] < r.core[2] && blk[1] >= r.core[1] && blk[3] < r.core[3] { r.cv } else { self.shade(r, c, v) };
                     let k: f16 = 1.0 - sh[3];
                     for i in 0..4 {
                         acc[i] = if fused { (sh[i] as f64 + acc[i] as f64 * k as f64) as f16 } else { sh[i] + acc[i] * k };
@@ -190,15 +265,24 @@ impl<V: View> Model<'_, V> {
 
 /// Compare every tile of the current state; returns (tiles modelled, skipped, mismatches per variant, first
 /// mismatch per variant).
-fn compare<V: View>(app: &mut App<V>, tag: &str) -> [u64; 4] {
+const VARS: [Var; 6] = [
+    Var { fused: true, rtne: true, border_fma: true, sqrt32: true },
+    Var { fused: true, rtne: true, border_fma: false, sqrt32: true },
+    Var { fused: true, rtne: true, border_fma: true, sqrt32: false },
+    Var { fused: true, rtne: false, border_fma: true, sqrt32: true },
+    Var { fused: false, rtne: true, border_fma: true, sqrt32: true },
+    Var { fused: true, rtne: true, border_fma: false, sqrt32: false },
+];
+
+fn compare<V: View>(app: &mut App<V>, tag: &str) -> [u64; 6] {
     let gpu = app.reference_pixels();
     let (w, h) = (app.rt.win_w, app.rt.win_h);
     let app: &App<V> = app;
     let m = Model { app, w, h };
     let recs: Vec<([i32; 4], u16, u32)> = app.rt.bough.records().iter().map(|r| (r.ink.to_xyxy(), r.clip, r.payload)).collect();
     let (mut done, mut skipped) = (0u64, 0u64);
-    let mut bad = [0u64; 4];
-    let mut shown = [false; 4];
+    let mut bad = [0u64; 6];
+    let mut shown = [false; 6];
     for ty in 0..(m.h + 31) / 32 {
         for tx in 0..(m.w + 31) / 32 {
             let o = [tx * 32, ty * 32];
@@ -207,8 +291,8 @@ fn compare<V: View>(app: &mut App<V>, tag: &str) -> [u64; 4] {
                 continue;
             };
             done += 1;
-            for (v, &(fused, rtne)) in [(false, true), (false, false), (true, true), (true, false)].iter().enumerate() {
-                let t = m.tile(&st, o, fused, rtne);
+            for (v, var) in VARS.iter().enumerate() {
+                let t = m.tile(&st, o, *var);
                 let mut diff = None;
                 'px: for y in 0..32 {
                     for x in 0..32 {
@@ -228,13 +312,13 @@ fn compare<V: View>(app: &mut App<V>, tag: &str) -> [u64; 4] {
                     bad[v] += 1;
                     if !shown[v] {
                         shown[v] = true;
-                        eprintln!("  {tag} variant {v} (fused {fused}, rtne {rtne}): tile ({tx},{ty}) first differs at ({x},{y}): gpu {g:?} cpu {c:?}");
+                        eprintln!("  {tag} variant {v} {var:?}: tile ({tx},{ty}) first differs at ({x},{y}): gpu {g:?} cpu {c:?}");
                     }
                 }
             }
         }
     }
-    println!("{tag}: tiles modelled {done}, skipped {skipped}; mismatching tiles: sep+rtne {} sep+halfup {} fused+rtne {} fused+halfup {}", bad[0], bad[1], bad[2], bad[3]);
+    println!("{tag}: tiles modelled {done}, skipped {skipped}; mismatching tiles per variant {bad:?}");
     bad
 }
 
@@ -268,7 +352,19 @@ impl View for Stress {
                 (x, y, (rnd(&mut s) % 30 + 8) as f32, rnd(&mut s) | 0x0100_0000, format!("Wg{i} quick brown fox {}", rnd(&mut s) % 1000))
             })
             .collect();
+        let shapes: Vec<(f32, f32, f32, f32, u32, u32, f32, f32)> = (0..1200)
+            .map(|_| {
+                let (x, y) = ((rnd(&mut s) % 960) as f32 + (rnd(&mut s) % 4) as f32 * 0.25, (rnd(&mut s) % 680) as f32 + (rnd(&mut s) % 4) as f32 * 0.25);
+                let (w, h) = ((rnd(&mut s) % 200 + 2) as f32, (rnd(&mut s) % 120 + 2) as f32);
+                let r = (rnd(&mut s) % 40) as f32 * 0.5;
+                let bw = (rnd(&mut s) % 6) as f32 * 0.5;
+                (x, y, w, h, rnd(&mut s) | 0x0100_0000, rnd(&mut s) | 0x0100_0000, r, bw)
+            })
+            .collect();
         (
+            each(shapes.into_iter().map(|(x, y, w, h, c, c2, r, bw)| {
+                if bw > 0.0 { quad(x, y, w, h).bg(Color(c)).rounded(r).border(bw, Color(c2)) } else { quad(x, y, w, h).bg(Color(c)).rounded(r.max(0.5)).border(0.0, Color(c2)) }
+            })),
             each(quads.into_iter().map(|(x, y, w, h, c)| quad(x, y, w, h).bg(Color(c)))),
             each(labels.into_iter().map(|(x, y, sz, c, t)| text(t).at(x, y).size(sz).line_height(sz * 1.25).color(Color(c)))),
         )

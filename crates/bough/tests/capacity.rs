@@ -56,5 +56,7 @@ fn seventy_thousand_quads_past_the_old_caps_draw_exactly() {
         }
     }
     assert_eq!(wrong, 0, "{wrong} of {N} quads drawn wrong");
-    assert_eq!(px, app.reference_pixels(), "the presented frame equals a full redraw");
+    let r = app.reference_pixels();
+    let diff = px.chunks_exact(4).zip(r.chunks_exact(4)).enumerate().filter(|(_, (a, b))| a != b).map(|(i, (a, b))| (i % w as usize, i / w as usize, a.to_vec(), b.to_vec())).collect::<Vec<_>>();
+    assert!(diff.is_empty(), "the presented frame equals a full redraw: {} pixels differ, first {:?} (repair {:?}, {:?})", diff.len(), &diff[..diff.len().min(4)], app.repair, app.surf_stats);
 }

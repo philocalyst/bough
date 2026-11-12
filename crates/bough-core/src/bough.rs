@@ -1825,6 +1825,15 @@ impl Bough {
         }
     }
 
+    /// `cull_tiles`, returning record positions (ascending paint order) instead of payloads (the CPU repair
+    /// backend reads each record's clip and payload).
+    pub fn cull_tiles_pos(&self, plane: &Plane, bbox: NRect, out: &mut Vec<u32>) {
+        out.clear();
+        if !plane.is_clear() {
+            self.cull_impl::<true, true, false>(bbox, bbox, plane, out);
+        }
+    }
+
     /// `repair_into(age, scratch)` then `cull_tiles`: the draw list for a surface of that age.
     pub fn cull_repair(&self, age: u32, scratch: &mut Plane, out: &mut Vec<u32>) {
         let bb = self.repair_into(age, scratch);

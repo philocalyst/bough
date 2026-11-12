@@ -135,6 +135,8 @@ pub struct SurfStats {
     /// (bough-metal `Fused::in_use_why` bits: committing, queued, the publisher's last, the calling thread's
     /// last or paced, the compositor).
     pub grew_why: [u64; 5],
+    /// Frames repaired by the CPU backend (no GPU work).
+    pub cpu: u64,
 }
 
 /// The presenter, chosen at compile time (never per frame): the vendored-wgpu-hal port (`bough_gpu::fused`,
@@ -143,6 +145,26 @@ pub struct SurfStats {
 pub use bough_gpu::fused as presenter;
 #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
 pub use bough_metal::fused as presenter;
+
+/// Which backend may repair a frame (`BOUGH_REPAIR`: `gpu`, `cpu`, or the cost model, the default). Every backend
+/// writes the same pixels (cpu_raster.rs); `Cpu` takes the CPU whenever the frame's records are all modelled
+/// (tests force it to hold the CPU path to the GPU's reference).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Repair {
+    Auto,
+    Gpu,
+    Cpu,
+}
+
+impl Repair {
+    pub fn from_env() -> Repair {
+        match std::env::var("BOUGH_REPAIR").as_deref() {
+            Ok("gpu") => Repair::Gpu,
+            Ok("cpu") => Repair::Cpu,
+            _ => Repair::Auto,
+        }
+    }
+}
 
 enum Pick {
     /// The surface on screen already shows the state.
@@ -185,6 +207,9 @@ pub struct App<V: View> {
     tape: Vec<u32>,
     /// `Config::mount_once`: no tape, no re-description.
     once: bool,
+    /// The repair backends' choice and the CPU backend (cpu_raster.rs).
+    pub repair: Repair,
+    pub cpu: crate::cpu_raster::CpuRaster,
 }
 
 /// Per raster worker started by [`prepare`]: (strikes, glyphs, instructions, ns), for those finished.
@@ -246,6 +271,11 @@ pub fn prepare(cfg: &Config, strikes: &[(f32, &str, u8)], svgs: &[(&'static str,
 
 /// Bin capacity per tile row the presenter starts with.
 const BIN_CAP: u32 = 1024;
+
+/// Repair-backend limits (damaged tiles per frame below which the CPU backend repairs): provisional values until
+/// the per-tile costs of both backends are measured (card `2026-11-11-repair-backends`).
+const CPU_TILES_WARM: u32 = 16;
+const CPU_TILES_COLD: u32 = 4096;
 
 impl<V: View> App<V> {
     /// Mount `view`. `gpu`: create the fused presenter (its shared buffer is the region); otherwise the
@@ -402,7 +432,17 @@ impl<V: View> App<V> {
             last_full: true,
             tape,
             once,
+            repair: Repair::from_env(),
+            cpu: crate::cpu_raster::CpuRaster::new(),
         }
+    }
+
+    /// The cost model's limit: frames of at most this many damaged tiles are repaired on the CPU. While the
+    /// GPU's queue has not run work (or was released) a GPU frame costs a queue wake (~3 ms, ~11 M instructions,
+    /// drvprobe) and the driver's 69 MiB, so the CPU takes much larger frames.
+    #[inline]
+    fn repair_limit(&self, gpu_warm: bool) -> u32 {
+        if gpu_warm { CPU_TILES_WARM } else { CPU_TILES_COLD }
     }
 
     /// Frames per pre-armed command buffer. Every frame goes through the pre-armed stream (bough-metal
@@ -798,9 +838,23 @@ impl<V: View> App<V> {
 
     fn draw<const PACED: bool>(&mut self, i: usize, epoch: u32) {
         let mut purged = false;
+        // a CPU-repairable frame must not make the surface resident (a first residency drains the pre-armed
+        // frames: GPU work); its volatility is handled by `write_begin` / `prepare_target`, whichever runs
+        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+        let cpu_able = self.repair != Repair::Gpu;
+        #[cfg(not(all(target_os = "macos", not(feature = "wgpu"))))]
+        let cpu_able = false;
         #[cfg(target_os = "macos")]
         if let Some(g) = self.gpu.as_mut() {
-            purged = g.prepare_target(i);
+            if !cpu_able {
+                purged = g.prepare_target(i);
+            }
+        }
+        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+        if cpu_able {
+            if let Some(g) = self.gpu.as_mut() {
+                purged = g.make_nonvolatile(i);
+            }
         }
         if purged {
             self.held[i] = None;
@@ -821,8 +875,33 @@ impl<V: View> App<V> {
         self.last_use[i] = self.frames;
         #[allow(unused_mut)]
         let mut drawn = false;
+        // the CPU backend (cpu_raster.rs): the damaged tiles written into the surface directly, no GPU work
+        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+        if cpu_able && copy.is_none() {
+            let tiles = if full { self.rt.layout.tiles_x() * self.rt.layout.tiles_y() } else { self.rows.iter().map(|r| r.count_ones()).sum() };
+            let warm = self.gpu.as_ref().is_some_and(|g| g.gpu_used());
+            let limit = self.repair_limit(warm);
+            if let Some(g) = self.gpu.as_mut() {
+                if self.repair == Repair::Cpu || tiles <= limit {
+                    let (p, bpr, _) = g.write_begin(i);
+                    // SAFETY: the surface is locked for this thread's writes, `bpr` bytes per row for the window's
+                    // rows (`write_begin`); the GPU finished every frame.
+                    let r = unsafe { self.cpu.repair(&self.rt, &self.rows, full, p, bpr) };
+                    g.write_end(i);
+                    if let Some(nt) = r {
+                        self.repaired_tiles = nt;
+                        g.show_held::<PACED>(i);
+                        self.surf_stats.cpu += 1;
+                        drawn = true;
+                    }
+                }
+            }
+        }
         #[cfg(target_os = "macos")]
-        if let Some(g) = self.gpu.as_mut() {
+        if let Some(g) = self.gpu.as_mut().filter(|_| !drawn) {
+            if cpu_able {
+                g.prepare_target(i);
+            }
             self.prof.mark(PH_CULL);
             let a = &mut self.rt.text.cache.atlas;
             if g.sync_atlas(a.width, a.height, &a.pixels, a.dirty_bytes != 0) {
@@ -875,7 +954,7 @@ impl<V: View> App<V> {
     pub fn needs_trim(&self) -> bool {
         #[cfg(target_os = "macos")]
         if let Some(g) = self.gpu.as_ref() {
-            return (0..self.held.len()).any(|i| Some(i) != self.shown && g.surfs[i].touched.get() && !g.surfs[i].volatile.get());
+            return (0..self.held.len()).any(|i| Some(i) != self.shown && (g.surfs[i].touched.get() || g.surfs[i].cpu_written.get()) && !g.surfs[i].volatile.get());
         }
         false
     }

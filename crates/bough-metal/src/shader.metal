@@ -1265,7 +1265,11 @@ struct FRec {
 // Rounded-box SDF in edge form (== sd_rbox(c - centre, half, r) mathematically).
 static float f_sd(float2 c, float4 b, float r) {
     float2 q = max(c - b.zw, b.xy - c) + r;
-    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+    float2 m = max(q, 0.0);
+    // the length with every operation specified (round 6, lane memory): the dot as one fma and a correctly rounded
+    // square root. `length` under fast math is x * rsqrt(x) with a hardware rsqrt that is not correctly rounded
+    // (4 % of inputs, examples/mathprobe.rs), which no CPU can reproduce; the CPU repair backend computes this.
+    return precise::sqrt(fma(m.y, m.y, m.x * m.x)) + min(max(q.x, q.y), 0.0) - r;
 }
 
 static half4 f_shade(threadgroup const FRec& r, float2 c, texture2d<float> atlas) {
@@ -1280,7 +1284,7 @@ static half4 f_shade(threadgroup const FRec& r, float2 c, texture2d<float> atlas
         float d = f_sd(c, r.b, r.radius);
         float outer = clamp(0.5 - d, 0.0, 1.0);
         float inner = clamp(0.5 - (d + r.bw), 0.0, 1.0);
-        return r.pm * half(max(outer - inner, 0.0)) + r.pm2 * half(inner); }
+        return fma(r.pm, half4(half(max(outer - inner, 0.0))), r.pm2 * half(inner)); }   // the contraction the compiler chose, written out
     default: {
         float2 t = c - r.b.xy;
         half cov = 0.0h;
@@ -1561,12 +1565,12 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
             if (rr.q.x > blk.z || rr.q.z <= blk.x || rr.q.y > blk.w || rr.q.w <= blk.y) continue;
             if (blk.x >= rr.core.x && blk.z < rr.core.z && blk.y >= rr.core.y && blk.w < rr.core.w) {
                 half4 cv = rr.cv;
-                for (uint j = 0; j < 4; j++) acc[j] = cv + acc[j] * (1.0h - cv.a);
+                for (uint j = 0; j < 4; j++) acc[j] = fma(acc[j], half4(1.0h - cv.a), cv);
                 continue;
             }
             for (uint j = 0; j < 4; j++) {
                 half4 sh = f_shade_x(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas, img);
-                acc[j] = sh + acc[j] * (1.0h - sh.a);
+                acc[j] = fma(acc[j], half4(1.0h - sh.a), sh);   // one rounding: the CPU repair backend relies on it
             }
         }
     }
