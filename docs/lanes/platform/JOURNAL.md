@@ -81,3 +81,47 @@ env is DejaVu Sans, the face gui-bench's spec names).
 * gui-bench/fakeland: this lane's clones in `/root/work/r7/platform/{gui-bench,fakeland}` (from the zortax
   checkouts, same commits 0fd4510 / 71695e7), runner patched to know `bough` (`apps/bough`: a one-line binary over
   `comparisons/bough-guibench`, whose spec.rs and cli.rs are byte-identical to gui-bench's shared ones).
+
+### 2026-11-12, M2 and the first gui-bench runs
+
+* **M2 reached** (head b3c56c4cb4 then 6ad7fd59aa; ilo-prod, fakeland 71695e7 `serve --renderer pixman --output
+  1280x800@60`, `bough-bench --scenario rows --rows 1000`): the first frame, a hover and a 200 px finger scroll
+  under fakeland, screenshots probed with a stdlib PNG decoder: (640,16) #ffffff, (640,48) #f6f8fa, (640,31)
+  #e5e7eb, hover (640,176) #cfe3ff. `ctl stats`: input to commit p50 6.8 ms over 4 events.
+* gui-bench: this lane's clone of gui-bench and fakeland (same commits as `/root/work/zortax`), the runner patched
+  to know `bough` (`apps/bough`, one line over `bough_guibench::run_cli`). `--quick --frameworks bough`, q1 (rows
+  only) and q2 (all 8 scenarios, 14 cells, head ad451b1a10, load 3-15, nice 10): 13 cells complete with the layout
+  check passing, 310 of 316 reports valid; spinner at 10,000 rows failed at mount (glyph column, see below).
+* **Found by the runs, fixed** (each its own commit; the first two also on `r7/platform-fixes`, cut from `round6`
+  for the integrator: a40713f01a, 72a87feefc):
+  1. The software `f16::mul_add` on x86-64 (`__truncdfhf2`, an f64 FMA rounded in software): 73 % of a scroll
+     frame. The CPU executor's half FMA is an f32 FMA rounded to half off aarch64 (aarch64 keeps the exact half
+     FMA). Scroll frame 327 M -> 60 M instructions, first frame 336 M -> 69 M (rows, 100, guibench headless R1).
+  2. `scroll_band` compared the record kind without masking `KF_MASK`, so a hoverable or scrolling box (the
+     scroll port itself) was damaged whole on every scroll step, Metal included: rows scroll repaired tiles at ring
+     age 4, 1000 -> 240; search 960 -> 80 (macOS R0, guibench headless).
+  3. The prelude scroll box moved its content with `scroll_run` (damage = the port): now `Rt::scroll_copy`.
+  4. The region reserves the record format's limits off macOS too (spinner 10,000 filled `glyph_x` at 2^19).
+  5. **Generalization OVERFIT 8, hover stale after a scroll** (the 198,048-byte retained-vs-fresh failure of
+     rows and virtual scroll): hover is now derived again at the still pointer after every settle and turn
+     (`App::rehover`; the hit cell's cache makes it one compare when nothing under the pointer moved).
+  6. **Generalization OVERFIT 1, plain state inside a scroll box never re-described** (every coarse table op
+     timed out in gui-bench: the window never changed): `ScrollBox` tapes its view and updates port and content
+     like any box instead of mounting opaque.
+  Minimal repros of 5 and 6 are `crates/bough/tests/scroll_box.rs` (each fails without its fix, checked).
+  The guibench gate matrix (66 gates: rows/virtual hover, scroll, jump; table fine/coarse x 9 ops; ticker; search
+  x 4; spinner; typing; resize; rings 4 and 1) passes on macOS Metal with 5 and 6; before them rows/virtual
+  scroll/jump and every coarse op failed.
+* CPU executor speed (still `cpu_raster.rs`, until the compute lane's `bough-kernel` replaces it): binned entries
+  per tile (CSR), each tile starts at its last opaque cover, AVX2 + F16C solid spans and store chosen at run time
+  (the same bits as the scalar loop, checked by `tests/cpu_target.rs`, which also caught an off-by-one in the
+  first version of the bins).
+* **What the fine table's ~10 ms ops are**: framework cost, but not the reactive engine's. Fine remove at 1,000
+  rows (guibench headless, ilo-prod, c2c001b1e5): 111 K instructions without rendering, 22.2 M with the CPU
+  executor, which repairs 883 tiles because every row below row 2 moved up 32 px (89 % of the profile in the tile
+  loop). A list splice is a rigid translation of the rows below it, the same as a scroll: a copy of the moved rows'
+  pixels plus the exposed row would cut it to a few dozen tiles. The scroll record holds one clip and one move;
+  generalising it to a copy rect (any run translated inside a clip) is a core-damage change (core lane).
+* Stale build caught: after a negative control that reverted and restored source files, cargo's mtime freshness
+  reused the reverted library and a passing test "failed"; the restored tree passed once rebuilt. From then on
+  `cargo -Z checksum-freshness` (AGENTS.md).
