@@ -1,0 +1,99 @@
+== tests
+      3 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+      1 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+      1 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+      3 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+      1 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.59s
+      3 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+      1 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+      1 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+      1 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.88s
+      1 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.26s
+      1 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.67s
+      1 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+      1 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+      1 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+      1 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+      1 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.65s
+      1 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+      1 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+      1 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.75s
+      1 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+== check
+warning: unused import: `NRect`
+  --> comparisons/bough-app-sketch-code/src/canvas.rs:12:26
+   |
+12 | use bough_core::{Handle, NRect};
+   |                          ^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+--
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 23s
+== dist head
+    Finished `dist` profile [optimized] target(s) in 2m 34s
+== dist base
+    Finished `dist` profile [optimized] target(s) in 2m 44s
+== run 1 head
+rows,mode,colour,number,string,idle,colour+frame,idle+frame
+1,once,366,3322,4221,95,1657,170
+1,redescribe,1362,4302,5201,1075,2637,1150
+64,once,366,144115188075854386,144115188075851565,95,1355,170
+64,redescribe,39146,37294,34515,38875,40119,38950
+256,once,365,8413,20320,95,865,170
+256,redescribe,154809,162821,174402,154075,154845,154150
+== run 1 base
+rows,mode,colour,number,string,idle,colour+frame,idle+frame
+1,once,546,3382,4280,188,1672,259
+1,redescribe,1534,4370,5268,1176,2660,1247
+64,once,514,144115188075854450,144115188075851629,188,1358,259
+64,redescribe,39302,37366,34587,38976,40146,38834
+256,once,503,8499,20376,188,870,259
+256,redescribe,154491,162429,174304,154133,154858,154278
+== run 2 head
+rows,mode,colour,number,string,idle,colour+frame,idle+frame
+1,once,366,3322,4221,95,1657,170
+1,redescribe,1346,4302,5201,1075,2755,1150
+64,once,366,144115188075854386,144115188075851565,95,1355,170
+64,redescribe,39146,37294,34504,38875,40135,38950
+256,once,365,8414,20321,95,865,170
+256,redescribe,154345,162323,174240,154201,155078,154149
+== run 2 base
+rows,mode,colour,number,string,idle,colour+frame,idle+frame
+1,once,546,3143,4278,188,1672,259
+1,redescribe,1534,4370,5268,1176,2660,1247
+64,once,514,144115188075854450,144115188075851628,188,1358,259
+64,redescribe,39302,37366,34575,39006,40146,39047
+256,once,503,8471,20378,188,870,259
+256,redescribe,154491,162469,174305,154176,154858,154289
+== run 3 head
+rows,mode,colour,number,string,idle,colour+frame,idle+frame
+1,once,366,3322,4221,95,1657,170
+1,redescribe,1346,4302,5201,1190,2637,1150
+64,once,366,144115188075854386,144115188075851565,95,1355,170
+64,redescribe,39146,37294,34504,38875,40135,38958
+256,once,365,8414,20321,95,865,170
+256,redescribe,154345,162365,174240,154075,154887,154150
+== run 3 base
+rows,mode,colour,number,string,idle,colour+frame,idle+frame
+1,once,546,3417,4278,188,1672,259
+1,redescribe,1534,4406,5105,1176,2660,1247
+64,once,514,144115188075854450,144115188075851628,188,1358,259
+64,redescribe,39302,37366,34574,38976,40146,39047
+256,once,503,8471,20378,188,870,259
+256,redescribe,154491,162465,174306,154176,154858,154247
+== redescribe head
+rows,owned,owned_per_row,static,static_per_row,bare,bare_per_row,once
+256,161954,632,159731,623,56727,221,83
+1000,623234,623,606131,606,213711,213,83
+rows,description_build_per_row,operands_only_per_row
+256,53,19
+1000,53,19
+== redescribe base
+rows,owned,owned_per_row,static,static_per_row,bare,bare_per_row,once
+256,162256,633,160045,625,56998,222,180
+1000,623658,623,606445,606,213982,213,180
+ 01:39:42 up 1 day, 14:24,  47 users,  load average: 45.21, 45.70, 37.21

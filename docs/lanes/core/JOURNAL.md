@@ -115,6 +115,21 @@ What the numbers say:
   opacity multiply, the paint log). "Under 60" is not reachable on this base without the write applying its
   own store (surface-api's direct wires measure 62 above idle); the general form of that is in section E4.
 
+**At the `dist` profile** (fat LTO, one codegen unit; commit `32aee86bce` against `3b0b00c698`, both built
+with the same example source; three runs each, identical to the instruction; Mac under load average 45;
+`data/r7/dist-and-verify-32aee86bce.txt`), once mode, base -> head:
+
+| rows | idle | colour | colour + frame | idle + frame |
+|---|---|---|---|---|
+| 1 | 188 -> 95 | 546 -> 366 | 1,672 -> 1,657 | 259 -> 170 |
+| 64 | 188 -> 95 | 514 -> 366 | 1,358 -> 1,355 | 259 -> 170 |
+| 256 | 188 -> 95 | 503 -> 365 | 870 -> 865 | 259 -> 170 |
+
+The shipping profile says it more plainly than `release` did: the turn is 27 to 33 % cheaper and the idle turn
+is half, but a colour write counted with its frame is unchanged (-5 of 870). What left the write arrived at
+the frame. Re-describing mode is unchanged throughout (154 K at 256 rows; 623 per row at 1,000), as it should
+be: nothing here touches the walk. The description-build floor at `dist` is 53 per row (operands 19).
+
 Correctness: the paint ring is read in four places (`repair_rows`, `copy_plan`, `frame_as`, `advance`), all
 behind `frame_as`, which projects first. A projection after a scroll marks the record where it is now; that is
 the exact rule (the copy brought the record's old pixels to the new place, and the old place holds copied
@@ -149,3 +164,229 @@ other (`cargo test` in the crate).
 7. Mount of 100,000 rows of 3 records: per record ~40 per row in the model (the real `insert_run` is 84 per
    record, so the model flatters the baseline); copied page images at most 12 per row; shared images under 1.
 8. Idle re-description over an operand lane: at most 6 per row at 1,000 rows. Kill: above 30.
+
+### Results of the model
+
+Hosts: Mac = M3 Pro, aarch64, under load (instructions and cycles of the calling thread; no miss counters);
+ilo = ilo-prod, Ryzen 7 3700X (Zen 2), x86-64, load average 17 to 20 during the run (a busy host), counters by
+`perf_event_open` in process, user mode, pinned to CPU 2 for the single-thread cells; "cache misses" on this PMU
+are L2 misses. Builds: release with fat LTO (the crate's own profile); ilo twice, the default x86-64 target
+(SSE2) and `-C target-cpu=znver2` (AVX2). Minimum of five samples. Raw files: `data/r7/pages-*.{csv,txt}`.
+Model commit: the one that adds this section.
+
+| # | cell | Mac | ilo SSE2 | ilo AVX2 | prediction | verdict |
+|---|---|---|---|---|---|---|
+| 1 | the write (`mark`), per write incl. the loop's index load | 14 | 16 (0.001 L2 misses) | 16 | at most 8 | missed: ~10 for the mark itself; flat from 64 to 1,000,000 records |
+| 2 | stage 1 by scan, idle frame, 100,000 records (1,563 pages) | 5,645 | 14,435 | 4,770 | ~2,300; kill above 1,000 | killed, as predicted: 3 to 9 per page |
+| 2 | the same, 1,000,000 records | 55,049 | 143,411 (113 L2 misses) | 46,732 (254) | | |
+| 2 | stage 1 by summary, idle, 100,000 / 1,000,000 | 160 / 1,260 | 209 / 1,749 | 209 / 1,749 | under 60 | missed at scale: the summary itself is scanned; a top word (or one pending byte, as `dirty.rs` has) makes it one load |
+| 3 | stage 2, one record of a list, scalar path, per call | 203 | 231 | 214 | at most 45 | missed: ~120 fixed per call + ~80 per record |
+| 3 | the same through lanes | 477 | 643 | 366 | ~250 per page | the page costs 280 to 560 whatever is set |
+| 3 | 8 of 64 bits: scalar / lanes, per record | 92 / 97 | 110 / 123 | 108 / 87 | crossover at 6 to 8 | crossover is at 8 (AVX2) to ~16 (NEON, SSE2) bits |
+| 4 | every record of every page (theme switch, 100,000): lanes / scalar | 18.4 / 51.2 | 22.5 / 60.8 | 17.6 / 61.9 | 14 / 40; kill under 2x | 2.7x to 3.5x: holds. 3.2 to 5.5 cycles per record |
+| 4 | one column of a 10-column table (10,000 of 100,000; 6.4 bits per page): lanes / scalar | 69 / 58 | 95 / 69 | 51 / 67 | about equal | scalar wins on NEON and SSE2, lanes on AVX2 |
+| 5 | stage 2 on workers, 1,000,000 dirty, wall ms at 1 / 2 / 4 / 8 / 16 threads | 3.24 / 2.44 / 1.58 / 1.04 / n/a | 4.20 / 1.94 / 1.16 / 1.10 / 0.89 | 3.53 / 2.10 / 1.48 / 1.06 / 1.14 | 4x at 8; kill 16 under 3x | 3.1x to 3.8x at 8, 4.7x at 16 on a busy host: not killed, under the prediction |
+| 5 | the same at 100,000 dirty, wall µs at 1 / 2 / 16 | 102 / 221 / n/a | 141 / 180 / 373 | 143 / 214 / 440 | no gain below ~20,000 | no gain below ~500,000: starting scoped threads costs 78 µs (2) to 384 µs (16) per call |
+| 6 | insert + remove pair, fill 32: shifting page / selection page | 927 / 188 (70 / 11.6 ns) | 668 / 158 (68 / 13.7 ns; 1.65 / 0.13 branch misses) | 648 / 154 | a third | 4.2x to 4.9x in instructions, 5x to 6x in time |
+| 6 | ordered walk per record: direct / selection, append-only / selection, permuted | 5.6 / 5.7 / 12.6 (0.40 / 0.40 / 0.55 ns) | 6.4 / 6.5 / 13.0 (0.53 / 0.53 / 0.64 ns) | | 1.0x and at most 1.5x; kill above 2x | 2.3x in instructions (killed by the letter), 1.2x to 1.4x in time: the loads are independent |
+| 7 | mount 100,000 rows of 3 records, per row: per record / copied images / shared images | 249 / 17.9 / 1.68 (13.3 / 1.65 / 0.05 ns) | 196 / 10.5 / 2.04 (27.8 / 0.85 / 0.22 ns; 0.61 / 0.07 / 0 L2 misses) | same | 40 / 12 / under 1 | per record is 83 per record, the same as the real `insert_run` (84); copy and share a little over the prediction |
+| 8 | idle re-description over an operand lane, per row | 4.5 to 4.7 (0.19 ns) | 17.9 | 7.2 to 7.4 | at most 6; kill above 30 | holds on NEON and AVX2 |
+| | scroll: translate one page (frame word) / re-cull one page (lanes) | 3.9 / 271 | 4.0 / 266 (1.2 L2 misses) | 1.7 / 134 (2.1) | | 4 instructions per record to re-derive visibility |
+
+In the façade, on the same question as cell 8 (`BUILD=1 redescribe_cost`, release, Mac): building the
+application row's description (three specs, tint, integer label, borrowed string label) costs **60 instructions
+per row**, and its operands alone (id, label slice, tint) 19, against 650 to 664 per row for the whole idle
+re-description. So ~590 of the ~650 are the lockstep walk and the stream-form seal check, not the description.
+The store lane's handoff put the floor at "the cost of rebuilding the description"; that floor is 60, not 300.
+
+### What the model says about the lead's notes
+
+1. **"Damage lives in the wrong space."** Half right. Record-space first is cheap at the write (10
+   instructions, no dependence on size) and gives every other consumer the same planes. It does not make the
+   one-write frame cheaper: projecting a record to tiles costs 80 to 100 whenever it is done (E1: -95 at the
+   write, +100 at the frame). The win is in fan-out: a page with every bit set projects at 18 per record
+   instead of 51 to 100, and N writes to one record project once.
+   * "The ring of planes can be a ring of record-space words": no. A geometry change needs the old rect, which
+     is gone after the write unless it is kept; the tile plane *is* the compact record of "where it was". The
+     ring stays in tile space; record-space is the epoch's working form. (For paint-only epochs a record-space
+     ring would work, but then the record must not have moved since, which is the same condition the paint log
+     already tests.)
+   * The 4,096 px limit: the model's tile bitmap is rows of `stride` words and costs nothing extra in the
+     single-word case (the projection's tests hold at 5,120 x 2,880). That part of the note stands.
+   * Effects: an effect-radius lane makes "a blur damages more than it covers" one saturating add in the
+     projection, no branch (in the model and its test).
+2. **"The frame as a simdjson pipeline."** The shape works and the tests hold the scalar, lane and worker
+   forms equal. Three corrections from the numbers:
+   * Stage 1 must not scan. One load and one compare per page is 3 to 9 instructions per page in practice
+     (5,645 per idle frame at 100,000 records); idle has to be one word. Summaries (a word per 64 pages, and one
+     above it) make stage 1 proportional to touched pages. simdjson scans because every byte of its input is
+     new; ours is almost entirely unchanged from the last frame, so the right analogue of its stage 1 is the
+     *write* setting the bit, not a pass finding it.
+   * Lanes win only on dense pages: the page-at-a-time span computation costs 280 to 560 instructions, so below
+     8 to 16 set bits the per-bit path is cheaper. Both forms are needed, chosen by popcount.
+   * "The one-core loop and the many-core loop are the same loop" is true and, for projection, useless: a
+     million dirty records project in 3 to 4 ms on one core and nothing real has a million; at 100,000 every
+     thread count loses. A persistent pool would remove the 78 to 384 µs start but not change the conclusion.
+     The pages-as-unit-of-work argument should be spent where a page costs microseconds, not nanoseconds: mount
+     (shaping, layout), raster and binning. Stage 2 stays on one core.
+
+### The reformulation the measurements point to
+
+Four of the five items of the brief and both of the lead's notes reduce to one change of representation:
+
+**A record's identity is its place: (page, slot), and a slot never moves.** Paint order inside a page is a
+64-byte selection vector; between pages it is the directory. Then:
+
+* the handle table (24 B per record, a dependent load on every write through a handle, a re-point for every
+  record an insert shifts) does not exist: 4.2x to 4.9x fewer instructions per structural edit, measured;
+* every per-record column outside the page (instances, state planes, dirty planes, operand lanes) is addressed
+  by the same index and never has to be carried by an insert, a split or a merge: the store lane's "ids at
+  columns" and the core lane's "state planes carried through every page-moving site" become the same thing and
+  the carrying code is deleted;
+* dirty planes are in the pages' own space, so a dense page projects as lanes with no gather (cell 4), and
+  stage 1's summary is the directory's;
+* a page that was only appended to is its own order (the walk is 1.0x); a permuted page costs 1.2x to 1.4x in
+  time for an ordered consumer. The GPU's bin pass is the consumer that matters and needs one byte load per
+  record on permuted pages only: the compute lane has to agree to that.
+
+**A page image is shared until it is written.** The directory entry carries the image, the offset and the first
+id. A run of identical-shape rows (a list, a table, a grid) is `lcm(k, 64)` records of template tiled once and
+one directory entry per page: mount of the geometry is 1.7 to 2 instructions per row and no cache miss, against
+196 to 249 and 0.6 L2 misses. What a row really owns is its operands, in lanes; those lanes are also the seal
+(cell 8) and the instance colours the GPU reads. The façade's tape, scopes, per-item seals arena, node mirrors
+and the per-record handle allocation are bookkeeping for the fact that today every row is stored as if it were
+unique.
+
+What has to be true in the façade for that: a description is (shape, operands). The builder types already fix
+the shape; the description value is 60 instructions to build, of which 19 are operands. Nothing has to be
+proved about the row closure for the idle case: computing the operands and comparing them with the lane is 4.5
+to 7 per row (cell 8) plus the 19. The static part does not have to be hoisted by a macro to reach "under 30":
+it has to stop being *compared*, which the shape's type already licenses for everything that is a literal in
+the builder chain. That needs the builders to tell literal from operand: a `const` spec per call site
+(`&'static Spec`, compared by address) is enough and is expressible today with an inline `const { }` block.
+
+### E4, borrowing: where a run-time check exists only because the API hides what was provable
+
+Read in the disassembly of the colour applier and the settle (base, 159 + ~220 instructions):
+
+| check, per write | what would prove it instead |
+|---|---|
+| `nodes[node]`, `runs[run]`, `inst[i]` bounds (3 compares and branches, 3 panic paths) | ids that are positions in columns reserved to capacity: a mask, or no check (stable slots) |
+| handle table: bounds, live, generation, null page, slot under 64 | identity = place; a slot is live by the page's live plane; no generation because nothing is re-pointed |
+| wire: address check (`w.head == addr`), dead flag, 56-byte copy of the wire to call through it | wires of a mounted shape are one contiguous table released as a range with its block; a `Signal` moved out of its owner is the one dynamic case and is caught when the block is released, not on every run |
+| HELD test on every wire run | a held cell is a bit in a plane beside QUEUED; settle masks once per word |
+| hover flag, border select, opacity multiply inside the colour applier | variants of the *shape* (three appliers chosen at mount), not branches at the write |
+| paint log capacity and overflow | content addressing by lane compare of the operand lane against its epoch-start copy, per touched page |
+| per-turn: seven mechanisms each asking "have I work" | one word every producer raises; the turn tests it once |
+| the thread-local for the write log (13 instructions at the write, 13 per settle) | writes through `&mut Turn`; kept only for `DerefMut` convenience |
+
+The one borrow-level fact not used at all: a turn whose handler was handed `&V` and not `&mut V` cannot have
+changed plain fields. `App::poll()` (async admission) and every read-only handler re-describe today
+(140,219 instructions at 256 rows) for nothing. A handler type that asks for `&V` plus the turn's writer for
+signals makes the idle re-description disappear by type, not by compare.
+
+### E5, the static schedule: what is static and what needs a fallback
+
+Static per shape (known when the view type is monomorphised, or at its first mount): the set of wired cells of
+an owner type and their order (class rank, already computed at mount), the wires of each cell that come from
+the fixed part of the shape and their targets as offsets from the block's base. For those, settle is: for each
+set bit of the owner's QUEUED word, in bit order, run a contiguous run of (applier, target offset) entries.
+No log, no sort, no chain, no per-wire flags.
+
+Dynamic, each needing its own small mechanism:
+
+1. **Dynamic parts (`each`, `Option`, `Vec`) whose items wire cells of an outer owner** (the shape of
+   `signal_cost`: every row wires `self.tint[i]`). The wire set of the cell changes when items mount and
+   unmount. Fallback: per cell, a second run of entries appended at mount and compacted when a block is
+   released; the settle loop is the same. Size: the entries themselves.
+2. **List rows and entities as owners**: each row is an instance of a class with a static schedule; what is
+   dynamic is *which* rows have a queued bit. One summary bit per row page (the list already stores rows in
+   64-item chunks).
+3. **Conditional shapes that change the wire set** (`Option<E>` flipping): the same as 1.
+4. **Async holds**: a cell held by a pending cohort runs only its `latest` wires. A HELD plane beside QUEUED;
+   release = OR the held bits back into QUEUED.
+5. **Wires that queue other cells** (derived values, `View::changed`): order by rank makes a forward pass
+   sufficient when a wire only queues higher ranks; a wire that queues a lower rank needs a second pass, which
+   is today's wave loop. Field declaration order is a topological order for derived cells declared after
+   their sources; anything else is detectable at mount (rank of target < rank of source) and can keep the loop.
+6. **Signals moved between owners at run time** (`mem::swap` of two `Signal`s): the head must not carry the
+   other owner's schedule. Today a per-wire address check on every run; instead the head can hold its own rank
+   and the settle indexes the owner's table by offset, so a moved head is simply a different cell.
+
+### Generalising damage (Amendment 1)
+
+One notion: **a class bit on a record, in the epoch's planes, projected by one pass that reads lanes.** What
+each consumer the amendment names needs from it:
+
+| consumer | class bit | lane the projection or reader uses | status |
+|---|---|---|---|
+| paint (colour, alpha) | PAINT | ink, clip | real (`dirty.rs`, `project_paint`) |
+| geometry (move, resize) | GEOM | old rect kept at first touch + new rect; edge bands | designed; the core's `set_ink*` family still marks tiles at the write |
+| text | TEXT | the label's row masks (bough-text computes them) | designed |
+| media tiles | MEDIA | the tile's rect within the record | designed |
+| effects (blur, shadow) | any | effect-radius lane: grow before clipping | model, tested |
+| time-driven shaders, transitions | ANIMATED plane (not an epoch bit: stays set while it runs) | swept bounds lane, written when it starts | model (`anim & visible` is work with no turn) |
+| native views | GEOM on the hole's record | ink | nothing special: a hole is a record |
+| accessibility | TEXT, STRUCT | none: reads set bits | designed |
+| async holds | HELD plane | none: masks stage 1 | designed (with the async lane) |
+| instance upload ranges | PAINT, GEOM | none: set bits are the ranges | designed |
+
+A transition as a kernel parameter touches the core in two places only: the record keeps `(from, to, t0,
+duration, ease)` in an operand lane the kernel reads, and its ANIMATED bit and swept-bounds lane are written
+once when it starts. No turn runs while it plays; stage 1 ORs `animated & visible` into the work word, which
+the model does.
+
+## State at the end of this session (2026-11-12)
+
+* Branch `r7/core`, two commits on `round6` `3b0b00c698`. Nothing pushed. Not rebased onto the integrated base
+  (no word from the lead that it is ready).
+* In the tree and real: the guarded turn, the record-space paint plane and its projection (`bough-core`
+  `dirty.rs`, `Bough::{mark_paint, paint_pending, project_paint}`, `Rt::{paint_write, paint_resolve}`), the
+  single settle wave, `tests/dirty.rs`, the frame cells of `signal_cost`, `BUILD=1 redescribe_cost`, the `attr`
+  feature's spans (noisy under load: ±30 to ±100 per span; good for "which half", not for a number).
+* In the tree and a model: `crates/bough-pages` (its own workspace; `cargo test` and
+  `cargo run --release --bin pages_bench -- [cell prefixes]`). On ilo-prod: `/root/work/r7/core` (`env.sh`, a
+  hard-linked toolchain, `src/bough-pages`, results in `out/`).
+* Not done from the brief: geometry, text and media classes of record-space damage (the core's `set_ink*`
+  family still marks tiles at the write); damage planes of any window size in the real core (model only);
+  stable-slot pages and shared images in the real core (model only); the single work word for the idle turn;
+  x86-64 twins of the core's NEON kernels (the new projection has a portable fallback, built on ilo-prod only
+  as part of the model, not as `bough-core`); perf counters on `bough-core` itself with the bench lane's recipe.
+
+## Failed or refuted, in one place
+
+1. Deferring damage with a generic journal and a netting resolve: colour + frame 965 -> 1,091. Killed.
+2. "A colour write under 60 including the append" on this base: 435. The damage half moved to the frame at
+   equal cost; the rest is settle machinery and the applier's chain, which only a write that applies its own
+   store, or the static schedule, removes.
+3. Idle turn under 60 by guards alone: 101.
+4. Stage 1 as a branch-free scan of every page: 3 to 9 instructions per page; killed for the idle path.
+5. Stage 2 on many cores: no gain below ~500,000 dirty records.
+6. Projecting one record in 45 instructions: 80 to 100, in the model and in the real core.
+7. The selection-vector page's ordered walk by instruction count: 2.3x (1.2x to 1.4x in time).
+8. "The floor of idle re-description is rebuilding the description" (store handoff): the build is 60 of 650.
+9. A ring of record-space planes instead of tile planes for buffer-age repair: refuted by argument (old rects).
+
+## Next, in order
+
+1. **Phase B on the integrated base, smallest first**: the guarded turn and the record-space paint plane
+   (conflicts: `rt.rs` `paint_write`, `app.rs` `turn` / `frame_as`; surface-api's `direct_flush` becomes a
+   `mark_paint` per dirty entry and loses its `old` field if content addressing moves to lane compare). Then the
+   single work word (prediction: idle turn 101 -> at most 25).
+2. **Stable slots in the real core** behind the existing `Bough` API, as an experiment with the differential
+   suite as its oracle: `Page` gains `ord` and `live`, `insert_in_page` stops shifting, `fixup_handles` is
+   deleted, the handle becomes (page id, slot). Predictions: insert8-front at 1e3 3,961 -> under 1,500;
+   set-ink-handle loses the handle-table load (387 -> ~340); cull and hit on append-only pages within 1.00x; on
+   permuted pages hit +10 % at most. Kill: any spatial cell on append-only pages above 1.02x, or the shader's
+   bin pass needing more than one extra load per record (ask the compute lane first).
+3. **Shared page images**: directory entries carry (image, offset, first id); `insert_run` of a tiled template
+   writes entries; first write to a shared page copies it. Prediction: the storage part of mounting 100,000
+   three-record rows from ~250 to under 20 instructions per row; resident bytes per row of the core's pages
+   from 69 B to under 2 B until rows diverge. Needs the façade to hand the core a template, which is 4.
+4. **(shape, operands) in the façade**: specs as `&'static` per call site compared by address; operand lanes as
+   the seal and as the instance's colour column. Prediction for the idle re-description of the application row:
+   650 -> at most 100 with today's builders (60 to build + lane compare), at most 30 with static specs.
+5. **Geometry class in record space** with the old rect kept at first touch, then text (labels hand their row
+   masks to the projection), then the tile bitmap as rows of `stride` words (removes the 4,096 px panic).
+6. Cache-miss counters on `bough-core` with the bench lane's recipe (`bench/perf/pstat.sh`, r7/bench), at 1,
+   64, 256 and 100,000 records, before and after 2.
