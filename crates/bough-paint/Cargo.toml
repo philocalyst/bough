@@ -8,3 +8,18 @@ description = "Round 8 raster lane: paints as types, one monomorphised CPU kerne
 [dependencies]
 bough-kernel = { path = "../bough-kernel" }
 wgsl-rs = { git = "https://github.com/schell/wgsl-rs", rev = "b2de16a1b81e67d76bc265c296184f882864badb", default-features = false }
+
+[dev-dependencies]
+# the `#[wgsl]` macro's generated `__validate_wgsl` tests (naga validation of each module); tests only
+wgsl-rs = { git = "https://github.com/schell/wgsl-rs", rev = "b2de16a1b81e67d76bc265c296184f882864badb", default-features = false, features = ["validation"] }
+
+[features]
+# Mutants for the exactness gate (tests/exact.rs must fail with each):
+# the tile rasteriser's core is one pixel too wide
+mutant_core = []
+# the bin cut treats an opaque paint's whole window as its cover
+mutant_cut = []
+# the flat-row classifier treats a rounded box's corner rows as flat
+mutant_flat = []
+# the static cut inside a composed paint hides one column too many
+mutant_hide = []

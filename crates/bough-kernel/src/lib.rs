@@ -45,7 +45,13 @@ pub mod scenes;
 pub mod stage;
 
 pub use kernel::fx;
-pub use kernel::kernel as k;
+/// The kernel's functions under one name: the arithmetic (`km`) and the generic kernel's own loads.
+#[allow(ambiguous_glob_reexports)]
+pub mod k {
+    pub use crate::kernel::kernel::*;
+    pub use crate::kernel::km::*;
+}
+pub use kernel::km;
 pub use k::Cmd;
 
 /// The kernel as naga translated it (compiled by Metal at run time).
