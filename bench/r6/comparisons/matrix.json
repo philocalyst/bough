@@ -1,0 +1,486 @@
+{
+ "status": "PARTIAL: bough side of the signal case only. No competitor framework has been measured yet.",
+ "fields": "case, framework, variant, n, metric, value, unit, machine, version, kind (measured|extrapolated), basis, runs, run_values, confirmed, extrapolated",
+ "rows": [
+  {
+   "case": "signal.colour",
+   "framework": "bough",
+   "variant": "once",
+   "n": 16,
+   "metric": "instructions_per_update",
+   "value": 707.0,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    649,
+    765
+   ],
+   "confirmed": false,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.number",
+   "framework": "bough",
+   "variant": "once",
+   "n": 16,
+   "metric": "instructions_per_update",
+   "value": 2765.0,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    2766,
+    2764
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.string",
+   "framework": "bough",
+   "variant": "once",
+   "n": 16,
+   "metric": "instructions_per_update",
+   "value": 3587.5,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    3523,
+    3652
+   ],
+   "confirmed": false,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.idle",
+   "framework": "bough",
+   "variant": "once",
+   "n": 16,
+   "metric": "instructions_per_update",
+   "value": 247.0,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    247,
+    247
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.colour",
+   "framework": "bough",
+   "variant": "redescribe",
+   "n": 16,
+   "metric": "instructions_per_update",
+   "value": 9825.0,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    9825,
+    9825
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.number",
+   "framework": "bough",
+   "variant": "redescribe",
+   "n": 16,
+   "metric": "instructions_per_update",
+   "value": 11942.0,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    11942,
+    11942
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.string",
+   "framework": "bough",
+   "variant": "redescribe",
+   "n": 16,
+   "metric": "instructions_per_update",
+   "value": 12698.5,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    12698,
+    12699
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.idle",
+   "framework": "bough",
+   "variant": "redescribe",
+   "n": 16,
+   "metric": "instructions_per_update",
+   "value": 9423.0,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    9423,
+    9423
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.colour",
+   "framework": "bough",
+   "variant": "once",
+   "n": 64,
+   "metric": "instructions_per_update",
+   "value": 618.0,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    618,
+    618
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.number",
+   "framework": "bough",
+   "variant": "once",
+   "n": 64,
+   "metric": "instructions_per_update",
+   "value": 1.4411518807585443e+17,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    144115188075854431,
+    144115188075854431
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.string",
+   "framework": "bough",
+   "variant": "once",
+   "n": 64,
+   "metric": "instructions_per_update",
+   "value": 1.4411518807585154e+17,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    144115188075851538,
+    144115188075851537
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.idle",
+   "framework": "bough",
+   "variant": "once",
+   "n": 64,
+   "metric": "instructions_per_update",
+   "value": 247.0,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    247,
+    247
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.colour",
+   "framework": "bough",
+   "variant": "redescribe",
+   "n": 64,
+   "metric": "instructions_per_update",
+   "value": 36024.5,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    35954,
+    36095
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.number",
+   "framework": "bough",
+   "variant": "redescribe",
+   "n": 64,
+   "metric": "instructions_per_update",
+   "value": 33894.5,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    33895,
+    33894
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.string",
+   "framework": "bough",
+   "variant": "redescribe",
+   "n": 64,
+   "metric": "instructions_per_update",
+   "value": 31096.0,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    31032,
+    31160
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.idle",
+   "framework": "bough",
+   "variant": "redescribe",
+   "n": 64,
+   "metric": "instructions_per_update",
+   "value": 35598.5,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    35583,
+    35614
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.colour",
+   "framework": "bough",
+   "variant": "once",
+   "n": 256,
+   "metric": "instructions_per_update",
+   "value": 606.0,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    606,
+    606
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.number",
+   "framework": "bough",
+   "variant": "once",
+   "n": 256,
+   "metric": "instructions_per_update",
+   "value": 8739.0,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    8724,
+    8754
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.string",
+   "framework": "bough",
+   "variant": "once",
+   "n": 256,
+   "metric": "instructions_per_update",
+   "value": 20851.5,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    20851,
+    20852
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.idle",
+   "framework": "bough",
+   "variant": "once",
+   "n": 256,
+   "metric": "instructions_per_update",
+   "value": 247.0,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    247,
+    247
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.colour",
+   "framework": "bough",
+   "variant": "redescribe",
+   "n": 256,
+   "metric": "instructions_per_update",
+   "value": 140603.5,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    140625,
+    140582
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.number",
+   "framework": "bough",
+   "variant": "redescribe",
+   "n": 256,
+   "metric": "instructions_per_update",
+   "value": 148729.0,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    148672,
+    148786
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.string",
+   "framework": "bough",
+   "variant": "redescribe",
+   "n": 256,
+   "metric": "instructions_per_update",
+   "value": 160760.5,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    160767,
+    160754
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  },
+  {
+   "case": "signal.idle",
+   "framework": "bough",
+   "variant": "redescribe",
+   "n": 256,
+   "metric": "instructions_per_update",
+   "value": 140223.0,
+   "unit": "instructions/turn",
+   "machine": "mac-m3pro-aarch64-macos (loaded, load avg ~40)",
+   "version": "wt/lead 4f4c469ef5 (binary built 2026-11-11 22:25)",
+   "kind": "measured",
+   "basis": "crates/bough/examples/signal_cost, prebuilt binary run twice by this lane; value = mean of the two runs",
+   "runs": 2,
+   "run_values": [
+    140223,
+    140223
+   ],
+   "confirmed": true,
+   "extrapolated": false
+  }
+ ]
+}
