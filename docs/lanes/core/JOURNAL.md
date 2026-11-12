@@ -704,3 +704,33 @@ nodes per cell (4,700 a node). The sheet's rows are identical in everything a la
 width of each number, and with tabular digits there are a handful of those. A memo inside the engine's
 per-node compute, keyed by the subtree's style ids and leaf sizes plus the inputs the parent passes, hits at
 the level of the cell; the row's own algorithm still runs over twelve cached children.
+
+## B4. Segment members as lanes (per-member captures beside the records)
+
+The lead's reformulation (2): a projection's captures that are per-record constants are a lane, and the
+operand is one loop over (signal value, lanes) with no wire and no call per member.
+
+**What stops it: nothing in the type system.** A `.map` closure is already required to be `Copy + 'static`
+and at most 16 bytes (it lived in a wire's recipe). That is exactly a lane element: the members of one
+segment all have the same closure *type* (the segment is keyed by the monomorphised runner), so their
+captures are a homogeneous column and the runner, being monomorphised for `F`, calls it inline. No macro and
+no borrow is involved; the view code does not change.
+
+**Built** (`rt::SegLane`, `elem::run_seg_map`): a segment's members are slots of three columns: node (4 B),
+captures (8 or 16 B), and, when the property's value fits a word, the value the member last applied. A run
+is two stages over 64 members at a time: evaluate and compare with the last value into a 64-bit mask, then
+apply the set bits. A scope holds (lane, slot) for its members instead of a wire index; a released slot is a
+tombstone on the lane's free list. Member memory: 16 to 28 B against a 56 B wire.
+
+**Semantics stated.** A member applies when its projection's value changes. A plain wire re-applied on
+every write of its cell and relied on the applier's own compare with the instance; the difference is
+observable only if something other than the wire wrote the same property of the same element in between,
+which no element does.
+
+**Prediction** (sheet hover, 100,000 cells, 6.47 M now, of which the fill segment is 100,000 x 55): stage 1
+at about 12 instructions per member (two loads, `fill`'s three tests, a compare, a store) and 10,000 applies
+at about 80: 1.2 M + 0.8 M + frame = **about 2.1 M**. Theme: every member changes, so stage 1 is added to
+200,000 applies: no better than now (21 M), possibly 1 M worse. Mount: a lane push is cheaper than a wire
+(the operands-lowered line of the mount table, 620 per label): expect 100 to 200 less per cell.
+**Kill:** hover above 4 M (then the storage change does not pay and an index is the only way), or theme
+worse by more than 10 %.
