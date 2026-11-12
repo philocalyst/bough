@@ -36,12 +36,14 @@ TOKENS_LIGHT = """
   --bg: #f6f6f2; --panel: #ffffff; --fg: #1b1b1f; --muted: #5f5f68; --rule: #dcdcd6; --grid: #e9e9e3;
   --measured: #2a5db0; --reported: #b4661a; --estimated: #7a4fb0; --good: #17806a; --bad: #c0503a;
   --c1: #2a5db0; --c2: #17806a; --c3: #b4661a; --c4: #7a4fb0; --c5: #b03a72;
+  --f1: #2a78d6; --f2: #eb6834; --f3: #1baf7a; --f4: #eda100;
 """
 TOKENS_DARK = """
   color-scheme: dark;
   --bg: #131316; --panel: #1c1c21; --fg: #ececef; --muted: #9d9da7; --rule: #34343c; --grid: #2a2a31;
   --measured: #7aa3e8; --reported: #e8a464; --estimated: #b994e8; --good: #5fd0b2; --bad: #f08f76;
   --c1: #7aa3e8; --c2: #5fd0b2; --c3: #e8a464; --c4: #b994e8; --c5: #ef8fbd;
+  --f1: #3987e5; --f2: #d95926; --f3: #199e70; --f4: #c98500;
 """
 
 CSS_TOKENS = (
@@ -141,6 +143,8 @@ svg .guide { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharr
   font-size: 13px; line-height: 1.4; white-space: pre-line; overflow-wrap: anywhere;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18); }
 footer { margin-top: 2.4rem; color: var(--muted); font-size: 0.85rem; }
+.fb { fill: var(--k); }
+.fb-x { fill: var(--panel); stroke: var(--k); stroke-width: 1.5; stroke-dasharray: 2 2; }
 .k-x { fill: var(--panel); stroke: var(--measured); stroke-width: 1.5; stroke-dasharray: 2 2; }
 .warnbox { border: 2px solid var(--reported); border-radius: 10px; padding: 10px 14px; margin: 0.6rem 0; background: var(--panel); }
 .warnbox .warnhead { font-weight: 700; font-size: 1.05rem; margin: 0 0 0.3em; color: var(--fg); }
@@ -722,6 +726,115 @@ def ms_text(us):
 
 
 
+FW_TOKEN = {"bough": "--f1", "egui": "--f2", "iced": "--f3", "gpui-kit": "--f4"}
+
+
+def fmt_ms(v):
+    if v >= 1000:
+        return f"{v / 1000:.2f} s"
+    if v >= 100:
+        return f"{v:.0f} ms"
+    if v >= 10:
+        return f"{v:.1f} ms"
+    return f"{v:.2f} ms"
+
+
+def frameworks_scenes_section(data):
+    fs = data.get("frameworks_scenes")
+    if not fs:
+        return ""
+    fws = fs["frameworks"]
+    out = []
+    out.append('<p class="cap">The same scene in each framework, drawn from one shared spec (layout, colours, data, keys) and '
+               'measured by gui-bench\'s runner under fakeland: input to presented frame, p50 over the probe\'s repeats. One session '
+               'on one host, cells in sequence. Hollow dashed bars come from a report that failed a validity check of the harness '
+               '(here always <code>wake_lateness</code>: a few compositor wakes later than 2 ms on the shared host).</p>')
+    out.append('<div class="warnbox"><p class="warnhead">Renderers differ</p><ul>'
+               + "".join(f'<li><span class="sw" style="--k: var({FW_TOKEN[f]})"></span> <b>{esc(f)}</b>: {esc(fs["renderer"][f])}</li>' for f in fws)
+               + '</ul><p class="small-note">ilo-prod has no GPU. bough draws with its CPU executor on one thread; the others rasterise '
+               'through lavapipe, which spreads the work over many threads (144-386 % CPU in the canvas). Provenance: '
+               + esc(" · ".join(fs["identity"])) + '.</p></div>')
+    cells = fs["cells"]
+    order = sorted(cells, key=lambda k: (k.split("|")[0] != "sheet", int(k.split("|")[1])))
+    for key in order:
+        scene, size = key.split("|")
+        byfw = cells[key]
+        mets = fs["metrics"]
+        vals = [byfw[f][f"{m['probe']}.{m['metric']}"]["value"] for f in fws if f in byfw for m in mets if f"{m['probe']}.{m['metric']}" in byfw[f]]
+        vals = [v for v in vals if v > 0]
+        if not vals:
+            continue
+        sc = make_scale(vals + [max(vals) * 1.3])
+        left, right, top, bh, bg, gg = 190, 120, 8, 12, 2, 14
+        w = 640
+        plot = w - left - right
+        gh = len(fws) * (bh + bg) - bg
+        h = top + len(mets) * (gh + gg) + 24
+        svg = [f'<svg class="fit" viewBox="0 0 {w} {h}" role="img" aria-label="{esc(scene)} at {esc(size)}: latency by framework">']
+        for t in nice_ticks(sc):
+            x = left + plot * sc["fn"](t)
+            svg.append(f'<line class="grid" x1="{x:.1f}" x2="{x:.1f}" y1="{top - 4}" y2="{h - 20}"/>')
+            svg.append(f'<text class="lbl small mid" x="{x:.1f}" y="{h - 6}">{esc(fmt_ms(t))}</text>')
+        for mi, m in enumerate(mets):
+            y0 = top + mi * (gh + gg)
+            svg.append(f'<text class="small end" x="{left - 10}" y="{y0 + gh / 2 + 4:.1f}">{esc(m["label"])}</text>')
+            for fi, f in enumerate(fws):
+                y = y0 + fi * (bh + bg)
+                cell = byfw.get(f, {}).get(f"{m['probe']}.{m['metric']}")
+                if not cell:
+                    svg.append(f'<text class="lbl small" x="{left + 4}" y="{y + bh - 1}">{esc(f)}: not measured</text>')
+                    continue
+                v = cell["value"]
+                # a dot on a log axis (bars would misstate ratios there), filled when the report is valid
+                x = left + plot * sc["fn"](v)
+                style = f"--k: var({FW_TOKEN[f]})"
+                cls = "fb" if cell["valid"] else "fb-x"
+                tipt = tip(f"{scene} {size}, {m['label']}", f"{f}: {fmt_ms(v)}" + ("" if cell["valid"] else f" (report failed: {cell['failed']})"), fs["renderer"][f])
+                cy = y + bh / 2
+                svg.append(f'<line class="grid" x1="{left}" x2="{x:.1f}" y1="{cy:.1f}" y2="{cy:.1f}"/>')
+                svg.append(f'<circle class="{cls} anim-fade" style="{style}; --d:{0.02 * (mi * 4 + fi):.2f}s" cx="{x:.1f}" cy="{cy:.1f}" r="4.5"/>')
+                svg.append(f'<text class="small" x="{x + 8:.1f}" y="{y + bh}">{esc(fmt_ms(v))} <tspan class="lbl">{esc(f)}</tspan></text>')
+                svg.append(f'<rect class="hit" x="0" y="{y - 1}" width="{w}" height="{bh + bg}" tabindex="0" data-tip="{esc(tipt)}"/>')
+        svg.append(f'<text class="lbl small" x="{left}" y="{h - 20 + 14}"></text>')
+        svg.append("</svg>")
+        # the table: the app's own share, memory, idle CPU, scroll
+        th = "<th>framework</th>" + "".join(f"<th>{esc(e['label'])}</th>" for e in fs["extra"])
+        trs = []
+        for f in fws:
+            tds = []
+            for e in fs["extra"]:
+                c = byfw.get(f, {}).get(f"{e['probe']}.{e['metric']}")
+                if not c:
+                    tds.append("<td>-</td>")
+                    continue
+                v = c["value"]
+                if e["metric"].endswith("rss_max"):
+                    txt = f"{v / 1e6:,.0f} MB"
+                elif e["metric"].endswith("cpu_ms_per_s"):
+                    txt = f"{v:,.2f} ms/s"
+                elif "smoothness" in e["metric"]:
+                    txt = f"{v:.0f}"
+                else:
+                    txt = fmt_ms(v)
+                tds.append(f"<td>{txt}{'' if c['valid'] else ' †'}</td>")
+            trs.append(f'<tr><th scope="row"><span class="sw" style="--k: var({FW_TOKEN[f]})"></span> {esc(f)}</th>{"".join(tds)}</tr>')
+        ref = fs.get("macref", {}).get(key)
+        refline = ""
+        if ref:
+            def ph(n):
+                return fmt_ms(ref[n][1] / 1000) if n in ref else "-"
+            refline = (f'<p class="small-note">bough on the Mac for reference (M3 Pro, Metal, bough\'s own harness, re-describing mode; '
+                       f'wall time per step including the GPU, not input to presented frame, so not on the chart\'s axis): '
+                       f'hover {ph("hover")}, theme {ph("theme")}, edit {ph("steady")}, resize {ph("resize")}, mount {ph("mount")}.</p>')
+        label = {"sheet": f"Sheet, {int(size):,} rows ({int(size) * 10:,} cells)", "canvas": f"Canvas, {int(size):,} nodes"}.get(scene, f"{scene} {size}")
+        out.append(f'<article class="panel"><h4>{esc(label)}</h4>' + "".join(svg)
+                   + f'<details class="tbl"><summary>More: the app\'s own share, memory, idle CPU (table)</summary><div class="scroll"><table><thead><tr>{th}</tr></thead><tbody>{"".join(trs)}</tbody></table></div></details>'
+                   + refline + "</article>")
+    out.append('<p class="small-note">† from a report that failed a validity check. Ports and every deviation from the spec: '
+               '<code>comparisons/gui-bench-scenes/DEVIATIONS-*.md</code>; source: <code>' + esc(fs["source"]) + '</code>.</p>')
+    return "\n".join(out)
+
+
 SCRIPT = """
 (function () {
   "use strict";
@@ -834,6 +947,7 @@ def build_body(data):
     sing = singles(data)
     zortax = zortax_section(data)
     zq1 = zortax_quick1_section(data)
+    fwscenes = frameworks_scenes_section(data)
     workloads = workloads_section(data)
 
     body = f"""<main>
@@ -864,6 +978,9 @@ def build_body(data):
 <h2>Every series over commits</h2>
 <p class="cap">One card per series, grouped as in data.json. Connected lines are before/after or commit sequences; dots are scenes or values with no order. Scale is log when the range exceeds 50x, otherwise linear from zero.</p>
 {"".join(card_groups)}
+
+<h2>The heavy scenes in four frameworks (ilo-prod, fakeland, software rendering) <span class="tag m">measured</span></h2>
+{fwscenes}
 
 <h2>zortax gui-bench under fakeland <span class="tag n">rough baseline only</span></h2>
 {zq1}
