@@ -113,7 +113,18 @@ impl Sealer for SealCheck<'_> {
             return;
         }
         let (head, rest) = self.cur.split_at(n);
-        self.ok &= head == b || mutant();
+        // OPUS EXPERIMENT (IDEAS-OPUS.md, finding A1c): short operands compared as two overlapping words, no
+        // `memcmp` call (bbtree: "load the bytes as integers and compare the integers").
+        let eq = if (8..=16).contains(&n) {
+            let w = |s: &[u8], o: usize| u64::from_ne_bytes(s[o..o + 8].try_into().unwrap());
+            (w(head, 0) ^ w(b, 0)) | (w(head, n - 8) ^ w(b, n - 8)) == 0
+        } else if (4..8).contains(&n) {
+            let w = |s: &[u8], o: usize| u32::from_ne_bytes(s[o..o + 4].try_into().unwrap());
+            (w(head, 0) ^ w(b, 0)) | (w(head, n - 4) ^ w(b, n - 4)) == 0
+        } else {
+            head == b
+        };
+        self.ok &= eq || mutant();
         self.cur = rest;
     }
     #[inline(always)]
