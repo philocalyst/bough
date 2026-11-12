@@ -38,6 +38,8 @@ struct RegionInner {
     len: usize,
     /// `Some` when the region allocated its memory itself (freed on drop).
     heap: Option<Layout>,
+    /// The region mapped its memory itself (unmapped on drop).
+    mapped: bool,
     /// Keeps external memory alive (e.g. the MTLBuffer whose contents the region is).
     _keep: Option<Box<dyn std::any::Any>>,
 }
@@ -47,6 +49,12 @@ impl Drop for RegionInner {
         if let Some(l) = self.heap {
             // SAFETY: allocated in `Region::heap` with exactly this layout.
             unsafe { dealloc(self.base.as_ptr(), l) };
+        }
+        #[cfg(unix)]
+        if self.mapped {
+            // SAFETY: the mapping `Region::heap` made, of exactly `len` bytes, unmapped once, after the last
+            // column over it is gone (columns hold the `Rc`).
+            unsafe { libc::munmap(self.base.as_ptr() as *mut libc::c_void, self.len) };
         }
     }
 }
@@ -58,14 +66,29 @@ pub struct Region {
 }
 
 impl Region {
-    /// `len` bytes of zeroed heap memory (lazily backed by the OS).
+    /// `len` bytes of zeroed memory of the process's own, lazily backed by the OS: an anonymous mapping
+    /// (zero on first touch; nothing is written or made resident here, so a generous reservation costs
+    /// what is used). It was `alloc_zeroed` with a 16 KiB alignment, which is `posix_memalign` + `bzero` of
+    /// the whole block: measured 39 M instructions for a 50 MB region at every `App::new` (round 6, lane
+    /// `store`), and resident from the start.
     pub fn heap(len: usize) -> Region {
         let len = len.next_multiple_of(PAGE).max(PAGE);
-        let l = Layout::from_size_align(len, PAGE).expect("region layout");
-        // SAFETY: non-zero size.
-        let p = unsafe { alloc_zeroed(l) };
-        let base = NonNull::new(p).expect("region allocation");
-        Region { inner: Rc::new(RegionInner { base, len, heap: Some(l), _keep: None }), next: 0 }
+        #[cfg(unix)]
+        {
+            // SAFETY: an anonymous private mapping: no file, no address hint.
+            let p = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANON, -1, 0) };
+            assert!(p != libc::MAP_FAILED, "bough-mem: cannot map a region of {len} bytes");
+            let base = NonNull::new(p as *mut u8).expect("region mapping");
+            Region { inner: Rc::new(RegionInner { base, len, heap: None, mapped: true, _keep: None }), next: 0 }
+        }
+        #[cfg(not(unix))]
+        {
+            let l = Layout::from_size_align(len, PAGE).expect("region layout");
+            // SAFETY: non-zero size.
+            let p = unsafe { alloc_zeroed(l) };
+            let base = NonNull::new(p).expect("region allocation");
+            Region { inner: Rc::new(RegionInner { base, len, heap: Some(l), mapped: false, _keep: None }), next: 0 }
+        }
     }
 
     /// The region is `len` bytes at `base`, kept alive by `keep` (dropped with the last column).
@@ -77,7 +100,7 @@ impl Region {
     pub unsafe fn external(base: *mut u8, len: usize, keep: Box<dyn std::any::Any>) -> Region {
         assert!(base as usize % COL_ALIGN == 0, "region base must be {COL_ALIGN}-aligned");
         let base = NonNull::new(base).expect("region base");
-        Region { inner: Rc::new(RegionInner { base, len, heap: None, _keep: Some(keep) }), next: 0 }
+        Region { inner: Rc::new(RegionInner { base, len, heap: None, mapped: false, _keep: Some(keep) }), next: 0 }
     }
 
     pub fn base(&self) -> *mut u8 {
@@ -365,6 +388,24 @@ impl<T> Default for Col<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Region::heap` is a mapping: zero when first read, writable at both ends, column-aligned, and far
+    /// larger than what is touched without anything being cleared up front (a 4 GiB region is made and
+    /// dropped here; an allocator's zeroed block of that size would be written whole).
+    #[test]
+    fn heap_region_is_zero_aligned_and_lazy() {
+        let mut r = Region::heap(4 << 30);
+        assert_eq!(r.base() as usize % COL_ALIGN, 0);
+        assert!(r.len() >= 4 << 30);
+        let mut c: Col<u64> = r.carve("probe", (4usize << 30) / 8 - 4096);
+        // SAFETY: mapped memory reads as zero and all-zero is a valid u64.
+        unsafe { c.set_len(c.capacity()) };
+        let last = c.len() - 1;
+        assert_eq!((c[0], c[last / 2], c[last]), (0, 0, 0));
+        c[0] = 7;
+        c[last] = 9;
+        assert_eq!((c[0], c[last]), (7, 9));
+    }
 
     #[test]
     fn owned_grows_like_vec() {

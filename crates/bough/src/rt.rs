@@ -24,6 +24,7 @@ use crate::text::TextSys;
 use bough_core::bough::Columns;
 use bough_core::damage::DamageRing;
 use bough_core::page::Page;
+use bough_core::nrect::WRect;
 use bough_core::{Bough, Handle, NRect, RecordInit};
 use bough_mem::{Col, Region};
 use bough_metal::fused::{Layout, Masks, HDR_BYTES};
@@ -160,27 +161,6 @@ impl StoreCaps {
             + crate::lay_deep::Deep::column_bytes(self.ids, self.texts)
             + 4096
     }
-}
-
-/// `len` bytes of address space, zero on first touch, as a region (`mmap`: nothing is written or made
-/// resident here, so a generous reservation costs what is used; an allocator's zeroed block of this size is
-/// cleared eagerly, which cost an empty App 415 M instructions when it was tried).
-fn reserve_zeroed(len: usize) -> Region {
-    struct Map(*mut libc::c_void, usize);
-    impl Drop for Map {
-        fn drop(&mut self) {
-            // SAFETY: the mapping made below, unmapped once, after the last column over it is gone (the
-            // region's keeper is dropped with the last reference to the region).
-            unsafe { libc::munmap(self.0, self.1) };
-        }
-    }
-    let len = len.next_multiple_of(bough_mem::PAGE);
-    // SAFETY: an anonymous private mapping: no file, no address hint.
-    let p = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANON, -1, 0) };
-    assert!(p != libc::MAP_FAILED, "bough: cannot reserve {len} bytes of address space for the element tables");
-    // SAFETY: `p` is `len` readable and writable bytes, page aligned, zero on first touch, alive until the
-    // keeper unmaps it, and reached only through this region's columns.
-    unsafe { Region::external(p as *mut u8, len, Box::new(Map(p, len))) }
 }
 
 /// Records per core page.
@@ -321,6 +301,16 @@ pub struct Wire {
     pub cls: u32,
     pub patch: PatchFn,
     pub recipe: [u8; 16],
+}
+
+impl Drop for Rt {
+    fn drop(&mut self) {
+        crate::signal::LOG.with(|l| {
+            if l as *const _ as usize == self.log_home {
+                l.live.set(l.live.get() - 1);
+            }
+        })
+    }
 }
 
 /// `View::changed` of an owner class, type-erased: `(owner, publications, committed readers)`.
@@ -482,6 +472,15 @@ pub struct Rt {
     /// Per owner class: the offsets of its wired cells (class 0 is the app's root owner; every list
     /// region adds one class shared by all its rows, `list.rs`).
     pub(crate) classes: Vec<Vec<u32>>,
+    /// Per class, indexed by `offset / 4`: 1 + the cell's position in `classes[cls]`, or 0 where no wired
+    /// cell starts. It answers "is this offset a wired cell" in one load (a wire being added; an address
+    /// from the write log) and gives the log's entries the order a scan would run them in.
+    pub(crate) class_rank: Vec<Vec<u32>>,
+    /// The thread's write log this runtime was made on, and the log epoch it last scanned its owner at.
+    log_home: usize,
+    log_epoch: u32,
+    /// `BOUGH_SETTLE_AUDIT`: after settling from the log, scan the owner and panic on a queued head.
+    settle_audit: bool,
     /// Per owner class: its `View::changed` (rows and entity views of a `View` type; class 0 is the app's).
     pub(crate) class_changed: Vec<Option<ChangedFn>>,
     pub texts: Col<crate::text::TextNode>,
@@ -594,7 +593,7 @@ impl Rt {
         };
         let (tx, ty) = (layout.tiles_x() as usize, layout.tiles_y() as usize);
         let sc = StoreCaps::of(&caps);
-        let mut store = reserve_zeroed(sc.bytes());
+        let mut store = Region::heap(sc.bytes());
         let mut runs: Col<Run> = store.carve("runs", sc.runs);
         runs.push(Run::default());
         let mut hot: Col<Hot> = store.carve("element hot", sc.ids);
@@ -642,6 +641,14 @@ impl Rt {
             wires,
             wire_free: Vec::new(),
             classes: vec![Vec::new()],
+            class_rank: vec![Vec::new()],
+            log_home: crate::signal::LOG.with(|l| {
+                l.live.set(l.live.get() + 1);
+                l as *const _ as usize
+            }),
+            // one behind: the first settle scans
+            log_epoch: crate::signal::LOG.with(|l| l.epoch.get().wrapping_sub(1)),
+            settle_audit: std::env::var_os("BOUGH_SETTLE_AUDIT").is_some(),
             class_changed: vec![None],
             texts,
             text_free: Vec::new(),
@@ -1096,9 +1103,15 @@ impl Rt {
         if first != 0 && self.wires.get(first as usize).is_none_or(|w| w.head != addr) {
             first = 0;
         }
-        let c = &mut self.classes[cls as usize];
-        if !c.contains(&off) {
+        let (c, r) = (&mut self.classes[cls as usize], &mut self.class_rank[cls as usize]);
+        debug_assert!(off % 4 == 0);
+        let k = (off / 4) as usize;
+        if k >= r.len() {
+            r.resize(k + 1, 0);
+        }
+        if r[k] == 0 {
             c.push(off);
+            r[k] = c.len() as u32;
         }
         // `latest` wires (producers, `latest(..)` operands) stay at the front of the chain: they run before a
         // held source's other wires are skipped (`run_head`), whatever the declaration order
@@ -1128,6 +1141,7 @@ impl Rt {
     /// A new owner class (list rows, entities): its wired offsets start empty.
     pub(crate) fn new_class(&mut self) -> u32 {
         self.classes.push(Vec::new());
+        self.class_rank.push(Vec::new());
         self.class_changed.push(None);
         (self.classes.len() - 1) as u32
     }
@@ -1139,13 +1153,81 @@ impl Rt {
     /// (every offset in class 0 is an `offset_of!`-proven headed field of it; the head is the first field of
     /// every cell, `#[repr(C)]`), and be derived from a unique borrow (list patches write their cell).
     pub unsafe fn settle(&mut self, owner: *const u8) {
-        loop {
-            unsafe { self.settle_cls(owner, 0) };
-            if !std::mem::take(&mut self.asy.rescan) {
+        // waves: a wire may queue further cells of the owner (bounded: a cycle is left for the next turn)
+        for _ in 0..64 {
+            let more = unsafe { self.settle_logged(owner) };
+            if !std::mem::take(&mut self.asy.rescan) && !more {
                 break;
             }
         }
+        if self.settle_audit {
+            for &off in &self.classes[0] {
+                let h = unsafe { &*(owner.add(off as usize) as *const std::cell::Cell<u32>) }.get();
+                assert!(h & crate::signal::QUEUED == 0 || h & crate::signal::HELD != 0, "settle left a queued head at offset {off}");
+            }
+        }
         self.lists_end_turn();
+    }
+
+    /// One wave of the root owner's settle, from the thread's write log (`signal.rs`): the logged heads that
+    /// are wired cells of `owner` run in the order a scan would meet them. Returns whether any ran. A scan of
+    /// the whole class replaces it when the log cannot be trusted to hold every write: it overflowed since
+    /// this runtime last scanned, or the runtime is settling on another thread than it was made on.
+    ///
+    /// # Safety
+    /// As `settle`.
+    unsafe fn settle_logged(&mut self, owner: *const u8) -> bool {
+        use crate::signal::{LOG, LOG_CAP};
+        let mut run = [(0u32, 0u32); LOG_CAP];
+        let mut n = 0;
+        let rank = &self.class_rank[0];
+        let mut away = false;
+        let scan = LOG.with(|l| {
+            if l as *const _ as usize != self.log_home {
+                away = true;
+                return true;
+            }
+            let scan = l.epoch.get() != self.log_epoch;
+            self.log_epoch = l.epoch.get();
+            let (len, mut keep) = (l.n.get() as usize, 0);
+            for i in 0..len {
+                let a = l.at[i].get();
+                let off = a.wrapping_sub(owner as usize);
+                // a wired cell of this owner (an address is only ever dereferenced through this test)
+                let r = if off % 4 == 0 { rank.get(off / 4).copied().unwrap_or(0) } else { 0 };
+                if r != 0 {
+                    run[n] = (r, off as u32);
+                    n += 1;
+                } else if l.live.get() > 1 {
+                    // another runtime's on this thread: its to take
+                    l.at[keep].set(a);
+                    keep += 1;
+                }
+            }
+            l.n.set(keep as u32);
+            scan
+        });
+        if scan {
+            unsafe { self.settle_cls(owner, 0) };
+            // what the scan's wires queued is in the log (not when away: the next turn's scan finds it)
+            return !away;
+        }
+        // scan order (insertion sort: a handful of entries)
+        for i in 1..n {
+            let mut j = i;
+            while j > 0 && run[j - 1].0 > run[j].0 {
+                run.swap(j - 1, j);
+                j -= 1;
+            }
+        }
+        for &(_, off) in &run[..n] {
+            let sig = unsafe { owner.add(off as usize) };
+            let head = unsafe { &*(sig as *const std::cell::Cell<u32>) };
+            if head.get() & crate::signal::QUEUED != 0 {
+                unsafe { self.run_head(head, sig, owner) };
+            }
+        }
+        n != 0
     }
 
     /// `settle` for the owner at `owner` of class `cls` (a list row, an entity).
@@ -1216,13 +1298,16 @@ impl Rt {
     // ------------------------------------------------------------------ geometry helpers
     /// Absolute ink (device px, outward rounded, with `margin`) of a space-local rect.
     #[inline]
-    pub fn ink_rect(&self, space: u16, x: f32, y: f32, w: f32, h: f32, margin: f32) -> NRect {
+    ///
+    /// An exact rect (`WRect`): content far from its scroll origin lies outside the 16-bit window domain
+    /// (`NRect`), and a clamped ink there could not be scrolled back into view (round 6, finding 3).
+    pub fn ink_rect(&self, space: u16, x: f32, y: f32, w: f32, h: f32, margin: f32) -> WRect {
         let o = self.space(space);
         let x0 = (o[0] + x - margin).floor() as i32;
         let y0 = (o[1] + y - margin).floor() as i32;
         let x1 = (o[0] + x + w + margin).ceil() as i32;
         let y1 = (o[1] + y + h + margin).ceil() as i32;
-        NRect::new(x0, y0, x1, y1)
+        WRect::new(x0, y0, x1, y1)
     }
 
     /// Move quad `node`'s box to `(x, y, w, h)` (space-local px; snapped to the geometry grid here): the
@@ -1257,7 +1342,7 @@ impl Rt {
         p.size = [w, h];
         let (band, space, p) = (edge_band_of(p), p.space, *p);
         let ink = self.ink_rect(space, x + tx, y + ty, w, h, self.margin_of(node, &p));
-        self.bough.set_ink_handle_edges(self.handle(node), ink, moved, band);
+        self.bough.set_ink_handle_edges_wide(self.handle(node), ink, moved, band);
     }
 
     /// Re-derive quad `node`'s ink from its instance and write it through: the old and the new ink are
@@ -1269,7 +1354,7 @@ impl Rt {
         let ink = self.ink_rect(p.space, p.pos[0], p.pos[1], p.size[0], p.size[1], self.margin_of(node, &p));
         let h = self.handle(node);
         self.bough.touch_handle(h);
-        self.bough.set_ink_handle(h, ink);
+        self.bough.set_ink_handle_wide(h, ink);
     }
 
     /// A paint-only write to `h`'s record (colour, glyph alphas) from state hash `old` to `new`: its visible

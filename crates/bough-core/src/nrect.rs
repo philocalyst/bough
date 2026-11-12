@@ -513,7 +513,7 @@ pub unsafe fn union8(p: *const NRect) -> NRect {
 /// `NRect` is the 16-bit form the pages store *relative to their offset* and the form every window test
 /// uses; a `WRect` is what a record's ink *is*. `to_nrect` is the clamped view (exact inside the domain,
 /// and a rect wholly outside it becomes EMPTY): it may be tested and marked, never translated again.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct WRect(pub [i32; 4]);
 
 impl WRect {

@@ -341,7 +341,7 @@ pub(crate) fn mount_deco<V>(m: &mut Mounter<'_, V>, ins: Instance, x: f32, y: f3
     // a decoration's ink margin is its own (a shadow's blur, a rotating image's corner reach)
     m.rt.hot[node as usize] = Hot { kind: NK_DECO, flags: 0, clip: m.clip, link: 0 };
     m.rt.aux[node as usize] = margin;
-    m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD | KF_NOHIT, payload: inst, handle: hd.idx, clip: m.clip });
+    m.recs.push(RecordInit { depth: m.depth, ink: ink.to_nrect(), kind: REC_QUAD | KF_NOHIT, payload: inst, handle: hd.idx, clip: m.clip });
     node
 }
 
@@ -475,5 +475,5 @@ impl<V: 'static> Element<V> for DecoBox {
 /// Damage a fresh ink rect (helper for tests of exactness: the record's ink as the damage model sees it).
 pub fn ink_of(rt: &Rt, node: u32) -> NRect {
     let p = rt.inst[rt.inst_of(node) as usize];
-    rt.ink_rect(p.space, p.pos[0], p.pos[1], p.size[0], p.size[1], rt.margin_of(node, &p))
+    rt.ink_rect(p.space, p.pos[0], p.pos[1], p.size[0], p.size[1], rt.margin_of(node, &p)).to_nrect()
 }

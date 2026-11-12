@@ -59,11 +59,11 @@ impl Canvas {
         *p = Instance { space: self.space, ..ins };
         if old.size[0] > 0.0 && old.size[1] > 0.0 {
             let r = rt.ink_rect(self.space, old.pos[0], old.pos[1], old.size[0], old.size[1], MARGIN);
-            rt.bough.damage_rect(r);
+            rt.bough.damage_rect(r.to_nrect());
         }
         if ins.size[0] > 0.0 && ins.size[1] > 0.0 {
             let r = rt.ink_rect(self.space, ins.pos[0], ins.pos[1], ins.size[0], ins.size[1], MARGIN);
-            rt.bough.damage_rect(r);
+            rt.bough.damage_rect(r.to_nrect());
             self.grow(ins.pos[0], ins.pos[1], ins.size[0], ins.size[1]);
         }
         true
@@ -115,9 +115,9 @@ impl Canvas {
             let k = self.ink;
             rt.ink_rect(self.space, k[0], k[1], k[2] - k[0], k[3] - k[1], MARGIN)
         } else {
-            NRect::EMPTY
+            bough_core::nrect::WRect::EMPTY
         };
-        rt.bough.set_ink_handle_nodamage(self.handle, ink);
+        rt.bough.set_ink_handle_nodamage_wide(self.handle, ink);
     }
 }
 

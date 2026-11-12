@@ -17,7 +17,8 @@
 //!
 //! Damage is produced at update time as tile marks (labels, line windows) into bough-core's current plane.
 use crate::rt::*;
-use bough_core::{Handle, NRect};
+use bough_core::nrect::WRect;
+use bough_core::Handle;
 use bough_metal::fused::{pay_irun, pay_runs};
 use bough_metal::instance::Instance;
 use bough_text::atlas::{GlyphCache, Instance as TInstance, LineBounds, StrikeId, TokStrike};
@@ -435,7 +436,7 @@ pub struct TextNode {
     pub space: u16,
     pub handle: Handle,
     /// The record's current (absolute) ink.
-    pub ink: NRect,
+    pub ink: WRect,
     pub shape: TShape,
     /// Per-glyph colour (instance representation even for covered text).
     pub per_glyph: bool,
@@ -489,12 +490,12 @@ impl bough_text::pool::Marks for NoMarks {
 }
 
 /// Ink of a line window `[0, w]` (font units) at baseline `oy`, pen origin `ox`, in space `sp`.
-fn line_ink(b: &LineBounds, scale: f32, ox: f32, oy: i32, w: i32, sp: [i32; 2]) -> NRect {
+fn line_ink(b: &LineBounds, scale: f32, ox: f32, oy: i32, w: i32, sp: [i32; 2]) -> WRect {
     if w <= 0 {
-        return NRect::EMPTY;
+        return WRect::EMPTY;
     }
     let oxh = ox + 0.5;
-    NRect::new(pen_px(0, scale, oxh) + sp[0] + b.left, oy + sp[1] + b.top, pen_px(w, scale, oxh) + sp[0] + b.over, oy + sp[1] + b.bottom)
+    WRect::new(pen_px(0, scale, oxh) + sp[0] + b.left, oy + sp[1] + b.top, pen_px(w, scale, oxh) + sp[0] + b.over, oy + sp[1] + b.bottom)
 }
 
 impl Rt {
@@ -528,13 +529,13 @@ impl Rt {
     }
 
     /// Ink of a line set: the union of its lines' extents.
-    fn set_ink(&mut self, ti: u32) -> NRect {
+    fn set_ink(&mut self, ti: u32) -> WRect {
         let strike = self.texts[ti as usize].strike as StrikeId;
         let b = self.text.bounds(strike);
         let TShape::Set(set) = &self.texts[ti as usize].shape else { unreachable!() };
         let st = set.style;
         let sp = self.glyphs.spaces[st.space as usize];
-        let mut ink = NRect::EMPTY;
+        let mut ink = WRect::EMPTY;
         for (i, l) in set.lines.iter().enumerate() {
             ink = ink.union(line_ink(&b, st.scale, st.ox, (st.oy + i as f32 * st.lh).round() as i32, l.width, sp));
         }
@@ -630,9 +631,9 @@ impl Rt {
         (t.ox, t.oy, t.ink) = (ox, oy, ink);
         let h = t.handle;
         // the record's ink as it is now (a row or scroll move translates records, not this cache)
-        let old = bough.pos_of(h).map_or(NRect::EMPTY, |p| bough.ink_at(p));
+        let old = bough.pos_of(h).map_or(bough_core::NRect::EMPTY, |p| bough.ink_at(p));
         bough.damage_rect(old);
-        bough.set_ink_handle(h, ink);
+        bough.set_ink_handle_wide(h, ink);
     }
 
     /// A laid-out label's text changed: the label patches itself (exact tile marks at update time; a digit
@@ -653,7 +654,7 @@ impl Rt {
             let scale = t.size_px / ts.shaper.script.upem as f32;
             let ink = line_ink(&lb.bounds, scale, t.ox, t.oy as i32, w, glyphs.spaces[t.space as usize]);
             t.ink = ink;
-            bough.set_ink_handle_nodamage(t.handle, ink);
+            bough.set_ink_handle_nodamage_wide(t.handle, ink);
         }
         Some(glyphs.label_line_width(lb) != old_lw)
     }
@@ -694,7 +695,7 @@ impl Rt {
         }
         widths.clear();
         let sp = self.glyphs.spaces[space as usize];
-        let mut ink = NRect::EMPTY;
+        let mut ink = WRect::EMPTY;
         let x = &self.glyphs.x;
         for (i, &(a, e)) in spans.iter().enumerate() {
             let w = if e > a {
@@ -773,7 +774,7 @@ impl Rt {
             };
             self.inst[(first + i as u32) as usize] = ins;
         }
-        let ink = if cnt == 0 { NRect::EMPTY } else { self.ink_rect(space, x0, y0, x1 - x0, y1 - y0, 1.0) };
+        let ink = if cnt == 0 { WRect::EMPTY } else { self.ink_rect(space, x0, y0, x1 - x0, y1 - y0, 1.0) };
         let t = &mut self.texts[ti as usize];
         t.ink = ink;
         t.shape = TShape::Glyphs { run };
@@ -799,7 +800,7 @@ impl Rt {
                         let scale = t.size_px / ts.shaper.script.upem as f32;
                         let ink = line_ink(&lb.bounds, scale, t.ox, t.oy as i32, w, glyphs.spaces[t.space as usize]);
                         t.ink = ink;
-                        bough.set_ink_handle_nodamage(t.handle, ink);
+                        bough.set_ink_handle_nodamage_wide(t.handle, ink);
                     }
                     return;
                 }
@@ -836,7 +837,7 @@ impl Rt {
                     let ink = self.set_ink(ti);
                     if ink != self.texts[ti as usize].ink {
                         self.texts[ti as usize].ink = ink;
-                        self.bough.set_ink_handle_nodamage(h, ink);
+                        self.bough.set_ink_handle_nodamage_wide(h, ink);
                     }
                     return;
                 }
@@ -857,6 +858,6 @@ impl Rt {
         self.bough.set_payload_handle(h, payload);
         let new_ink = self.texts[ti as usize].ink;
         self.bough.damage_rect(old_ink);
-        self.bough.set_ink_handle(h, new_ink);
+        self.bough.set_ink_handle_wide(h, new_ink);
     }
 }

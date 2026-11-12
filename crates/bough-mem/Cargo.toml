@@ -6,3 +6,6 @@ license.workspace = true
 description = "Fixed-capacity columns carved out of one block of memory (the GPU-shared buffer): the storage every bough structure the GPU reads lives in"
 
 [dependencies]
+# mmap: a region is address space that is zero on first touch (an allocator's zeroed block of this size is
+# cleared eagerly: measured 39 M instructions for 50 MB)
+libc = "0.2"

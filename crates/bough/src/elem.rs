@@ -274,6 +274,20 @@ fn recipe_of<F: Copy>(f: F) -> [u8; 16] {
     r
 }
 
+
+/// A wired operand's part of a seal (`seal.rs`): the wire's identity, i.e. the offset of the signal it reads in
+/// the owner and the bytes its patch function captured. The signal's *value* is not part of a description:
+/// it reaches the record through the wire. Equal identity means the installed wire is the one this
+/// description would install, so the element may be stepped over.
+#[inline(always)]
+fn seal_wire<S: crate::seal::Sealer>(s: &mut S, tag: u32, off: u32, recipe: [u8; 16]) {
+    s.word(tag);
+    s.word(off);
+    for w in recipe.chunks_exact(4) {
+        s.word(u32::from_ne_bytes([w[0], w[1], w[2], w[3]]));
+    }
+}
+
 impl<'a, T: Clone + 'static, V> IntoProp<T, V> for Wired<'a, T, V> {
     fn lower<K: Apply<P = T>>(self, m: &mut Mounter<'_, V>, node: u32) -> T {
         m.wire(&self, patch_sig::<K, T>, node, [0; 16]);
@@ -281,6 +295,10 @@ impl<'a, T: Clone + 'static, V> IntoProp<T, V> for Wired<'a, T, V> {
     }
     fn value(self) -> T {
         self.get().clone()
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        seal_wire(s, 0x5749_5245, self.off, [0; 16])
     }
 }
 
@@ -295,6 +313,10 @@ where
     }
     fn value(self) -> P {
         (self.f)(self.w.get())
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        seal_wire(s, 0x574d_4150, self.w.off, recipe_of(self.f))
     }
 }
 
@@ -484,7 +506,7 @@ where
             inst
         };
         *m.rt.inst_mut(inst) = ins;
-        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: inst, handle: handle_idx, clip: m.clip });
+        m.recs.push(RecordInit { depth: m.depth, ink: ink.to_nrect(), kind: REC_QUAD, payload: inst, handle: handle_idx, clip: m.clip });
         // children: inside the border
         let bw = self.border.map_or(0.0, |b| b.0);
         let (ox, oy) = (m.ox, m.oy);
@@ -732,6 +754,10 @@ impl<'a, V> TextSrc<V> for Wired<'a, String, V> {
     fn value(self) -> String {
         self.get().clone()
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        seal_wire(s, 0x5754_5854, self.off, [0; 16])
+    }
 }
 impl<'a, T: 'static, V, F: Fn(&T) -> String + Copy + 'static> TextSrc<V> for WMap<'a, T, V, F> {
     fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String {
@@ -741,6 +767,10 @@ impl<'a, T: 'static, V, F: Fn(&T) -> String + Copy + 'static> TextSrc<V> for WMa
     }
     fn value(self) -> String {
         (self.f)(self.w.get())
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        seal_wire(s, 0x5754_4d50, self.w.off, recipe_of(self.f))
     }
 }
 impl<'a, T: 'static, V, F: Fn(&T) -> f32 + Copy + 'static> TextSrc<V> for Num<'a, T, V, F> {
@@ -759,6 +789,10 @@ impl<'a, T: 'static, V, F: Fn(&T) -> f32 + Copy + 'static> TextSrc<V> for Num<'a
         let mut slow = String::new();
         let n = render_num(&self.fmt, v, &mut buf, &mut slow);
         if n == usize::MAX { slow } else { bough_text::numeric::as_str(&buf, n).to_owned() }
+    }    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        seal_wire(s, 0x574e_554d, self.w.off, recipe_of(self.f));
+        s.bytes(&self.fmt.identity());
     }
 }
 
@@ -908,7 +942,7 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
             oy: base,
             space: m.space,
             handle: hd,
-            ink: NRect::EMPTY,
+            ink: bough_core::nrect::WRect::EMPTY,
             shape: TShape::None,
             per_glyph: G::PER_GLYPH,
             num,
@@ -923,7 +957,7 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
             self.g.install(m, node);
         }
         let ink = m.rt.texts[ti as usize].ink;
-        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_TEXT, payload, handle: hd.idx, clip: m.clip });
+        m.recs.push(RecordInit { depth: m.depth, ink: ink.to_nrect(), kind: REC_TEXT, payload, handle: hd.idx, clip: m.clip });
     }
 
     fn update(self, m: &mut Mounter<'_, V>) {
@@ -967,7 +1001,7 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
             m.rt.bough.set_payload_handle(hd, payload);
             let ink = m.rt.texts[ti as usize].ink;
             m.rt.bough.damage_rect(old_ink);
-            m.rt.bough.set_ink_handle(hd, ink);
+            m.rt.bough.set_ink_handle_wide(hd, ink);
         }
         m.pos += 1;
     }
@@ -1184,7 +1218,7 @@ impl<F, V> Bars<'_, F, V> {
 /// instances; returns the union ink. With `damage`, each bar whose top moved marks only the strip between
 /// its old and new top (`Bough::damage_edges`, a solid's band): bars are bottom-anchored on the geometry
 /// grid, so the bottom edge `y + h` is the same exact value every tick and never damages.
-fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage: bool) -> NRect {
+fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage: bool) -> bough_core::nrect::WRect {
     let (clip, link, hd) = (rt.hot[node as usize].clip, rt.hot[node as usize].link, rt.handle(node));
     let Rt { cold, spans, .. } = rt;
     let n = &mut cold[link as usize];
@@ -1205,7 +1239,7 @@ fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage:
             *s = f(key + i as u64);
         }
     } else {
-        return rt.bough.visible_ink_handle(hd).unwrap_or(NRect::EMPTY);
+        return rt.bough.pos_of(hd).map_or(bough_core::nrect::WRect::EMPTY, |p| rt.bough.ink_wide_at(p));
     }
     n.series_ok = true;
     n.series_key = key;
@@ -1260,7 +1294,7 @@ unsafe fn patch_bars<F: Fn(u64) -> f32 + Copy>(rt: &mut Rt, w: &Wire, sig: *cons
     // each bar damages the strip its top moved through (inside write_bars); the record's ink is the union
     let ink = write_bars(rt, w.node, key, f, true);
     let h = rt.handle(w.node);
-    rt.bough.set_ink_handle_nodamage(h, ink);
+    rt.bough.set_ink_handle_nodamage_wide(h, ink);
 }
 
 impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a, F, V> {
@@ -1297,7 +1331,7 @@ impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a,
         m.wire(&self.key, patch_bars::<F>, node, recipe_of(self.sample));
         let hd = m.rt.handle(node);
         m.scope.runs.push(run);
-        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: pay_irun(first, self.count as u32), handle: hd.idx, clip: m.clip });
+        m.recs.push(RecordInit { depth: m.depth, ink: ink.to_nrect(), kind: REC_QUAD, payload: pay_irun(first, self.count as u32), handle: hd.idx, clip: m.clip });
     }
     /// The series is wire-driven; its geometry constants are taken as fixed for the owner's life.
     fn update(self, m: &mut Mounter<'_, V>) {

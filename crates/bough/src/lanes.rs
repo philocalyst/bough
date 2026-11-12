@@ -11,7 +11,7 @@ use crate::color::Color;
 use crate::elem::{Element, Mounter};
 use crate::rt::*;
 use crate::signal::{Signal, Wired};
-use bough_core::{NRect, RecordInit};
+use bough_core::RecordInit;
 use bough_metal::fused::pay_irun;
 use bough_metal::instance::Instance;
 
@@ -46,7 +46,7 @@ impl<T, V, F> Lanes<'_, T, V, F> {
 
 /// Write every lane's instance; returns the union of their ink (absolute device px).
 #[inline(always)]
-fn write_lanes<T, F: Fn(&T, usize) -> Lane>(rt: &mut Rt, node: u32, v: &T, f: F) -> NRect {
+fn write_lanes<T, F: Fn(&T, usize) -> Lane>(rt: &mut Rt, node: u32, v: &T, f: F) -> bough_core::nrect::WRect {
     let (first, n, ox, oy, space, s) = {
         let nd = rt.cold_of(node);
         (nd.inst as usize, rt.runs[nd.run as usize].len as usize, nd.x, nd.y, nd.space, rt.scale)
@@ -79,7 +79,7 @@ unsafe fn patch_lanes<T: 'static, F: Fn(&T, usize) -> Lane + Copy>(rt: &mut Rt, 
     let h = rt.handle(w.node);
     // the lanes changed inside the old union too: old and new ink, even when the union is the same
     rt.bough.touch_handle(h);
-    rt.bough.set_ink_handle(h, ink);
+    rt.bough.set_ink_handle_wide(h, ink);
 }
 
 fn recipe_of<F: Copy>(f: F) -> [u8; 16] {
@@ -115,7 +115,7 @@ impl<'a, T: 'static, V: 'static, F: Fn(&T, usize) -> Lane + Copy + 'static> Elem
         let hd = m.rt.handle(node);
         m.scope.runs.push(run);
         m.tape_push(node);
-        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: pay_irun(first, self.n as u32), handle: hd.idx, clip: m.clip });
+        m.recs.push(RecordInit { depth: m.depth, ink: ink.to_nrect(), kind: REC_QUAD, payload: pay_irun(first, self.n as u32), handle: hd.idx, clip: m.clip });
     }
     /// The lanes are wire-driven; a re-description steps over the record.
     fn update(self, m: &mut Mounter<'_, V>) {

@@ -168,6 +168,9 @@ dependencies = [
 [[package]]
 name = "bough-mem"
 version = "0.0.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "bough-metal"
