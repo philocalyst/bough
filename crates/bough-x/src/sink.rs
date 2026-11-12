@@ -9,7 +9,7 @@
 //! row carries operands only. Where its records are is the layout's answer, given once per shape as a slice of
 //! rects, so rows of a list that share a shape share one layout.
 use crate::expr::U;
-use crate::store::{Arch, Backend, Hov, HoverFn, Pass, Rect, Site, Space, Store, Tiles, hit_fn};
+use crate::store::{Arch, Backend, Hov, HoverFn, Pass, Rect, Site, Space, Store, Tiles, desc, hit_fn};
 use core::any::TypeId;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -348,7 +348,7 @@ struct Discover<'a, B> {
 }
 impl<V, B: Backend> Leaf<V> for Discover<'_, B> {
     fn leaf<A: Arch>(&mut self, _: &A, key: TypeId, hov: Option<Hov>) {
-        self.st.discover::<A, B>(self.rects[self.k], key, hov);
+        self.st.discover(desc::<A, B>(), self.rects[self.k], key, hov);
         self.k += 1;
     }
 }
@@ -499,6 +499,10 @@ pub fn exposed(l: &List<'_>, org: (i32, i32), clip: Rect) -> (u32, u32) {
 /// Bring list `q` of `parent` up to date: rows that entered exposure are written, rows the relation's journal
 /// names are compared, rows that left are released. Nothing else is touched, and nothing outside the window
 /// exists.
+///
+/// What is generic here is only what must be: asking the row function for a row, and writing or comparing its
+/// records. Which rows, their layout, their damage and the window are decided by [`list_plan`], one body for
+/// every list in a program.
 #[inline]
 pub fn list_sync<V, R: Row<V>, F: FnMut(usize) -> R, B: Backend>(parent: &mut Store, q: usize, cx: &mut Cx<'_>, l: &List<'_>, mut f: F) {
     let space = parent.space;
@@ -512,7 +516,26 @@ pub fn list_sync<V, R: Row<V>, F: FnMut(usize) -> R, B: Backend>(parent: &mut St
     if (lo == st.lo) & (hi == st.hi) & (st.seen == l.edits.ver) & !cx.all {
         return;
     }
-    list_rows::<V, R, F, B>(st, cx, l, &mut f, (lo, hi), org, space);
+    if st.rows.is_empty() && lo < hi {
+        row_new::<V, R, B>(st, l.shape, &f(lo as usize));
+    }
+    let mk = list_plan(st, cx, l, (lo, hi), org, space, R::LEAVES as usize, TypeId::of::<R>());
+    let (sites, mask) = (st.sites.as_ptr(), st.cap - 1);
+    let plan = core::mem::take(&mut st.plan);
+    for &e in &plan {
+        let r = e & 0x7fff_ffff;
+        let row = f(r as usize);
+        // SAFETY: the sites were discovered from a row of type `R` (`list_plan` checked the type); `r & mask` is
+        // a slot of the list.
+        unsafe {
+            if e >> 31 != 0 {
+                row.write(sites, r & mask);
+            } else {
+                row.patch(sites, r & mask, &mk, cx);
+            }
+        }
+    }
+    st.plan = plan;
 }
 
 #[cold]
@@ -526,18 +549,29 @@ fn list_new(parent: &mut Store, l: &List<'_>) {
     parent.subs.push(st);
 }
 
+/// Decide what a list pass does, and do everything that does not need the row's type: replay the relation's
+/// journal, move the window, lay out rows that entered (their rects are the shape's, shifted), damage rows that
+/// entered, left or are other rows than before, and leave in `st.plan` the rows whose operands the caller must
+/// write (top bit) or compare.
 #[inline(never)]
-fn list_rows<V, R: Row<V>, F: FnMut(usize) -> R, B: Backend>(st: &mut Store, cx: &mut Cx<'_>, l: &List<'_>, f: &mut F, (lo, hi): (u32, u32), org: (i32, i32), space: Space) {
+#[allow(clippy::too_many_arguments)]
+fn list_plan(st: &mut Store, cx: &mut Cx<'_>, l: &List<'_>, (lo, hi): (u32, u32), org: (i32, i32), space: Space, leaves: usize, ty: TypeId) -> Mk {
     let (from, upd, nupd) = l.edits.since(st.seen);
     #[cfg(feature = "mutant_journal")]
     let (from, nupd) = (u32::MAX, 0 * nupd);
     st.seen = l.edits.ver;
     st.space = space;
+    st.plan.clear();
+    let mk = Mk { org, clip: space.clip };
     assert!(hi - lo <= st.cap, "the window outgrew the list's capacity");
-    assert!(l.shape.len() == R::LEAVES as usize, "a row's layout has one rect per record");
+    assert!(l.shape.len() == leaves, "a row's layout has one rect per record");
+    // The one check per batch: this list's rows are still of the type its columns were made for.
+    match st.rows.first() {
+        Some(&(t, _)) => assert!(t == ty, "a list's row type changed"),
+        None => assert!(lo == hi),
+    }
     let geo = (l.x, l.y, l.row_h);
     let (mut olo, mut ohi) = (st.lo, st.hi);
-    let mk = Mk { org, clip: space.clip };
     let row_rect = |r: u32| Rect { x0: space.clip.x0, y0: org.1 + l.y + r as i32 * l.row_h, x1: space.clip.x1, y1: org.1 + l.y + (r as i32 + 1) * l.row_h }.and(space.clip);
     // The layout is the same if it is the same slice (the usual case: one layout per shape, kept by whoever
     // computed it); only a different slice is compared by content.
@@ -553,25 +587,14 @@ fn list_rows<V, R: Row<V>, F: FnMut(usize) -> R, B: Backend>(st: &mut Store, cx:
         }
         (olo, ohi) = (0, 0);
     }
-    let mask = st.cap - 1;
-    let mut sites = st.sites.as_ptr();
-    // The one check per batch: this list's rows are still of the type its columns were made for.
-    let mut known = match st.rows.first() {
-        Some(&(t, _)) => {
-            assert!(t == TypeId::of::<R>(), "a list's row type changed");
-            true
-        }
-        None => false,
-    };
-    if known & (lo == olo) & (hi == ohi) & (from == u32::MAX) & !cx.all {
-        // only updates of single rows: touch those and nothing else
+    if (lo == olo) & (hi == ohi) & (from == u32::MAX) & !cx.all {
+        // only updates of single rows: those and nothing else
         for &r in &upd[..nupd] {
             if (r >= lo) & (r < hi) {
-                // SAFETY: the sites were discovered from a row of type `R`; the slot is under `cap`.
-                unsafe { f(r as usize).patch(sites, r & mask, &mk, cx) };
+                st.plan.push(r);
             }
         }
-        return;
+        return mk;
     }
     // rows that left: what they showed is gone (a no-op when they left by scrolling out of the clip)
     for r in olo..ohi {
@@ -579,35 +602,23 @@ fn list_rows<V, R: Row<V>, F: FnMut(usize) -> R, B: Backend>(st: &mut Store, cx:
             cx.tiles.mark(row_rect(r));
         }
     }
+    let mask = st.cap - 1;
     for r in lo..hi {
         let fresh = (r < olo) | (r >= ohi);
-        let wanted = fresh | (r >= from);
-        if !(wanted | cx.all | upd[..nupd].contains(&r)) {
-            continue;
-        }
-        let row = f(r as usize);
-        if !known {
-            row_new::<V, R, B>(st, l.shape, &row);
-            sites = st.sites.as_ptr();
-            known = true;
-        }
-        let slot = r & mask;
-        if wanted {
-            if fresh {
-                let at = (l.x, l.y + r as i32 * l.row_h);
-                for (k, t) in l.shape.iter().enumerate() {
-                    // SAFETY: site `k` of this list's `LEAVES` sites; the slot is under `cap`.
-                    unsafe { (*sites.add(k)).set_rect(slot, t.shift(at)) }
-                }
-            }
+        if fresh | (r >= from) {
             // A row that is new here, or another row than was here: its records are written without being
             // compared, and the row is damaged as a whole.
-            // SAFETY: as above.
-            unsafe { row.write(sites, slot) };
+            if fresh {
+                let at = (l.x, l.y + r as i32 * l.row_h);
+                for (s, t) in st.sites[..leaves].iter().zip(l.shape) {
+                    // SAFETY: a site of this list; the slot is under `cap`.
+                    unsafe { s.set_rect(r & mask, t.shift(at)) }
+                }
+            }
             cx.tiles.mark(row_rect(r));
-        } else {
-            // SAFETY: as above.
-            unsafe { row.patch(sites, slot, &mk, cx) };
+            st.plan.push(r | 1 << 31);
+        } else if cx.all | upd[..nupd].contains(&r) {
+            st.plan.push(r);
         }
     }
     st.lo = lo;
@@ -617,4 +628,5 @@ fn list_rows<V, R: Row<V>, F: FnMut(usize) -> R, B: Backend>(st: &mut Store, cx:
         let s = r & mask;
         st.row_live[s as usize >> 6] |= 1 << (s & 63);
     }
+    mk
 }

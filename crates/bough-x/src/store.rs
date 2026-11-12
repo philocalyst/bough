@@ -444,25 +444,28 @@ pub struct Store {
     /// Where the slice `tmpl` was copied from was: an identity check before a content compare.
     pub tmpl_at: usize,
     pub geo: (i32, i32, i32),
+    /// Scratch: the rows a list pass visits (row index; top bit set: write without comparing).
+    pub plan: Vec<u32>,
 }
 
 impl Store {
     pub fn new(cap: u32, space: Space) -> Store {
         assert!(cap == 1 || (cap >= 64 && cap.is_power_of_two()));
-        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0) }
+        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new() }
     }
     #[inline(always)]
     pub fn view(&self) -> StoreView<'_> {
         StoreView { space: &self.space, live: Live { cap: self.cap, rows: &self.row_live, nrec: 0 } }
     }
-    /// Give the next position of the shape a column. Cold: runs once per position per store.
+    /// Give the next position of the shape a column. Cold: runs once per position per store, and is not
+    /// generic: an archetype is its descriptor here.
     ///
     /// A position joins an existing column of its archetype when painting the column as a whole keeps painter's
     /// order: the column is in the same segment (no child store between them) and no record described since, in
     /// a later column, overlaps the new one.
     #[cold]
     #[inline(never)]
-    pub fn discover<A: Arch, B: Backend>(&mut self, rect: Rect, key: TypeId, hover: Option<Hov>) {
+    pub fn discover(&mut self, d: &'static Desc, rect: Rect, key: TypeId, hover: Option<Hov>) {
         let seg = self.subs.len() as u32;
         let mut pick = None;
         for (j, c) in self.cols.iter().enumerate() {
@@ -472,7 +475,6 @@ impl Store {
             }
         }
         let j = pick.unwrap_or_else(|| {
-            let d = desc::<A, B>();
             self.cols.push(RawCol { pages: core::ptr::null_mut(), npages: 0, nrec: 0, k: 0, reads: d.reads, key, desc: d, seg, hover });
             self.order.push(Pass::Col(self.cols.len() as u32 - 1));
             self.cols.len() - 1
@@ -642,16 +644,34 @@ unsafe fn delta_col<A: Arch>(col: &RawCol, sv: &StoreView, old: &U, new: &U, til
 }
 
 /// Damage the records of a page named by `m`.
-#[inline]
+#[inline(always)]
 fn mark_page<A: Arch>(pg: &Page<A>, mut m: u64, org: (i32, i32), clip: Rect, old: &U, new: &U, tiles: &mut Tiles) {
-    if !A::MOVES && m.count_ones() >= 8 {
+    if !A::MOVES {
+        // SAFETY: a page starts with its four rect lanes, whatever its archetype.
+        return unsafe { mark_rects(&*(pg as *const Page<A> as *const [[i32; 64]; 4]), m, org, clip, tiles) };
+    }
+    while m != 0 {
+        let i = m.trailing_zeros() as usize;
+        m &= m - 1;
+        let r = pg.rect(i).shift(org);
+        #[cfg(not(feature = "mutant_moves"))]
+        tiles.mark(r.shift(pg.rec[i].offset(old)).and(clip));
+        tiles.mark(r.shift(pg.rec[i].offset(new)).and(clip));
+    }
+}
+
+/// Damage the rects of a page named by `m`. One body for every archetype.
+#[inline(never)]
+fn mark_rects(l: &[[i32; 64]; 4], mut m: u64, org: (i32, i32), clip: Rect, tiles: &mut Tiles) {
+    let rect = |i: usize| Rect { x0: l[0][i], y0: l[1][i], x1: l[2][i], y1: l[3][i] };
+    if m.count_ones() >= 8 {
         // Dense: one mark of the bounding box when the records fill most of it (a column strip, a block of
         // rows), which is what a fan-out looks like on a page.
         let (mut bb, mut sum, mut k) = (Rect { x0: i32::MAX, y0: i32::MAX, x1: i32::MIN, y1: i32::MIN }, 0i64, m);
         while k != 0 {
             let i = k.trailing_zeros() as usize;
             k &= k - 1;
-            let r = pg.rect(i);
+            let r = rect(i);
             bb = bb.or(r);
             sum += r.area();
         }
@@ -663,14 +683,7 @@ fn mark_page<A: Arch>(pg: &Page<A>, mut m: u64, org: (i32, i32), clip: Rect, old
     while m != 0 {
         let i = m.trailing_zeros() as usize;
         m &= m - 1;
-        let r = pg.rect(i).shift(org);
-        if A::MOVES {
-            #[cfg(not(feature = "mutant_moves"))]
-            tiles.mark(r.shift(pg.rec[i].offset(old)).and(clip));
-            tiles.mark(r.shift(pg.rec[i].offset(new)).and(clip));
-        } else {
-            tiles.mark(r.and(clip));
-        }
+        tiles.mark(rect(i).shift(org).and(clip));
     }
 }
 
