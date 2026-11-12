@@ -6,7 +6,7 @@ license.workspace = true
 description = "zgx's heavy dashboard scene on the bough façade: windowed and headless adapters"
 
 [dependencies]
-bough = { path = "../../crates/bough" }
+bough = { path = "../../crates/bough", default-features = false }
 bough-metal = { path = "../../crates/bough-metal" }
 zgx-workload = { git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }
 libc = "0.2"
@@ -23,3 +23,8 @@ path = "src/bin/heavy_shot.rs"
 [[bin]]
 name = "frame_diff"
 path = "src/bin/frame_diff.rs"
+
+[features]
+# bough's complex-text shaping, on by default; the size lane builds the gates without it (docs/lanes/developer-loop/)
+default = ["complex-text"]
+complex-text = ["bough/complex-text"]

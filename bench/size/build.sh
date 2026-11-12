@@ -15,6 +15,7 @@
 #             "immediate-abort" needs ZFLAGS=-Zpanic-immediate-abort)
 #   ZFLAGS    extra cargo -Z flags
 #   FEATURES  extra cargo features for every package built (e.g. bough/sabotage_copy)
+#   NOCX      1: without bough's default `complex-text` feature (no rustybuzz): --no-default-features everywhere
 #   MAP       a directory: also link an unstripped twin of the counter (and apps with SET apps/all) with an ld64 map
 # Uses the caller's CARGO_TARGET_DIR (the worktree's target). Prints each executable's size.
 set -e
@@ -36,6 +37,7 @@ if [ "${STD:-0}" = 1 ]; then
   dir=$T/aarch64-apple-darwin/$PROFILE
 fi
 feat=""; [ -n "${FEATURES:-}" ] && feat="--features $FEATURES"
+nd=""; [ "${NOCX:-0}" = 1 ] && nd="--no-default-features"
 log=$OUT/build.log; : > "$log"
 echo "RUSTFLAGS=$RUSTFLAGS cargo build $args $feat" >> "$log"
 b() { cargo build $args "$@" >> "$log" 2>&1 || { tail -30 "$log"; exit 1; }; }
@@ -45,24 +47,25 @@ m() { # m <name> <cargo rustc target args...>: unstripped twin with a link map
   cargo rustc $args "$@" -- -C strip=none -C link-arg=-Wl,-map,"$MAP/$n.map" >> "$log" 2>&1 || { tail -30 "$log"; exit 1; }
 }
 if [ "$SET" = counter ] || [ "$SET" = apps ] || [ "$SET" = all ]; then
-  b -p bough --example counter $feat
+  b -p bough --example counter $nd $feat
   cp "$dir/examples/counter" "$OUT/counter"
-  if [ -n "${MAP:-}" ]; then m counter -p bough --example counter $feat; cp "$dir/examples/counter" "$MAP/counter.unstripped"; fi
+  if [ -n "${MAP:-}" ]; then m counter -p bough --example counter $nd $feat; cp "$dir/examples/counter" "$MAP/counter.unstripped"; fi
 fi
 if [ "$SET" = apps ] || [ "$SET" = all ]; then
-  b -p bough-awagy $feat
+  sfeat="$feat"; [ -n "$nd" ] && sfeat="$nd --features scroll${FEATURES:+,$FEATURES}"
+  b -p bough-awagy $sfeat
   cp "$dir/bough-awagy" "$OUT/awagy-scroll"
-  if [ -n "${MAP:-}" ]; then m awagy-scroll -p bough-awagy --bin bough-awagy $feat; cp "$dir/bough-awagy" "$MAP/awagy-scroll.unstripped"; fi
-  dfeat="--no-default-features --features dashboard"; [ -n "${FEATURES:-}" ] && dfeat="$dfeat,$FEATURES"
+  if [ -n "${MAP:-}" ]; then m awagy-scroll -p bough-awagy --bin bough-awagy $sfeat; cp "$dir/bough-awagy" "$MAP/awagy-scroll.unstripped"; fi
+  dfeat="--no-default-features --features dashboard"; [ -z "$nd" ] && dfeat="$dfeat,complex-text"; [ -n "${FEATURES:-}" ] && dfeat="$dfeat,$FEATURES"
   b -p bough-awagy $dfeat
   cp "$dir/bough-awagy" "$OUT/awagy-dashboard"
   if [ -n "${MAP:-}" ]; then m awagy-dashboard -p bough-awagy --bin bough-awagy $dfeat; cp "$dir/bough-awagy" "$MAP/awagy-dashboard.unstripped"; fi
 fi
 if [ "$SET" = gate ] || [ "$SET" = all ]; then
   b -p bough-heavy -p bough-scenes -p bough-vlist --bin heavy_headless --bin heavy_shot --bin lab_headless \
-    --bin animate_headless --bin scene_shot --bin vlist_headless --bin vlist_shot $feat
+    --bin animate_headless --bin scene_shot --bin vlist_headless --bin vlist_shot $nd $feat
   for x in heavy_headless heavy_shot lab_headless animate_headless scene_shot vlist_headless vlist_shot; do cp "$dir/$x" "$OUT/$x"; done
-  b -p bough --example counter_gate $feat
+  b -p bough --example counter_gate $nd $feat
   cp "$dir/examples/counter_gate" "$OUT/counter_gate"
 fi
 for f in "$OUT"/*; do [ -x "$f" ] && [ -f "$f" ] && printf '%10d  %s\n' "$(/usr/bin/stat -f %z "$f")" "$(basename "$f")"; done

@@ -12,8 +12,9 @@
 //! * **wrapped by layout**: the text is shaped once into a block (byte slots); each line is one 32-byte run
 //!   header, a *window* onto the block. The record draws the whole range of headers.
 //! * **beyond Latin-1** (and per-glyph colour, `glyph_alpha`): 48-byte glyph instances in an instance run,
-//!   shaped by the table kernel per ASCII segment and by rustybuzz per non-Latin-1 chunk (cached). This is the
-//!   only rustybuzz use left; everything the token table covers goes through the pool.
+//!   shaped by the table kernel per ASCII segment and by the fallback shaper per non-Latin-1 chunk (cached):
+//!   rustybuzz with the `complex-text` feature (default), else cmap + hmtx glyph by glyph ([`Fallback`]).
+//!   Everything the token table covers goes through the pool.
 //!
 //! Damage is produced at update time as tile marks (labels, line windows) into bough-core's current plane.
 use crate::rt::*;
@@ -26,10 +27,46 @@ use bough_text::lines::{LineSet, LineStyle};
 use bough_text::window::Shaped;
 use bough_text::{GlyphRun, Shaper, SimpleScript};
 
+/// Shaping for text the token table does not cover: rustybuzz (feature `complex-text`, the default).
+#[cfg(feature = "complex-text")]
+struct Fallback(rustybuzz::Face<'static>);
+/// Shaping for text the token table does not cover, without the `complex-text` feature: each character's
+/// glyph from cmap and its advance from hmtx (no GSUB, GPOS or marks), so rustybuzz and its tables are not linked.
+#[cfg(not(feature = "complex-text"))]
+struct Fallback(ttf_parser::Face<'static>);
+
+impl Fallback {
+    fn new(font: &'static [u8]) -> Fallback {
+        #[cfg(feature = "complex-text")]
+        return Fallback(rustybuzz::Face::from_slice(font, 0).expect("rustybuzz face"));
+        #[cfg(not(feature = "complex-text"))]
+        return Fallback(ttf_parser::Face::parse(font, 0).expect("font"));
+    }
+
+    /// `text`'s glyphs as (glyph id, x offset, x advance) in font units, in visual order.
+    fn shape(&self, text: &str, mut glyph: impl FnMut(u16, i32, i32)) {
+        #[cfg(feature = "complex-text")]
+        {
+            let mut buf = rustybuzz::UnicodeBuffer::new();
+            buf.push_str(text);
+            buf.guess_segment_properties();
+            let out = rustybuzz::shape(&self.0, &[], buf);
+            for (i, p) in out.glyph_infos().iter().zip(out.glyph_positions()) {
+                glyph(i.glyph_id as u16, p.x_offset, p.x_advance);
+            }
+        }
+        #[cfg(not(feature = "complex-text"))]
+        for c in text.chars() {
+            let g = self.0.glyph_index(c).unwrap_or(ttf_parser::GlyphId(0));
+            glyph(g.0, 0, self.0.glyph_hor_advance(g).unwrap_or(0) as i32);
+        }
+    }
+}
+
 /// A face's shaping state while another face is current ([`TextSys::select`]).
 struct FaceState {
     shaper: std::sync::Arc<Shaper>,
-    face: rustybuzz::Face<'static>,
+    face: Fallback,
     ascent: f32,
     descent: f32,
     upem: f32,
@@ -42,7 +79,7 @@ impl FaceState {
         let tf = ttf_parser::Face::parse(leaked, 0).expect("font");
         FaceState {
             shaper,
-            face: rustybuzz::Face::from_slice(leaked, 0).expect("rustybuzz face"),
+            face: Fallback::new(leaked),
             ascent: tf.ascender() as f32,
             descent: -(tf.descender() as f32),
             upem: tf.units_per_em() as f32,
@@ -97,7 +134,7 @@ fn take_face(font: &[u8]) -> FaceState {
     }
 }
 
-// SAFETY: a FaceState is plain tables plus a rustybuzz face over leaked ('static) bytes; it moves from the
+// SAFETY: a FaceState is plain tables plus a fallback face over leaked ('static) bytes; it moves from the
 // thread that built it to the one that uses it, never shared.
 unsafe impl Send for FaceState {}
 
@@ -113,7 +150,7 @@ pub struct TextSys {
     pub shaper: std::sync::Arc<Shaper>,
     pub cache: GlyphCache,
     pub scratch: Vec<TInstance>,
-    face: rustybuzz::Face<'static>,
+    face: Fallback,
     /// Font-unit vertical metrics (hhea).
     pub ascent: f32,
     pub descent: f32,
@@ -167,7 +204,7 @@ impl TextSys {
             shaper,
             cache: GlyphCache::with_tok_column(font, toks),
             scratch: Vec::with_capacity(1024),
-            face: rustybuzz::Face::from_slice(leaked, 0).expect("rustybuzz face"),
+            face: Fallback::new(leaked),
             ascent,
             descent,
             upem,
@@ -284,22 +321,17 @@ impl TextSys {
         b
     }
 
-    /// Non-Latin-1 chunk `s` shaped by rustybuzz once; index into `chunks`.
+    /// Non-Latin-1 chunk `s` shaped by the fallback shaper once; index into `chunks`.
     fn chunk(&mut self, s: &str) -> usize {
         if let Some(i) = self.chunks.iter().position(|c| c.0 == s) {
             return i;
         }
-        let mut buf = rustybuzz::UnicodeBuffer::new();
-        buf.push_str(s);
-        buf.guess_segment_properties();
-        let out = rustybuzz::shape(&self.face, &[], buf);
-        let (infos, pos) = (out.glyph_infos(), out.glyph_positions());
         let (mut gids, mut xs, mut x) = (Vec::new(), Vec::new(), 0i32);
-        for (i, p) in infos.iter().zip(pos) {
-            gids.push(i.glyph_id as u16);
-            xs.push(x + p.x_offset);
-            x += p.x_advance;
-        }
+        self.face.shape(s, |g, dx, adv| {
+            gids.push(g);
+            xs.push(x + dx);
+            x += adv;
+        });
         self.chunks.push((s.to_owned(), gids, xs, x));
         self.chunks.len() - 1
     }
@@ -374,10 +406,6 @@ impl TextSys {
     }
 
     fn shape_rb(&mut self, text: &str, size_px: f32) {
-        let mut buf = rustybuzz::UnicodeBuffer::new();
-        buf.push_str(text);
-        buf.guess_segment_properties();
-        let out = rustybuzz::shape(&self.face, &[], buf);
         let r = &mut self.run;
         r.gid.clear();
         r.x.clear();
@@ -386,11 +414,11 @@ impl TextSys {
         r.upem = self.upem as u16;
         r.size = size_px;
         let mut x = 0i32;
-        for (i, p) in out.glyph_infos().iter().zip(out.glyph_positions()) {
-            r.gid.push(i.glyph_id as u16);
-            r.x.push(x + p.x_offset);
-            x += p.x_advance;
-        }
+        self.face.shape(text, |g, dx, adv| {
+            r.gid.push(g);
+            r.x.push(x + dx);
+            x += adv;
+        });
         r.width = x;
     }
 

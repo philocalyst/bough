@@ -6,7 +6,7 @@ license.workspace = true
 description = "zgx's lab, animate, blink and micro_bench scenes on the bough facade: windowed and headless adapters"
 
 [dependencies]
-bough = { path = "../../crates/bough" }
+bough = { path = "../../crates/bough", default-features = false }
 bough-metal = { path = "../../crates/bough-metal" }
 zgx-workload = { git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }
 libc = "0.2"
@@ -38,3 +38,8 @@ path = "src/bin/scene_diff.rs"
 [[bin]]
 name = "kernel_bench"
 path = "src/bin/kernel_bench.rs"
+
+[features]
+# bough's complex-text shaping, on by default; the size lane builds the gates without it (docs/lanes/developer-loop/)
+default = ["complex-text"]
+complex-text = ["bough/complex-text"]

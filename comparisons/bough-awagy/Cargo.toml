@@ -11,10 +11,12 @@ path = "src/main.rs"
 
 [features]
 # As the site's apps: exactly one of the two workloads.
-default = ["scroll"]
+default = ["scroll", "complex-text"]
+# bough's shaping of text beyond its table (rustybuzz); the site's apps draw Latin text only
+complex-text = ["bough/complex-text"]
 scroll = []
 dashboard = []
 
 [dependencies]
-bough = { path = "../../crates/bough" }
+bough = { path = "../../crates/bough", default-features = false }
 
