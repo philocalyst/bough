@@ -39,14 +39,13 @@ struct DNode {
     root: bool,
     hgen: u32,
     nkids: u32,
-    /// The node's layout children as a chain through the nodes themselves: its first and last child, and
-    /// each child's next sibling (0: none; node 0 does not exist, handle index 0 is the core's "no handle").
-    /// A child's `next` sits beside the style and flags a visit of that child reads, so walking a
-    /// container's children loads no line the visit would not load anyway, and no container owns a heap
-    /// list (round 6, lane `store`: no per-node heap objects).
-    first: u32,
-    last: u32,
-    next: u32,
+    /// The node's layout children: `nkids` element ids in flow order, a span of `Deep::spans` of
+    /// `1 << kclass` words at `kids` (0: none yet). An array, not a chain through the nodes: a container's
+    /// children are read by independent loads from contiguous words (measured at 4,096 children, per child:
+    /// chain 3.4 ns in mount order and 6.6 ns after churn, array 1.2 and 1.0), and no container owns a heap
+    /// object (the spans are words of one arena that never moves).
+    kids: u32,
+    kclass: u8,
     touched: u32,
     layout: Layout,
     cache: NodeCache,
@@ -58,7 +57,7 @@ const NOCTX: u32 = u32::MAX;
 
 impl DNode {
     fn blank() -> DNode {
-        DNode { style: 0, flags: 0, live: false, root: false, hgen: 0, nkids: 0, first: 0, last: 0, next: 0, touched: 0, layout: Layout::ZERO, cache: NodeCache::default(), ctx: NOCTX }
+        DNode { style: 0, flags: 0, live: false, root: false, hgen: 0, nkids: 0, kids: 0, kclass: 0, touched: 0, layout: Layout::ZERO, cache: NodeCache::default(), ctx: NOCTX }
     }
 }
 
@@ -79,6 +78,8 @@ pub struct Deep {
     /// Text states of measured / sized text leaves, by index (`DNode::ctx`), and the free indices.
     ctxs: bough_mem::Col<LeafCtx>,
     ctx_free: Vec<u32>,
+    /// The containers' children arrays (`DNode::kids`).
+    spans: crate::store::Spans,
 }
 
 #[inline(always)]
@@ -101,7 +102,7 @@ impl Deep {
     /// Bytes `new` carves for `ids` nodes and `texts` text states.
     pub fn column_bytes(ids: usize, texts: usize) -> usize {
         let a = |n: usize| n.next_multiple_of(256) + 256;
-        a(ids * size_of::<DNode>()) + a(texts * size_of::<LeafCtx>())
+        a(ids * size_of::<DNode>()) + a(texts * size_of::<LeafCtx>()) + a(ids * 4 * 4)
     }
 
     /// The engine over columns carved from `store` (type-stable: a node never moves).
@@ -117,6 +118,7 @@ impl Deep {
             abs: HashMap::default(),
             ctxs: store.carve("text leaf states", texts),
             ctx_free: Vec::new(),
+            spans: crate::store::Spans::new(store.carve("layout children", ids * 4)),
             orphans: Vec::new(),
             recycled: Vec::new(),
         }
@@ -203,7 +205,7 @@ impl Deep {
         nd.root = false;
         nd.hgen = hd.generation;
         nd.nkids = 0;
-        (nd.first, nd.last, nd.next) = (0, 0, 0);
+        let (ko, kc) = (std::mem::take(&mut nd.kids), nd.kclass);
         nd.touched = 0;
         nd.layout = Layout::ZERO;
         nd.cache.clear();
@@ -211,6 +213,7 @@ impl Deep {
         if old != NOCTX {
             self.orphans.push(old);
         }
+        self.spans.free(ko, kc);
         i
     }
 
@@ -246,7 +249,7 @@ impl Deep {
         nd.root = false;
         nd.hgen = hd.generation;
         nd.nkids = 0;
-        (nd.first, nd.last, nd.next) = (0, 0, 0);
+        let (ko, kc) = (std::mem::take(&mut nd.kids), nd.kclass);
         nd.touched = 0;
         nd.layout = Layout::ZERO;
         nd.cache.clear();
@@ -254,6 +257,7 @@ impl Deep {
         if old != NOCTX {
             self.orphans.push(old);
         }
+        self.spans.free(ko, kc);
         i
     }
 
@@ -278,41 +282,33 @@ impl Deep {
     /// Append `child` to `parent`'s children.
     #[inline]
     pub fn append(&mut self, parent: u32, child: u32) {
-        let after = self.n[parent as usize].last;
-        self.link_after(parent, after, child);
-    }
-
-    /// Link `child` into `parent`'s children right after `after` (0: as the first child).
-    #[inline]
-    pub fn link_after(&mut self, parent: u32, after: u32, child: u32) {
-        let next = if after == 0 { std::mem::replace(&mut self.n[parent as usize].first, child) } else { std::mem::replace(&mut self.n[after as usize].next, child) };
-        self.n[child as usize].next = next;
         let p = &mut self.n[parent as usize];
+        let n = p.nkids as usize;
+        if p.kids == 0 {
+            // four children to start with (a row of a few cells never grows)
+            (p.kids, p.kclass) = (self.spans.alloc(2), 2);
+        } else if n == 1usize << p.kclass {
+            self.grow_kids(parent);
+        }
+        let p = &mut self.n[parent as usize];
+        self.spans.words_mut(p.kids, n + 1)[n] = child;
         p.nkids += 1;
-        if next == 0 {
-            p.last = child;
-        }
     }
-
-    /// Take the `count` children that follow `after` (0: from the first) out of `parent`'s chain, and
-    /// invalidate `parent` (its algorithm reruns over its children at the next layout). The removed nodes
-    /// keep their own `next` until they are reused (`add`).
-    pub fn unlink_after(&mut self, b: &Bough, parent: u32, after: u32, count: usize) {
-        let mut c = self.next_kid(parent, after);
-        for _ in 0..count {
-            c = self.n[c as usize].next;
+    /// Double the children span of `parent` (its children move to a span of the next class; the old one
+    /// goes back to its class's list).
+    #[cold]
+    fn grow_kids(&mut self, parent: u32) {
+        let p = &self.n[parent as usize];
+        let (old, class, n) = (p.kids, p.kclass, p.nkids as usize);
+        let new = self.spans.alloc(class + 1);
+        // one arena: copy through a split at the higher span (the two never overlap)
+        for i in 0..n {
+            let v = self.spans.words(old, n)[i];
+            self.spans.words_mut(new, n)[i] = v;
         }
-        if after == 0 {
-            self.n[parent as usize].first = c;
-        } else {
-            self.n[after as usize].next = c;
-        }
+        self.spans.free(old, class);
         let p = &mut self.n[parent as usize];
-        p.nkids -= count as u32;
-        if c == 0 {
-            p.last = after;
-        }
-        self.invalidate(b, parent);
+        (p.kids, p.kclass) = (new, class + 1);
     }
 
     /// Number of children of container `n`.
@@ -320,28 +316,28 @@ impl Deep {
     pub fn kid_count(&self, n: u32) -> usize {
         self.n[n as usize].nkids as usize
     }
-    /// The first child of `n` (0: none), its last child, and the sibling after child `c` (0: none).
-    #[inline(always)]
-    pub fn first_kid(&self, n: u32) -> u32 {
-        self.n[n as usize].first
-    }
-    #[inline(always)]
-    pub fn last_kid(&self, n: u32) -> u32 {
-        self.n[n as usize].last
-    }
-    #[inline(always)]
-    pub fn next_sib(&self, c: u32) -> u32 {
-        self.n[c as usize].next
-    }
-    /// The child of `parent` that follows `after` (0: its first child).
-    #[inline(always)]
-    pub fn next_kid(&self, parent: u32, after: u32) -> u32 {
-        if after == 0 { self.n[parent as usize].first } else { self.n[after as usize].next }
-    }
     /// The children of `n` (mount order = flow order).
-    #[inline]
-    pub fn kids(&self, n: u32) -> KidIds<'_> {
-        KidIds { n: &self.n, c: self.n[n as usize].first }
+    #[inline(always)]
+    pub fn kids(&self, n: u32) -> &[u32] {
+        let nd = &self.n[n as usize];
+        self.spans.words(nd.kids, nd.nkids as usize)
+    }
+    /// Structural edit of container `n`'s children (a removed item's boxes): `kids[at..at+del]` are taken
+    /// out; the container is invalidated (its algorithm reruns over its children at the next layout).
+    pub fn splice_kids(&mut self, b: &Bough, n: u32, at: usize, del: usize) {
+        let nd = &mut self.n[n as usize];
+        let len = nd.nkids as usize;
+        self.spans.words_mut(nd.kids, len).copy_within(at + del..len, at);
+        nd.nkids = (len - del) as u32;
+        self.invalidate(b, n);
+    }
+    /// Rotate the last `k` children of `n` to index `at` (items mounted at the end, then placed).
+    pub fn place_tail_kids(&mut self, n: u32, at: usize, k: usize) {
+        let nd = &self.n[n as usize];
+        let len = nd.nkids as usize;
+        if k > 0 && at + k < len {
+            self.spans.words_mut(nd.kids, len)[at..].rotate_right(k);
+        }
     }
 
     /// Give node `n` a text state after the fact (a label whose text left the label kernel's coverage
@@ -390,8 +386,7 @@ impl Deep {
             nd.live = false;
             nd.flags &= META_MASK;
             nd.cache.clear();
-            let mut k = nd.first;
-            (nd.first, nd.last, nd.nkids) = (0, 0, 0);
+            let (ko, kc, kn) = (std::mem::take(&mut nd.kids), nd.kclass, std::mem::take(&mut nd.nkids) as usize);
             let c = std::mem::replace(&mut nd.ctx, NOCTX);
             if c != NOCTX {
                 self.orphans.push(c);
@@ -399,10 +394,8 @@ impl Deep {
             if abs {
                 self.abs.remove(&i);
             }
-            while k != 0 {
-                stack.push(k);
-                k = self.n[k as usize].next;
-            }
+            stack.extend_from_slice(self.spans.words(ko, kn));
+            self.spans.free(ko, kc);
         }
     }
 
@@ -417,7 +410,9 @@ impl Deep {
             if c != NOCTX {
                 self.orphans.push(c);
             }
-            (nd.first, nd.last, nd.nkids) = (0, 0, 0);
+            let (ko, kc) = (std::mem::take(&mut nd.kids), nd.kclass);
+            nd.nkids = 0;
+            self.spans.free(ko, kc);
             if !self.abs.is_empty() {
                 self.abs.remove(&i);
             }
@@ -454,7 +449,7 @@ impl Deep {
     }
 
     pub fn children_into(&self, _b: &Bough, n: u32, out: &mut Vec<u32>) {
-        out.extend(self.kids(n));
+        out.extend_from_slice(self.kids(n));
     }
 
     /// The engine's tables as `(name, entries, bytes)` (`Rt::store_ledger`). A node's answer cache is one
@@ -476,6 +471,7 @@ impl Deep {
             ("lay.eng.n caches (boxed on first store)", ncache, caches),
             ("col lay.eng.ctxs (LeafCtx)", self.ctxs.len(), self.ctxs.len() * size_of::<LeafCtx>()),
             ("lay.eng.ctxs heap (runs, text, word tables)", self.ctxs.len(), self.ctxs.iter().map(ctx_heap).sum::<usize>()),
+            ("col lay.eng children (id arrays)", self.spans.touched(), self.spans.touched() * 4),
             ("lay.eng misc (changed, orphans, recycled, free)", 0, (self.changed.capacity() + self.orphans.capacity() + self.recycled.capacity() + self.ctx_free.capacity()) * 4),
         ]
     }
@@ -493,9 +489,8 @@ impl Deep {
                     root: x.root,
                     hgen: x.hgen,
                     nkids: x.nkids,
-                    first: x.first,
-                    last: x.last,
-                    next: x.next,
+                    kids: x.kids,
+                    kclass: x.kclass,
                     touched: 0,
                     layout: Layout::ZERO,
                     cache: NodeCache::default(),
@@ -521,6 +516,7 @@ impl Deep {
             ctx_free: Vec::new(),
             orphans: Vec::new(),
             recycled: Vec::new(),
+            spans: self.spans.clone_owned(),
         };
         cold.layout(b, root, avail);
         let mut out = Vec::new();
@@ -542,30 +538,12 @@ struct DViewRef<'a> {
     b: &'a Bough,
 }
 
-/// A container's children, by their sibling chain (`DNode::next`).
-pub struct KidIds<'a> {
-    n: &'a [DNode],
-    c: u32,
-}
-impl Iterator for KidIds<'_> {
-    type Item = u32;
-    #[inline(always)]
-    fn next(&mut self) -> Option<u32> {
-        let c = self.c;
-        if c == 0 {
-            return None;
-        }
-        // SAFETY-free: a chain holds only ids of nodes that were added (`link_after`), all `< n.len()`.
-        self.c = self.n[c as usize].next;
-        Some(c)
-    }
-}
-struct Kids<'a>(KidIds<'a>);
+struct Kids<'a>(std::slice::Iter<'a, u32>);
 impl Iterator for Kids<'_> {
     type Item = NodeId;
     #[inline(always)]
     fn next(&mut self) -> Option<NodeId> {
-        self.0.next().map(nid)
+        self.0.next().map(|&i| nid(i))
     }
 }
 
@@ -605,7 +583,7 @@ impl LayoutTree for DView<'_> {
 
     #[inline]
     fn children(&self, node: NodeId) -> Kids<'_> {
-        Kids(self.d.kids(ix(node) as u32))
+        Kids(self.d.kids(ix(node) as u32).iter())
     }
     #[inline]
     fn child_count(&self, node: NodeId) -> usize {

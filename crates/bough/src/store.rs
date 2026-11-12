@@ -78,6 +78,12 @@ impl Spans {
         // SAFETY: as `floats`; the borrow is unique.
         unsafe { std::slice::from_raw_parts_mut(w.as_mut_ptr() as *mut f32, n) }
     }
+    /// A copy on its own heap storage (test support: a cold copy of the layout engine).
+    pub fn clone_owned(&self) -> Spans {
+        let mut w = Col::owned("spans copy");
+        w.extend_from_slice(&self.w);
+        Spans { w, free: self.free }
+    }
     /// Words handed out so far (the arena's high-water mark), for the ledger.
     pub fn touched(&self) -> usize {
         self.w.len()

@@ -20,9 +20,6 @@ pub struct DynItem {
     pub key: u64,
     pub nrec: u32,
     pub nkid: u32,
-    /// The last of its top-level layout children (0: it has none): where the walk's sibling cursor
-    /// (`Mounter::prev`) stands after the item is stepped over.
-    pub last_kid: u32,
     pub scope: Scope,
     pub tape: Vec<u32>,
     /// Its seal in the part's arena (`seal.rs`): offset and length; length 0 = none yet.
@@ -92,13 +89,6 @@ impl Rt {
         }
     }
 
-    /// The tail of `lid`'s children as a mount sees it: the insertion cursor while one is set on `lid`
-    /// (`Lay::ins`), else the container's last child.
-    #[inline]
-    pub(crate) fn lay_tail(&self, lid: u32) -> u32 {
-        if self.lay.ins.0 == lid { self.lay.ins.1 } else { self.lay.eng.last_kid(lid) }
-    }
-
     /// Release the layout subtree of `n` (a removed item's top-level box).
     pub(crate) fn remove_layout_subtree(&mut self, n: u32) {
         let mut stack = vec![n];
@@ -144,18 +134,13 @@ pub(crate) fn mount_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl It
 fn mount_item<V, E: Element<V>>(m: &mut Mounter<'_, V>, e: E, into: Option<&mut Vec<RecordInit>>) -> DynItem {
     let mut scope = Scope::default();
     let mut tape = Vec::new();
-    let inserted = into.is_some();
     let lid = m.rt.lay.cur;
     let k0 = if lid == NONE { 0 } else { m.rt.lay.eng.kid_count(lid) };
     let nrec = match into {
         Some(buf) => {
-            // an item added by a re-description: its top-level layout children are linked at the walk's
-            // place (after `m.prev`), not at the container's tail
-            let ins = std::mem::replace(&mut m.rt.lay.ins, (lid, m.prev));
             let b0 = buf.len();
             let mut sub = m.sub(buf, &mut scope, &mut tape as *mut Vec<u32>);
             e.mount(&mut sub);
-            m.prev = std::mem::replace(&mut m.rt.lay.ins, ins).1;
             buf.len() - b0
         }
         None => {
@@ -168,8 +153,7 @@ fn mount_item<V, E: Element<V>>(m: &mut Mounter<'_, V>, e: E, into: Option<&mut 
         }
     };
     let nkid = if lid == NONE { 0 } else { m.rt.lay.eng.kid_count(lid) - k0 };
-    let last_kid = if nkid == 0 { 0 } else if inserted { m.prev } else { m.rt.lay_tail(lid) };
-    DynItem { key: 0, nrec: nrec as u32, nkid: nkid as u32, last_kid, scope, tape, seal: (0, 0) }
+    DynItem { key: 0, nrec: nrec as u32, nkid: nkid as u32, scope, tape, seal: (0, 0) }
 }
 
 /// Re-describe a dynamic part: item `k` updates retained item `k`, new items are mounted as one run at the
@@ -184,7 +168,7 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
     let mut k = 0;
     let mut fresh: Vec<RecordInit> = Vec::new();
     let mut added: Vec<DynItem> = Vec::new();
-    let fresh_pos = std::cell::Cell::new(usize::MAX);
+    let (fresh_pos, fresh_kid) = (std::cell::Cell::new(usize::MAX), std::cell::Cell::new(0));
     let mut items = items;
     // one item of look-ahead (insertion detection below)
     let mut pending: Option<E> = None;
@@ -200,9 +184,6 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
                     if k < old.len() && old[k].key == e.dyn_key() && sealed_as(&old[k], &e, &seals, &m.rt.lay.descs, cx).0 {
                         m.pos += old[k].nrec as usize;
                         m.kid += old[k].nkid as usize;
-                        if old[k].last_kid != 0 {
-                            m.prev = old[k].last_kid;
-                        }
                         k += 1;
                         continue;
                     }
@@ -218,9 +199,15 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
         if k < old.len() && old[k].key != e.dyn_key() {
             // a keyed item that changed identity: replaced in place (its run out, the new one in)
             let key = e.dyn_key();
-            let gone = std::mem::replace(&mut old[k], DynItem { key, nrec: 0, nkid: 0, last_kid: 0, scope: Scope::default(), tape: Vec::new(), seal: (0, 0) });
+            let gone = std::mem::replace(&mut old[k], DynItem { key, nrec: 0, nkid: 0, scope: Scope::default(), tape: Vec::new(), seal: (0, 0) });
             seals.dead += gone.seal.1;
-            unlink_kids(m, lid, gone.nkid as usize);
+            if lid != NONE && gone.nkid > 0 {
+                for i in 0..gone.nkid as usize {
+                    let c = m.rt.lay.eng.kids(lid)[m.kid + i];
+                    m.rt.remove_layout_subtree(c);
+                }
+                m.rt.lay.eng.splice_kids(&m.rt.bough, lid, m.kid, gone.nkid as usize);
+            }
             m.rt.bough.remove_run(m.pos, gone.nrec as usize);
             m.rt.release_scope(gone.scope);
             let mut buf = Vec::new();
@@ -228,6 +215,7 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
             it.key = key;
             m.rt.bough.insert_run(m.pos, &buf);
             if lid != NONE && it.nkid > 0 {
+                m.rt.lay.eng.place_tail_kids(lid, m.kid, it.nkid as usize);
                 m.rt.lay.eng.invalidate(&m.rt.bough, lid);
                 m.rt.queue_container(lid);
             }
@@ -240,9 +228,6 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
                 // described exactly as before, in the same context: its records stand
                 m.pos += old[k].nrec as usize;
                 m.kid += old[k].nkid as usize;
-                if old[k].last_kid != 0 {
-                    m.prev = old[k].last_kid;
-                }
                 k += 1;
                 continue;
             }
@@ -274,6 +259,7 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
                         it.key = key;
                         m.rt.bough.insert_run(m.pos, &buf);
                         if lid != NONE && it.nkid > 0 {
+                            m.rt.lay.eng.place_tail_kids(lid, m.kid, it.nkid as usize);
                             m.rt.lay.eng.invalidate(&m.rt.bough, lid);
                             m.rt.queue_container(lid);
                         }
@@ -305,15 +291,13 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
                 // SAFETY: reborrow of the mounter's buffer for the sub-walk only.
                 let mut sub = m.sub(unsafe { &mut *recs }, &mut it.scope, &mut it.tape as *mut Vec<u32>);
                 e.update(&mut sub);
-                let (p1, k1, v1) = (sub.pos, sub.kid, sub.prev);
+                let (p1, k1) = (sub.pos, sub.kid);
                 drop(sub);
                 m.pos = p1;
                 m.kid = k1;
-                m.prev = v1;
             }
             it.nrec = (m.pos - p0) as u32;
             it.nkid = (m.kid - k0) as u32;
-            it.last_kid = if it.nkid == 0 { 0 } else { m.prev };
             if !seals.refused {
                 if scratch.len() <= it.seal.1 as usize {
                     // fits where the old one was
@@ -330,6 +314,7 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
         } else {
             if fresh_pos.get() == usize::MAX {
                 fresh_pos.set(m.pos);
+                fresh_kid.set(m.kid);
             }
             let key = e.dyn_key();
             let mut it = mount_item(m, e, Some(&mut fresh));
@@ -343,6 +328,7 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
         m.rt.bough.insert_run(at, &fresh);
         let nkid: usize = added.iter().map(|i| i.nkid as usize).sum();
         if lid != NONE {
+            m.rt.lay.eng.place_tail_kids(lid, fresh_kid.get(), nkid);
             m.rt.lay.eng.invalidate(&m.rt.bough, lid);
             m.rt.queue_container(lid);
         }
@@ -355,7 +341,11 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
         let nrec: usize = gone.iter().map(|i| i.nrec as usize).sum();
         let nkid: usize = gone.iter().map(|i| i.nkid as usize).sum();
         if lid != NONE && nkid > 0 {
-            unlink_kids(m, lid, nkid);
+            for i in 0..nkid {
+                let c = m.rt.lay.eng.kids(lid)[m.kid + i];
+                m.rt.remove_layout_subtree(c);
+            }
+            m.rt.lay.eng.splice_kids(&m.rt.bough, lid, m.kid, nkid);
             m.rt.queue_container(lid);
         }
         m.rt.bough.remove_run(m.pos, nrec);
@@ -394,25 +384,15 @@ fn sealed_as<V, E: Element<V>>(it: &DynItem, e: &E, seals: &Seals, descs: &crate
 /// Take `nrec` records and `nkid` layout children out at the walk's position (a removed item's run).
 fn remove_items<V>(m: &mut Mounter<'_, V>, lid: u32, nrec: usize, nkid: usize) {
     if lid != NONE && nkid > 0 {
-        unlink_kids(m, lid, nkid);
+        for i in 0..nkid {
+            let c = m.rt.lay.eng.kids(lid)[m.kid + i];
+            m.rt.remove_layout_subtree(c);
+        }
+        m.rt.lay.eng.splice_kids(&m.rt.bough, lid, m.kid, nkid);
+        m.rt.lay.eng.invalidate(&m.rt.bough, lid);
         m.rt.queue_container(lid);
     }
     m.rt.bough.remove_run(m.pos, nrec);
-}
-
-/// Release the `nkid` layout children of `lid` that follow the walk's sibling cursor (a removed item's
-/// top-level boxes, still in the Bough) and take them out of `lid`'s chain.
-fn unlink_kids<V>(m: &mut Mounter<'_, V>, lid: u32, nkid: usize) {
-    if lid == NONE || nkid == 0 {
-        return;
-    }
-    let mut c = m.rt.lay.eng.next_kid(lid, m.prev);
-    for _ in 0..nkid {
-        let next = m.rt.lay.eng.next_sib(c);
-        m.rt.remove_layout_subtree(c);
-        c = next;
-    }
-    m.rt.lay.eng.unlink_after(&m.rt.bough, lid, m.prev, nkid);
 }
 
 /// `Option<E>`: a dynamic part of zero or one item.
@@ -436,7 +416,7 @@ pub(crate) unsafe fn redescribe<V: crate::app::View>(rt: &mut Rt, v: &V, tape: &
     let prev = rt.lay.cur;
     rt.lay.cur = NONE;
     {
-        let mut m = Mounter { rt, owner: v as *const V, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None, cls: 0, tape: tape as *mut Vec<u32>, ti: 0, pos: 0, kid: 0, prev: 0, keep: false };
+        let mut m = Mounter { rt, owner: v as *const V, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None, cls: 0, tape: tape as *mut Vec<u32>, ti: 0, pos: 0, kid: 0, keep: false };
         el.update(&mut m);
         debug_assert_eq!(m.ti, tape.len(), "re-description walked a different shape than the tape");
     }
@@ -455,7 +435,6 @@ pub(crate) fn mount_opaque<V>(m: &mut Mounter<'_, V>, f: impl FnOnce(&mut Mounte
     m.tape_push(0);
     m.tape_push(0);
     m.tape_push(0);
-    m.tape_push(0);
     let r0 = m.recs.len();
     let lid = m.rt.lay.cur;
     let k0 = if lid == NONE { 0 } else { m.rt.lay.eng.kid_count(lid) };
@@ -463,11 +442,8 @@ pub(crate) fn mount_opaque<V>(m: &mut Mounter<'_, V>, f: impl FnOnce(&mut Mounte
     let nkid = if lid == NONE { 0 } else { m.rt.lay.eng.kid_count(lid) - k0 };
     let t1 = m.ti_len();
     m.tape_set(at, (m.recs.len() - r0) as u32);
-    m.tape_set(at + 1, (t1 - at - 4) as u32);
+    m.tape_set(at + 1, (t1 - at - 3) as u32);
     m.tape_set(at + 2, nkid as u32);
-    // the last layout child it made (0: none): where the sibling cursor stands after stepping over it
-    let last = if nkid == 0 { 0 } else { m.rt.lay_tail(lid) };
-    m.tape_set(at + 3, last);
 }
 
 /// Step over an element mounted by `mount_opaque`.
@@ -475,10 +451,6 @@ pub(crate) fn update_opaque<V>(m: &mut Mounter<'_, V>) {
     let nrec = m.tape_next() as usize;
     let ntape = m.tape_next() as usize;
     let nkid = m.tape_next() as usize;
-    let last = m.tape_next();
-    if last != 0 {
-        m.prev = last;
-    }
     m.ti += ntape;
     m.pos += nrec;
     m.kid += nkid;

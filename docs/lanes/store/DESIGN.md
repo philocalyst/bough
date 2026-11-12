@@ -60,24 +60,21 @@ Found while unifying: `input.rs` searched the scope's node list for "the node wh
 record's" (linear, three places) and a tooltip replaced a dynamic element's handle with a fresh one. Both
 are now "the node is the record's handle index".
 
-## 3. Layout children: a chain through the nodes, not a scan of the depth column (departure, for now)
+## 3. Layout children: an array of ids in the span arena (a chain was tried and measured out)
 
 STORE-R6: "a container's layout children are its direct children in the depth column: an iteration over the
-page, not a heap `Vec` per container". Built: the `Vec` is gone, and the children are **a chain through the
-nodes** (`first`/`last` on the container, `next` on the child).
+page, not a heap `Vec` per container". Built: the `Vec` is gone; a container's children are **an array of
+element ids in a span of one word arena** (`DNode::kids`, `store::Spans`: power-of-two spans, never moved).
 
-* Reason 1: the layout tree is not exactly the record tree. A group root nested under a port (a scroll
-  box's content, a list row) is a record child that is not a layout child, and a container's record
-  children may include records that are no layout node (decorations, absolutely placed quads).
-* Reason 2: the scan needs a cursor API in bough-core (`first_child`, `next_sibling` over (page, slot)),
-  and bough-core's page paths are being rewritten by lane `core`. A child's `next` sits in the line a visit
-  of that child already loads (its style and flags), so the chain adds no miss.
-* What it removed besides the `Vec`: `splice_kids`, `place_tail_kids`, `permute_kids` (index surgery after
-  every edit). A re-description's walk carries the sibling it last stepped over (`Mounter::prev`), and an
-  item is linked or unlinked there in O(1).
-* When side pages land (stage 3) the chain becomes a bit column ("is a layout child of its record parent")
-  and the scan, if the cursor API exists by then; the engine's interface (`first_kid`/`next_sib`) hides
-  which.
+* First attempt (stage 0a, commit eb156f9): a chain through the nodes (`first`/`last`/`next`), with a sibling
+  cursor in the re-description walk. The Opus review (IDEAS-OPUS A12b) warned it makes child iteration a
+  chain of dependent loads. **Measured** at 4,096 children, per child, reading what a layout visit reads
+  first: chain 3.4 ns in mount order and 6.6 ns after churn; array of ids 1.2 ns and 1.0 ns (same instruction
+  count, 9 to 10 per child: the difference is the dependency). The chain is gone; the cursor went with it.
+* Why not the depth-column scan yet: the layout tree is not exactly the record tree (a group root nested
+  under a port, and record children that are no layout node), and the scan needs a cursor API in bough-core
+  whose page paths lane `core` is rewriting. When side pages land the array becomes a bit column ("is a
+  layout child of its record parent") plus the scan; the engine's interface (`kids(n) -> &[u32]`) hides which.
 
 ## 4. The signal path (in progress)
 
