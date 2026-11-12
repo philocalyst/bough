@@ -1385,6 +1385,15 @@ impl Bough {
         let (mut uo, mut un) = (NRect::EMPTY, NRect::EMPTY);
         while rem > 0 {
             let l = self.d_len[d] as usize;
+            #[cfg(target_arch = "aarch64")]
+            if s == 0 && rem >= l {
+                // a run of whole pages: the vector loop takes every leading plain one
+                let (o, w, nd, nrem) = self.translate_pages(d, rem, dx, dy);
+                if nd != d {
+                    (uo, un, d, rem) = (uo.union(o), un.union(w), nd, nrem);
+                    continue;
+                }
+            }
             let n = rem.min(l - s);
             let old_d = self.d_ink[d];
             let mut pages = 1;
@@ -1460,6 +1469,58 @@ impl Bough {
         }
         self.fix_chunks(d0, d);
         (uo, un)
+    }
+
+    /// Whole plain pages from directory index `d`, while `rem` records cover the next page whole, in
+    /// vector form (overfitting finding 13: a scroll is this loop over the content's pages; it was ~109
+    /// scalar instructions a page). The page summary moves by one saturating lane add, the offset by one
+    /// 32-bit pair add, the offset lanes are that pair and its negation narrowed, both damage unions are a
+    /// lane min, and one compare pair proves the result is still a plain page (summary inside the domain,
+    /// offset in 16 bits). Stops at the first page that is not (the caller's general path takes it).
+    /// Returns (old union, new union, next directory index, records left).
+    #[cfg(target_arch = "aarch64")]
+    #[inline(never)]
+    fn translate_pages(&mut self, mut d: usize, mut rem: usize, dx: i32, dy: i32) -> (NRect, NRect, usize, usize) {
+        use core::arch::aarch64::*;
+        if (dx.unsigned_abs() | dy.unsigned_abs()) > 32766 {
+            return (NRect::EMPTY, NRect::EMPTY, d, rem);
+        }
+        let n = self.d_ptr.len();
+        // SAFETY: d < n is a directory index throughout (d_len, d_ink and d_ptr have an entry for it and the
+        // page is live); `off` is two i32 and `offl` four i16 of the page header; &mut self is exclusive.
+        unsafe {
+            let dl = [dx as i16, dy as i16, (-dx) as i16, (-dy) as i16];
+            let (dlv, d32) = (vld1_s16(dl.as_ptr()), vld1_s32([dx, dy].as_ptr()));
+            let (mut uov, mut unv) = (vdup_n_s16(i16::MAX), vdup_n_s16(i16::MAX));
+            let (lens, inks, ptrs) = (self.d_len.as_ptr(), self.d_ink.as_mut_ptr() as *mut i16, self.d_ptr.as_ptr());
+            while d < n {
+                let l = *lens.add(d) as usize;
+                if rem < l {
+                    break;
+                }
+                let pp = *ptrs.add(d);
+                let dip = inks.add(d * 4);
+                let v = vld1_s16(dip);
+                let r = vqadd_s16(v, dlv);
+                let no = vadd_s32(vld1_s32((*pp).off.as_ptr()), d32);
+                // (an empty summary has saturated lanes: it is `out`, and the general path keeps it empty)
+                let out = vget_lane_u64::<0>(vreinterpret_u64_u16(vcgt_s16(vqabs_s16(r), vdup_n_s16(COORD_MAX as i16))))
+                    | vget_lane_u64::<0>(vreinterpret_u64_u32(vcgt_s32(vabs_s32(no), vdup_n_s32(32767))));
+                if out != 0 || (*pp).flags & !F_XF != 0 {
+                    break;
+                }
+                (*pp).wgen = (*pp).wgen.wrapping_add(1);
+                vst1_s32((*pp).off.as_mut_ptr(), no);
+                vst1_s16((*pp).offl.as_mut_ptr(), vmovn_s32(vcombine_s32(no, vneg_s32(no))));
+                vst1_s16(dip, r);
+                uov = vmin_s16(uov, v);
+                unv = vmin_s16(unv, r);
+                rem -= l;
+                d += 1;
+            }
+            // an int16x4 is four i16 lanes, the layout of NRect
+            (core::mem::transmute::<int16x4_t, NRect>(uov), core::mem::transmute::<int16x4_t, NRect>(unv), d, rem)
+        }
     }
 
     /// The exact path of a translation: slots `[s, s + n)` of page `d` (not transformed) move by
