@@ -34,12 +34,17 @@ fn corrupt_and_draw(open_masks: bool) {
     app.presented_pixels(); // the GPU is idle: the region may be written
     let l = app.rt.layout;
     let base = app.rt.region_base();
-    let pages = app.rt.bough.num_pages();
+    // the directory is blocks of 64 entries, live pages first and holes after (EMPTY ink, page id 0): walk
+    // every entry the kernels scan and skip the holes
+    let dir = app.rt.bough.dir_len();
     let mut rng = Rng(0x2545_F491_4F6C_DD1D);
     // SAFETY: every write below lands inside a column carved for it (offsets and capacities from the
     // layout); the GPU is idle (synced above).
     unsafe {
-        for d in 0..pages {
+        for d in 0..dir {
+            if *(base.add(l.dir_ink_off as usize + 8 * d) as *const i16) == i16::MAX {
+                continue; // a hole (NRect::EMPTY)
+            }
             let id = *(base.add(l.dir_id_off as usize + 4 * d) as *const u32) as usize;
             let pg = base.add(l.pages_off as usize + id * 1472);
             for s in 0..64 {

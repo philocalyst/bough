@@ -14,7 +14,8 @@ const W: f32 = 320.0;
 const H: f32 = 240.0;
 
 fn cfg() -> Config {
-    Config::new(W, H, 1.0, bough::ui::default_font())
+    let font = std::fs::read(std::env::var("ZGX_FONT_FILE").unwrap_or_else(|_| "/System/Library/Fonts/Supplemental/Arial.ttf".into())).unwrap();
+    Config::new(W, H, 1.0, font)
 }
 
 struct Hovered {

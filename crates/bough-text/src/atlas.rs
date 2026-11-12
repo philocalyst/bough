@@ -186,6 +186,9 @@ struct Strike {
     size: f32,
     face: u8,
     bounds: Option<LineBounds>,
+    /// What every label of the strike needs once, not once per label (`label_strike`): the union of the
+    /// ten digit boxes, known after the printable ASCII tokens were made drawable.
+    digit_cell: Option<[i32; 4]>,
     entries: Vec<Entry>,
     /// Entries of the 128 ASCII bytes (indexed by byte, not gid), filled lazily, for the
     /// fused kernel that never materializes a `GlyphRun`.
@@ -281,7 +284,7 @@ impl GlyphCache {
         tok.ready[crate::script::TOK_PAD as usize] = 1;
         tok.ready[crate::script::TOK_PH as usize] = 1;
         self.toks.push(tok);
-        self.strikes.push(Strike { size, face, bounds: None, entries: vec![], ascii: Box::new([Entry::default(); 128]) });
+        self.strikes.push(Strike { size, face, bounds: None, digit_cell: None, entries: vec![], ascii: Box::new([Entry::default(); 128]) });
         self.strikes.len() - 1
     }
 
@@ -346,6 +349,30 @@ impl GlyphCache {
         }
         self.strikes[strike].bounds = Some(b);
         b
+    }
+
+    /// Make the strike ready for labels and return its digit cell (the union of the ten digit boxes,
+    /// `[left, top, right, bottom]` relative to pen and baseline): the printable ASCII tokens are made
+    /// drawable the first time, and the cell is remembered, so a label after the first costs one load
+    /// here (it was 95 readiness tests and ten box unions per label).
+    #[inline]
+    pub fn label_strike(&mut self, strike: StrikeId, tok_gid: &[u16; 256]) -> [i32; 4] {
+        match self.strikes[strike].digit_cell {
+            Some(c) => c,
+            None => self.label_strike_cold(strike, tok_gid),
+        }
+    }
+    #[cold]
+    fn label_strike_cold(&mut self, strike: StrikeId, tok_gid: &[u16; 256]) -> [i32; 4] {
+        self.prepare_tokens(strike, tok_gid, 0x20..0x7F);
+        let ib = &self.toks[strike].ibox;
+        let mut dcell = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+        for d in b'0'..=b'9' {
+            let b = ib[d as usize];
+            dcell = [dcell[0].min(b[0]), dcell[1].min(b[1]), dcell[2].max(-b[2]), dcell[3].max(-b[3])];
+        }
+        self.strikes[strike].digit_cell = Some(dcell);
+        dcell
     }
 
     /// The token tables of a strike (see [`TokStrike`]).

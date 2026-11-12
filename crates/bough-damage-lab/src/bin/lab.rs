@@ -45,6 +45,7 @@ fn main() {
             lab_cull_plane_runs as *const () as usize,
             lab_hw_mark as *const () as usize,
         ];
+        // the NEON cull exists on aarch64 only (`forms::hw` falls back to the scalar cull elsewhere)
         #[cfg(target_arch = "aarch64")]
         f.push(lab_cull_hw_neon as *const () as usize);
         println!("{:x?}", std::hint::black_box(f));

@@ -115,7 +115,10 @@ unless marked "within". All integers are little-endian.
 
 ## 3. Directory and pages: bough-core's own layout
 
-* **Directory** (paint order), one entry per page:
+* **Directory** (paint order), one entry per page, in blocks of 64 entries with holes after each block's live
+  pages (round 6, core's gapped directory: a hole has page id 0 and EMPTY ink, so it fails every test). The
+  columns are carved at twice the page capacity and the fused bin pass scans `min(n_dir, 2 * (m_page + 1))`
+  entries:
   * `dir_page[i]: u32` = the page's id;
   * `dir_ink[i]: NRect` = the page's union ink (core `d_ink`).
 * **Page pool:** page `id` lives at `pagepool_off + id * 1344` and is **exactly `bough_core::page::Page`**

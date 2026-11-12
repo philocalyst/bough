@@ -85,12 +85,57 @@ fn cells(n: usize, once: bool) -> [u64; 4] {
     [cell(&mut a, 0), cell(&mut a, 1), cell(&mut a, 2), cell(&mut a, 3)]
 }
 
+/// Layout probe (`PHASES=1`, lane `layout`): every write changes the label's width (the string alternates
+/// between one and three digits), so every turn lays out. Per write: the whole turn (without the profiler,
+/// whose counter reads are system calls), then cephal's compute and the write-back (`LProf`), the nodes the
+/// write-back visited and wrote; and cephal's query counters when built with `--features cephal-stats`.
+/// `NOPROF=1`: the turn only; `REPS`: writes per measurement (default 256).
+fn phases(n: usize) {
+    let mut a = app(n, true);
+    let reps = std::env::var("REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(256u32);
+    let run = |a: &mut App<Rows>, k0: u32| {
+        let p0 = a.rt.lay.prof.acc;
+        let s0 = a.rt.lay.stats;
+        let t0 = tinstr();
+        for k in k0..k0 + reps {
+            let i = (k as usize * 7) % n;
+            a.turn(|r| {
+                let v = if *r.name[i] == 5 { 905 } else { 5 };
+                drop(r.name[i].set(v))
+            });
+        }
+        let t = tinstr() - t0;
+        let (p1, s1) = (a.rt.lay.prof.acc, a.rt.lay.stats);
+        let r = reps as u64;
+        (t / r, (p1[bough::layout::LP_COMPUTE] - p0[bough::layout::LP_COMPUTE]) / r, (p1[bough::layout::LP_WRITE] - p0[bough::layout::LP_WRITE]) / r, (s1.nodes_visited - s0.nodes_visited) / r, (s1.nodes_written - s0.nodes_written) / r)
+    };
+    run(&mut a, 0);
+    #[cfg(feature = "cephal-stats")]
+    let _ = cephal::compute::stats::report();
+    let (t, ..) = run(&mut a, 1);
+    if std::env::var_os("NOPROF").is_some() {
+        return println!("{n},{t}");
+    }
+    a.rt.lay.prof.enable();
+    let (_, c, w, v, wr) = run(&mut a, 1);
+    println!("{n},{t},{c},{w},{v},{wr}");
+    #[cfg(feature = "cephal-stats")]
+    println!("  cephal per {reps} writes: {}", cephal::compute::stats::report());
+}
+
 fn main() {
     if let Some(reps) = std::env::var("SPIN").ok().and_then(|v| v.parse::<u32>().ok()) {
         // profiling: idle turns of a re-describing owner, nothing else
         let mut a = app(MAX, false);
         for _ in 0..reps {
             a.turn(|_| {});
+        }
+        return;
+    }
+    if std::env::var_os("PHASES").is_some() {
+        println!("rows,turn,lay_compute,lay_writeback,wb_visited,wb_written (per width-changing string write, once)");
+        for n in std::env::args().skip(1).filter_map(|s| s.parse::<usize>().ok()) {
+            phases(n);
         }
         return;
     }

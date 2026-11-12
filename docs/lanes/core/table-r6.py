@@ -40,6 +40,8 @@ def ideal(op):
     if op.startswith('freeze'): return 0.0, 'changed pages'
     if op == 'insert8-front+posall': return 1.0, 'one lookup per page'
     if op == 'set-inks-handles64': return 0.0, '64 writes'
+    if op == 'state-run-half': return 1.0, 'one word per page (N/128)'
+    if op.startswith('state-any'): return 0.0, 'log N with directory nodes; one test per page today'
     if op.startswith(('insert', 'remove', 'move', 'append', 'translate64')): return 0.0, 'K + log N'
     return 0.0, 'log N'
 

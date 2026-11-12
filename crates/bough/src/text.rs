@@ -484,6 +484,11 @@ pub struct TextNode {
     pub per_glyph: bool,
     /// The format of a numeric operand (`sig!(..).num(f, fmt)`).
     pub num: Option<bough_text::numeric::NumFmt>,
+    /// A laid-out label: its baseline's offset below the top of its line box (px), so a write-back places
+    /// it without selecting its face.
+    pub base_off: f32,
+    /// Per-glyph alpha (`glyph_alpha`): a hash of the alpha vector, the record's paint state.
+    pub paint_key: u64,
 }
 
 impl TextNode {
@@ -613,8 +618,14 @@ impl Rt {
         Some(pay_runs(first, cap))
     }
 
-    fn build_label(&mut self, ti: u32) -> Option<u32> {
+    /// A one-line text as a retained label (`None`: the label kernel does not cover it: a codepoint
+    /// outside its set, or a line taller than the label's damage rows hold).
+    pub(crate) fn build_label(&mut self, ti: u32) -> Option<u32> {
         let strike = self.texts[ti as usize].strike as StrikeId;
+        let lb = self.text.bounds(strike);
+        if lb.bottom - lb.top > 3 * 32 + 1 {
+            return None;
+        }
         let (size_px, ox, oy, color, space) = {
             let t = &self.texts[ti as usize];
             (t.size_px, t.ox, t.oy, t.color, t.space)
@@ -634,6 +645,60 @@ impl Rt {
         t.ink = ink;
         t.shape = TShape::Label(Box::new(lb));
         Some(pay_runs(run, 1))
+    }
+
+    /// The layout size (device px) of text `ti` when it is a label: its width on one line, trailing spaces
+    /// excluded, and its line height (what `LeafCtx::label_size` answers for the general representation).
+    pub(crate) fn label_px(&self, ti: u32) -> Option<(f32, f32)> {
+        let t = &self.texts[ti as usize];
+        let TShape::Label(lb) = &t.shape else { return None };
+        let k = (t.size_px / (self.text.shaper.script.upem as f32).max(1.0)).max(1e-6);
+        Some((self.glyphs.label_line_width(lb) as f32 * k, t.line_h))
+    }
+
+    /// A laid-out label's box is at `(x, y)` (space-local px): move its pen origin there. Nothing about
+    /// its slots depends on the position, so nothing is shaped or re-pointed; damage is the old and the
+    /// new ink.
+    pub(crate) fn place_label(&mut self, ti: u32, x: f32, y: f32) {
+        let Rt { glyphs, texts, bough, text: ts, .. } = self;
+        let t = &mut texts[ti as usize];
+        let TShape::Label(lb) = &mut t.shape else { unreachable!("place_label: a label") };
+        let (ox, oy) = (x, (y + t.base_off).round());
+        let scale = t.size_px / ts.shaper.script.upem as f32;
+        let ink = line_ink(&lb.bounds, scale, ox, oy as i32, lb.width(), glyphs.spaces[t.space as usize]);
+        if t.ox == ox && t.oy == oy && t.ink == ink {
+            return;
+        }
+        glyphs.move_label(lb, [ox, oy]);
+        (t.ox, t.oy, t.ink) = (ox, oy, ink);
+        let h = t.handle;
+        // the record's ink as it is now (a row or scroll move translates records, not this cache)
+        let old = bough.pos_of(h).map_or(bough_core::NRect::EMPTY, |p| bough.ink_at(p));
+        bough.damage_rect(old);
+        bough.set_ink_handle_wide(h, ink);
+    }
+
+    /// A laid-out label's text changed: the label patches itself (exact tile marks at update time; a digit
+    /// that stays a digit rewrites one entry id). Returns `Some(width changed)`; `None` when the label kernel
+    /// refuses the new text (the label is unchanged: the caller changes representation).
+    pub(crate) fn label_set(&mut self, ti: u32, new: &str, placed: bool) -> Option<bool> {
+        let Rt { glyphs, text: ts, bough, texts, ctr, .. } = self;
+        let t = &mut texts[ti as usize];
+        let TShape::Label(lb) = &mut t.shape else { unreachable!("label_set: a label") };
+        ctr.text_set += 1;
+        let (old_w, old_lw) = (lb.width(), glyphs.label_line_width(lb));
+        let ok = if placed { glyphs.set_text(&ts.shaper, &mut ts.cache, lb, new, &mut CoreMarks(bough.plane_mut())) } else { glyphs.set_text(&ts.shaper, &mut ts.cache, lb, new, &mut NoMarks) };
+        if !ok {
+            return None;
+        }
+        let w = lb.width();
+        if w != old_w && placed {
+            let scale = t.size_px / ts.shaper.script.upem as f32;
+            let ink = line_ink(&lb.bounds, scale, t.ox, t.oy as i32, w, glyphs.spaces[t.space as usize]);
+            t.ink = ink;
+            bough.set_ink_handle_nodamage_wide(t.handle, ink);
+        }
+        Some(glyphs.label_line_width(lb) != old_lw)
     }
 
     /// Point text node `ti`'s line windows at `spans` of `block` (lines `i` at baseline `oy + i * line_h`);

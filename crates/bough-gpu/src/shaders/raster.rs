@@ -186,7 +186,7 @@ pub mod raster {
         let th = vec4i((tx1 * 32u32) as i32, (ty * 32u32 + 32u32) as i32, -((tx0 * 32u32) as i32), -((ty * 32u32) as i32));
         let cap = hw(H_BIN_CAP);
         let base = ty * cap;
-        let ndir = min(hw(H_N_DIR), hw(H_M_PAGE) + 1u32);
+        let ndir = min(hw(H_N_DIR), 2u32 * (hw(H_M_PAGE) + 1u32)); // directory columns hold 2x pages
         let pages = hw(H_PAGES) / 4u32;
         let mut nb = 0u32;
         let mut d0 = 0u32;

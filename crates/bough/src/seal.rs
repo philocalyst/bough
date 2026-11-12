@@ -29,6 +29,13 @@ pub trait Sealer {
     fn paint(&mut self, w: u32) {
         self.word(w)
     }
+    /// An integer whose text is the operand (`text(row.id)`): the integer itself, two words. Its own entry so
+    /// the gate's mutant reaches it as it reaches text bytes.
+    #[inline(always)]
+    fn int(&mut self, v: u64) {
+        self.word(v as u32);
+        self.word((v >> 32) as u32);
+    }
     /// This description cannot be sealed.
     fn refuse(&mut self);
     #[inline(always)]
@@ -113,8 +120,24 @@ impl Sealer for SealCheck<'_> {
             return;
         }
         let (head, rest) = self.cur.split_at(n);
-        self.ok &= head == b || mutant();
+        // (IDEAS-OPUS.md, finding A1c) short operands compared as two overlapping words, no
+        // `memcmp` call (bbtree: "load the bytes as integers and compare the integers").
+        let eq = if (8..=16).contains(&n) {
+            let w = |s: &[u8], o: usize| u64::from_ne_bytes(s[o..o + 8].try_into().unwrap());
+            (w(head, 0) ^ w(b, 0)) | (w(head, n - 8) ^ w(b, n - 8)) == 0
+        } else if (4..8).contains(&n) {
+            let w = |s: &[u8], o: usize| u32::from_ne_bytes(s[o..o + 4].try_into().unwrap());
+            (w(head, 0) ^ w(b, 0)) | (w(head, n - 4) ^ w(b, n - 4)) == 0
+        } else {
+            head == b
+        };
+        self.ok &= eq || mutant_mode() == 1;
         self.cur = rest;
+    }
+    #[inline(always)]
+    fn int(&mut self, v: u64) {
+        let (lo, hi) = (self.take_word(), self.take_word());
+        self.ok &= ((lo as u64 | (hi as u64) << 32) == v) || mutant_mode() == 2;
     }
     #[inline(always)]
     fn spec(&mut self, s: &Spec) {
@@ -131,10 +154,15 @@ impl Sealer for SealCheck<'_> {
     }
 }
 
-/// The gate's negative control (`tests/seals.rs`): `BOUGH_SEAL_MUTANT` makes a check accept any bytes of the
-/// right length, so a changed text inside a sealed item is missed. Read once; false in every normal run.
+/// The gate's negative controls (`tests/seals.rs`): `BOUGH_SEAL_MUTANT` makes a check accept any text bytes
+/// of the right length (mode 1), or, set to `int`, any integer operand (mode 2), so a changed text or number
+/// inside a sealed item is missed. Read once; 0 in every normal run.
 #[inline]
-fn mutant() -> bool {
-    static M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *M.get_or_init(|| std::env::var_os("BOUGH_SEAL_MUTANT").is_some())
+fn mutant_mode() -> u8 {
+    static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *M.get_or_init(|| match std::env::var("BOUGH_SEAL_MUTANT") {
+        Ok(v) if v == "int" => 2,
+        Ok(_) => 1,
+        Err(_) => 0,
+    })
 }

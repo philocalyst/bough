@@ -54,6 +54,7 @@ fn main() {
             ("insert64-end", n, 64, false),
             ("remove64-front", 1, 64, true),
             ("remove64-middle", n / 2, 64, true),
+            ("remove64-end", n - 64, 64, true),
         ] {
             let mut rows = Vec::new();
             for _ in 0..3 {

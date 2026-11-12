@@ -460,9 +460,22 @@ fn overflow_edits_match_cold_layout() {
                 tree.set_context(n, Some(Text(text)));
                 format!("text {n:?} to {text}")
             };
+            let debug = std::env::var("CEPHAL_DEBUG_STEP").ok().and_then(|v| v.parse::<usize>().ok()) == Some(step);
+            if debug {
+                println!("step {step}: {what}");
+                for n in &nodes {
+                    println!("  before {n:?} parent={:?} dirty={} display={:?} pos={:?} overflow={:?} layout={:?}", tree.parent(*n), tree.is_dirty(*n), tree.style(*n).display, tree.style(*n).position, tree.style(*n).overflow, tree.unrounded_layout(*n));
+                }
+            }
             tree.compute_layout_with_measure(root, viewport, measure);
             let mut cold = tree.clone_cold();
             cold.compute_layout_with_measure(root, viewport, measure);
+            if debug {
+                for n in &nodes {
+                    let (a, b) = (tree.unrounded_layout(*n), cold.unrounded_layout(*n));
+                    println!("  {} {n:?}\n    inc:  {a:?}\n    cold: {b:?}", if a != b { "DIFF" } else { "same" });
+                }
+            }
             assert_same(&format!("seed {seed} step {step} ({what})"), &tree, &cold, root);
         }
     }

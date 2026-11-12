@@ -60,7 +60,7 @@ fn main() {
         let mut app = App::new(v, Config::new(480.0, 320.0, 2.0, font.clone()).once(), true);
         app.frame();
         let _ = app.reference_pixels(); // grows the bins to the scene
-        let n_dir = app.rt.bough.num_pages() as u32;
+        let n_dir = app.rt.bough.dir_len() as u32;
         let target = app.last_surface;
         let g = app.gpu.as_mut().unwrap();
         let mut full: Vec<f64> = (0..5).map(|_| g.bench_frames(target, &[], true, n_dir, reps, 0, &bough_frame::SlotCopy::NONE)).collect();

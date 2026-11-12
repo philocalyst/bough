@@ -1,5 +1,6 @@
 //! The question a parent asks a child, and the answer it gets back.
 
+use crate::compute::common::overflow::contribution_extent;
 use crate::geometry::{AbsoluteAxis, AvailableSpace, Line, Point, Rect, Size};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -156,6 +157,38 @@ impl LayoutOutput {
         let (a, b) = (self.scrollable_overflow_rect, old.scrollable_overflow_rect);
         let same_x = a.left == b.left && a.right == b.right;
         let same_y = a.top == b.top && a.bottom == b.bottom;
+        let propagates_x = !is_scroll_container && !contained && overflow.x == crate::style::Overflow::Visible;
+        let propagates_y = !is_scroll_container && !contained && overflow.y == crate::style::Overflow::Visible;
+        (same_x || !propagates_x) && (same_y || !propagates_y)
+    }
+
+    /// [`Self::same_for_parent`] for an in-flow child that its parent placed at size `placed`. The
+    /// parent reads its overflow only through
+    /// [`scrollable_overflow_contribution`](crate::compute::common::overflow::scrollable_overflow_contribution)
+    /// at that size (which is not always the answer's: a grid area may impose the item's style
+    /// size): on an axis where the overflow propagates, the contribution clamps the rectangle to the
+    /// placed border box ([`contribution_extent`]), so an overflow that changed inside it (content
+    /// that moved or resized without leaving the box) is invisible to the parent. The node's own
+    /// stored layout, its other reader, is patched by the scheduler.
+    ///
+    /// Not for an out-of-flow box: its containing block records its placement with its overflow
+    /// rectangle and reuses the record while the box's answers stand (see
+    /// [`crate::tree::LayoutTree::keeps_placements`]).
+    pub fn same_contribution(&self, old: &Self, placed: Size<f32>, overflow: Point<crate::style::Overflow>, contain: crate::style::Contain) -> bool {
+        if !self.same_except_overflow(old) {
+            return false;
+        }
+        let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
+        let contained = contain.contains_scrollable_overflow();
+        let (a, b) = (self.scrollable_overflow_rect, old.scrollable_overflow_rect);
+        #[cfg(not(feature = "mutant-overflow-cut"))]
+        let bits = |(s, e): (f32, f32)| (s.to_bits(), e.to_bits());
+        #[cfg(feature = "mutant-overflow-cut")]
+        let bits = |(_, e): (f32, f32)| e.to_bits();
+        let same_x = (a.left == b.left && a.right == b.right)
+            || bits(contribution_extent(placed.width, a.left, a.right)) == bits(contribution_extent(placed.width, b.left, b.right));
+        let same_y = (a.top == b.top && a.bottom == b.bottom)
+            || bits(contribution_extent(placed.height, a.top, a.bottom)) == bits(contribution_extent(placed.height, b.top, b.bottom));
         let propagates_x = !is_scroll_container && !contained && overflow.x == crate::style::Overflow::Visible;
         let propagates_y = !is_scroll_container && !contained && overflow.y == crate::style::Overflow::Visible;
         (same_x || !propagates_x) && (same_y || !propagates_y)

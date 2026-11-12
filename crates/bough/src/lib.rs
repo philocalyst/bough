@@ -30,6 +30,7 @@ pub mod rt;
 pub mod seal;
 pub mod select;
 pub mod signal;
+pub mod store;
 pub mod template;
 pub mod text;
 pub mod transition;

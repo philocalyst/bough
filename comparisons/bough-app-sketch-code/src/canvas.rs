@@ -29,10 +29,14 @@ impl Canvas {
     /// The canvas mounted as `lanes(cap, ..)`: the one live lanes record whose run holds `cap` instances.
     pub fn locate(rt: &Rt, cap: u32) -> Canvas {
         let mut found = None;
-        for n in rt.nodes.iter() {
-            if n.live && n.kind == NK_BARS && rt.runs[n.run as usize].len == cap {
+        for i in 1..rt.hot.len() as u32 {
+            if rt.hot[i as usize].kind != NK_BARS || !rt.node_live(i) {
+                continue;
+            }
+            let n = rt.cold_of(i);
+            if rt.runs[n.run as usize].len == cap {
                 assert!(found.is_none(), "two canvases of capacity {cap}");
-                found = Some(Canvas { first: rt.runs[n.run as usize].first, cap, handle: n.handle, space: n.space, ink: [0.0; 4], ink_set: false });
+                found = Some(Canvas { first: rt.runs[n.run as usize].first, cap, handle: rt.handle(i), space: n.space, ink: [0.0; 4], ink_set: false });
             }
         }
         found.unwrap_or_else(|| panic!("no canvas of capacity {cap}"))

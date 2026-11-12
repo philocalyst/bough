@@ -377,7 +377,7 @@ fn mount_element<V: 'static>(m: &mut Mounter<'_, V>, n: &LNode, ids: &mut [u32],
     let deco = if n.deco != 0 && n.flags & L_TEXT == 0 { decos.get(n.deco as usize).copied().unwrap_or(Deco::NONE) } else { Deco::NONE };
     if n.flags & L_TEXT != 0 {
         // a measured leaf (para / label): shaped once into the pool, wrapped by the layout
-        let node = m.rt.alloc_node();
+        let node = m.rt.node_at(hd);
         let size_px = n.font * s;
         let lh_px = n.line_h * s;
         let face = m.rt.text.face_id(n.face);
@@ -403,22 +403,12 @@ fn mount_element<V: 'static>(m: &mut Mounter<'_, V>, n: &LNode, ids: &mut [u32],
             shape: TShape::None,
             per_glyph: false,
             num: None,
+            base_off: 0.0,
+            paint_key: 0,
         });
-        {
-            let nd = &mut m.rt.nodes[node as usize];
-            nd.text = ti;
-            nd.space = m.space;
-            nd.clip = m.clip;
-            nd.kind = NK_LTEXT;
-            nd.color = n.color;
-            nd.size_px = size_px;
-            nd.line_h = lh_px;
-            nd.handle = hd;
-            nd.lnode = lid;
-        }
-        m.rt.lay.info[lid as usize].rtn = node;
+        m.rt.hot[node as usize] = Hot { kind: NK_LTEXT, flags: 0, clip: m.clip, link: ti };
         m.rt.lay.info[lid as usize].kind = 2;
-        m.scope.nodes.push(node);
+        m.scope.texts.push(ti);
         m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_TEXT, payload: 0, handle: hd.idx, clip: m.clip });
         return (lid, rec);
     }
@@ -438,7 +428,7 @@ fn mount_element<V: 'static>(m: &mut Mounter<'_, V>, n: &LNode, ids: &mut [u32],
     let bordered = n.border_w > 0.0 && n.border >> 24 != 0;
     let painted = !hidden && (n.bg >> 24 != 0 || bordered || n.hover != 0 || deco.grad.is_some());
     if painted {
-        let node = m.rt.alloc_node();
+        let node = m.rt.node_at(hd);
         let border = bordered.then_some((n.border_w, Color(n.border)));
         let (mut ins, _kind, mut margin) = quad_instance(Color(n.bg), n.radius * s, border, s, m.space);
         if let Some(g) = &deco.grad {
@@ -446,24 +436,10 @@ fn mount_element<V: 'static>(m: &mut Mounter<'_, V>, n: &LNode, ids: &mut [u32],
             crate::deco::gradient_instance(&mut ins, g, ramp);
             margin = 1.0;
         }
-        let run = m.rt.alloc_run(1);
-        m.rt.runs[run as usize].len = 1;
-        let inst = m.rt.runs[run as usize].first;
+        let inst = m.rt.inst_of(node);
         *m.rt.inst_mut(inst) = ins;
-        {
-            let nd = &mut m.rt.nodes[node as usize];
-            nd.handle = hd;
-            nd.run = run;
-            nd.space = m.space;
-            nd.clip = m.clip;
-            nd.kind = if bordered { NK_BORDER } else { NK_QUAD };
-            nd.color = n.bg;
-            nd.margin = margin;
-            nd.lnode = lid;
-        }
-        m.scope.nodes.push(node);
-        m.scope.runs.push(run);
-        m.rt.lay.info[lid as usize].rtn = node;
+        let _ = margin;
+        m.rt.hot[node as usize] = Hot { kind: if bordered { NK_BORDER } else { NK_QUAD }, flags: 0, clip: m.clip, link: 0 };
         m.rt.lay.info[lid as usize].kind = 1;
         m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_QUAD, payload: inst, handle: hd.idx, clip: m.clip });
     } else {
@@ -710,7 +686,7 @@ impl Rt {
             }
             PlaceHook::Deco { node, dx, dy, grow, sized } => {
                 let _ = space;
-                let (dw, dh) = if sized { (w + 2.0 * grow, h + 2.0 * grow) } else { (self.nodes[node as usize].w, self.nodes[node as usize].h) };
+                let (dw, dh) = if sized { (w + 2.0 * grow, h + 2.0 * grow) } else { { let p = &self.inst[self.inst_of(node) as usize]; (p.size[0], p.size[1]) } };
                 self.place_deco(node, ax + dx - grow, ay + dy - grow, dw, dh);
             }
             PlaceHook::Port { reg } => {

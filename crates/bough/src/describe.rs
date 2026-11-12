@@ -184,7 +184,30 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
     let mut items = items;
     // one item of look-ahead (insertion detection below)
     let mut pending: Option<E> = None;
-    while let Some(e) = pending.take().or_else(|| items.next()) {
+    loop {
+        // (docs/lanes/core/IDEAS-OPUS.md, finding A1a, taken by lane store) The hot path (an item described exactly as retained)
+        // runs in its own loop, where `e` has one source (`items.next()`), so it is never merged with the
+        // look-ahead slot and never copied into it. Only a mismatch leaves this loop.
+        let e = match pending.take() {
+            Some(e) => e,
+            None => {
+                let mut next = None;
+                for e in items.by_ref() {
+                    if k < old.len() && old[k].key == e.dyn_key() && sealed_as(&old[k], &e, &seals, &m.rt.lay.descs, cx).0 {
+                        m.pos += old[k].nrec as usize;
+                        m.kid += old[k].nkid as usize;
+                        k += 1;
+                        continue;
+                    }
+                    next = Some(e);
+                    break;
+                }
+                match next {
+                    Some(e) => e,
+                    None => break,
+                }
+            }
+        };
         if k < old.len() && old[k].key != e.dyn_key() {
             // a keyed item that changed identity: replaced in place (its run out, the new one in)
             let key = e.dyn_key();
@@ -195,7 +218,7 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
                     let c = m.rt.lay.eng.kids(lid)[m.kid + i];
                     m.rt.remove_layout_subtree(c);
                 }
-                m.rt.lay.eng.splice_kids(&m.rt.bough, lid, m.kid, gone.nkid as usize, &[]);
+                m.rt.lay.eng.splice_kids(&m.rt.bough, lid, m.kid, gone.nkid as usize);
             }
             m.rt.bough.remove_run(m.pos, gone.nrec as usize);
             m.rt.release_scope(gone.scope);
@@ -334,7 +357,7 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
                 let c = m.rt.lay.eng.kids(lid)[m.kid + i];
                 m.rt.remove_layout_subtree(c);
             }
-            m.rt.lay.eng.splice_kids(&m.rt.bough, lid, m.kid, nkid, &[]);
+            m.rt.lay.eng.splice_kids(&m.rt.bough, lid, m.kid, nkid);
             m.rt.queue_container(lid);
         }
         m.rt.bough.remove_run(m.pos, nrec);
@@ -377,7 +400,7 @@ fn remove_items<V>(m: &mut Mounter<'_, V>, lid: u32, nrec: usize, nkid: usize) {
             let c = m.rt.lay.eng.kids(lid)[m.kid + i];
             m.rt.remove_layout_subtree(c);
         }
-        m.rt.lay.eng.splice_kids(&m.rt.bough, lid, m.kid, nkid, &[]);
+        m.rt.lay.eng.splice_kids(&m.rt.bough, lid, m.kid, nkid);
         m.rt.lay.eng.invalidate(&m.rt.bough, lid);
         m.rt.queue_container(lid);
     }
@@ -411,7 +434,7 @@ pub(crate) unsafe fn redescribe<V: crate::app::View>(rt: &mut Rt, v: &V, tape: &
     }
     rt.lay.cur = prev;
     // a fixed shape adds nothing outside dynamic parts: the root scope stays empty
-    debug_assert!(scope.nodes.is_empty() && scope.wires.is_empty());
+    debug_assert!(scope.texts.is_empty() && scope.insts.is_empty() && scope.wires.is_empty());
 }
 
 /// Mount an element a re-description steps over (its content is state-driven: templates, scroll views,
