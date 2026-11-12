@@ -391,6 +391,9 @@ struct PubShared {
 /// How long before the target vsync a paced commit starts (the window server takes a commit until ~0.3-1.3 ms
 /// after the vsync on this Mac: docs/lanes/pacing/2026-11-11-compositor-deadline.md; a commit takes ~0.1 ms).
 const COMMIT_BEFORE: f64 = 0.0005;
+/// A paced frame whose GPU work ends later than this past its vsync waits for the next deadline (committing it
+/// would put two commits in one refresh).
+const LATE_OK: f64 = 0.00025;
 
 impl PubShared {
     /// The next commit deadline at or after `now`, if commits are paced.
@@ -494,6 +497,7 @@ impl Publisher {
     fn run(sh: &PubShared, o: &PubObjs) {
         let mut realtime = false;
         loop {
+            let mut aimed: Option<f64> = None;
             let job = {
                 let mut g = sh.m.lock().unwrap();
                 loop {
@@ -510,6 +514,7 @@ impl Publisher {
                                 time_constraint(p, 0.0005, 0.001);
                             }
                             fl::note(fl::N_LATCH, fl::secs_to_ns(t), fl::secs_to_ns(d));
+                            aimed = Some(t);
                             drop(g);
                             // SAFETY: a plain wait on the host clock.
                             unsafe { mach_wait_until(ticks(d)) };
@@ -518,7 +523,8 @@ impl Publisher {
                                 return;
                             }
                         }
-                        let j = g.job.take().expect("only the publisher takes jobs");
+                        // the main thread may have reclaimed the queued surface meanwhile (ring exhausted)
+                        let Some(j) = g.job.take() else { continue };
                         sh.in_flight.store(j.surf, Relaxed);
                         sh.queued.store(NONE_SURF, Relaxed);
                         break j;
@@ -531,6 +537,20 @@ impl Publisher {
             let ev = &o.kern.ev;
             let drawn = job.wait == 0 || ev.signaledValue() >= job.wait || ev.waitUntilSignaledValue_timeoutMS(job.wait, 5000);
             let t_drawn = fl::now_ns();
+            // paced: a frame the GPU finished after its vsync's deadline goes back to the mailbox for the next one
+            // (unless a newer frame is already there, which supersedes it)
+            if let Some(t) = aimed.filter(|_| job.wait != 0) {
+                if now() > t + LATE_OK {
+                    let mut g = sh.m.lock().unwrap();
+                    sh.in_flight.store(NONE_SURF, Relaxed);
+                    if g.job.is_none() {
+                        sh.queued.store(job.surf, Relaxed);
+                        g.job = Some(PubJob { wait: 0, ..job });
+                    }
+                    fl::note(fl::N_HELD_BACK, 1, 0);
+                    continue;
+                }
+            }
             // SAFETY: the overflow word lies in the live counts buffer (the main thread replaces it only after
             // `publisher_idle`); shared storage, written by the GPU before it signalled the event.
             let overflowed = unsafe { std::ptr::read_volatile(job.overflow as *const u32) } != 0;
@@ -1403,6 +1423,18 @@ impl Fused {
     pub fn last_commit_time(&self) -> f64 {
         let p = self.publisher.as_ref().map_or(0.0, |p| f64::from_bits(p.sh.last_commit.load(Relaxed)));
         p.max(self.last_main_commit)
+    }
+
+    /// Take back the queued publication (not yet taken by the publisher), freeing its surface: a frame that
+    /// finds every surface held draws into it instead of waiting (the newer frame supersedes it anyway).
+    pub fn reclaim_queued(&mut self) -> Option<usize> {
+        let p = self.publisher.as_ref()?;
+        let mut g = p.sh.m.lock().unwrap();
+        let j = g.job.take()?;
+        p.sh.queued.store(NONE_SURF, Relaxed);
+        p.sh.idle.notify_all();
+        fl::note(fl::N_SUPERSEDED, 0, j.surf as u64);
+        Some(j.surf)
     }
 
     /// Pace commits by the display (the interactive host, at every display-link callback): `target` is the next
