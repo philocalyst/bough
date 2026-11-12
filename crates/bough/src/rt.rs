@@ -61,8 +61,7 @@ pub fn edge_band(kind: u8, radius: f32, bw: f32) -> i16 {
 /// invariant anywhere (-1: their whole visible ink).
 #[inline]
 fn scroll_band(inst: &Col<Instance>, kind: u8, payload: u32) -> i16 {
-    // the kind's low bits (the high ones are interaction flags, `KF_MASK`: a hoverable or scrolling box is still a box)
-    if kind & !bough_core::KF_MASK != REC_QUAD || payload & (bough_metal::fused::PAY_RUN | bough_metal::fused::PAY_IRUN) != 0 {
+    if kind != REC_QUAD || payload & (bough_metal::fused::PAY_RUN | bough_metal::fused::PAY_IRUN) != 0 {
         return -1;
     }
     if payload as usize >= inst.len() {
