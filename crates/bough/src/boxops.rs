@@ -142,6 +142,11 @@ impl<V, A: BoxOps<V>, B: BoxOps<V>> BoxOps<V> for (A, B) {
         self.0.refresh(rt, lid, node);
         self.1.refresh(rt, lid, node);
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        self.0.seal(s);
+        self.1.seal(s);
+    }
 }
 
 pub struct Opacity<P>(pub P);
@@ -159,6 +164,11 @@ impl<V, P: IntoProp<f32, V>> BoxOps<V> for Opacity<P> {
     fn refresh(self, rt: &mut Rt, _lid: u32, node: u32) {
         ApplyOpacity::apply(rt, node, &self.0.value());
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x50);
+        self.0.seal(s);
+    }
 }
 impl<V, P: IntoProp<(f32, f32), V>> BoxOps<V> for Translate<P> {
     const SIZE: bool = false;
@@ -172,6 +182,11 @@ impl<V, P: IntoProp<(f32, f32), V>> BoxOps<V> for Translate<P> {
     fn refresh(self, rt: &mut Rt, _lid: u32, node: u32) {
         ApplyTranslate::apply(rt, node, &self.0.value());
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x51);
+        self.0.seal(s);
+    }
 }
 impl<V, P: IntoProp<f32, V>> BoxOps<V> for WidthOp<P> {
     const SIZE: bool = true;
@@ -182,6 +197,11 @@ impl<V, P: IntoProp<f32, V>> BoxOps<V> for WidthOp<P> {
     fn refresh(self, rt: &mut Rt, lid: u32, _node: u32) {
         ApplyBoxW::apply(rt, lid, &self.0.value());
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x52);
+        self.0.seal(s);
+    }
 }
 impl<V, P: IntoProp<f32, V>> BoxOps<V> for HeightOp<P> {
     const SIZE: bool = true;
@@ -191,6 +211,11 @@ impl<V, P: IntoProp<f32, V>> BoxOps<V> for HeightOp<P> {
     }
     fn refresh(self, rt: &mut Rt, lid: u32, _node: u32) {
         ApplyBoxH::apply(rt, lid, &self.0.value());
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x53);
+        self.0.seal(s);
     }
 }
 

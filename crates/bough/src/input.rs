@@ -705,6 +705,14 @@ impl<V> ActOp<V> for Scrolls<'_, V> {
         s.line = self.line;
         s.max = self.max;
     }
+    /// The scrolled field, the step and the limit (what `refresh` writes).
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x0108);
+        s.word(self.sig.off);
+        s.f32(self.line);
+        s.f32(self.max);
+    }
 }
 
 /// The paint state of an instance as one hash word (content addressing: one convention per record).
@@ -744,13 +752,20 @@ impl<'a, T: 'static, V, F: Fn(&T) -> (Color, Color) + Copy + 'static> ActOp<V> f
         let (c1, c2) = (self.f)(self.sig.get());
         paint2(m.rt, a, c1, c2);
     }
+    /// The wire's field and the mapping (its colours travel through the wire).
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x0109);
+        s.word(self.sig.off);
+        crate::seal::closure(s, &self.f);
+    }
 }
 
 /// # Safety
 /// Wire contract: `sig` is a `Signal<T>`; the recipe holds an `F`; `w.node` is the act.
 unsafe fn patch_paint2<T: 'static, F: Fn(&T) -> (Color, Color) + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
-    let s = unsafe { &*(sig as *const Signal<T>) };
+    let s = unsafe { (*(sig as *const Signal<T>)).peek() };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
     let (c1, c2) = f(s);
     paint2(rt, w.node, c1, c2);
@@ -951,6 +966,10 @@ impl<V: 'static, T: Element<V>> Element<V> for Tooltip<T> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x45);
+    }
 }
 impl<T> Tooltip<T> {
     fn mount_in<V: 'static>(self, m: &mut Mounter<'_, V>)
@@ -1116,6 +1135,10 @@ impl<V: 'static> Element<V> for TextField<'_, V> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x46);
+    }
 }
 impl<V: 'static> TextField<'_, V> {
     fn mount_in(self, m: &mut Mounter<'_, V>) {
@@ -1210,9 +1233,10 @@ impl<V: View> App<V> {
             }
         };
         self.rt.input.stats.routes += 1;
-        // the handler's receiver describes itself again: the root here; a row through its list's edit log; an
-        // entity's views with the owner that shows them (`Rt::owner_mut` marked those)
-        self.rt.redesc_root |= r.own.is_root();
+        self.root_handled |= r.own.is_root();
+        // the handler's receiver describes itself again if the handler changed what its description sees: the
+        // root by its plain bytes and its subscriptions (`grain.rs`, `App::root_dirty`); a row through its
+        // list's edit log; an entity's views with the owner that shows them (`Rt::owner_mut` marked those)
         // SAFETY: `o` is the live owner `r.own` names, whose type the route's receiver was matched against when
         // it was lowered (`receiver`), uniquely borrowed (derived from the root's unique borrow).
         unsafe { r.call(o, e) };
@@ -1249,14 +1273,10 @@ impl<V: View> App<V> {
         // wire was installed from a `sig!` proof for it.
         unsafe { self.rt.settle(owner) };
         self.effects();
-        // Only owners a handler (a route, a `changed`) ran on describe again: the root if one ran on it, the
-        // rows the turn edited. A turn of wires alone (a hover colour, a wheel, a glide's tick, a keystroke in
-        // a field) changed no plain state, so it re-describes nothing.
-        if std::mem::take(&mut self.rt.redesc_root) {
-            self.redescribe();
-        } else {
-            self.redescribe_rows();
-        }
+        // Only owners whose described state a handler (a route, a `changed`) changed describe again: the root
+        // if its plain bytes or a cell its description read changed, the rows the turn edited. A turn of wires
+        // alone (a hover colour, a wheel, a glide's tick, a keystroke in a field) re-describes nothing.
+        self.redescribe_dirty();
         self.rt.lay_flush();
     }
 
@@ -1522,7 +1542,7 @@ impl<V: View> App<V> {
             let o = self.owner_mut();
             let s = &mut self.rt.input.scrollers[sc as usize];
             // SAFETY: `off` is the offset_of!-proven offset of a Signal<f32> field of the owner (Wired).
-            let at = **unsafe { &*(o.add(s.off as usize) as *const Signal<f32>) };
+            let at = *unsafe { (*(o.add(s.off as usize) as *const Signal<f32>)).peek() };
             let heading = s.glide.map_or(at, |g| g.to);
             let max = if s.root != NONE { (self.rt.lay.root_height(s.root) / self.rt.scale - s.port_h).max(0.0) } else { s.max };
             let s = &mut self.rt.input.scrollers[sc as usize];

@@ -43,6 +43,12 @@ sabotage_copy = []
 mutant_scroll_skip = []
 mutant_route_stale = []
 mutant_route_owner = []
+# Mutants of the owner-grain gates (tests/owner_grain.rs): the plan's last plain range is not compared; plain reads of
+# cells subscribe nothing.
+mutant_grain_plan = []
+mutant_grain_track = []
+# The owner seal answers "unchanged" without comparing (tests/owner_grain.rs).
+mutant_owner_seal = []
 
 [dev-dependencies]
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }

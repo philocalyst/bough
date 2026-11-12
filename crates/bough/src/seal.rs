@@ -131,6 +131,16 @@ impl Sealer for SealCheck<'_> {
     }
 }
 
+/// A closure operand (a route, a projection, a mapping) as its bytes: which code runs is fixed by the
+/// description's type and place, so equal bytes are the same function with the same captures. (Padding inside
+/// the captures has no defined value: it can only make two equal closures look different, which costs an update.)
+#[inline(always)]
+pub fn closure<S: Sealer, F: Copy>(s: &mut S, f: &F) {
+    // SAFETY: `f` is `size_of::<F>()` bytes of a `Copy` value; a byte copy is what a recipe stores too.
+    let b = unsafe { std::slice::from_raw_parts(f as *const F as *const u8, size_of::<F>()) };
+    s.bytes(b);
+}
+
 /// The gate's negative control (`tests/seals.rs`): `BOUGH_SEAL_MUTANT` makes a check accept any bytes of the
 /// right length, so a changed text inside a sealed item is missed. Read once; false in every normal run.
 #[inline]

@@ -150,8 +150,20 @@ impl<T> Entities<T> {
         // SAFETY: the slot was live; it is marked free above.
         Some(unsafe { p.read() })
     }
+    /// A plain read while an owner describes itself: inserts and removals do not queue the head, so the
+    /// owner describes itself again after every turn while it reads one plainly (`grain.rs`).
+    #[inline(always)]
+    fn read(&self) {
+        crate::grain::read(&self.head.0, crate::grain::Dep::Always, crate::grain::wake_root);
+    }
     /// A scoped, generation-checked read.
     pub fn get(&self, e: Entity<T>) -> Option<&T> {
+        self.read();
+        self.get_raw(e)
+    }
+    /// `get` for the runtime (an entity view's own mount: not its owner's plain read).
+    #[inline(always)]
+    pub(crate) fn get_raw(&self, e: Entity<T>) -> Option<&T> {
         // SAFETY: a live slot is initialised.
         self.live(e).then(|| unsafe { &*self.ptr(e.idx) })
     }
@@ -174,6 +186,7 @@ impl<T> Entities<T> {
         Some(unsafe { &mut *self.ptr(e.idx) })
     }
     pub fn len(&self) -> usize {
+        self.read();
         self.meta.iter().filter(|&&m| m & LIVE != 0).count()
     }
     pub fn is_empty(&self) -> bool {
@@ -181,6 +194,7 @@ impl<T> Entities<T> {
     }
     /// The entities edited this turn (`changed`).
     pub fn edited(&self) -> impl Iterator<Item = Entity<T>> + '_ {
+        self.read();
         self.edits.iter().map(move |&i| Entity { idx: i, generation: self.meta[i as usize] & GEN, _t: PhantomData })
     }
     pub(crate) fn edits_raw(&self) -> &[u32] {
@@ -287,7 +301,7 @@ impl<'a, T: crate::app::View, V: 'static> Element<V> for Keyed<'a, T, V> {
     /// fields, its routes' captures). A removed entity's view keeps its last pixels: stepped over.
     fn update(self, m: &mut Mounter<'_, V>) {
         let at = m.ti;
-        let Some(p) = self.0.ents.ents.get(self.0.e) else { return crate::describe::update_opaque(m) };
+        let Some(p) = self.0.ents.ents.get_raw(self.0.e) else { return crate::describe::update_opaque(m) };
         let p = p as *const T;
         m.ti += 3;
         let ev = m.tape_next();
@@ -317,7 +331,7 @@ impl<'a, T: crate::app::View, V: 'static> Element<V> for Keyed<'a, T, V> {
 impl<'a, T: crate::app::View, V: 'static> EntityView<'a, T, V> {
     fn mount_in(self, m: &mut Mounter<'_, V>) {
         let ents = self.ents.ents;
-        let p = ents.get(self.e).expect("entity_view of a removed entity") as *const T;
+        let p = ents.get_raw(self.e).expect("entity_view of a removed entity") as *const T;
         let cls = m.rt.new_class();
         m.rt.class_changed[cls as usize] = Some(crate::changed::changed_shim::<T>);
         let ev = m.rt.eviews.len() as u32;

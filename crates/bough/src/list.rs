@@ -117,6 +117,12 @@ pub struct List<T> {
     pub(crate) wired: std::cell::RefCell<Vec<u32>>,
     /// Some region's patch has registered this list for the end-of-settle cleanup this turn.
     pub(crate) registered: Cell<bool>,
+    /// The plain bytes of the items edited this turn as they were before their first edit (`grain.rs`: a row
+    /// whose plain bytes did not change does not describe itself again), and where each slot's start in it
+    /// (`u32::MAX`: unknown, the row describes itself again). Stale after `end_turn`, cleared by the next edit.
+    snap: Vec<u8>,
+    snap_at: Vec<(u32, u32)>,
+    snap_stale: bool,
 }
 
 // SAFETY: `#[repr(C)]` with the head first.
@@ -165,7 +171,7 @@ impl<T> Drop for List<T> {
 
 impl<T> List<T> {
     pub fn new() -> List<T> {
-        List { head: WireHead::new(), chunks: Vec::new(), meta: Vec::new(), order: Vec::new(), free: Vec::new(), pending_free: Vec::new(), log: Vec::new(), perm: Vec::new(), wired: Default::default(), registered: Cell::new(false) }
+        List { head: WireHead::new(), chunks: Vec::new(), meta: Vec::new(), order: Vec::new(), free: Vec::new(), pending_free: Vec::new(), log: Vec::new(), perm: Vec::new(), wired: Default::default(), registered: Cell::new(false), snap: Vec::new(), snap_at: Vec::new(), snap_stale: false }
     }
     pub fn with_capacity(n: usize) -> List<T> {
         let mut l = List::new();
@@ -248,36 +254,59 @@ impl<T> List<T> {
     }
 
     // ------------------------------------------------------------------ reads
+    // A read while an owner describes itself subscribes the owner (`grain.rs`): to the list's shape (`len`,
+    // `slot`, `position`, `slots`: inserts, removals, moves) or to its items as well (`get`, `get_slot`, `iter`).
+    #[inline(always)]
+    fn read_shape(&self) {
+        crate::grain::read(&self.head.0, crate::grain::Dep::Shape, crate::listview::wake_list::<T>);
+    }
+    #[inline(always)]
+    fn read_items(&self) {
+        crate::grain::read(&self.head.0, crate::grain::Dep::Items, crate::listview::wake_list::<T>);
+    }
     pub fn len(&self) -> usize {
+        self.read_shape();
+        self.order.len()
+    }
+    /// `len` read by the runtime (not a description's dependency).
+    #[inline(always)]
+    pub(crate) fn len_raw(&self) -> usize {
         self.order.len()
     }
     pub fn is_empty(&self) -> bool {
+        self.read_shape();
         self.order.is_empty()
     }
     pub fn get(&self, pos: usize) -> Option<&T> {
+        self.read_items();
         let &s = self.order.get(pos)?;
         // SAFETY: slots in `order` are live.
         Some(unsafe { &*self.slot_ptr(s) })
     }
     pub fn slot(&self, pos: usize) -> Option<Slot<T>> {
+        self.read_shape();
         self.order.get(pos).map(|&s| self.slot_of(s))
     }
     pub fn get_slot(&self, s: Slot<T>) -> Option<&T> {
+        self.read_items();
         // SAFETY: a live slot is initialised.
         self.live(s).then(|| unsafe { &*self.slot_ptr(s.idx) })
     }
     /// The position of `s` (a scan of the order vector), or `None` if it was taken out.
     pub fn position(&self, s: Slot<T>) -> Option<usize> {
+        self.read_shape();
         if !self.live(s) {
             return None;
         }
         self.order.iter().position(|&x| x == s.idx)
     }
     pub fn iter(&self) -> impl ExactSizeIterator<Item = &T> + '_ {
+        self.read_items();
         // SAFETY: slots in `order` are live.
         self.order.iter().map(move |&s| unsafe { &*self.slot_ptr(s) })
     }
     pub fn slots(&self) -> impl ExactSizeIterator<Item = Slot<T>> + '_ {
+        self.read_shape();
         self.order.iter().map(move |&s| self.slot_of(s))
     }
 
@@ -408,16 +437,47 @@ impl<T> List<T> {
     pub(crate) fn item_ptr(&self, pos: usize) -> *mut T {
         self.slot_ptr(self.order[pos])
     }
-    /// The item at `pos` was written in place (reflection): log it as an edit.
+    /// The item at `pos` was written in place (reflection): log it as an edit (its row describes itself
+    /// again: the bytes before the write are gone).
     pub(crate) fn mark_edit_pos(&mut self, pos: usize) {
-        self.mark_edit(self.order[pos]);
+        let s = self.order[pos];
+        self.mark_edit(s);
+        if let Some(x) = self.snap_at.iter_mut().rev().find(|x| x.0 == s) {
+            x.1 = u32::MAX;
+        }
     }
     fn mark_edit(&mut self, s: u32) {
         let m = self.meta[s as usize];
         if m & EDITED == 0 && self.displayed() {
             self.meta[s as usize] = m | EDITED;
             self.note(Op::Edit { slot: s });
+            // the item's plain bytes before its first edit this turn
+            if std::mem::take(&mut self.snap_stale) {
+                self.snap.clear();
+                self.snap_at.clear();
+            }
+            let plan = crate::grain::plan::<T>();
+            let at = if plan.exact {
+                let at = self.snap.len() as u32;
+                // SAFETY: a live slot holds an initialised `T`, borrowed by nothing (`&mut self`).
+                unsafe { plan.snapshot(self.slot_ptr(s) as *const u8, &mut self.snap) };
+                at
+            } else {
+                u32::MAX
+            };
+            self.snap_at.push((s, at));
         }
+    }
+    /// Are slot `s`'s plain bytes what they were before its first edit this turn (`grain.rs`)? `false` when
+    /// that is not known.
+    pub(crate) fn unchanged(&self, s: u32) -> bool {
+        let Some(&(_, at)) = self.snap_at.iter().rev().find(|x| x.0 == s) else { return false };
+        if at == u32::MAX || self.meta[s as usize] & LIVE == 0 {
+            return false;
+        }
+        let plan = crate::grain::plan::<T>();
+        // SAFETY: a live slot holds an initialised `T`; `at` starts a snapshot of `T`'s plan.
+        unsafe { plan.same(self.slot_ptr(s) as *const u8, &self.snap[at as usize..at as usize + plan.bytes as usize]) }
     }
     /// Replace the item at `pos` (identity kept: the same slot, its row re-mounted).
     pub fn set(&mut self, pos: usize, v: T) -> T {
@@ -447,6 +507,7 @@ impl<T> List<T> {
         self.perm.clear();
         self.free.append(&mut self.pending_free);
         self.registered.set(false);
+        self.snap_stale = true;
     }
     #[inline]
     pub(crate) fn slot_live(&self, s: u32) -> bool {

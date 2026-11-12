@@ -588,6 +588,11 @@ impl<V: 'static> Element<V> for LTemplate<V> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x41);
+    }
 }
 
 // =============================================================================== placement hooks

@@ -92,6 +92,11 @@ impl<V: 'static> Element<V> for Template<V> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x43);
+    }
 }
 impl<V: 'static> Template<V> {
     fn mount_in(self, m: &mut Mounter<'_, V>) {
@@ -410,9 +415,9 @@ impl Rt {
 /// Wire contract: `sig` is a `Signal<f32>`; `w.node` is the view index.
 unsafe fn patch_view(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
-    let s = unsafe { &*(sig as *const Signal<f32>) };
+    let s = unsafe { (*(sig as *const Signal<f32>)).peek() };
     let v = w.node as usize;
-    let new_px = (**s * rt.scale).round();
+    let new_px = (*s * rt.scale).round();
     let old_px = rt.input.views[v].px;
     if new_px == old_px {
         return;
@@ -515,6 +520,20 @@ impl<V: 'static, C: Element<V>> Element<V> for ScrollY<'_, V, C> {
         quad(x, y, w, h).bg(self.bg).scrolls(self.sig, self.line, self.max).update(m);
         let v = m.tape_next();
         update_content(m, v, self.content);
+    }
+    /// The port's operands, the scrolled field and the content's operands (the view's offset, space and clip
+    /// are its own state).
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x60);
+        for v in self.rect {
+            s.f32(v);
+        }
+        s.word(self.bg.0);
+        s.f32(self.line);
+        s.f32(self.max);
+        s.word(self.sig.off);
+        self.content.seal(s);
     }
 }
 
@@ -624,6 +643,16 @@ impl<'a, V: 'static, Bg: crate::elem::IntoProp<Color, V>, Ch: Element<V>> Elemen
         let v = m.tape_next();
         update_content(m, v, self.content);
     }
+    /// The port box, the scrolled field and its step, then the content (the view's offset, space and clip
+    /// are its own state).
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x61);
+        self.port.seal(s);
+        s.word(self.sig.off);
+        s.f32(self.line);
+        self.content.seal(s);
+    }
 }
 
 // =============================================================================== wired clips and port lists
@@ -643,7 +672,7 @@ pub fn clip_by<'a, T, V, F: Fn(&T) -> [f32; 4] + Copy + 'static, C>(sig: Wired<'
 /// Wire contract: `sig` is a `Signal<T>`; the recipe holds an `F`; `w.node` is the clip index in `Input::clips`.
 unsafe fn patch_clip_by<T: 'static, F: Fn(&T) -> [f32; 4] + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
-    let s = unsafe { &*(sig as *const Signal<T>) };
+    let s = unsafe { (*(sig as *const Signal<T>)).peek() };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
     let (id, space, parent) = rt.input.wclips[w.node as usize];
     let r = clip_px(rt, space, f(s), parent);
@@ -679,6 +708,11 @@ impl<'a, T: 'static, V, F: Fn(&T) -> [f32; 4] + Copy + 'static, C: Element<V>> E
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x43);
+    }
 }
 impl<'a, T: 'static, V, F: Fn(&T) -> [f32; 4] + Copy + 'static, C: Element<V>> ClipBy<'a, T, V, F, C> {
     fn mount_in(self, m: &mut Mounter<'_, V>) {
@@ -713,7 +747,7 @@ pub fn port_list<'a, V>(scroll: Wired<'a, f32, V>, top: Wired<'a, f32, V>, x: f3
 /// Wire contract: `sig` is a `Signal<f32>` (the port's top edge, points); `owner` is the region's owner.
 unsafe fn patch_port(rt: &mut Rt, w: &Wire, sig: *const u8, owner: *const u8) {
     // SAFETY: see the function contract.
-    let top = **unsafe { &*(sig as *const Signal<f32>) };
+    let top = *unsafe { (*(sig as *const Signal<f32>)).peek() };
     let reg = w.node as usize;
     let s = rt.scale;
     let (x0, bottom_px, wpx) = {
@@ -780,6 +814,11 @@ impl<'a, V: 'static> Element<V> for PortList<'a, V> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x43);
+    }
 }
 impl<'a, V: 'static> PortList<'a, V> {
     fn mount_in(self, m: &mut Mounter<'_, V>) {
@@ -845,7 +884,7 @@ pub(crate) type OffsetState = (bough_core::Handle, u16, f32, f32, [i32; 2]);
 /// Wire contract: `sig` is a `Signal<(f32, f32)>`; `w.node` indexes `Input::offsets`.
 unsafe fn patch_offset(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
-    let v = **unsafe { &*(sig as *const Signal<(f32, f32)>) };
+    let v = *unsafe { (*(sig as *const Signal<(f32, f32)>)).peek() };
     let (h, space, bx, by, cur) = rt.input.offsets[w.node as usize];
     let s = rt.scale;
     let new = [(v.0 * s).round() as i32, (v.1 * s).round() as i32];
@@ -868,6 +907,11 @@ impl<V: 'static, C: Element<V>> Element<V> for Offset<'_, V, C> {
     /// State-driven content: a re-description steps over it.
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
+    }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x43);
     }
 }
 impl<V: 'static, C: Element<V>> Offset<'_, V, C> {
@@ -943,6 +987,11 @@ impl<V: 'static, C: Element<V>> Element<V> for Anchor<C> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x43);
+    }
 }
 
 /// A fixed-row virtual list whose port is the laid-out box it is mounted in (a panel): `count` rows of
@@ -998,5 +1047,10 @@ impl<'a, V: 'static> Element<V> for PortListIn<'a, V> {
     }
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
+    }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x43);
     }
 }

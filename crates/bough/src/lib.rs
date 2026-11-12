@@ -12,6 +12,7 @@ pub mod deco;
 pub mod describe;
 pub mod elem;
 pub mod entity;
+pub mod grain;
 pub mod input;
 pub mod inspect;
 pub mod lanes;

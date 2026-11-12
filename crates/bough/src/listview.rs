@@ -256,6 +256,11 @@ pub struct LRegion {
     /// like `row_fn`, and the monomorphic walk that runs it.
     pub(crate) upd_fn: usize,
     pub(crate) update: Option<LRowUpdateFn>,
+    /// A list source: are a slot's plain bytes those of before its first edit this turn (`List::unchanged`)?
+    pub(crate) unchanged: Option<unsafe fn(*const u8, u32) -> bool>,
+    /// A row's description read one of the row's cells plainly (`grain.rs`): an edited row always describes
+    /// itself again (rows are not subscribed cell by cell).
+    pub(crate) row_reads: bool,
 }
 
 impl LRegion {
@@ -300,6 +305,8 @@ pub struct Lists {
     pub(crate) redesc: Vec<(u32, u32)>,
     /// The rows being mounted (region, slot), innermost last: a region mounted inside one is nested in it.
     pub(crate) mounting: Vec<(u32, u32)>,
+    /// Scratch: a row description's plain reads (`Rt::row_described`).
+    reads: Vec<crate::grain::Read>,
 }
 
 impl Lists {
@@ -436,6 +443,7 @@ unsafe fn update_lrow<T: 'static>(rt: &mut Rt, reg: u32, k: usize) {
     rt.lay.cur = NONE;
     rt.lay.mount_avail = (width, f32::NAN);
     rt.lists.mounting.push((reg, slot));
+    let rec = crate::grain::Describing::begin();
     let pos1 = {
         let mut m = Mounter { rt, owner: row, recs: &mut recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls, tape: &mut tape as *mut Vec<u32>, ti: 0, pos: pos0, kid: 0, keep: false, own };
         // SAFETY: the row is live (see above); only shared access to it during the walk.
@@ -443,6 +451,7 @@ unsafe fn update_lrow<T: 'static>(rt: &mut Rt, reg: u32, k: usize) {
         debug_assert_eq!(m.ti, tape.len(), "a row's re-description walked a different shape than its tape");
         m.pos
     };
+    rt.row_described(reg, row as *const u8, size_of::<T>(), rec);
     rt.lists.mounting.pop();
     rt.lay.cur = prev;
     rt.lay.mount_avail = avail;
@@ -498,10 +507,14 @@ unsafe fn mount_row<O>(rt: &mut Rt, reg: u32, owner: *const O, cls: u32, own: Ow
     let mut tape: Vec<u32> = Vec::new();
     // rows are mounted by the placement, outside any view's mount: no view is being mounted
     let view = rt.input.mounting_view.take();
+    let rec = (taped && rt.describes).then(crate::grain::Describing::begin);
     {
         let tp: *mut Vec<u32> = if taped && rt.describes { &mut tape } else { std::ptr::null_mut() };
         let mut m = Mounter { rt, owner, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls, tape: tp, ti: 0, pos: 0, kid: 0, keep: false, own };
         body(&mut m);
+    }
+    if let Some(rec) = rec {
+        rt.row_described(reg, owner as *const u8, size_of::<O>(), rec);
     }
     rt.input.mounting_view = view;
     rt.lay.cur = prev;
@@ -587,6 +600,18 @@ impl Rt {
         (!q.is_null()).then_some(q)
     }
 
+    /// A row of region `reg` (at `row`, `size` bytes) has just described itself under `rec`: if it read one of
+    /// its own cells plainly, the region's edited rows always describe themselves again (`grain.rs`).
+    pub(crate) fn row_described(&mut self, reg: u32, row: *const u8, size: usize, rec: crate::grain::Describing) {
+        let mut reads = std::mem::take(&mut self.lists.reads);
+        reads.clear();
+        let lost = rec.end(row as usize, size, &mut reads);
+        if lost || !reads.is_empty() {
+            self.lists.regs[reg as usize].row_reads = true;
+        }
+        self.lists.reads = reads;
+    }
+
     /// Re-describe the rows edited this turn (`List::edit`, a route run on a row): each walks its own tape
     /// with its own `view()`, after the turn's effects have settled and before the root re-describes (the
     /// root's walk steps over the rows by their record counts, which a row's dynamic parts may have changed).
@@ -597,6 +622,12 @@ impl Rt {
             let Some(update) = r.update.filter(|_| !r.dead) else { continue };
             // the row may have left the window (or the list) since it was edited
             let Some(k) = r.rows.iter().position(|x| x.mounted && x.slot == slot) else { continue };
+            // its plain bytes are those it was described from and its description reads none of its cells
+            // plainly: its wires carried every change (`grain.rs`)
+            // SAFETY: the region is live, so is its list; `slot` is one of its slots.
+            if !r.row_reads && r.unchanged.is_some_and(|f| unsafe { f(r.list, slot) }) {
+                continue;
+            }
             // SAFETY: the region is live, so is its list (a field of the owner that mounted it); row `k` is
             // mounted, taped (`update` is set only for taped regions) and its slot live (a removed item's row
             // is unmounted by the replay that queued this).
@@ -1662,11 +1693,29 @@ unsafe fn patch_list<T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: 
     unsafe { rt.lr_replay::<T>(w.node as usize, l) };
 }
 
+/// The wake wire of a list a description read plainly (`grain.rs`): registers the list's end of turn as a
+/// region's wire does, and wakes the root unless it read only the list's shape and the turn only edited items.
+///
+/// # Safety
+/// Wire contract: `sig` is a live `List<T>` field of the owner; the recipe's first byte is 1 for a shape-only read.
+pub(crate) unsafe fn wake_list<T>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
+    // SAFETY: the contract.
+    let l = unsafe { &*(sig as *const List<T>) };
+    if !l.registered.get() {
+        l.registered.set(true);
+        rt.lists.ends.push((sig, end_list::<T>));
+        rt.pubs.list(sig as usize, l.log().0);
+    }
+    if w.recipe[0] != 1 || l.log().0.iter().any(|op| !matches!(op, Op::Edit { .. })) {
+        rt.redesc_root = true;
+    }
+}
+
 /// # Safety
 /// Wire contract: `sig` is a `Signal<f32>` field of the live owner, `w.node` the region it scrolls.
 unsafe fn patch_scroll(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: the contract.
-    let v = **unsafe { &*(sig as *const Signal<f32>) };
+    let v = *unsafe { (*(sig as *const Signal<f32>)).peek() };
     let px = (v * rt.scale).round() as i64;
     let r = &mut rt.lists.regs[w.node as usize];
     if px != r.req && !r.dead {
@@ -1705,6 +1754,14 @@ pub struct SrcParts {
     edit: Option<LEditFn>,
     upd_fn: usize,
     update: Option<LRowUpdateFn>,
+    unchanged: Option<unsafe fn(*const u8, u32) -> bool>,
+}
+
+/// # Safety
+/// `l` points at a live `List<T>`.
+unsafe fn list_unchanged<T>(l: *const u8, s: u32) -> bool {
+    // SAFETY: the function contract.
+    unsafe { (*(l as *const List<T>)).unchanged(s) }
 }
 
 /// A `List<T>` field and its row function.
@@ -1720,7 +1777,7 @@ impl<T: 'static, V: 'static> RowSource<V> for ListRows<'_, T, V> {
         let l = self.list.list;
         SrcParts {
             list: l as *const List<T> as *const u8,
-            n: l.len(),
+            n: l.len_raw(),
             slots: l.order_slots().iter().copied().max().map_or(0, |x| x as usize + 1),
             mount: mount_lrow::<T>,
             slot_at: list_slot_at::<T>,
@@ -1732,6 +1789,7 @@ impl<T: 'static, V: 'static> RowSource<V> for ListRows<'_, T, V> {
             edit: Some(list_edit::<T>),
             upd_fn: self.upd.map_or(0, |f| f as usize),
             update: self.upd.map(|_| update_lrow::<T> as LRowUpdateFn),
+            unchanged: Some(list_unchanged::<T>),
         }
     }
     fn wire(&self, m: &mut Mounter<'_, V>, reg: u32) {
@@ -1748,7 +1806,7 @@ pub struct IndexRows<V> {
 impl<V> sealed::Sealed for IndexRows<V> {}
 impl<V: 'static> RowSource<V> for IndexRows<V> {
     fn parts(&self) -> SrcParts {
-        SrcParts { list: std::ptr::null(), n: self.n, slots: 0, mount: mount_irow::<V>, slot_at: index_slot_at, item: index_item, set_wired: index_set_wired, row_fn: self.row as usize, row_size: 0, list_off: 0, edit: None, upd_fn: 0, update: None }
+        SrcParts { list: std::ptr::null(), n: self.n, slots: 0, mount: mount_irow::<V>, slot_at: index_slot_at, item: index_item, set_wired: index_set_wired, row_fn: self.row as usize, row_size: 0, list_off: 0, edit: None, upd_fn: 0, update: None, unchanged: None }
     }
     fn wire(&self, _: &mut Mounter<'_, V>, _: u32) {}
 }
@@ -1942,6 +2000,8 @@ impl<'a, S: RowSource<V>, V: 'static> Element<V> for LList<'a, S, V> {
             upd_fn: src.upd_fn,
             // rows re-describe only in an app that does
             update: src.update.filter(|_| m.rt.describes),
+            unchanged: src.unchanged,
+            row_reads: false,
         });
         m.rt.space_reg(m.space, reg as u32, true);
         self.src.wire(m, reg as u32);
@@ -1966,5 +2026,14 @@ impl<'a, S: RowSource<V>, V: 'static> Element<V> for LList<'a, S, V> {
         }
         m.pos += 1 + m.rt.lists.regs[reg].rows.iter().map(|r| r.nrec as usize).sum::<usize>();
         m.kid += 1;
+    }
+    /// What `update` applies: the background (the rows are the list's state, the rest is read at mount).
+    #[inline(always)]
+    fn seal<Z: crate::seal::Sealer>(&self, s: &mut Z) {
+        s.word(0x62);
+        match self.bg {
+            Some(c) => s.paint(c.0),
+            None => s.word(0x70),
+        }
     }
 }
