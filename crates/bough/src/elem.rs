@@ -118,11 +118,19 @@ pub trait Element<V>: Sized {
     fn dyn_key(&self) -> u64 {
         0
     }
+    /// Write this description's operands to `s` (`seal.rs`), or refuse (the default): an element whose
+    /// retained state its description does not determine must not be stepped over.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.refuse()
+    }
 }
 
 impl<V> Element<V> for () {
     fn mount(self, _: &mut Mounter<'_, V>) {}
     fn update(self, _: &mut Mounter<'_, V>) {}
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, _: &mut S) {}
 }
 
 macro_rules! tuple_elements {
@@ -137,6 +145,12 @@ macro_rules! tuple_elements {
             fn update(self, m: &mut Mounter<'_, V>) {
                 let ($($t,)+) = self;
                 $($t.update(m);)+
+            }
+            #[allow(non_snake_case)]
+            #[inline(always)]
+            fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+                let ($($t,)+) = self;
+                $($t.seal(s);)+
             }
         }
     };
@@ -191,6 +205,11 @@ pub trait IntoProp<P: 'static, V>: Sized {
     /// The current value, at a re-description (a wired operand keeps its wire; applying its current value
     /// is a no-op through the property's equality cut-off).
     fn value(self) -> P;
+    /// The operand's part of its element's seal (`seal.rs`); refuses by default.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.refuse()
+    }
 }
 
 macro_rules! const_prop {
@@ -203,7 +222,21 @@ macro_rules! const_prop {
         }
     )*};
 }
-const_prop!(f32, (f32, f32), Color);
+const_prop!(f32, (f32, f32));
+impl<V> IntoProp<Color, V> for Color {
+    #[inline]
+    fn lower<K: Apply<P = Color>>(self, _: &mut Mounter<'_, V>, _: u32) -> Color {
+        self
+    }
+    #[inline]
+    fn value(self) -> Color {
+        self
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(self.0)
+    }
+}
 
 /// A plain borrow is a constant of this description (re-read only when the owner re-describes).
 impl<T: Clone + 'static, V> IntoProp<T, V> for &Signal<T> {
@@ -509,14 +542,33 @@ pub trait TextSrc<V>: Sized {
     fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String;
     /// The current text, at a re-description.
     fn value(self) -> String;
+    /// `value` lent to `f` without building a `String` where the source already is one.
+    #[inline]
+    fn with_str<R>(self, f: impl FnOnce(&str) -> R) -> R {
+        f(&self.value())
+    }
+    /// The text's part of its element's seal (`seal.rs`); refuses by default.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.refuse()
+    }
 }
 
-impl<V> TextSrc<V> for &'static str {
+/// Any borrowed string: the text is copied at mount, so the borrow need not outlive the description.
+impl<V> TextSrc<V> for &str {
     fn lower(self, _: &mut Mounter<'_, V>, _: u32) -> String {
         self.to_owned()
     }
     fn value(self) -> String {
         self.to_owned()
+    }
+    #[inline]
+    fn with_str<R>(self, f: impl FnOnce(&str) -> R) -> R {
+        f(self)
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.bytes(self.as_bytes())
     }
 }
 impl<V> TextSrc<V> for String {
@@ -526,13 +578,68 @@ impl<V> TextSrc<V> for String {
     fn value(self) -> String {
         self
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.bytes(self.as_bytes())
+    }
 }
+/// An integer as its decimal text, formatted on the stack: `text(row.id)` allocates nothing at a
+/// re-description (a `format!("{id}")` costs an allocation and the formatting machinery per row per turn).
+macro_rules! int_text {
+    ($($t:ty),*) => {$(
+        impl<V> TextSrc<V> for $t {
+            fn lower(self, _: &mut Mounter<'_, V>, _: u32) -> String {
+                decimal(self as i128, &mut [0u8; 40]).to_owned()
+            }
+            fn value(self) -> String {
+                decimal(self as i128, &mut [0u8; 40]).to_owned()
+            }
+            #[inline]
+            fn with_str<R>(self, f: impl FnOnce(&str) -> R) -> R {
+                let mut buf = [0u8; 40];
+                f(decimal(self as i128, &mut buf))
+            }
+            #[inline]
+            fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+                let mut buf = [0u8; 40];
+                s.bytes(decimal(*self as i128, &mut buf).as_bytes())
+            }
+        }
+    )*};
+}
+int_text!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
+
+/// `v` in decimal, written at the end of `buf`.
+#[inline]
+fn decimal(v: i128, buf: &mut [u8; 40]) -> &str {
+    let (neg, mut u) = (v < 0, v.unsigned_abs() as u64);
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (u % 10) as u8;
+        u /= 10;
+        if u == 0 {
+            break;
+        }
+    }
+    if neg {
+        i -= 1;
+        buf[i] = b'-';
+    }
+    // SAFETY: only ASCII digits and '-' were written to `buf[i..]`.
+    unsafe { std::str::from_utf8_unchecked(&buf[i..]) }
+}
+
 impl<V> TextSrc<V> for &Signal<String> {
     fn lower(self, _: &mut Mounter<'_, V>, _: u32) -> String {
         (**self).clone()
     }
     fn value(self) -> String {
         (**self).clone()
+    }
+    #[inline]
+    fn with_str<R>(self, f: impl FnOnce(&str) -> R) -> R {
+        f(self)
     }
 }
 

@@ -440,6 +440,8 @@ impl PagePool {
         p.gink = [NRect::EMPTY; NGROUPS];
         p.cgroups = 0;
         p.set_off(0, 0);
+        // A freed page carries no transform: the next run to reuse it must not inherit one (round 6).
+        (p.xm, p.xv) = ([0.0; 4], [0.0; 2]);
         p.version += 1;
         p.wgen = p.wgen.wrapping_add(1);
         p.dir = u32::MAX;
