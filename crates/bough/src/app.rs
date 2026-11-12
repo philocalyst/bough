@@ -318,6 +318,7 @@ impl<V: View> App<V> {
             m.set_layout(rt.layout);
         }
         rt.lay.mount_avail = (win_w as f32, win_h as f32);
+        rt.input.direct.enter();
         let owner = Box::new(view);
         let mut recs: Vec<RecordInit> = Vec::with_capacity(4096);
         let mut scope = Scope::default();
@@ -355,6 +356,7 @@ impl<V: View> App<V> {
         unsafe { rt.settle(&mut *owner as *mut V as *const u8) };
         rt.lay_flush();
         rt.flags_flush();
+        rt.direct_arm();
         drop(scope); // the root scope lives as long as the app: nothing of it is ever released
         let mut startup = Startup { mount_ns: t_mount.elapsed().as_nanos() as u64, ..Startup::default() };
         #[cfg(target_os = "macos")]
@@ -431,6 +433,7 @@ impl<V: View> App<V> {
     /// `sync` for the input module (an input turn writes the region, so the GPU must be done with it).
     pub(crate) fn sync_pub(&mut self) {
         self.sync();
+        self.rt.input.direct.enter();
     }
 
     /// The window is now `w` x `h` device px: the tile-row buffer follows and every surface is stale.
@@ -452,6 +455,7 @@ impl<V: View> App<V> {
     /// wires), lay out what changed.
     pub fn turn(&mut self, f: impl FnOnce(&mut V)) {
         self.sync();
+        self.rt.input.direct.enter();
         if self.reclaiming() {
             self.rt.reclaim(RECLAIM_BUDGET);
         }
@@ -472,6 +476,7 @@ impl<V: View> App<V> {
         self.prof.mark(PH_TEXT);
         self.after_turn();
         self.blur_disabled();
+        self.rt.direct_arm();
     }
 
     /// What the turn moved under a resting pointer is entered and left (`rehover`); a hover route that ran
@@ -867,6 +872,8 @@ impl<V: View> App<V> {
 
     /// The publication policy is chosen by the turn's source at compile time (`PACED`), never per frame.
     pub fn frame_as<const PACED: bool>(&mut self) -> bool {
+        // direct wires' writes since the last frame become paint writes (`direct.rs`)
+        self.rt.direct_flush();
         let core = !self.rt.bough.plane(0).is_clear();
         let paint = !self.rt.paint.plane(0).is_clear();
         if !core && !paint {

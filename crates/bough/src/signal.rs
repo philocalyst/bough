@@ -145,11 +145,18 @@ impl<T> Signal<T> {
 }
 
 impl<T: PartialEq> Signal<T> {
-    /// Equality cut-off, then mark. Returns whether the value changed.
+    /// Equality cut-off, then mark. Returns whether the value changed. A signal whose one binding is a direct
+    /// wire (`direct.rs`) is applied here: the destination's column takes the value, no settle runs.
     #[inline]
     pub fn set(&mut self, v: T) -> bool {
         if self.value == v {
             return false;
+        }
+        let h = self.head.0.get();
+        // SAFETY: a head is tagged `DIRECT` only for a `Signal<Color>` (`direct::store`'s contract).
+        if h & (crate::direct::DIRECT | HELD) == crate::direct::DIRECT && unsafe { crate::direct::store(h, &self.head.0, &v) } {
+            self.value = v;
+            return true;
         }
         *self.deref_mut() = v;
         true

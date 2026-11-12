@@ -10,6 +10,7 @@ pub mod changed;
 pub mod color;
 pub mod deco;
 pub mod describe;
+pub(crate) mod direct;
 pub mod elem;
 pub mod entity;
 pub mod flags;

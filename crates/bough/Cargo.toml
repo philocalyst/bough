@@ -51,6 +51,11 @@ mutant_grain_track = []
 mutant_owner_seal = []
 # A list's item-flag change skips the second row it changes (tests/flags.rs).
 mutant_flags_range = []
+# Direct wires (tests/direct.rs): no binding is direct (a control, not a mutant); the frame marks no damage for direct
+# writes; the write does not store.
+mutant_direct_off = []
+mutant_direct_damage = []
+mutant_direct_store = []
 
 [dev-dependencies]
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }

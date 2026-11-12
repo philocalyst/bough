@@ -311,7 +311,7 @@ pub type ChangedFn = unsafe fn(*mut u8, &crate::changed::Pubs, &[usize]);
 unsafe fn nop(_: &mut Rt, _: &Wire, _: *const u8, _: *const u8) {}
 
 /// Index bits of a head (the rest are flags: `QUEUED`, `HELD`).
-pub const HEAD_IDX: u32 = (1 << 30) - 1;
+pub const HEAD_IDX: u32 = (1 << 29) - 1;
 
 /// Everything created while mounting one subtree that must be released when it unmounts.
 #[derive(Default)]
@@ -973,7 +973,9 @@ impl Rt {
     /// that cell's head, and `patch` monomorphised for the cell's type (and `recipe` holding what it reads).
     pub(crate) unsafe fn add_wire(&mut self, head: &std::cell::Cell<u32>, off: u32, cls: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
         let addr = head as *const _ as usize;
-        let h = head.get();
+        // a second wire on a head that held one direct wire: the head is an ordinary chain again (`direct.rs`)
+        let h = head.get() & !crate::direct::DIRECT;
+        head.set(h);
         let mut first = h & HEAD_IDX;
         // a chain that is not this head's own (moved in from elsewhere) is dropped, never extended
         if first != 0 && self.wires.get(first as usize).is_none_or(|w| w.head != addr) {
@@ -1302,6 +1304,7 @@ impl Rt {
     fn cut_scope(&mut self, s: &mut Scope) {
         for w in s.wires.drain(..) {
             self.wires[w as usize].dead = true;
+            self.input.direct.kill(w);
         }
         for r in s.lroots.drain(..) {
             self.lay_remove_root(r);

@@ -557,7 +557,7 @@ impl<E: crate::layout::Styled, V> crate::layout::Styled for FlagBy<'_, E, V> {
         self.e.spec_mut()
     }
 }
-impl<E: Element<()>> Flagged for E {}
+impl<E> Flagged for E {}
 
 impl<E: crate::layout::Styled> crate::layout::Styled for When<E> {
     fn spec_mut(&mut self) -> &mut crate::layout::Spec {

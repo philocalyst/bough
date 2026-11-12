@@ -339,6 +339,8 @@ pub struct Input {
     focus_within: Vec<Handle>,
     /// Some record sets flags for its subtree (a record mounted later may inherit them).
     pub(crate) any_sub: bool,
+    /// Direct wires (`direct.rs`), boxed: the thread's write path finds it by address.
+    pub(crate) direct: Box<crate::direct::Table>,
 }
 
 impl Default for Input {
@@ -387,6 +389,7 @@ impl Default for Input {
             drag_over: Vec::new(),
             focus_within: Vec::new(),
             any_sub: false,
+            direct: Box::default(),
         }
     }
 }
@@ -1262,6 +1265,7 @@ impl<V: View> App<V> {
         }
         self.blur_disabled();
         self.sync_ring();
+        self.rt.direct_arm();
     }
 
     /// A focused record that became disabled (its own flag, or a subtree's) loses focus, as a disabled

@@ -199,6 +199,9 @@ where
 /// How a property's new value is applied to its node (monomorphic, one per property).
 pub trait Apply {
     type P: 'static;
+    /// The property is a plain colour-word store into the node's instance: a binding may be a direct wire
+    /// (`direct.rs`), applied by the signal's write.
+    const DIRECT: bool = false;
     fn apply(rt: &mut Rt, node: u32, v: &Self::P);
 }
 
@@ -313,6 +316,12 @@ fn seal_wire<S: crate::seal::Sealer>(s: &mut S, tag: u32, off: u32, recipe: [u8;
 impl<'a, T: Clone + 'static, V> IntoProp<T, V> for Wired<'a, T, V> {
     fn lower<K: Apply<P = T>>(self, m: &mut Mounter<'_, V>, node: u32) -> T {
         m.wire(&self, patch_sig::<K, T>, node, [0; 16]);
+        if K::DIRECT {
+            // a plain colour store: the write itself may apply it (`direct.rs`)
+            let w = *m.scope.wires.last().expect("the wire just installed");
+            let rt = &mut *m.rt;
+            rt.input.direct.bind(&rt.wires, w, self.sig.head(), node);
+        }
         self.get().clone()
     }
     fn value(self) -> T {
@@ -345,6 +354,17 @@ where
 // =============================================================================== properties
 
 pub struct ApplyBg;
+/// `ApplyBg` where nothing else writes the colour word (no opacity or paint operand on the element): its
+/// bindings may be direct wires (`direct.rs`).
+pub struct ApplyBgDirect;
+impl Apply for ApplyBgDirect {
+    type P = Color;
+    const DIRECT: bool = true;
+    #[inline]
+    fn apply(rt: &mut Rt, node: u32, v: &Color) {
+        ApplyBg::apply(rt, node, v)
+    }
+}
 pub struct ApplyW;
 pub struct ApplySpan;
 
@@ -468,7 +488,7 @@ where
     fn mount(self, m: &mut Mounter<'_, V>) {
         let node = m.rt.alloc_node();
         let wires_before = m.scope.wires.len();
-        let bg = self.bg.lower::<ApplyBg>(m, node);
+        let bg = self.bg.lower::<ApplyBgDirect>(m, node);
         let w = self.wd.lower::<ApplyW>(m, node);
         let (y, h) = self.sp.lower::<ApplySpan>(m, node);
         let s = m.rt.scale;

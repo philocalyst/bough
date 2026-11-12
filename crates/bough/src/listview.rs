@@ -699,6 +699,7 @@ impl Rt {
         self.free_space(row.space);
         let mut scope = self.lists.take_scope(row.scope);
         for &w in &scope.wires {
+            self.input.direct.kill(w);
             let wr = &mut self.wires[w as usize];
             if wr.head >= lo && wr.head < hi {
                 wr.dead = true;

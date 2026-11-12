@@ -1492,7 +1492,8 @@ where
         let mut qnode = NONE;
         if self.draw {
             let node = m.rt.alloc_node();
-            let bg = self.bg.lower::<ApplyBg>(m, node);
+            // a colour no paint operand also writes may be bound as a direct wire (`direct.rs`)
+            let bg = if X::PAINT { self.bg.lower::<ApplyBg>(m, node) } else { self.bg.lower::<crate::elem::ApplyBgDirect>(m, node) };
             let (ins, _kind, margin) = quad_instance(bg, snap(self.radius * s), self.border, s, m.space);
             let run = m.rt.alloc_run(1);
             m.rt.runs[run as usize].len = 1;
