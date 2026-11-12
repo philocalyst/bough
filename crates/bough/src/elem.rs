@@ -97,12 +97,12 @@ impl<V> Mounter<'_, V> {
     }
     /// Install a wire whose applier commutes (`Apply::COMMUTES`) as a member of the cell's segment for
     /// `runner` (the monomorphised loop for this kind of operand): the cell's chain holds one segment wire
-    /// per kind, and the members hang off it.
-    pub(crate) fn wire_seg<T>(&mut self, w: &Wired<'_, T, V>, runner: PatchFn, node: u32, recipe: [u8; 16]) {
+    /// per kind, and the members hang off it. A cell's first wire of a kind stays a plain wire (`plain`).
+    pub(crate) fn wire_seg<T>(&mut self, w: &Wired<'_, T, V>, runner: PatchFn, plain: PatchFn, node: u32, recipe: [u8; 16]) {
         debug_assert_eq!(w.sig as *const Signal<T> as usize, self.owner as usize + w.off as usize, "sig! operand is not a field of the mounted owner");
         // SAFETY: as `wire`: the offset is proven for `V`, and `runner` is monomorphised for the signal's `T`
         // and reads the recipes its members are given here.
-        let i = unsafe { self.rt.add_seg_wire(w.sig.head(), w.off, self.cls, runner, node, recipe) };
+        let i = unsafe { self.rt.add_seg_wire(w.sig.head(), w.off, self.cls, runner, plain, node, recipe) };
         self.scope.wires.push(i);
     }
     /// Install a wire on any headed cell of this owner (lists, readers): `head` at `owner + off`.
@@ -402,7 +402,7 @@ fn seal_wire<S: crate::seal::Sealer>(s: &mut S, tag: u32, off: u32, recipe: [u8;
 impl<'a, T: Clone + 'static, V> IntoProp<T, V> for Wired<'a, T, V> {
     fn lower<K: Apply<P = T>>(self, m: &mut Mounter<'_, V>, node: u32) -> T {
         if K::COMMUTES {
-            m.wire_seg(&self, run_seg_sig::<K, T>, node, [0; 16]);
+            m.wire_seg(&self, run_seg_sig::<K, T>, patch_sig::<K, T>, node, [0; 16]);
         } else {
             m.wire(&self, patch_sig::<K, T>, node, [0; 16]);
         }
@@ -424,7 +424,7 @@ where
     fn lower<K: Apply<P = P>>(self, m: &mut Mounter<'_, V>, node: u32) -> P {
         let init = (self.f)(self.w.get());
         if K::COMMUTES {
-            m.wire_seg(&self.w, run_seg_map::<K, T, F>, node, recipe_of(self.f));
+            m.wire_seg(&self.w, run_seg_map::<K, T, F>, patch_map::<K, T, F>, node, recipe_of(self.f));
         } else {
             m.wire(&self.w, patch_map::<K, T, F>, node, recipe_of(self.f));
         }

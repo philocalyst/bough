@@ -2546,6 +2546,36 @@ impl Bough {
         }
     }
 
+    /// The union of the inks of records `[start, start + len)` (not cut by their clips): a whole page inside
+    /// the run contributes its directory ink.
+    pub fn run_bounds(&self, start: usize, len: usize) -> NRect {
+        let mut u = NRect::EMPTY;
+        let mut pos0 = 0usize;
+        let (mut d, end) = (0usize, if self.np == 0 { 0 } else { self.dir_len() });
+        while d < end {
+            let cur = d;
+            d = self.next_dir(d);
+            let l = self.d_len[cur] as usize;
+            let (p0, p1) = (pos0, pos0 + l);
+            pos0 = p1;
+            if p1 <= start {
+                continue;
+            }
+            if p0 >= start + len {
+                break;
+            }
+            if p0 >= start && p1 <= start + len {
+                u = u.union(self.d_ink[cur]);
+                continue;
+            }
+            let p = self.page(cur);
+            for s in start.max(p0) - p0..(start + len).min(p1) - p0 {
+                u = u.union(p.abs(p.ink[s]));
+            }
+        }
+        u
+    }
+
     /// A rigid move written record by record (round 7): between `move_begin` and `move_end` the caller moves
     /// every record of a run by one integral `(dx, dy)` through the ordinary writers (inks, instances, text
     /// origins) and changes nothing else about them; the marks those writes make are dropped, and `move_end`

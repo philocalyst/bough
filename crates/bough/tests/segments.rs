@@ -95,6 +95,7 @@ fn a_captureless_projection_runs_once_and_not_at_all_when_unchanged() {
     // segment's one evaluation finds its value unchanged; nothing else is dispatched
     a.turn(|v| drop(v.look.set(0x02)));
     assert_eq!(a.rt.ctr.wires_run - c0, 2, "two segment dispatches for {N} cells");
+    // (a cell with a single wire of a kind keeps a plain wire: the per-row value labels are not segments)
     a.frame();
     let mut f = App::new(grid(N, 0x02), cfg(), false);
     f.frame();

@@ -1325,7 +1325,7 @@ impl Rt {
     ///
     /// # Safety
     /// As `add_wire`; `runner` reads members' recipes as written here.
-    pub(crate) unsafe fn add_seg_wire(&mut self, head: &std::cell::Cell<u32>, off: u32, cls: u32, runner: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
+    pub(crate) unsafe fn add_seg_wire(&mut self, head: &std::cell::Cell<u32>, off: u32, cls: u32, runner: PatchFn, plain: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
         let key = (head as *const _ as usize, runner as usize);
         let valid = |rt: &Rt, i: u32| rt.wires.get(i as usize).is_some_and(|w| !w.dead && w.head == key.0 && w.patch as usize == key.1);
         let mut seg = 0u32;
@@ -1339,10 +1339,38 @@ impl Rt {
             seg = match self.segs.get(&key) {
                 Some(&i) if valid(self, i) => i,
                 _ => {
+                    // No segment of this kind on the cell yet. A cell with one wire of a kind keeps it as a
+                    // plain wire (one dispatch, no loop); the segment is made when a second arrives: the first
+                    // is looked for among the cell's newest wires and becomes the segment's first member.
+                    let h = head.get();
+                    let (mut prev, mut p, mut found) = (0u32, h & HEAD_IDX, 0u32);
+                    for _ in 0..4 {
+                        let Some(w) = self.wires.get(p as usize).filter(|w| p != 0 && w.head == key.0) else { break };
+                        if !w.dead && w.patch as usize == plain as usize {
+                            found = p;
+                            break;
+                        }
+                        prev = p;
+                        p = w.next;
+                    }
+                    if found == 0 {
+                        // SAFETY: this fn's contract is `add_wire`'s; `plain` reads the recipe as `runner` does.
+                        return unsafe { self.add_wire(head, off, cls, plain, node, recipe) };
+                    }
+                    let next = self.wires[found as usize].next;
+                    if prev == 0 {
+                        head.set(next | (h & !HEAD_IDX));
+                    } else {
+                        self.wires[prev as usize].next = next;
+                    }
                     // SAFETY: this fn's contract is `add_wire`'s.
                     let i = unsafe { self.add_wire(head, off, cls, runner, 0, [0; 16]) };
                     self.wires[i as usize].recipe[..4].copy_from_slice(&i.to_ne_bytes());
                     self.segs.insert(key, i);
+                    let f = &mut self.wires[found as usize];
+                    f.next = 0;
+                    f.patch = runner;
+                    self.wires[i as usize].node = found;
                     i
                 }
             };
