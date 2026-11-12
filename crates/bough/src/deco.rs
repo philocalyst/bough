@@ -375,7 +375,7 @@ pub(crate) fn mount_deco<V>(m: &mut Mounter<'_, V>, ins: Instance, x: f32, y: f3
     }
     m.scope.nodes.push(node);
     m.scope.runs.push(run);
-    m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD | KF_NOHIT, payload: inst, handle: hd.idx, clip: m.clip });
+    m.recs.push(RecordInit { depth: m.depth, ink: ink.to_nrect(), kind: REC_QUAD | KF_NOHIT, payload: inst, handle: hd.idx, clip: m.clip });
     node
 }
 
@@ -510,5 +510,5 @@ impl<V: 'static> Element<V> for DecoBox {
 /// Damage a fresh ink rect (helper for tests of exactness: the record's ink as the damage model sees it).
 pub fn ink_of(rt: &Rt, node: u32) -> NRect {
     let n = &rt.nodes[node as usize];
-    rt.ink_rect(n.space, n.x, n.y, n.w, n.h, n.margin)
+    rt.ink_rect(n.space, n.x, n.y, n.w, n.h, n.margin).to_nrect()
 }

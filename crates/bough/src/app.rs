@@ -575,9 +575,12 @@ impl<V: View> App<V> {
         let (ix0, iy0) = ((x0 + 31) >> 5, (y0 + 31) >> 5);
         let ix1 = if x1 >= ww { (ww + 31) >> 5 } else { x1 >> 5 };
         let iy1 = if y1 >= wh { (wh + 31) >> 5 } else { y1 >> 5 };
-        if ix0 < ix1 {
+        // none when C holds no whole tile across x or y: ix0 >= ix1 or iy0 >= iy1 (a nested viewport cut by its
+        // parent's clip to a strip inside one tile row, e.g. [0, 364, 220, 372]: iy0 = 12, iy1 = 11)
+        let (ry0, ry1) = (iy0.max(0) as usize, (iy1.max(0) as usize).min(rows));
+        if ix0 < ix1 && ry0 < ry1 {
             let inner = (u128::MAX >> (128 - (ix1 - ix0))) << ix0;
-            for r in &mut self.rows[iy0.max(0) as usize..(iy1.max(0) as usize).min(rows)] {
+            for r in &mut self.rows[ry0..ry1] {
                 *r &= !inner;
             }
         }

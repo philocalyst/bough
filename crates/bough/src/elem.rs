@@ -112,6 +112,8 @@ impl<V> Mounter<'_, V> {
         // these patches (lists, readers, entities, virtual lists) are handed the class's owner and read it as
         // the mounting owner: inside an embedded view that is the embedding owner
         assert!(self.base == 0, "lists, readers, entities and virtual lists inside an embedded view (embed!) are not built yet");
+        // SAFETY: this fn's contract: `off` is the proven offset of the cell whose head is `head` in this owner type, and
+        // `patch` reads that cell type (`add_wire` asks for the same).
         let i = unsafe { self.rt.add_wire(head, off, self.cls, patch, node, recipe) };
         self.scope.wires.push(i);
         i
@@ -128,11 +130,19 @@ pub trait Element<V>: Sized {
     fn dyn_key(&self) -> u64 {
         0
     }
+    /// Write this description's operands to `s` (`seal.rs`), or refuse (the default): an element whose
+    /// retained state its description does not determine must not be stepped over.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.refuse()
+    }
 }
 
 impl<V> Element<V> for () {
     fn mount(self, _: &mut Mounter<'_, V>) {}
     fn update(self, _: &mut Mounter<'_, V>) {}
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, _: &mut S) {}
 }
 
 macro_rules! tuple_elements {
@@ -147,6 +157,12 @@ macro_rules! tuple_elements {
             fn update(self, m: &mut Mounter<'_, V>) {
                 let ($($t,)+) = self;
                 $($t.update(m);)+
+            }
+            #[allow(non_snake_case)]
+            #[inline(always)]
+            fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+                let ($($t,)+) = self;
+                $($t.seal(s);)+
             }
         }
     };
@@ -201,6 +217,11 @@ pub trait IntoProp<P: 'static, V>: Sized {
     /// The current value, at a re-description (a wired operand keeps its wire; applying its current value
     /// is a no-op through the property's equality cut-off).
     fn value(self) -> P;
+    /// The operand's part of its element's seal (`seal.rs`); refuses by default.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.refuse()
+    }
 }
 
 macro_rules! const_prop {
@@ -213,7 +234,21 @@ macro_rules! const_prop {
         }
     )*};
 }
-const_prop!(f32, (f32, f32), Color);
+const_prop!(f32, (f32, f32));
+impl<V> IntoProp<Color, V> for Color {
+    #[inline]
+    fn lower<K: Apply<P = Color>>(self, _: &mut Mounter<'_, V>, _: u32) -> Color {
+        self
+    }
+    #[inline]
+    fn value(self) -> Color {
+        self
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.paint(self.0)
+    }
+}
 
 /// A plain borrow is a constant of this description (re-read only when the owner re-describes).
 impl<T: Clone + 'static, V> IntoProp<T, V> for &Signal<T> {
@@ -440,7 +475,7 @@ where
             m.rt.free_node(node);
         }
         m.scope.runs.push(run);
-        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: inst, handle: handle_idx, clip: m.clip });
+        m.recs.push(RecordInit { depth: m.depth, ink: ink.to_nrect(), kind: REC_QUAD, payload: inst, handle: handle_idx, clip: m.clip });
         // children: inside the border
         let bw = self.border.map_or(0.0, |b| b.0);
         let (ox, oy) = (m.ox, m.oy);
@@ -519,14 +554,33 @@ pub trait TextSrc<V>: Sized {
     fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String;
     /// The current text, at a re-description.
     fn value(self) -> String;
+    /// `value` lent to `f` without building a `String` where the source already is one.
+    #[inline]
+    fn with_str<R>(self, f: impl FnOnce(&str) -> R) -> R {
+        f(&self.value())
+    }
+    /// The text's part of its element's seal (`seal.rs`); refuses by default.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.refuse()
+    }
 }
 
-impl<V> TextSrc<V> for &'static str {
+/// Any borrowed string: the text is copied at mount, so the borrow need not outlive the description.
+impl<V> TextSrc<V> for &str {
     fn lower(self, _: &mut Mounter<'_, V>, _: u32) -> String {
         self.to_owned()
     }
     fn value(self) -> String {
         self.to_owned()
+    }
+    #[inline]
+    fn with_str<R>(self, f: impl FnOnce(&str) -> R) -> R {
+        f(self)
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.bytes(self.as_bytes())
     }
 }
 impl<V> TextSrc<V> for String {
@@ -536,13 +590,68 @@ impl<V> TextSrc<V> for String {
     fn value(self) -> String {
         self
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.bytes(self.as_bytes())
+    }
 }
+/// An integer as its decimal text, formatted on the stack: `text(row.id)` allocates nothing at a
+/// re-description (a `format!("{id}")` costs an allocation and the formatting machinery per row per turn).
+macro_rules! int_text {
+    ($($t:ty),*) => {$(
+        impl<V> TextSrc<V> for $t {
+            fn lower(self, _: &mut Mounter<'_, V>, _: u32) -> String {
+                decimal(self as i128, &mut [0u8; 40]).to_owned()
+            }
+            fn value(self) -> String {
+                decimal(self as i128, &mut [0u8; 40]).to_owned()
+            }
+            #[inline]
+            fn with_str<R>(self, f: impl FnOnce(&str) -> R) -> R {
+                let mut buf = [0u8; 40];
+                f(decimal(self as i128, &mut buf))
+            }
+            #[inline]
+            fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+                let mut buf = [0u8; 40];
+                s.bytes(decimal(*self as i128, &mut buf).as_bytes())
+            }
+        }
+    )*};
+}
+int_text!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
+
+/// `v` in decimal, written at the end of `buf`.
+#[inline]
+fn decimal(v: i128, buf: &mut [u8; 40]) -> &str {
+    let (neg, mut u) = (v < 0, v.unsigned_abs() as u64);
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (u % 10) as u8;
+        u /= 10;
+        if u == 0 {
+            break;
+        }
+    }
+    if neg {
+        i -= 1;
+        buf[i] = b'-';
+    }
+    // SAFETY: only ASCII digits and '-' were written to `buf[i..]`.
+    unsafe { std::str::from_utf8_unchecked(&buf[i..]) }
+}
+
 impl<V> TextSrc<V> for &Signal<String> {
     fn lower(self, _: &mut Mounter<'_, V>, _: u32) -> String {
         (**self).clone()
     }
     fn value(self) -> String {
         (**self).clone()
+    }
+    #[inline]
+    fn with_str<R>(self, f: impl FnOnce(&str) -> R) -> R {
+        f(self)
     }
 }
 
@@ -788,7 +897,7 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
             oy: base,
             space: m.space,
             handle: hd,
-            ink: NRect::EMPTY,
+            ink: bough_core::nrect::WRect::EMPTY,
             shape: TShape::None,
             per_glyph: G::PER_GLYPH,
             num,
@@ -811,7 +920,7 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
         self.g.install(m, node);
         m.scope.nodes.push(node);
         let ink = m.rt.texts[ti as usize].ink;
-        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_TEXT, payload, handle: hd.idx, clip: m.clip });
+        m.recs.push(RecordInit { depth: m.depth, ink: ink.to_nrect(), kind: REC_TEXT, payload, handle: hd.idx, clip: m.clip });
     }
 
     fn update(self, m: &mut Mounter<'_, V>) {
@@ -865,7 +974,7 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
             m.rt.bough.set_payload_handle(hd, payload);
             let ink = m.rt.texts[ti as usize].ink;
             m.rt.bough.damage_rect(old_ink);
-            m.rt.bough.set_ink_handle(hd, ink);
+            m.rt.bough.set_ink_handle_wide(hd, ink);
         }
         m.pos += 1;
     }
@@ -1082,7 +1191,7 @@ impl<F, V> Bars<'_, F, V> {
 /// instances; returns the union ink. With `damage`, each bar whose top moved marks only the strip between
 /// its old and new top (`Bough::damage_edges`, a solid's band): bars are bottom-anchored on the geometry
 /// grid, so the bottom edge `y + h` is the same exact value every tick and never damages.
-fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage: bool) -> NRect {
+fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage: bool) -> bough_core::nrect::WRect {
     let n = &mut rt.nodes[node as usize];
     let count = n.series.len();
     // The samples that leave or are overwritten: with the new series they bound every old and new bar top
@@ -1100,7 +1209,7 @@ fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage:
             *s = f(key + i as u64);
         }
     } else {
-        return rt.bough.visible_ink_handle(n.handle).unwrap_or(NRect::EMPTY);
+        return rt.bough.pos_of(n.handle).map_or(bough_core::nrect::WRect::EMPTY, |p| rt.bough.ink_wide_at(p));
     }
     n.series_ok = true;
     n.series_key = key;
@@ -1156,7 +1265,7 @@ unsafe fn patch_bars<F: Fn(u64) -> f32 + Copy>(rt: &mut Rt, w: &Wire, sig: *cons
     // each bar damages the strip its top moved through (inside write_bars); the record's ink is the union
     let ink = write_bars(rt, w.node, key, f, true);
     let h = rt.nodes[w.node as usize].handle;
-    rt.bough.set_ink_handle_nodamage(h, ink);
+    rt.bough.set_ink_handle_nodamage_wide(h, ink);
 }
 
 impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a, F, V> {
@@ -1193,7 +1302,7 @@ impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a,
         m.rt.nodes[node as usize].handle = hd;
         m.scope.nodes.push(node);
         m.scope.runs.push(run);
-        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: pay_irun(first, self.count as u32), handle: hd.idx, clip: m.clip });
+        m.recs.push(RecordInit { depth: m.depth, ink: ink.to_nrect(), kind: REC_QUAD, payload: pay_irun(first, self.count as u32), handle: hd.idx, clip: m.clip });
     }
     /// The series is wire-driven; its geometry constants are taken as fixed for the owner's life.
     fn update(self, m: &mut Mounter<'_, V>) {

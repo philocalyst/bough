@@ -327,6 +327,9 @@ unsafe fn index_slot_at(_: *const u8, p: usize) -> u32 {
     p as u32
 }
 /// An index source's rows are owned by the source's owner itself.
+///
+/// # Safety
+/// None needed: returns `o` unread.
 unsafe fn index_item(o: *const u8, _: u32) -> *const u8 {
     o
 }
@@ -661,14 +664,17 @@ impl Rt {
             let mut out = std::mem::take(&mut self.lists.stage2);
             stage.clear();
             out.clear();
-            self.bough.read_run(base, kept, &mut stage);
+            // exact rects travel with the records (a reordered row may lie outside the 16-bit domain)
+            let (mut wide, mut wide_out) = (Vec::with_capacity(kept), Vec::with_capacity(kept));
+            self.bough.read_run_wide(base, kept, &mut stage, &mut wide);
             for &s in src {
                 if s != NONE {
                     let (a, n) = (koff[s as usize], rows[s as usize].nrec as usize);
                     out.extend_from_slice(&stage[a..a + n]);
+                    wide_out.extend_from_slice(&wide[a..a + n]);
                 }
             }
-            self.bough.rewrite_run(base, &out);
+            self.bough.rewrite_run_wide(base, &out, &wide_out);
             self.lists.stage = stage;
             self.lists.stage2 = out;
         }
@@ -691,6 +697,9 @@ impl Rt {
 
     /// Replay list `l`'s delta log on region `reg`'s window (see the module docs), rebuild the index from the
     /// lowest position the log touched, then settle the edited rows.
+    ///
+    /// # Safety
+    /// `l` points at the live `List<T>` registered for region `reg` (the wire contract of `patch_list`).
     unsafe fn lr_replay<T: 'static>(&mut self, reg: usize, l: *const List<T>) {
         let lp = l as *const u8;
         self.lists.regs[reg].list = lp;
@@ -1468,6 +1477,7 @@ unsafe fn patch_list<T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: 
         rt.pubs.list(sig as usize, reg.log().0);
     }
     rt.pubs.owner(_owner as usize, w.cls);
+    // SAFETY: the contract: `l` is the live `List<T>` field of the owner and `w.node` its region.
     unsafe { rt.lr_replay::<T>(w.node as usize, l) };
 }
 
@@ -1678,11 +1688,7 @@ impl<'a, S: RowSource<V>, V: 'static> Element<V> for LList<'a, S, V> {
             None => m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: hd.idx, clip: m.clip }),
         }
         // a definite width is known now
-        let width = match self.spec.w {
-            Dim::Pt(w) => w * s - pad[0] - pad[2],
-            Dim::Px(w) => w - pad[0] - pad[2],
-            _ => f32::NAN,
-        };
+        let width = self.spec.w.fixed_px(s).map_or(f32::NAN, |w| w - pad[0] - pad[2]);
         // a virtual list's rows are cut to its box (the clip's rect is set when the box is placed)
         let clip = if self.virt { m.rt.bough.new_clip(NRect::EMPTY) } else { m.clip };
         let cls = m.rt.new_class();

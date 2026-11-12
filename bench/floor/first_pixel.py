@@ -2,7 +2,7 @@
 """Cold first pixel, headless, A/B in alternating fresh processes: exec -> first frame complete on the GPU
 (heavy dashboard, scale 2). Usage: first_pixel.py <binA> <binB> [n=7]. Prints per-run splits and medians."""
 import os, re, statistics, subprocess, sys, time
-FONT = "/Users/mileswirht/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf"
+FONT = os.path.expanduser(os.environ.get("BOUGH_REF", "~/projects/_ref")) + "/zgx/comparisons/fonts/DejaVuSans.ttf"
 def one(b):
     t = time.time()
     out = subprocess.run([b], env=dict(os.environ, ZGX_FONT_FILE=FONT), capture_output=True, text=True).stdout

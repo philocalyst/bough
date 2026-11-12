@@ -26,6 +26,7 @@ pub mod part;
 pub mod reader;
 pub mod reflect;
 pub mod rt;
+pub mod seal;
 pub mod select;
 pub mod signal;
 pub mod template;

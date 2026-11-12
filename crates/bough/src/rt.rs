@@ -24,6 +24,7 @@ use crate::text::TextSys;
 use bough_core::bough::Columns;
 use bough_core::damage::DamageRing;
 use bough_core::page::Page;
+use bough_core::nrect::WRect;
 use bough_core::{Bough, Handle, NRect, RecordInit};
 use bough_mem::{Col, Region};
 use bough_metal::fused::{Layout, Masks, HDR_BYTES};
@@ -271,6 +272,8 @@ pub struct Wire {
 /// `View::changed` of an owner class, type-erased: `(owner, publications, committed readers)`.
 pub type ChangedFn = unsafe fn(*mut u8, &crate::changed::Pubs, &[usize]);
 
+/// # Safety
+/// None needed: reads nothing (a patch for a wire whose cell has nothing to apply).
 unsafe fn nop(_: &mut Rt, _: &Wire, _: *const u8, _: *const u8) {}
 
 /// Index bits of a head (the rest are flags: `QUEUED`, `HELD`).
@@ -925,6 +928,7 @@ impl Rt {
     /// every cell, `#[repr(C)]`), and be derived from a unique borrow (list patches write their cell).
     pub unsafe fn settle(&mut self, owner: *const u8) {
         loop {
+            // SAFETY: this fn's contract (`owner` is the live root owner).
             unsafe { self.settle_cls(owner, 0) };
             if !std::mem::take(&mut self.asy.rescan) {
                 break;
@@ -949,6 +953,7 @@ impl Rt {
             if h & crate::signal::QUEUED == 0 {
                 continue;
             }
+            // SAFETY: the contract again: `head` is the head of the cell at `sig`, in the live owner `owner`.
             unsafe { self.run_head(head, sig, owner) };
         }
     }
@@ -1001,13 +1006,16 @@ impl Rt {
     // ------------------------------------------------------------------ geometry helpers
     /// Absolute ink (device px, outward rounded, with `margin`) of a space-local rect.
     #[inline]
-    pub fn ink_rect(&self, space: u16, x: f32, y: f32, w: f32, h: f32, margin: f32) -> NRect {
+    ///
+    /// An exact rect (`WRect`): content far from its scroll origin lies outside the 16-bit window domain
+    /// (`NRect`), and a clamped ink there could not be scrolled back into view (round 6, finding 3).
+    pub fn ink_rect(&self, space: u16, x: f32, y: f32, w: f32, h: f32, margin: f32) -> WRect {
         let o = self.space(space);
         let x0 = (o[0] + x - margin).floor() as i32;
         let y0 = (o[1] + y - margin).floor() as i32;
         let x1 = (o[0] + x + w + margin).ceil() as i32;
         let y1 = (o[1] + y + h + margin).ceil() as i32;
-        NRect::new(x0, y0, x1, y1)
+        WRect::new(x0, y0, x1, y1)
     }
 
     /// Move a quad node's box to `(x, y, w, h)` (space-local px; snapped to the geometry grid here): node,
@@ -1031,7 +1039,7 @@ impl Rt {
         p.size = [w, h];
         let band = edge_band_of(p);
         let ink = self.ink_rect(space, x + tx, y + ty, w, h, margin);
-        self.bough.set_ink_handle_edges(hd, ink, moved, band);
+        self.bough.set_ink_handle_edges_wide(hd, ink, moved, band);
     }
 
     /// Re-derive a quad node's ink and write it through: the old and the new ink are damaged even when the
@@ -1042,7 +1050,7 @@ impl Rt {
         let ink = self.ink_rect(n.space, n.x + n.tx, n.y + n.ty, n.w, n.h, n.margin);
         let h = n.handle;
         self.bough.touch_handle(h);
-        self.bough.set_ink_handle(h, ink);
+        self.bough.set_ink_handle_wide(h, ink);
     }
 
     /// A paint-only write to `h`'s record (colour, glyph alphas) from state hash `old` to `new`: its visible
@@ -1188,6 +1196,9 @@ impl Rt {
     }
 
     /// Mount rows `range` (ascending) and insert them at the front or the back of the region.
+    ///
+    /// # Safety
+    /// As `region_initial`: `owner` points at the live owner the region's row function was monomorphised for.
     unsafe fn region_mount(&mut self, reg: usize, owner: *const u8, range: Range<usize>, front: bool) {
         if range.is_empty() {
             return;
@@ -1256,6 +1267,7 @@ impl Rt {
             let r = &mut self.regions[reg];
             r.scroll_px = new_px;
             r.range = new_range.clone();
+            // SAFETY: `region_scroll`'s contract is `region_mount`'s.
             unsafe { self.region_mount(reg, owner, new_range, false) };
             return;
         }
@@ -1281,6 +1293,7 @@ impl Rt {
         let surv_start = old_range.start.max(new_range.start);
         let surv_end = old_range.end.min(new_range.end);
         self.regions[reg].range = new_range.clone();
+        // SAFETY: `region_scroll`'s contract is `region_mount`'s.
         unsafe {
             self.region_mount(reg, owner, new_range.start..surv_start, true);
             self.region_mount(reg, owner, surv_end..new_range.end, false);

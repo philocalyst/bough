@@ -206,10 +206,7 @@ impl<V: 'static> Element<V> for ImageBox {
         let key = self.png.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
         let png = self.png;
         // the image kernel draws atlas texels 1:1 on device pixels: resample to the box's device size
-        let dev = |d: Dim, n: u32| match d {
-            Dim::Pt(v) => (v * s).round().max(1.0) as u32,
-            _ => (n as f32 * s).round().max(1.0) as u32,
-        };
+        let dev = |d: Dim, n: u32| (d.pt().unwrap_or(n as f32) * s).round().max(1.0) as u32;
         let (tw, th) = (dev(self.spec.w, self.px.0), dev(self.spec.h, self.px.1));
         let (pw, ph) = self.px;
         let uv = m.rt.images.put(key, tw, th, |buf| {

@@ -139,7 +139,7 @@ impl Warm {
 
 /// What encoding a frame needs, shared by the main thread and the publisher thread (which keeps the stream
 /// armed, so no encode or commit runs on the input thread): the hal device and queues, the event, the region,
-/// the three pipelines and their layout, the slot bind groups, and the arming state behind one lock (two threads
+/// the three pipelines, the slot bind groups, and the arming state behind one lock (two threads
 /// never arm overlapping frames). Everything a frame binds is the region, the bins, the counts and the slot: the
 /// surfaces and the atlas are read from the region's bind table (build.rs's bindless transform).
 struct Kern {
@@ -147,7 +147,6 @@ struct Kern {
     queue: hal::metal::Queue,
     aux: hal::metal::Queue,
     ev: Retained<ProtocolObject<dyn MTLSharedEvent>>,
-    region: hal::metal::Buffer,
     region_raw: Retained<ProtocolObject<dyn MTLBuffer>>,
     pso_bin: hal::metal::ComputePipeline,
     pso_tile: hal::metal::ComputePipeline,
@@ -295,11 +294,8 @@ impl Kern {
 }
 
 
-/// The pipelines and layouts of the hal frame path (kernels from the build-time metallib).
+/// The pipelines of the hal frame path (kernels from the build-time metallib).
 struct Pipes {
-    bgl0: hal::metal::BindGroupLayout,
-    bgl1: hal::metal::BindGroupLayout,
-    layout: hal::metal::PipelineLayout,
     pso_bin: hal::metal::ComputePipeline,
     pso_tile: hal::metal::ComputePipeline,
     pso_copy: hal::metal::ComputePipeline,
@@ -333,7 +329,7 @@ fn make_pipes(dev: &hal::metal::Device) -> Pipes {
             .unwrap()
         };
         let (pso_bin, pso_tile, pso_copy) = (pso(&m256, "fs_bin"), pso(&m256, "fs_tile"), pso(&m32x8, "fs_copy"));
-        Pipes { bgl0, bgl1, layout, pso_bin, pso_tile, pso_copy }
+        Pipes { pso_bin, pso_tile, pso_copy }
     }
 }
 
@@ -637,8 +633,8 @@ impl Fused {
         let counts = device.newBufferWithLength_options((ty + 1) * 4, MTLResourceOptions::StorageModeShared).expect("bin counts");
         let surfs = (0..surfaces.clamp(1, MAX_SURFACES)).map(|_| Self::new_surface(&device, w, h)).collect();
         let device_ev = device.newSharedEvent().expect("shared event");
-        // SAFETY: live queues and buffer of this device.
-        let (hq, haux, hregion) = unsafe { (hal::metal::Queue::queue_from_raw(queue.clone(), 1.0), hal::metal::Queue::queue_from_raw(aux.clone(), 1.0), hal::metal::Device::buffer_from_raw(pool.clone(), region_len as u64)) };
+        // SAFETY: live queues of this device.
+        let (hq, haux) = unsafe { (hal::metal::Queue::queue_from_raw(queue.clone(), 1.0), hal::metal::Queue::queue_from_raw(aux.clone(), 1.0)) };
         let slot_raw: [Retained<ProtocolObject<dyn MTLBuffer>>; 3] = std::array::from_fn(|_| device.newBufferWithLength_options(16, MTLResourceOptions::StorageModeShared).expect("slot uniform"));
         // SAFETY: device-owned objects.
         let (enc, fence, aux_enc, aux_fence) = unsafe {
@@ -654,7 +650,6 @@ impl Fused {
             queue: hq,
             aux: haux,
             ev: device_ev.clone(),
-            region: hregion,
             region_raw: pool.clone(),
             pso_bin: pipes.pso_bin,
             pso_tile: pipes.pso_tile,
