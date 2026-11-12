@@ -94,3 +94,43 @@ Branch `r7/bench` in `wt/r7-bench`, from `round6` `3b0b00c698`. Brief: `bough/ru
   lane: derived clips recomputed in rank order; not on round6 yet) and the list-row transition panic (trigger from
   the chat agent: the transition must start after the row mounted, the view scrolled to the end, and a resize
   before the frame).
+
+### 2026-11-12 (later): the heavy scenes in other frameworks
+
+Coordinator's job: port the sheet and the canvas (then the others) to iced, egui and gpui-kit, run all four
+frameworks under gui-bench/fakeland on ilo-prod in one session, bough on the Mac for reference, results on the
+dashboard by host and renderer; reduce the two unreproduced defects to failing tests.
+
+* Framework choice kept as suggested: egui (immediate mode), iced (Elm architecture, view rebuilt per message),
+  gpui-kit (GPUI: retained entities, cached views). They were the three of zortax's quick run with working builds
+  and mostly sane cells. A fine-grained-signal framework (zgui, floem or freya) would be the most informative
+  fourth, since that is bough's own architecture; not started.
+* Design: the scenes join gui-bench as new scenario kinds rather than a separate harness, so the same fakeland
+  probes and validity checks apply to every framework. `comparisons/gui-bench-scenes/`: `overlay/` holds the files
+  copied over gui-bench 0fd4510 on ilo-prod: `apps/shared/scenes.rs` (the shared spec: geometry, colours, data,
+  keys, CLI), `runner/src/scenes.rs` (layout checks, probes), the runner's registrations, `apps/<fw>/`
+  (each framework's port), `apps/bough` (bough's app: the platform lane's eight scenarios plus the scenes).
+  `sync.sh` copies the overlay, `remote.sh` builds an app and runs one quick cell (summary + screenshot),
+  `flatten.py` turns a run into metric rows with validity. `PORT-BRIEF.md` is what the porting agents follow.
+* Probes per scene cell (after startup and the layout check): idle; hover (the fan-out: pointer onto the target,
+  pixels of the restyled region); theme (`t`, key latency); edit (`e` / `m`, key latency); scroll (sheet); resize
+  storm. Sizes: sheet 1,000 and 10,000 rows (10 K and 100 K cells), canvas 1,000 and 5,000 nodes.
+* ilo-prod: `/root/work/r7/bench/gb` (gui-bench 0fd4510 + overlay), `fakeland` 71695e7, toolchains as hard links
+  (nightly-2026-04-16 for gui-bench, 2026-10-17 for bough), `gb-env.sh` sources the zortax nix env read-only.
+  bough's app builds from `/root/work/r7/bench/bough` on a local branch `r7/bench-plat` = r7/bench merged with
+  r7/platform c2c001b1e5 (conflicts resolved in the platform lane's favour: its bough-sys counters and Linux
+  examples; app.rs from r7/platform, so the hotpath sites in app.rs are absent there). Not pushed anywhere.
+* bough's sheet is the standing workload itself, now following the spec's data and keys (`t`, `e` on a focused
+  root). Two visual bugs it had found by the first screenshot: the page right of the cells was FILL_HOT whenever no
+  column was hovered (`fill(look, NO_HOVER, 0)` matched NO_HOVER) and the selection outline drew under its cell.
+  Fixed; the Mac baseline's sheet numbers predate the fix (cost unchanged: one wire's colour).
+* First bough cells (quick, ilo-prod, CPU executor, wl_shm, load ~6-10): sheet 1,000 rows: startup to first
+  present 95 ms, idle RSS 50 MB, hover total p50 11.5 ms (input to commit 1.05 ms), theme 14.7 ms (4.97), edit
+  12.1 ms (0.20), scroll smoothness 94.8 at 60 fps, resize configure to present 17 ms; 10,000 rows: hover 15.1 ms
+  (5.65), theme 21.2 ms (12.1), edit 12.1 ms (0.23), idle RSS 346 MB, resize invalid (wake lateness: ~1 s of CPU
+  per resize of 100 K cells).
+* Defects reduced to failing tests (tests/defects.rs, `--ignored`): a scroll offset not re-clamped when the
+  content gets shorter (2,940 against an end of 780 after widening); the image atlas panicking at nine distinct
+  400 x 260 px images (`image atlas full`, deco.rs:215). With the earlier two, four defect repros now.
+* Porting agents (Sonnet, one per framework: iced, egui, gpui-kit) and the canvas agent for bough's canvas edition
+  are running.
