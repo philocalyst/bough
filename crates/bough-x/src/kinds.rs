@@ -10,6 +10,8 @@ pub trait FillArch: Arch {
 }
 pub trait NumArch: Arch {
     const DECIMALS: u8;
+    /// The least number of digits drawn, zeros on the left (`{:05}` is 5).
+    const PAD: u8 = 0;
     fn value(&self, u: &U) -> i32;
     fn color(&self, u: &U) -> Color;
 }

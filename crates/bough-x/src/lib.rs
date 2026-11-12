@@ -5,6 +5,7 @@
 //! * [`store`]: archetype columns in 64-record pages; the finite-difference derivative; tile damage.
 //! * [`kinds`]: the paint kinds, generic over their operands' expressions.
 //! * [`sink`]: `view` drives a sink; rows of a list are plain tuples; relations carry their own journal.
+//! * [`text`]: a line of shaped text as a record (a two-word run of the shared glyph lanes) and padded numbers.
 //! * [`world`]: the driver.
 //! * [`reflect`]: the typed walk every tool reads (tests, theming, accessibility, events, an inspector).
 //! * [`soft`]: a reference raster and an immediate-mode sink, both oracles.
@@ -17,6 +18,7 @@ pub mod reflect;
 pub mod sink;
 pub mod soft;
 pub mod store;
+pub mod text;
 pub mod world;
 
 pub mod prelude {
@@ -25,5 +27,6 @@ pub mod prelude {
     pub use crate::event::{Button, Ev, Interact, Key, Mods, hover};
     pub use crate::sink::{FIXED, Journal, List, Rel, Row, Sink, View};
     pub use crate::store::{NO_WORD, Rect, Space};
+    pub use crate::text::{Digits, Line};
     pub use crate::world::World;
 }

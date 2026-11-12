@@ -169,6 +169,10 @@ name = "bough-expr"
 version = "0.0.0"
 
 [[package]]
+name = "bough-face"
+version = "0.0.0"
+
+[[package]]
 name = "bough-frame"
 version = "0.0.0"
 
@@ -281,6 +285,7 @@ name = "bough-text"
 version = "0.0.0"
 dependencies = [
  "bough-damage-lab",
+ "bough-face",
  "bough-mem",
  "icu_segmenter",
  "libc",
@@ -348,6 +353,7 @@ name = "bough-x"
 version = "0.0.0"
 dependencies = [
  "bough-expr",
+ "bough-face",
  "bough-mem",
 ]
 
