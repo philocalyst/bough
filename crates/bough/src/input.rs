@@ -201,7 +201,15 @@ pub(crate) struct Field {
     pub focused: bool,
     /// The caret's blink phase: shown (`true`) or hidden.
     pub lit: bool,
+    /// Select-all (ctrl/cmd + A): the caret quad spans the text in the selection colour, and the next edit
+    /// replaces (a character) or clears (backspace, delete) the whole text; a movement key ends it.
+    pub all: bool,
+    /// The caret quad's own width (device px), restored when a selection ends.
+    pub caret_w: f32,
 }
+
+/// Select-all's highlight (premultiplied blending of RGBA 51, 144, 255 at 40 %).
+const SELECTION: u32 = 0x66ff_9033;
 
 /// zgui's smooth scroll (zgui-scroll `Tween`): 240 ms, ease-out cubic; a detent during a glide adds to
 /// its destination and restarts the ease from where the content has reached.
@@ -846,9 +854,9 @@ unsafe fn patch_caret(rt: &mut Rt, w: &Wire, _sig: *const u8, _owner: *const u8)
 
 /// Put field `f`'s caret quad at its byte index (pen of that slot, or the label's end).
 fn place_caret(rt: &mut Rt, f: u32) {
-    let (ti, cn, caret, color, focused) = {
+    let (ti, cn, caret, color, focused, all, cw) = {
         let fl = &rt.input.fields[f as usize];
-        (fl.ti, fl.caret_node, fl.caret, fl.caret_color, fl.focused && fl.lit)
+        (fl.ti, fl.caret_node, fl.caret, fl.caret_color, fl.focused && fl.lit, fl.all && fl.focused, fl.caret_w)
     };
     let len = rt.texts[ti as usize].bytes().len();
     let caret = caret.min(len);
@@ -867,13 +875,22 @@ fn place_caret(rt: &mut Rt, f: u32) {
         _ => 0,
     };
     let x = bough_text::pool::pen_px(units, scale, ox + 0.5) as f32;
+    // select-all: the caret quad spans the text (pen 0 to the label's width) in the selection colour
+    let (x, w, want) = match &rt.texts[ti as usize].shape {
+        crate::text::TShape::Label(lb) if all && len > 0 => {
+            let x0 = bough_text::pool::pen_px(0, scale, ox + 0.5) as f32;
+            let x1 = bough_text::pool::pen_px(lb.width(), scale, ox + 0.5) as f32;
+            (x0, (x1 - x0).max(cw), SELECTION)
+        }
+        _ => (x, cw, if focused { color } else { color & 0x00ff_ffff }),
+    };
     let n = &mut rt.nodes[cn as usize];
-    let want = if focused { color } else { color & 0x00ff_ffff };
-    let (moved, recolor) = (n.x != x, n.color != want);
+    let (moved, recolor) = (n.x != x || (cw > 0.0 && n.w != w), n.color != want);
+    let w = if cw > 0.0 { w } else { n.w };
     if !moved && !recolor {
         return;
     }
-    let (inst, h, old, (y, w, hh)) = (rt.runs[n.run as usize].first, n.handle, n.color, (n.y, n.w, n.h));
+    let (inst, h, old, (y, hh)) = (rt.runs[n.run as usize].first, n.handle, n.color, (n.y, n.h));
     n.color = want;
     rt.inst_mut(inst).color = want;
     if moved {
@@ -910,7 +927,7 @@ impl<V: 'static> TextField<'_, V> {
         quad(x, y, w, h).bg(self.bg).rounded(self.radius).border(1.0, self.border).children(()).mount(m);
         let a = act_for(m, before, nodes_before, KF_FOCUS);
         let f = m.rt.input.fields.len() as u32;
-        m.rt.input.fields.push(Field { off: self.sig.off, ti: NONE, caret_node: NONE, caret: 0, caret_color: self.color.0, focused: false, lit: true });
+        m.rt.input.fields.push(Field { off: self.sig.off, ti: NONE, caret_node: NONE, caret: 0, caret_color: self.color.0, focused: false, lit: true, all: false, caret_w: 0.0 });
         m.rt.input.acts[a as usize].field = f;
         // children inside the border, clipped to the inner box
         let (ox, oy, depth, clip) = (m.ox, m.oy, m.depth, m.clip);
@@ -935,6 +952,7 @@ impl<V: 'static> TextField<'_, V> {
         no_hit(quad(self.pad, ty, 1.0, caret_h).bg(sig_caret(self.sig, f, self.color))).mount(m);
         let cnode = m.scope.nodes[cn_before..].iter().copied().find(|&n| m.rt.nodes[n as usize].handle.idx == m.recs[cb].handle).expect("caret node");
         m.rt.input.fields[f as usize].caret_node = cnode;
+        m.rt.input.fields[f as usize].caret_w = m.rt.nodes[cnode as usize].w;
         let tn_before = m.scope.nodes.len();
         text(self.sig).at(self.pad, ty).size(self.size).line_height(lh).color(self.color).mount(m);
         let tnode = m.scope.nodes[tn_before..].iter().copied().find(|&n| m.rt.nodes[n as usize].text != NONE).expect("label node");
@@ -1401,6 +1419,12 @@ impl<V: View> App<V> {
         let fa = self.rt.input.focus_act;
         if fa != 0 {
             let f = self.rt.input.acts[fa as usize].field;
+            if f != NONE && (mods.cmd || mods.ctrl) && matches!(key, Key::Char('a' | 'A')) {
+                self.rt.input.fields[f as usize].all = true;
+                place_caret(&mut self.rt, f);
+                self.settle_input();
+                return;
+            }
             if f != NONE && !mods.cmd && !mods.ctrl && self.edit_field(f, key) {
                 self.settle_input();
                 return;
@@ -1454,6 +1478,30 @@ impl<V: View> App<V> {
         let sig = unsafe { &mut *(o.add(off as usize) as *mut Signal<String>) };
         let len = sig.len();
         let caret = caret.min(len);
+        if self.rt.input.fields[f as usize].all {
+            // the whole text is selected: an edit replaces or clears it, a movement ends the selection
+            let new_caret = match key {
+                Key::Char(c) => {
+                    sig.replace_range(0..len, "");
+                    sig.insert(0, c);
+                    c.len_utf8()
+                }
+                Key::Backspace | Key::Delete => {
+                    sig.replace_range(0..len, "");
+                    0
+                }
+                Key::Left | Key::Home => 0,
+                Key::Right | Key::End => len,
+                _ => return false,
+            };
+            let fl = &mut self.rt.input.fields[f as usize];
+            fl.all = false;
+            fl.caret = new_caret;
+            fl.lit = true;
+            self.rt.input.blink_t = 0.0;
+            place_caret(&mut self.rt, f);
+            return true;
+        }
         let prev = |s: &str, i: usize| s[..i].char_indices().next_back().map_or(0, |(j, _)| j);
         let next = |s: &str, i: usize| s[i..].chars().next().map_or(i, |c| i + c.len_utf8());
         let new_caret = match key {
@@ -1498,6 +1546,7 @@ impl<V: View> App<V> {
             let f = self.rt.input.acts[a as usize].field;
             if f != NONE {
                 self.rt.input.fields[f as usize].focused = false;
+                self.rt.input.fields[f as usize].all = false;
                 place_caret(&mut self.rt, f);
             }
         }
