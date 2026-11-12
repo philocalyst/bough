@@ -108,6 +108,63 @@ op!(And = x_and(a: A: Vec4i, b: B: Vec4i) -> Vec4i; opaque = false);
 op!(/// A word read as a signed value.
     I = x_i(a: A: u32) -> i32; opaque = false);
 
+/// Whether a colour's alpha is full, as a property of the record: a function of record words and constants
+/// only, never of the block, so it cannot change between frames (only a record write changes it, and that
+/// reruns the window pass). This is what lets a colour the author gave as a plain run-time value
+/// (`.bg(theme.panel)`: one record word) cover what is beneath it: no type has to assert it.
+///
+/// `MAY`: the type admits a full alpha at all (false: the cover is not even computed). The generated GPU
+/// function derives the same predicate from the code tree (`emit::full`); `emit::archetype` asserts the two
+/// agree on `MAY`.
+pub trait Alpha: Expr<Out = Vec4u> {
+    const MAY: bool;
+    fn full(&self, cx: &Cx) -> bool;
+}
+impl<C: Expr<Out = u32>> Alpha for Pm<C> {
+    const MAY: bool = C::READS == 0;
+    #[inline(always)]
+    fn full(&self, cx: &Cx) -> bool {
+        C::READS == 0 && x::x_full(self.c.eval(cx))
+    }
+}
+impl<C: Expr<Out = u32>> Alpha for Pmo<C> {
+    const MAY: bool = true;
+    #[inline(always)]
+    fn full(&self, _: &Cx) -> bool {
+        true
+    }
+}
+impl<A: Alpha, B: Alpha, T: Expr<Out = u32>> Alpha for MixV<A, B, T>
+where
+    (A::Stage, B::Stage, T::Stage): JoinAll,
+{
+    const MAY: bool = A::MAY && B::MAY;
+    #[inline(always)]
+    fn full(&self, cx: &Cx) -> bool {
+        self.a.full(cx) && self.b.full(cx)
+    }
+}
+impl<C: Expr<Out = u32>, A: Alpha, B: Alpha> Alpha for SelV<C, A, B>
+where
+    (C::Stage, A::Stage, B::Stage): JoinAll,
+{
+    const MAY: bool = A::MAY && B::MAY;
+    #[inline(always)]
+    fn full(&self, cx: &Cx) -> bool {
+        self.a.full(cx) && self.b.full(cx)
+    }
+}
+impl<A: Expr<Out = Vec4u>, T: Expr<Out = u32>> Alpha for Fade<A, T>
+where
+    (A::Stage, T::Stage): JoinAll,
+{
+    const MAY: bool = false;
+    #[inline(always)]
+    fn full(&self, _: &Cx) -> bool {
+        false
+    }
+}
+
 /// A record's four words as a rect.
 pub type RecRect = RectW<Rec, Rec, Rec, Rec>;
 pub fn rec_rect(r: [i32; 4]) -> RecRect {

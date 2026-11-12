@@ -139,12 +139,46 @@ fn staged(mk: &str, args: &[&Code], mut base: usize, clip: &str, u: char) -> Str
     a.push(clip.into());
     format!("{mk}({})", a.join(", "))
 }
+/// `Alpha::full` of a colour expression whose first record word is `base`: `None` where the type admits no
+/// full alpha (`Alpha::MAY` false).
+fn full(c: &Code, base: usize) -> Option<String> {
+    let Code::Call(n, a) = c else { return None };
+    let both = |x: &Code, bx: usize, y: &Code, by: usize| Some(format!("({} && {})", full(x, bx)?, full(y, by)?));
+    match (*n, *a) {
+        ("x_pmo", _) => Some("true".into()),
+        ("x_pm", [w]) if reads(w) == 0 => Some(format!("x_full({})", expr(w, &mut { base }, 'u'))),
+        ("x_mixv", [x, y, _]) => both(x, base, y, base + words(x)),
+        ("x_selv", [k, x, y]) => both(x, base + words(k), y, base + words(k) + words(x)),
+        _ => None,
+    }
+}
+/// The condition under which a primitive's core covers, if its type admits one.
+fn prim_full(args: &[&Code], idx: &[usize], base: usize) -> Option<String> {
+    let mut out = vec!["true".to_string()];
+    for &i in idx {
+        let b = base + args[..i].iter().map(|c| words(c)).sum::<usize>();
+        out.push(full(args[i], b)?);
+    }
+    Some(out.join(" && "))
+}
+/// Every primitive's `opaque` flag (from `Alpha::MAY`, the CPU's side) agrees with what `full` derives from
+/// the code tree (the GPU's side).
+fn check_full(p: &PCode, name: &str) {
+    match p {
+        PCode::Prim { args, opaque, full: idx, .. } => assert_eq!(*opaque, !idx.is_empty() && prim_full(args, idx, 0).is_some(), "{name}: the two definitions of a full alpha disagree"),
+        PCode::Over { a, b, .. } => {
+            check_full(a, name);
+            check_full(b, name);
+        }
+        PCode::Clip { p, .. } | PCode::Hit { p, .. } => check_full(p, name),
+    }
+}
 /// `Paint::cover` as an expression.
 fn cover(p: &PCode, base: usize, clip: &str) -> String {
     match p {
-        PCode::Prim { mk, args, opaque, .. } => {
+        PCode::Prim { mk, args, opaque, full: idx, .. } => {
             if *opaque {
-                format!("c_core({})", staged(mk, args, base, clip, 'u'))
+                format!("x_keep(c_core({}), {})", staged(mk, args, base, clip, 'u'), prim_full(args, idx, base).unwrap())
             } else {
                 EMPTY.into()
             }
@@ -323,6 +357,7 @@ pub fn uniform_names(reads: u64, pre: char) -> Vec<String> {
 pub fn archetype(lang: Lang, k: usize, d: &Desc, out: &mut String) {
     let p = d.code;
     assert_eq!(pwords(p), d.words, "{}: the code tree and the record disagree about its words", d.name);
+    check_full(p, d.name);
     let ws: Vec<(T, String)> = (0..d.words).map(|i| (T::U32, format!("w{i}"))).collect();
     let us: Vec<(T, String)> = uniform_names(d.reads, 'u').into_iter().map(|n| (T::U32, n)).collect();
     let os: Vec<(T, String)> = uniform_names(d.reads, 'o').into_iter().map(|n| (T::U32, n)).collect();

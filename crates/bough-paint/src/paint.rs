@@ -7,7 +7,7 @@
 //! staged primitives, in paint order, the kind of each call fixed by the type. The tile rasteriser, the
 //! flat-row classifier, the window pass, the per-pixel specification, the oracle's stager and the pick are
 //! six sinks; each is monomorphised per archetype, so none of them tests a kind.
-use crate::expr::{Code, Cx, Expr, Ty, Val, Words};
+use crate::expr::{Alpha, Code, Cx, Expr, Ty, Val, Words};
 use crate::ops::ops as x;
 use bough_kernel::Cmd;
 use wgsl_rs::std::{Vec4, Vec4i, Vec4u};
@@ -37,7 +37,16 @@ pub const fn worst(a: Cost, b: Cost) -> Cost {
 #[derive(Debug)]
 pub enum PCode {
     /// `p(mk(args.., clip), x, y)`; `glyph`: `p` also takes the atlas byte at `x_texel(mk(..), x, y, aw)`.
-    Prim { mk: &'static str, p: &'static str, args: &'static [&'static Code], tys: &'static [Ty], glyph: bool, opaque: bool },
+    Prim {
+        mk: &'static str,
+        p: &'static str,
+        args: &'static [&'static Code],
+        tys: &'static [Ty],
+        glyph: bool,
+        /// Its core covers when the colour operands `full` names (indices into `args`) all have full alpha.
+        opaque: bool,
+        full: &'static [usize],
+    },
     /// `a` then `b`; `cut`: `b`'s core is opaque, so `a` is skipped inside it.
     Over { a: &'static PCode, b: &'static PCode, cut: bool },
     Clip { p: &'static PCode, k: &'static Code },
@@ -85,22 +94,26 @@ pub trait Paint: Words {
 }
 
 /// A primitive from its stager leaf and its shade leaf:
-/// `prim!(Name: sink_method = mk_leaf, p_leaf(field: Type: Out: moves_window, ..); opaque = ..; cost = ..)`.
+/// `prim!(Name: sink_method = mk_leaf, p_leaf(field: Type: Out: moves_window, ..); full = [colour operands
+/// whose full alpha makes the core a cover, with their positions]; cover = ..; cost = ..)`.
 macro_rules! prim {
-    ($(#[$m:meta])* $name:ident : $sink:ident = $mk:ident, $p:ident ( $($f:ident : $T:ident : $ty:ty : $geom:literal),* ); opaque = $opq:expr; cost = $cost:expr; glyph = $gl:literal) => {
+    ($(#[$m:meta])* $name:ident : $sink:ident = $mk:ident, $p:ident ( $($f:ident : $T:ident : $ty:ty : $geom:literal),* ); full = [$($ff:ident : $FT:ident = $fi:literal),*]; cover = $cov:literal; cost = $cost:expr; glyph = $gl:literal) => {
         $(#[$m])*
         #[repr(C)]
         #[derive(Clone, Copy)]
         pub struct $name<$($T),*> { $(pub $f: $T),* }
         // SAFETY: `repr(C)` over `Words` operands.
         unsafe impl<$($T: Words),*> Words for $name<$($T),*> {}
-        impl<$($T: Expr<Out = $ty>),*> Paint for $name<$($T),*> {
+        impl<$($T: Expr<Out = $ty>),*> Paint for $name<$($T),*>
+        where
+            $($FT: Alpha,)*
+        {
             const READS: u64 = 0 $(| $T::READS)*;
             const GEOM_READS: u64 = 0 $(| if $geom { $T::READS } else { 0 })*;
-            const OPAQUE_CORE: bool = $opq;
+            const OPAQUE_CORE: bool = $cov $(&& $FT::MAY)*;
             const COST: Cost = $cost;
             const LAYERS: usize = 1;
-            const CODE: &'static PCode = &PCode::Prim { mk: stringify!($mk), p: stringify!($p), args: &[$($T::CODE),*], tys: &[$(<$ty as Val>::TY),*], glyph: $gl, opaque: $opq };
+            const CODE: &'static PCode = &PCode::Prim { mk: stringify!($mk), p: stringify!($p), args: &[$($T::CODE),*], tys: &[$(<$ty as Val>::TY),*], glyph: $gl, opaque: Self::OPAQUE_CORE, full: &[$($fi),*] };
             #[inline(always)]
             fn paint<Sk: Sink>(&self, cx: &Cx, clip: Vec4i, s: &mut Sk) {
                 s.$sink(x::$mk($(self.$f.eval(cx)),*, clip))
@@ -111,24 +124,24 @@ macro_rules! prim {
             }
             #[inline(always)]
             fn cover(&self, cx: &Cx, clip: Vec4i) -> Vec4i {
-                if Self::OPAQUE_CORE { x::$mk($(self.$f.eval(cx)),*, clip).core } else { EMPTY }
+                if Self::OPAQUE_CORE $(&& self.$ff.full(cx))* { x::$mk($(self.$f.eval(cx)),*, clip).core } else { EMPTY }
             }
         }
     };
 }
 
 prim!(/// A solid box (no antialiasing: pixels whose centres it holds).
-    Solid: solid = mk_solid, p_solid(b: B: Vec4i: true, c: C: Vec4u: false); opaque = C::OPAQUE; cost = Cost::Flat; glyph = false);
+    Solid: solid = mk_solid, p_solid(b: B: Vec4i: true, c: C: Vec4u: false); full = [c: C = 1]; cover = true; cost = Cost::Flat; glyph = false);
 prim!(/// A rounded box.
-    RRect: rrect = mk_rrect, p_rrect(b: B: Vec4i: true, r: R: i32: true, c: C: Vec4u: false); opaque = C::OPAQUE; cost = Cost::Edge; glyph = false);
+    RRect: rrect = mk_rrect, p_rrect(b: B: Vec4i: true, r: R: i32: true, c: C: Vec4u: false); full = [c: C = 2]; cover = true; cost = Cost::Edge; glyph = false);
 prim!(/// A rounded box of colour `fill` with a border of width `w` in colour `c` inside its edge.
-    Border: border = mk_border, p_border(b: B: Vec4i: true, r: R: i32: true, w: W: i32: true, c: C: Vec4u: false, fill: F: Vec4u: false); opaque = F::OPAQUE; cost = Cost::Edge; glyph = false);
+    Border: border = mk_border, p_border(b: B: Vec4i: true, r: R: i32: true, w: W: i32: true, c: C: Vec4u: false, fill: F: Vec4u: false); full = [fill: F = 4]; cover = true; cost = Cost::Edge; glyph = false);
 prim!(/// The shadow of a rounded box, blurred by a spline of width `blur` (Q8, two sigma).
-    Shadow: shadow = mk_shadow, p_shadow(b: B: Vec4i: true, r: R: i32: true, blur: S: i32: true, c: C: Vec4u: false); opaque = false; cost = Cost::Wide; glyph = false);
+    Shadow: shadow = mk_shadow, p_shadow(b: B: Vec4i: true, r: R: i32: true, blur: S: i32: true, c: C: Vec4u: false); full = []; cover = false; cost = Cost::Wide; glyph = false);
 prim!(/// A two-stop linear gradient in a rounded box.
-    Grad: grad = mk_grad, p_grad(b: B: Vec4i: true, r: R: i32: true, dx: X: i32: false, dy: Y: i32: false, c: C: Vec4u: false, c2: D: Vec4u: false); opaque = C::OPAQUE && D::OPAQUE; cost = Cost::PerPixel; glyph = false);
+    Grad: grad = mk_grad, p_grad(b: B: Vec4i: true, r: R: i32: true, dx: X: i32: false, dy: Y: i32: false, c: C: Vec4u: false, c2: D: Vec4u: false); full = [c: C = 4, c2: D = 5]; cover = true; cost = Cost::PerPixel; glyph = false);
 prim!(/// One glyph: `b` is its texels' box, `texel` its first texel in the atlas.
-    Glyph: glyph = mk_glyph, p_glyph(b: B: Vec4i: true, texel: T: u32: false, c: C: Vec4u: false); opaque = false; cost = Cost::Flat; glyph = true);
+    Glyph: glyph = mk_glyph, p_glyph(b: B: Vec4i: true, texel: T: u32: false, c: C: Vec4u: false); full = []; cover = false; cost = Cost::Flat; glyph = true);
 
 /// `A` beneath `B`, one record. Where `B`'s core is opaque, `A` is not evaluated: the cut between a record's
 /// own layers is decided by the types, not found by a binner.

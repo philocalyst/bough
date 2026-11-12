@@ -122,6 +122,17 @@ pub mod ops {
     pub fn x_nei(a: i32, b: i32) -> bool {
         a != b
     }
+    /// A packed RGBA8 word's alpha is 255.
+    pub fn x_full(c: u32) -> bool {
+        (c >> 24u32) == 255u32
+    }
+    /// `r` if `k`, else the empty rect.
+    pub fn x_keep(r: Vec4i, k: bool) -> Vec4i {
+        if k {
+            return r;
+        }
+        vec4i(0i32, 0i32, 0i32, 0i32)
+    }
     pub fn x_store(acc: Vec4u) -> u32 {
         store8(acc)
     }
