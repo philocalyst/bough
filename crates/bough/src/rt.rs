@@ -1085,6 +1085,7 @@ impl Rt {
     /// `owner` must point at the live root owner whose wired cells were installed through `sig!` proofs
     /// (every offset in class 0 is an `offset_of!`-proven headed field of it; the head is the first field of
     /// every cell, `#[repr(C)]`), and be derived from a unique borrow (list patches write their cell).
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub unsafe fn settle(&mut self, owner: *const u8) {
         // waves: a wire may queue further cells of the owner (bounded: a cycle is left for the next turn)
         for _ in 0..64 {

@@ -27,6 +27,7 @@
 #![allow(clippy::len_without_is_empty)]
 
 pub mod count;
+pub mod pmu;
 
 use std::alloc::{Layout, alloc_zeroed, dealloc, realloc};
 use std::marker::PhantomData;

@@ -1119,6 +1119,7 @@ impl Rt {
         self.lay.prof.mark(LP_WRITE);
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn lay_flush(&mut self) {
         if self.lay.pending.is_empty() && self.lay.ready.is_empty() && !self.lists.regs.iter().any(|r| r.dirty && !r.dead) {
             if !self.lay.dirty.is_empty() {

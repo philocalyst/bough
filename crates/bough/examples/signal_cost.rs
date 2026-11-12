@@ -85,6 +85,9 @@ fn cells(n: usize, once: bool) -> [u64; 4] {
     [cell(&mut a, 0), cell(&mut a, 1), cell(&mut a, 2), cell(&mut a, 3)]
 }
 
+// `--features hotpath` (or `hotpath-alloc`): hotpath's report of the measured phases at exit; the cells it prints
+// are then instrumented numbers (MEASUREMENT.md), never release results.
+#[cfg_attr(feature = "hotpath", hotpath::main(allocator = bough_mem::count::Counting))]
 fn main() {
     if let Some(reps) = std::env::var("SPIN").ok().and_then(|v| v.parse::<u32>().ok()) {
         // profiling: idle turns of a re-describing owner, nothing else

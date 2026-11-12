@@ -998,6 +998,7 @@ impl<V: View> App<V> {
     /// The pointer moved to (x, y) points. Hover chains change (enter/leave writes and routes) only when
     /// the pointer leaves its hit cell; while a press with a drag route is held, the drag route runs
     /// instead (capture: no hit test).
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn pointer_move(&mut self, x: f32, y: f32) {
         self.sync_pub();
         let (px, py) = self.dev(x, y);
@@ -1226,6 +1227,7 @@ impl<V: View> App<V> {
 
     /// A wheel turned at (x, y) by (dx, dy) lines: the nearest scroller of the chain aims its glide
     /// (detents add to the destination). The glide runs in `tick`.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn wheel(&mut self, x: f32, y: f32, _dx: f32, dy: f32) {
         self.sync_pub();
         let (px, py) = self.dev(x, y);
@@ -1362,6 +1364,7 @@ impl<V: View> App<V> {
 
     /// A key went down. Tab / Shift+Tab move focus (preorder scan of the kind column); a focused text
     /// field edits; otherwise the key routes of the focused record's chain run, nearest first.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn key_down(&mut self, key: Key, mods: Mods) {
         self.sync_pub();
         if key == Key::Tab {
@@ -1548,6 +1551,7 @@ impl<V: View> App<V> {
     /// The window was resized to (w, h) points: the damage rings, tile grid and layout groups take the new
     /// size; the groups re-lay out through cephal's incremental path (root size changed), and every
     /// surface is repainted whole.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn resize(&mut self, w_pt: f32, h_pt: f32) {
         self.sync_pub();
         let s = self.rt.scale;

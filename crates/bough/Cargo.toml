@@ -19,6 +19,9 @@ resvg = { version = "0.46", default-features = false }
 png = "0.17"
 # cephal: the user's retained, incremental CSS layout engine (separate repo, used unmodified, by path)
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }
+# Per-function time and allocation profiles (docs/lanes/bench/MEASUREMENT.md). Optional and off by default: a
+# build without the `hotpath` feature does not compile it, and no number from a build with it is a release number.
+hotpath = { version = "=0.30.3", optional = true, default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 bough-gpu = { path = "../bough-gpu", optional = true }
@@ -33,6 +36,13 @@ block2 = "0.6"
 dispatch2 = "0.3"
 
 [features]
+# hotpath's function timing on the turn's phases (`#[cfg_attr(feature = "hotpath", hotpath::measure)]` sites in
+# app.rs, rt.rs, layout.rs, input.rs) and `hotpath::main` in the examples that opt in. Instrumented: never quote
+# its numbers as release results (MEASUREMENT.md).
+hotpath = ["dep:hotpath", "hotpath/hotpath"]
+# hotpath's per-function allocation counts and bytes (its own `#[global_allocator]`, wrapping
+# `bough_mem::count::Counting` where an example passes it as `allocator = ..`).
+hotpath-alloc = ["hotpath", "hotpath/hotpath-alloc"]
 # The presenter on the vendored wgpu-hal with wgsl-rs kernels (crates/bough-gpu) instead of direct Metal.
 wgpu = ["dep:bough-gpu"]
 # Gate sabotage (RESULTS §15): the scroll copy reads one pixel off; every scroll pixel gate must fail with it.
