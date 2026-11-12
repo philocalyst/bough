@@ -211,3 +211,58 @@ Answers in the new core (F: free, data that exists or a reader derives; N: a new
 A "last turn" record is not needed: a turn's facts persist until the next turn (block, tiles, sweeps, journals,
 the lists' last plans, the pick and focus words), or are derived by a reader holding its previous block, or
 are return values. History is the reader's ring, kept only while it is attached.
+
+## 4. Events, the dataflow run backwards (2026-11-12; `d2dbf6a248` .. `1cf7e5c349`)
+
+Agreed seam first (S1-S3, raster `106fd97a8f` section 8, expr `8af3f228d0` section 9): a pick names a *place*,
+`column << 20 | record` with columns numbered in paint order across the world; pickable is a column property
+from its handler kinds (raster's `Hit<P, I>` and author-chosen ids go away); records with no pointer handler
+are transparent; a pick-only `Area` paint for handler elements with no ink; core words 56..59 (`Focus`,
+`Press`, `Env`, `PressAt`); reduced motion is `Time` run 2^30 ahead of the clock for one-shot transitions plus
+the `Env` bit as an operand of loop leaves (raster's correction); `Code::Id` / `Cx::id` for a record's own place
+(raster's patch to bough-expr, pending).
+
+What an author writes (unchanged from the façade, on any record; the element layer will attach the same calls
+to an element's first record):
+
+```rust
+s.list(&List { .., edits: &self.items.journal }, |r| (
+    Fill(((theme, un::<Sel>()), un::<Hot>(), rec(r as u32)).map(row_fill))
+        .on_click(move |s: &mut Inbox| s.select(r))          // captures its row
+        .on_hover(move |s: &mut Inbox, e: &Ev| s.hover(r, e.on))
+        .focusable(),
+    Label(*self.items.get(r), ink),
+));
+Fill(white).on_text(|s: &mut Inbox, t: &str| s.type_text(t)).on_key(|s: &mut Inbox, e: &Ev| s.field_key(e))
+Fill(grey).on_drag(|s: &mut Inbox, e: &Ev| s.split = e.dx)
+```
+
+What the author did not write: ids, hit regions, registration, a dispatch tree, bubbling setup, a focus ring's
+bookkeeping, tab order, a scroll handler (a wheel over a space whose origin reads a word writes that word, within
+its lists' extent), keyboard activation (Enter/Space click the focused record), pointer capture for drags, or
+anything to keep handlers right when a list's ring reuses a slot (captures are written with the row).
+
+How it works: a record with handlers is `On<T, H>` (nested for several); its column, discovered from that type,
+holds one `&'static Ons` (kinds, hit kernel, a single trampoline, the captures' size); captures live in a CPU
+lane beside the column. An event: the pick (raster's word, or the CPU chain on a CPU frame) gives a place, the
+place gives the column, the column's `Ons::call` runs the handler for the event's kind with `&mut V`. Click
+bubbles from the pressed record to the nearest click handler under the pointer; keys go to the focused record,
+then to records with key handlers it lies inside. Focus is kept as (store, site, row) so it survives its row
+leaving exposure: `Focus` holds the place while the row is exposed and `NONE` otherwise, rewritten after every
+pass. Every entry point returns a `Dispatch` (the "which handler ran" fact for any reader, free when dropped).
+
+Found on the way, fixed on this branch for expr to review: a closure written inside `view<S>` is a different
+type in each sink's instantiation of `view`, so a list row holding a closure (any handler, or a `.map` with a
+closure) failed "a list's row type changed" at the first turn (mount uses `Write`, turns use `Patch`). A list's
+rows are now checked by their call site (the sink methods are `#[track_caller]`), leaf count and size.
+
+Tests (`tests/events.rs`, 11): hover through the pick, labels transparent; click, press-and-release elsewhere,
+`Press`/`PressAt`; captures follow the ring past its capacity and across an insert; keys and text to the focused
+field, Backspace, a key typed into the field not reaching the window; Tab order (window, rows in row order, the
+field); focus survives scrolling away and back; drag capture; reduced-motion clock; the wheel; Enter/Space
+activation; 300 random events with retained == full redraw == immediate paint after each.
+
+Cost (`sheet_x`, 10,000 rows, `dist`, M3 Pro, load 14, against `feb3214293`): hover 7,083 -> 7,809 instructions,
+pointer between headers 8,294 -> 9,246, pointer on the same record 665 -> 717, exposed edit 1,605 -> 1,627, scroll
+three rows 5,387 -> 5,373; idle, theme and select unchanged. About 2 µs per hover against the 50 µs target of
+Amendment 5. `__text` +5.9 KB.
