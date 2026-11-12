@@ -340,6 +340,26 @@ impl CpuRaster {
             self.stats.refused += 1;
             return None;
         }
+        // x86-64: the tile loop compiled a second time for AVX2 + FMA + F16C, chosen at run time (the half
+        // arithmetic is otherwise a library call per conversion); the arithmetic is the same either way
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: the caller's contract; the features are present (checked).
+        let tiles = if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") && std::arch::is_x86_feature_detected!("f16c") {
+            unsafe { self.tiles_v3(rt, w, h, dst, bpr) }
+        } else {
+            unsafe { self.tiles(rt, w, h, dst, bpr) }
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        // SAFETY: the caller's contract.
+        let tiles = unsafe { self.tiles(rt, w, h, dst, bpr) };
+        self.stats.frames += 1;
+        self.stats.tiles += tiles as u64;
+        Some(tiles)
+    }
+
+    /// Every staged tile (see `repair`).
+    #[inline(always)]
+    unsafe fn tiles(&mut self, rt: &Rt, w: i32, h: i32, dst: *mut u8, bpr: usize) -> u32 {
         let mut tiles = 0u32;
         for ty in self.plane.y0..self.plane.y1 {
             let mut bits = self.plane.rows[ty as usize];
@@ -351,12 +371,19 @@ impl CpuRaster {
                 tiles += 1;
             }
         }
-        self.stats.frames += 1;
-        self.stats.tiles += tiles as u64;
-        Some(tiles)
+        tiles
+    }
+
+    /// `tiles` with x86-64-v3's half conversions and FMA.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2,fma,f16c")]
+    unsafe fn tiles_v3(&mut self, rt: &Rt, w: i32, h: i32, dst: *mut u8, bpr: usize) -> u32 {
+        // SAFETY: the caller's contract.
+        unsafe { self.tiles(rt, w, h, dst, bpr) }
     }
 
     /// One tile: the entries that touch it, in paint order, over zeroed accumulators; then the store.
+    #[inline(always)]
     unsafe fn tile(&mut self, rt: &Rt, o: [i32; 2], w: i32, h: i32, dst: *mut u8, bpr: usize) {
         self.tile_ents.clear();
         for (k, e) in self.ents.iter().enumerate() {
@@ -505,6 +532,7 @@ fn img_texel(img: &[u8], x: i32, y: i32) -> [f32; 4] {
     [img[i] as f32 / 255.0, img[i + 1] as f32 / 255.0, img[i + 2] as f32 / 255.0, img[i + 3] as f32 / 255.0]
 }
 
+#[inline(always)]
 fn erf2(x: [f32; 2]) -> [f32; 2] {
     x.map(|x| {
         let s = if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 };
@@ -515,6 +543,7 @@ fn erf2(x: [f32; 2]) -> [f32; 2] {
     })
 }
 
+#[inline(always)]
 fn shadow_x(x: f32, y: f32, sigma: f32, corner: f32, hs: [f32; 2]) -> f32 {
     let delta = (hs[1] - corner - y.abs()).min(0.0);
     let curved = hs[0] - corner + (corner * corner - delta * delta).max(0.0).sqrt();
@@ -524,6 +553,7 @@ fn shadow_x(x: f32, y: f32, sigma: f32, corner: f32, hs: [f32; 2]) -> f32 {
 }
 
 /// A rounded box's Gaussian shadow (`f_shadow`: the closed form along x, 4 samples along y).
+#[inline(always)]
 fn shadow(p: [f32; 2], hs: [f32; 2], sigma: f32, corner: f32) -> f32 {
     let (low, high) = (p[1] - hs[1], p[1] + hs[1]);
     let start = (-3.0 * sigma).clamp(low, high);
@@ -539,6 +569,7 @@ fn shadow(p: [f32; 2], hs: [f32; 2], sigma: f32, corner: f32) -> f32 {
 }
 
 /// `f_shade_t`: a record of kinds 0-3 in a transformed space, at `u` (the pixel centre mapped back).
+#[inline(always)]
 fn shade_t(e: &Ent, u: [f32; 2], atlas: &bough_text::atlas::Atlas) -> [f16; 4] {
     let s = e.xs;
     let mulh = |c: [f16; 4], k: f32| c.map(|v| v * (k as f16));
@@ -576,6 +607,7 @@ fn shade_t(e: &Ent, u: [f32; 2], atlas: &bough_text::atlas::Atlas) -> [f16; 4] {
 }
 
 /// `f_shade_x` for the entries the exact paths do not take: transformed spaces and kinds 4-6.
+#[inline(always)]
 fn shade_x(e: &Ent, c: [f32; 2], atlas: &bough_text::atlas::Atlas, img: &[u8]) -> [f16; 4] {
     if !(c[0] >= e.q[0] && c[0] < e.q[2] && c[1] >= e.q[1] && c[1] < e.q[3]) {
         return [0.0; 4];
