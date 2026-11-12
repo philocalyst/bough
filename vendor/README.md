@@ -97,3 +97,17 @@ same input.
 | parley | `src/builder.rs`, `src/shape/mod.rs` (`build_simple`), `src/layout/data.rs` (`push_slot_run`, `SlotRun`, `run_metrics` factored), `src/bough/fast.rs` (per-segment slots) | **graft 5**: the fused build. Simple text in one item, whose style runs' fonts are first complete candidates with covering tables, is laid out in one pass per font segment from bough's table output (same clusters, glyphs, f32 operations and run accounting as `process_clusters`), skipping analysis, style-index fill, the item/segment loops and harfrust; all or nothing |
 | parley | `src/bough/breaks.rs` (new), `src/analysis/mod.rs`, `src/shape/mod.rs`, `src/layout/data.rs` | **graft 3b**: exact UAX #14 / #29 boundaries for all covered Latin-1 text by walking ICU4X's own baked rule tables (`Baked::SINGLETON_SEGMENTER_BREAK_{LINE,WORD}_V1`) over a 256-entry property map (the iterators' `next` transcribed); graft 3 and graft 5 accept every covered Latin/Common character (digits and other emoji-property characters included) | labels, numbers and log lines take the fused path |
 | parley | `src/layout/layout.rs` (`Layout::retext`), `src/layout/data.rs` (`FastKey`), `src/shape/mod.rs` (`retext_simple`) | **graft 6**: retained re-text. A layout the fused path built from one style on one font keeps that font's key; a new covered text is laid out without the builder, style resolution or font query (boundaries, table shaping, clusters only) | labels, numbers, log lines, messages |
+
+## Layout: cephal
+
+`vendor/cephal` is zortax/cephal `9e77f91` (0.2.0), copied without history (`ad79959f5d`). Its own tests
+(`cargo test --release` in `vendor/cephal`, run on ilo-prod) gate every change below: incremental and parallel
+layout must equal a cold layout bit for bit over random trees and random edits.
+
+| file | change | why |
+|---|---|---|
+| `src/compute/common/overflow.rs` | `contribution_extent` factored out of `scrollable_overflow_contribution` (same expressions) | the one place that says what a parent reads of a child's overflow |
+| `src/tree/input.rs` | `LayoutOutput::same_contribution`: an in-flow child's final answer whose overflow changed only inside the box its parent placed (equal `contribution_extent` bits at the placed size) is the same answer for the parent | lane `layout` (round 6): a text edit inside a box of fixed size no longer re-gathers the overflow of every sibling of the box (`signal_cost`: the per-row growth of a width-changing label write is gone) |
+| `src/schedule/mod.rs` | `answer_changed` takes `in_flow` and reads the child's placed size from its stored layout; out-of-flow boxes keep `same_for_parent` (their containing block's placement record holds their overflow) | as above |
+| `Cargo.toml`, `src/tree/input.rs`, `src/schedule/mod.rs` | features `mutant-overflow-cut`, `mutant-boundary` (compiled out unless enabled) | negative controls: cephal's incremental tests and bough's `tests/lay_diff.rs` must fail with either |
+| `tests/incremental.rs` | `CEPHAL_DEBUG_STEP=<n>` dumps every node before and after step `n` of `overflow_edits_match_cold_layout` | debugging the incremental tests |

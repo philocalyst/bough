@@ -21,13 +21,11 @@ pub fn scrollable_overflow_contribution(
     let contained = contain.contains_scrollable_overflow();
     let propagates_x = !is_scroll_container && !contained && overflow.x == Overflow::Visible;
     let propagates_y = !is_scroll_container && !contained && overflow.y == Overflow::Visible;
-    let end_x = if propagates_x { size.width.max(child_overflow.right) } else { size.width };
-    let end_y = if propagates_y { size.height.max(child_overflow.bottom) } else { size.height };
+    let (start_x, end_x) = if propagates_x { contribution_extent(size.width, child_overflow.left, child_overflow.right) } else { (0.0, size.width) };
+    let (start_y, end_y) = if propagates_y { contribution_extent(size.height, child_overflow.top, child_overflow.bottom) } else { (0.0, size.height) };
     if end_x <= 0.0 || end_y <= 0.0 {
         return Rect::ZERO;
     }
-    let start_x = if propagates_x { child_overflow.left.min(0.0) } else { 0.0 };
-    let start_y = if propagates_y { child_overflow.top.min(0.0) } else { 0.0 };
     let contribution = Rect {
         left: location.x + start_x,
         right: location.x + end_x,
@@ -39,6 +37,16 @@ pub fn scrollable_overflow_contribution(
     } else {
         contribution
     }
+}
+
+/// What [`scrollable_overflow_contribution`] reads of a child's overflow rectangle on an axis where it
+/// propagates: the start clamped to the border box's start and the end to its end, from the size the
+/// child was placed at on that axis and the rectangle's start and end. With the location and size
+/// unchanged, two rectangles whose extents are equal bit for bit contribute the same rectangle, so the
+/// parent cannot tell them apart (see [`crate::tree::LayoutOutput::same_contribution`]).
+#[inline(always)]
+pub fn contribution_extent(size: f32, start: f32, end: f32) -> (f32, f32) {
+    (start.min(0.0), size.max(end))
 }
 
 /// Union of two overflow rects; both always contain the origin.

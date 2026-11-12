@@ -24,6 +24,12 @@ stats = []
 # answers are identical; poisons the unrequested axis of single-axis answers. Slow; for tests.
 verify-cache = []
 taffy-compat = ["dep:taffy"]
+# Negative controls (bough lane `layout`): deliberately wrong cuts that the incremental-equals-cold tests
+# must catch. `mutant-overflow-cut` compares only the end of a child's clamped overflow extent (a change of
+# its start escapes); `mutant-boundary` treats a box whose style fixes both sizes as a relayout boundary
+# whatever its answers say (its content minimum and baselines still reach a parent that reads them).
+mutant-overflow-cut = []
+mutant-boundary = []
 
 [dependencies]
 serde = { version = "1", features = ["derive", "rc"], optional = true }

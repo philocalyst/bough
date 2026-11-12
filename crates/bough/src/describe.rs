@@ -200,6 +200,11 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
                     if k < old.len() && old[k].key == e.dyn_key() && sealed_as(&old[k], &e, &seals, &m.rt.lay.descs, cx).0 {
                         m.pos += old[k].nrec as usize;
                         m.kid += old[k].nkid as usize;
+                        // the sibling cursor steps over the item's layout children too: an item linked or
+                        // unlinked after it (an insertion, a removal) finds its place from `m.prev`
+                        if old[k].last_kid != 0 {
+                            m.prev = old[k].last_kid;
+                        }
                         k += 1;
                         continue;
                     }
