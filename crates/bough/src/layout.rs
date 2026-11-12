@@ -928,7 +928,7 @@ impl LProf {
 pub struct Lay {
     pub eng: Eng,
     pub prof: LProf,
-    pub info: Vec<LInfo>,
+    pub info: bough_mem::Col<LInfo>,
     /// Layout parent while a subtree is being mounted (NONE: the next box is a group root).
     pub cur: u32,
     /// An insertion cursor `(container, after)`: while set, a child attached to `container` is linked after
@@ -955,15 +955,16 @@ pub struct Lay {
 }
 
 impl Lay {
-    pub fn new(scale: f32) -> Lay {
+    /// `store`: the block the façade's tables are carved from (`rt::StoreCaps`).
+    pub fn new(scale: f32, store: &mut bough_mem::Region, sc: &crate::rt::StoreCaps) -> Lay {
         let mut prof = LProf { on: false, acc: [0; 8], last: 0, ovh: 0 };
         if std::env::var_os("BOUGH_LPROF").is_some() {
             prof.enable();
         }
         Lay {
-            eng: Eng::new(),
+            info: store.carve("layout info", sc.ids),
+            eng: Eng::new(store, sc.ids, sc.texts),
             prof,
-            info: Vec::new(),
             cur: NONE,
             ins: (NONE, 0),
             last_box: NONE,

@@ -196,6 +196,9 @@ fn heap(n: usize) {
         println!("  {name:<52} {entries:>9} {bytes:>12} {per:>9.1}");
     }
     println!("  {:<52} {:>9} {:>12} {sum:>9.1}", "sum of the tables", "", "");
+    // columns carved from the reserved block are not the allocator's: their touched bytes are added
+    let cols: f64 = f.2.iter().enumerate().filter(|(_, e)| e.0.starts_with("col ")).map(|(i, e)| (e.2 as f64 - z.2[i].2 as f64) / k).sum();
+    println!("  bytes per row, allocator live + carved columns touched: {:.0}", (f.0[1] - z.0[1]) as f64 / k + cols);
 }
 
 fn main() {

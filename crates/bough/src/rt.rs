@@ -126,6 +126,62 @@ pub struct Caps {
     pub strikes: usize,
 }
 
+/// Capacities of the façade's own (CPU-only) tables, derived from [`Caps`]: every table is a column carved
+/// from one zeroed block (`Rt::new`), so it never moves and never copies what was mounted before (round 6,
+/// lane `store`: type-stable storage). Untouched capacity is not resident.
+#[derive(Clone, Copy, Debug)]
+pub struct StoreCaps {
+    /// Element ids (node id = layout id = record handle index).
+    pub ids: usize,
+    pub texts: usize,
+    pub wires: usize,
+    pub runs: usize,
+}
+
+impl StoreCaps {
+    pub fn of(caps: &Caps) -> StoreCaps {
+        // an id per record the pages can hold, twice over (handles of records not inserted yet, of static
+        // texts, and of removed records whose ids were not reissued yet)
+        let ids = (caps.pages * crate::rt::PAGE_SLOTS * 2).next_power_of_two();
+        StoreCaps { ids, texts: ids, wires: ids * 2, runs: caps.instances }
+    }
+    fn bytes(&self) -> usize {
+        let a = |n: usize| n.next_multiple_of(256) + 256;
+        a(self.ids * size_of::<Node>())
+            + a(self.runs * size_of::<Run>())
+            + a(self.texts * size_of::<crate::text::TextNode>())
+            + a(self.wires * size_of::<Wire>())
+            + a(self.ids * size_of::<crate::layout::LInfo>())
+            + a(self.ids * 16)
+            + crate::lay_deep::Deep::column_bytes(self.ids, self.texts)
+            + 4096
+    }
+}
+
+/// `len` bytes of address space, zero on first touch, as a region (`mmap`: nothing is written or made
+/// resident here, so a generous reservation costs what is used; an allocator's zeroed block of this size is
+/// cleared eagerly, which cost an empty App 415 M instructions when it was tried).
+fn reserve_zeroed(len: usize) -> Region {
+    struct Map(*mut libc::c_void, usize);
+    impl Drop for Map {
+        fn drop(&mut self) {
+            // SAFETY: the mapping made below, unmapped once, after the last column over it is gone (the
+            // region's keeper is dropped with the last reference to the region).
+            unsafe { libc::munmap(self.0, self.1) };
+        }
+    }
+    let len = len.next_multiple_of(bough_mem::PAGE);
+    // SAFETY: an anonymous private mapping: no file, no address hint.
+    let p = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANON, -1, 0) };
+    assert!(p != libc::MAP_FAILED, "bough: cannot reserve {len} bytes of address space for the element tables");
+    // SAFETY: `p` is `len` readable and writable bytes, page aligned, zero on first touch, alive until the
+    // keeper unmaps it, and reached only through this region's columns.
+    unsafe { Region::external(p as *mut u8, len, Box::new(Map(p, len))) }
+}
+
+/// Records per core page.
+pub const PAGE_SLOTS: usize = 64;
+
 impl Caps {
     /// Sized for the comparison scenes with headroom (heavy: ~2.6 K records / 2.3 K glyphs; vlist: ~6 K
     /// glyphs mounted). Untouched capacity costs no memory until written.
@@ -393,20 +449,20 @@ pub struct Rt {
     next_fresh: u32,
     free_blocks: [Vec<u32>; 16],
     free_bits: [Vec<u64>; 16],
-    pub runs: Vec<Run>,
+    pub runs: Col<Run>,
     run_free: Vec<u32>,
-    pub nodes: Vec<Node>,
+    pub nodes: Col<Node>,
     node_free: Vec<u32>,
     /// The wire arena and the owner offsets of wired signals: crate-private, because `settle` trusts them
     /// (every offset is an `offset_of!`-proven `Signal<_>` field, every recipe the closure its patch reads).
-    pub(crate) wires: Vec<Wire>,
+    pub(crate) wires: Col<Wire>,
     pub(crate) wire_free: Vec<u32>,
     /// Per owner class: the offsets of its wired cells (class 0 is the app's root owner; every list
     /// region adds one class shared by all its rows, `list.rs`).
     pub(crate) classes: Vec<Vec<u32>>,
     /// Per owner class: its `View::changed` (rows and entity views of a `View` type; class 0 is the app's).
     pub(crate) class_changed: Vec<Option<ChangedFn>>,
-    pub texts: Vec<crate::text::TextNode>,
+    pub texts: Col<crate::text::TextNode>,
     text_free: Vec<u32>,
     /// Virtual-list regions: crate-private (each holds a type-erased row function its `mount_row` trusts).
     pub(crate) regions: Vec<VRegion>,
@@ -456,6 +512,8 @@ pub struct Rt {
     pub(crate) owner: *const u8,
     /// Keeps a heap region alive (the GPU region is kept alive by the columns' reference count too).
     _region: Region,
+    /// The block the façade's own tables are carved from (`StoreCaps`).
+    _store: Region,
 }
 
 impl Rt {
@@ -511,6 +569,17 @@ impl Rt {
             },
         };
         let (tx, ty) = (layout.tiles_x() as usize, layout.tiles_y() as usize);
+        let sc = StoreCaps::of(&caps);
+        let mut store = reserve_zeroed(sc.bytes());
+        let mut runs: Col<Run> = store.carve("runs", sc.runs);
+        runs.push(Run::default());
+        let mut nodes: Col<Node> = store.carve("nodes", sc.ids);
+        nodes.push(Node::blank());
+        let mut wires: Col<Wire> = store.carve("wires", sc.wires);
+        wires.push(Wire { next: 0, dead: true, latest: false, node: 0, head: 0, cls: 0, patch: nop, recipe: [0; 16] });
+        let texts = store.carve("texts", sc.texts);
+        let lay = crate::layout::Lay::new(scale, &mut store, &sc);
+        let reflect = crate::reflect::Reflect { types: store.carve("element types", sc.ids) };
         Rt {
             bough,
             glyphs,
@@ -524,15 +593,15 @@ impl Rt {
             next_fresh: 0,
             free_blocks: Default::default(),
             free_bits: Default::default(),
-            runs: vec![Run::default()],
+            runs,
             run_free: Vec::new(),
-            nodes: vec![Node::blank()],
+            nodes,
             node_free: Vec::new(),
-            wires: vec![Wire { next: 0, dead: true, latest: false, node: 0, head: 0, cls: 0, patch: nop, recipe: [0; 16] }],
+            wires,
             wire_free: Vec::new(),
             classes: vec![Vec::new()],
             class_changed: vec![None],
-            texts: Vec::new(),
+            texts,
             text_free: Vec::new(),
             regions: Vec::new(),
             clip_dedupe: Vec::new(),
@@ -547,10 +616,10 @@ impl Rt {
             tiles_x: tx,
             tiles_y: ty,
             ctr: Counters::default(),
-            lay: crate::layout::Lay::new(scale),
+            lay,
             lists: Default::default(),
             reclaim_q: Vec::new(),
-            reflect: Default::default(),
+            reflect,
             dyns: Default::default(),
             eviews: Vec::new(),
             asy: Default::default(),
@@ -562,6 +631,7 @@ impl Rt {
             images: Default::default(),
             owner: std::ptr::null(),
             _region: region,
+            _store: store,
         }
     }
 
@@ -1285,14 +1355,16 @@ impl Rt {
     /// The façade's tables as `(name, entries, bytes)`: `size_of` x capacity of each table plus the heap
     /// capacity of every `Vec` / `Box` reachable from its entries (lane `store`: what one mounted element
     /// costs beside its 23 B core record). GPU-region columns (instances, pages, glyph slots) are not heap
-    /// and are not listed.
+    /// and are not listed. Names starting with `col ` are columns carved from the reserved block (not the
+    /// allocator's: the harness adds them to the allocator's live bytes).
     pub fn store_ledger(&self) -> Vec<(&'static str, usize, usize)> {
         use std::mem::size_of;
+        // a carved column's bytes are its high-water length (what was touched), not its reservation
         let mut v: Vec<(&'static str, usize, usize)> = Vec::new();
         v.push(("core: bough (pages' directory, prefix, htab, planes)", self.bough.len(), self.bough.heap_bytes()));
-        v.push(("rt.nodes", self.nodes.len(), self.nodes.capacity() * size_of::<Node>() + self.nodes.iter().map(|n| n.series.capacity() * 4).sum::<usize>() + self.node_free.capacity() * 4));
-        v.push(("rt.runs", self.runs.len(), self.runs.capacity() * size_of::<Run>() + self.run_free.capacity() * 4));
-        v.push(("rt.wires", self.wires.len(), self.wires.capacity() * size_of::<Wire>() + self.wire_free.capacity() * 4));
+        v.push(("col rt.nodes", self.nodes.len(), self.nodes.len() * size_of::<Node>() + self.nodes.iter().map(|n| n.series.capacity() * 4).sum::<usize>() + self.node_free.capacity() * 4));
+        v.push(("col rt.runs", self.runs.len(), self.runs.len() * size_of::<Run>() + self.run_free.capacity() * 4));
+        v.push(("col rt.wires", self.wires.len(), self.wires.len() * size_of::<Wire>() + self.wire_free.capacity() * 4));
         let text_heap = |t: &crate::text::TextNode| {
             t.text.capacity()
                 + match &t.shape {
@@ -1302,8 +1374,8 @@ impl Rt {
                     _ => 0,
                 }
         };
-        v.push(("rt.texts", self.texts.len(), self.texts.capacity() * size_of::<crate::text::TextNode>() + self.texts.iter().map(text_heap).sum::<usize>() + self.text_free.capacity() * 4));
-        v.push(("lay.info", self.lay.info.len(), self.lay.info.capacity() * size_of::<crate::layout::LInfo>()));
+        v.push(("col rt.texts", self.texts.len(), self.texts.len() * size_of::<crate::text::TextNode>() + self.texts.iter().map(text_heap).sum::<usize>() + self.text_free.capacity() * 4));
+        v.push(("col lay.info", self.lay.info.len(), self.lay.info.len() * size_of::<crate::layout::LInfo>()));
         v.extend(self.lay.eng.ledger());
         fn scope_heap(s: &Scope) -> usize {
             (s.nodes.capacity() + s.wires.capacity() + s.runs.capacity() + s.lroots.capacity() + s.dyns.capacity() + s.lregs.capacity() + s.prods.capacity()) * 4
@@ -1316,7 +1388,7 @@ impl Rt {
         }
         v.push(("dyns.parts (items, tapes, scopes)", items, bytes));
         v.push(("dyns.seals", self.dyns.seals.len(), self.dyns.seals.iter().map(|s| s.bytes.capacity()).sum::<usize>()));
-        v.push(("reflect.types", self.reflect.types.len(), self.reflect.types.capacity() * 16));
+        v.push(("col reflect.types", self.reflect.types.len(), self.reflect.types.len() * 16));
         v.push(("reclaim_q", self.reclaim_q.len(), self.reclaim_q.capacity() * size_of::<Scope>() + self.reclaim_q.iter().map(scope_heap).sum::<usize>()));
         v
     }

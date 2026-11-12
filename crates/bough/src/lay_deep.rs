@@ -31,6 +31,7 @@ use cephal::{AvailableSpace, Size, Style};
 use std::collections::HashMap;
 
 
+#[derive(Clone)]
 struct DNode {
     style: u32,
     flags: u8,
@@ -62,7 +63,7 @@ impl DNode {
 }
 
 pub struct Deep {
-    n: Vec<DNode>,
+    n: bough_mem::Col<DNode>,
     styles: StyleTable,
     spec_ids: HashMap<SpecKey, u32, FxBuild>,
     generation: u32,
@@ -76,7 +77,7 @@ pub struct Deep {
     pub orphans: Vec<u32>,
     pub recycled: Vec<u32>,
     /// Text states of measured / sized text leaves, by index (`DNode::ctx`), and the free indices.
-    ctxs: Vec<LeafCtx>,
+    ctxs: bough_mem::Col<LeafCtx>,
     ctx_free: Vec<u32>,
 }
 
@@ -97,9 +98,16 @@ fn meta_bits(styles: &StyleTable, style: u32, measured: bool) -> u8 {
 }
 
 impl Deep {
-    pub fn new() -> Deep {
+    /// Bytes `new` carves for `ids` nodes and `texts` text states.
+    pub fn column_bytes(ids: usize, texts: usize) -> usize {
+        let a = |n: usize| n.next_multiple_of(256) + 256;
+        a(ids * size_of::<DNode>()) + a(texts * size_of::<LeafCtx>())
+    }
+
+    /// The engine over columns carved from `store` (type-stable: a node never moves).
+    pub fn new(store: &mut bough_mem::Region, ids: usize, texts: usize) -> Deep {
         Deep {
-            n: Vec::new(),
+            n: store.carve("layout nodes", ids),
             styles: StyleTable::new(),
             spec_ids: HashMap::default(),
             generation: 1,
@@ -107,7 +115,7 @@ impl Deep {
             last_root: None,
             changed: Vec::new(),
             abs: HashMap::default(),
-            ctxs: Vec::new(),
+            ctxs: store.carve("text leaf states", texts),
             ctx_free: Vec::new(),
             orphans: Vec::new(),
             recycled: Vec::new(),
@@ -167,8 +175,8 @@ impl Deep {
 
     pub fn add(&mut self, hd: Handle, spec: &Spec, scale: f32, ctx: Option<LeafCtx>) -> u32 {
         let i = hd.idx;
-        if self.n.len() <= i as usize {
-            self.n.resize_with(i as usize + 1, DNode::blank);
+        while self.n.len() <= i as usize {
+            self.n.push(DNode::blank());
         }
         let style = self.style_id(spec, scale);
         let flags = meta_bits(&self.styles, style, ctx.as_ref().is_some_and(|c| c.user.is_none()));
@@ -214,8 +222,8 @@ impl Deep {
     /// `add` with an interned style id instead of a `Spec` (layout templates, `ltemplate.rs`).
     pub fn add_style(&mut self, hd: Handle, style: u32, ctx: Option<LeafCtx>) -> u32 {
         let i = hd.idx;
-        if self.n.len() <= i as usize {
-            self.n.resize_with(i as usize + 1, DNode::blank);
+        while self.n.len() <= i as usize {
+            self.n.push(DNode::blank());
         }
         let flags = meta_bits(&self.styles, style, ctx.as_ref().is_some_and(|c| c.user.is_none()));
         let ci = match ctx {
@@ -442,9 +450,10 @@ impl Deep {
             c.run.gid.capacity() * 2 + c.run.x.capacity() * 4 + c.run.cluster.capacity() * 4 + c.text.capacity() + c.starts.capacity() * 4 + c.para.text.capacity() + c.para.words.capacity() * size_of::<bough_text::para::Word>()
         };
         vec![
-            ("lay.eng.n (DNode)", self.n.len(), self.n.capacity() * size_of::<DNode>()),
+            ("col lay.eng.n (DNode)", self.n.len(), self.n.len() * size_of::<DNode>()),
             ("lay.eng.n caches (boxed on first store)", ncache, caches),
-            ("lay.eng.ctxs (LeafCtx)", self.ctxs.len(), self.ctxs.capacity() * size_of::<LeafCtx>() + self.ctxs.iter().map(ctx_heap).sum::<usize>()),
+            ("col lay.eng.ctxs (LeafCtx)", self.ctxs.len(), self.ctxs.len() * size_of::<LeafCtx>()),
+            ("lay.eng.ctxs heap (runs, text, word tables)", self.ctxs.len(), self.ctxs.iter().map(ctx_heap).sum::<usize>()),
             ("lay.eng misc (changed, orphans, recycled, free)", 0, (self.changed.capacity() + self.orphans.capacity() + self.recycled.capacity() + self.ctx_free.capacity()) * 4),
         ]
     }
@@ -452,10 +461,10 @@ impl Deep {
     /// Test support: a copy with no layout state, laid out cold.
     pub fn cold_rects(&self, b: &Bough, root: u32, avail: Size<AvailableSpace>) -> Vec<(u32, (f32, f32, f32, f32))> {
         let mut cold = Deep {
-            n: self
-                .n
-                .iter()
-                .map(|x| DNode {
+            n: {
+                let mut c = bough_mem::Col::owned("cold layout nodes");
+                for x in self.n.iter() {
+                    c.push(DNode {
                     style: x.style,
                     flags: x.flags & META_MASK,
                     live: x.live,
@@ -469,8 +478,10 @@ impl Deep {
                     layout: Layout::ZERO,
                     cache: NodeCache::default(),
                     ctx: x.ctx,
-                })
-                .collect(),
+                    });
+                }
+                c
+            },
             styles: self.styles.clone(),
             spec_ids: HashMap::default(),
             generation: 1,
@@ -478,7 +489,13 @@ impl Deep {
             last_root: None,
             changed: Vec::new(),
             abs: HashMap::default(),
-            ctxs: self.ctxs.clone(),
+            ctxs: {
+                let mut c = bough_mem::Col::owned("cold text leaf states");
+                for x in self.ctxs.iter() {
+                    c.push(x.clone());
+                }
+                c
+            },
             ctx_free: Vec::new(),
             orphans: Vec::new(),
             recycled: Vec::new(),
@@ -492,12 +509,6 @@ impl Deep {
         }
         out.sort_by_key(|e| e.0);
         out
-    }
-}
-
-impl Default for Deep {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

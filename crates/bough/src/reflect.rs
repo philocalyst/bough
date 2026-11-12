@@ -745,9 +745,8 @@ pub(crate) unsafe fn set_raw(s: &'static Schema, root: *mut u8, path: &str, text
 }
 
 /// Element type names by record handle (recorded at mount; reflection of the element tree).
-#[derive(Default)]
 pub struct Reflect {
-    pub(crate) types: Vec<&'static str>,
+    pub(crate) types: bough_mem::Col<&'static str>,
 }
 impl Reflect {
     #[inline]
