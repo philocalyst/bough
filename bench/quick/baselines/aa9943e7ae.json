@@ -1,0 +1,848 @@
+{
+ "schema": "bough-quick/1",
+ "commit": "a6c11ebac9c90ffcf0a31b5b35dd72b52a1a1108",
+ "branch": "lane/iteration/round6",
+ "dirty": false,
+ "date": "2026-11-11T16:19:44",
+ "host": "mileswirht arm64 Apple M3 Pro macOS 15.7.4",
+ "toolchain": "rustc 1.101.0-nightly (5d8fec066 2026-10-16)",
+ "profile": "release",
+ "load": {
+  "start": [
+   64.46,
+   66.86,
+   68.81
+  ],
+  "end": [
+   46.3,
+   50.48,
+   59.08
+  ]
+ },
+ "inject": {},
+ "cells": {
+  "slope.heavy.stream.r0": {
+   "kind": "instr",
+   "unit": "instr/frame",
+   "value": 158262.91666666666,
+   "noise": {
+    "n": 5,
+    "min": 158249.60833333334,
+    "median": 158262.91666666666,
+    "max": 158528.9625
+   },
+   "method": "heavy_headless ZGX_MODE=stream RENDER=0 TICKS=300: one process per run, instructions of the in-process window after warm-up (process-wide, final GPU sync included) / ticks; median of 5, runs serial"
+  },
+  "slope.heavy.scroll.r0": {
+   "kind": "instr",
+   "unit": "instr/frame",
+   "value": 34285.020833333336,
+   "noise": {
+    "n": 5,
+    "min": 34226.629166666666,
+    "median": 34285.020833333336,
+    "max": 34332.7
+   },
+   "method": "heavy_headless ZGX_MODE=scroll RENDER=0 TICKS=300: one process per run, instructions of the in-process window after warm-up (process-wide, final GPU sync included) / ticks; median of 5, runs serial"
+  },
+  "slope.lab.both.r0": {
+   "kind": "instr",
+   "unit": "instr/frame",
+   "value": 28955.370833333334,
+   "noise": {
+    "n": 5,
+    "min": 28955.370833333334,
+    "median": 28955.370833333334,
+    "max": 28963.370833333334
+   },
+   "method": "lab_headless ZGX_MODE=both RENDER=0 TICKS=300: one process per run, instructions of the in-process window after warm-up (process-wide, final GPU sync included) / ticks; median of 5, runs serial"
+  },
+  "slope.animate.r0": {
+   "kind": "instr",
+   "unit": "instr/frame",
+   "value": 13993.45625,
+   "noise": {
+    "n": 5,
+    "min": 13993.45625,
+    "median": 13993.45625,
+    "max": 13993.45625
+   },
+   "method": "animate_headless  RENDER=0 FRAMES=600: one process per run, instructions of the in-process window after warm-up (process-wide, final GPU sync included) / ticks; median of 5, runs serial"
+  },
+  "slope.vlist.scroll.r0": {
+   "kind": "instr",
+   "unit": "instr/frame",
+   "value": 12798.370833333332,
+   "noise": {
+    "n": 5,
+    "min": 12793.795833333334,
+    "median": 12798.370833333332,
+    "max": 12827.7625
+   },
+   "method": "vlist_headless ZGX_MODE=scroll RENDER=0 TICKS=300: one process per run, instructions of the in-process window after warm-up (process-wide, final GPU sync included) / ticks; median of 5, runs serial"
+  },
+  "slope.heavy.stream.r1": {
+   "kind": "instr",
+   "unit": "instr/frame",
+   "value": 266643.9625,
+   "noise": {
+    "n": 5,
+    "min": 263728.1125,
+    "median": 266643.9625,
+    "max": 312670.69583333336
+   },
+   "method": "heavy_headless ZGX_MODE=stream RENDER=1 TICKS=300: one process per run, instructions of the in-process window after warm-up (process-wide, final GPU sync included) / ticks; median of 5, runs serial"
+  },
+  "slope.heavy.stream.r1.main": {
+   "kind": "instr",
+   "unit": "instr/frame",
+   "value": 206424.0625,
+   "noise": {
+    "n": 5,
+    "min": 205803.3375,
+    "median": 206424.0625,
+    "max": 208959.5375
+   },
+   "method": "heavy_headless ZGX_MODE=stream RENDER=1 TICKS=300: one process per run, instructions of the in-process window after warm-up (main thread only (thread_selfcounts), final GPU sync included) / ticks; median of 5, runs serial"
+  },
+  "slope.heavy.scroll.r1": {
+   "kind": "instr",
+   "unit": "instr/frame",
+   "value": 140692.47083333333,
+   "noise": {
+    "n": 5,
+    "min": 138909.5625,
+    "median": 140692.47083333333,
+    "max": 141870.8125
+   },
+   "method": "heavy_headless ZGX_MODE=scroll RENDER=1 TICKS=300: one process per run, instructions of the in-process window after warm-up (process-wide, final GPU sync included) / ticks; median of 5, runs serial"
+  },
+  "slope.heavy.scroll.r1.main": {
+   "kind": "instr",
+   "unit": "instr/frame",
+   "value": 82715.35,
+   "noise": {
+    "n": 5,
+    "min": 81675.41666666667,
+    "median": 82715.35,
+    "max": 83004.79166666667
+   },
+   "method": "heavy_headless ZGX_MODE=scroll RENDER=1 TICKS=300: one process per run, instructions of the in-process window after warm-up (main thread only (thread_selfcounts), final GPU sync included) / ticks; median of 5, runs serial"
+  },
+  "slope.lab.both.r1": {
+   "kind": "instr",
+   "unit": "instr/frame",
+   "value": 134611.27083333334,
+   "noise": {
+    "n": 5,
+    "min": 133588.59583333333,
+    "median": 134611.27083333334,
+    "max": 137312.31666666668
+   },
+   "method": "lab_headless ZGX_MODE=both RENDER=1 TICKS=300: one process per run, instructions of the in-process window after warm-up (process-wide, final GPU sync included) / ticks; median of 5, runs serial"
+  },
+  "slope.lab.both.r1.main": {
+   "kind": "instr",
+   "unit": "instr/frame",
+   "value": 77266.6875,
+   "noise": {
+    "n": 5,
+    "min": 76140.49166666667,
+    "median": 77266.6875,
+    "max": 77422.1375
+   },
+   "method": "lab_headless ZGX_MODE=both RENDER=1 TICKS=300: one process per run, instructions of the in-process window after warm-up (main thread only (thread_selfcounts), final GPU sync included) / ticks; median of 5, runs serial"
+  },
+  "slope.animate.r1": {
+   "kind": "instr",
+   "unit": "instr/frame",
+   "value": 122158.92916666667,
+   "noise": {
+    "n": 5,
+    "min": 121672.78541666667,
+    "median": 122158.92916666667,
+    "max": 123000.80833333333
+   },
+   "method": "animate_headless  RENDER=1 FRAMES=600: one process per run, instructions of the in-process window after warm-up (process-wide, final GPU sync included) / ticks; median of 5, runs serial"
+  },
+  "slope.animate.r1.main": {
+   "kind": "instr",
+   "unit": "instr/frame",
+   "value": 61178.13333333333,
+   "noise": {
+    "n": 5,
+    "min": 60920.104166666664,
+    "median": 61178.13333333333,
+    "max": 62334.84583333333
+   },
+   "method": "animate_headless  RENDER=1 FRAMES=600: one process per run, instructions of the in-process window after warm-up (main thread only (thread_selfcounts), final GPU sync included) / ticks; median of 5, runs serial"
+  },
+  "slope.vlist.scroll.r1": {
+   "kind": "instr",
+   "unit": "instr/frame",
+   "value": 118153.80416666667,
+   "noise": {
+    "n": 5,
+    "min": 117099.67083333334,
+    "median": 118153.80416666667,
+    "max": 118963.9875
+   },
+   "method": "vlist_headless ZGX_MODE=scroll RENDER=1 TICKS=300: one process per run, instructions of the in-process window after warm-up (process-wide, final GPU sync included) / ticks; median of 5, runs serial"
+  },
+  "slope.vlist.scroll.r1.main": {
+   "kind": "instr",
+   "unit": "instr/frame",
+   "value": 60083.63333333333,
+   "noise": {
+    "n": 5,
+    "min": 60053.9125,
+    "median": 60083.63333333333,
+    "max": 62060.14166666667
+   },
+   "method": "vlist_headless ZGX_MODE=scroll RENDER=1 TICKS=300: one process per run, instructions of the in-process window after warm-up (main thread only (thread_selfcounts), final GPU sync included) / ticks; median of 5, runs serial"
+  },
+  "redescribe.owned.1000": {
+   "kind": "instr",
+   "unit": "instr/turn",
+   "value": 2748111,
+   "noise": {
+    "n": 3,
+    "min": 2745730,
+    "median": 2748111,
+    "max": 2748606
+   },
+   "method": "crates/bough/examples/redescribe_cost.rs 1000: a plain column of 1,000 rows, one plain field changed per App::turn, no frame; main-thread instructions per turn by slope (48 vs 16 turns); shape owned; median of 3"
+  },
+  "redescribe.static.1000": {
+   "kind": "instr",
+   "unit": "instr/turn",
+   "value": 2312877,
+   "noise": {
+    "n": 3,
+    "min": 2310012,
+    "median": 2312877,
+    "max": 2313218
+   },
+   "method": "crates/bough/examples/redescribe_cost.rs 1000: a plain column of 1,000 rows, one plain field changed per App::turn, no frame; main-thread instructions per turn by slope (48 vs 16 turns); shape static; median of 3"
+  },
+  "redescribe.bare.1000": {
+   "kind": "instr",
+   "unit": "instr/turn",
+   "value": 465044,
+   "noise": {
+    "n": 3,
+    "min": 465003,
+    "median": 465044,
+    "max": 465044
+   },
+   "method": "crates/bough/examples/redescribe_cost.rs 1000: a plain column of 1,000 rows, one plain field changed per App::turn, no frame; main-thread instructions per turn by slope (48 vs 16 turns); shape bare; median of 3"
+  },
+  "mount.empty": {
+   "kind": "instr",
+   "unit": "instr",
+   "value": 15383227,
+   "noise": {
+    "n": 5,
+    "min": 15248617,
+    "median": 15383227,
+    "max": 17503979
+   },
+   "method": "quick_life mount empty: a bare div (the fixed cost: runtime, region, font); App::new(view, cfg, gpu=false) + the first frame's CPU work, process-wide instructions, a fresh process per run, serial; median of 5"
+  },
+  "mount.counter": {
+   "kind": "instr",
+   "unit": "instr",
+   "value": 19382573,
+   "noise": {
+    "n": 5,
+    "min": 19311082,
+    "median": 19382573,
+    "max": 20356153
+   },
+   "method": "quick_life mount counter: examples/counter.rs; App::new(view, cfg, gpu=false) + the first frame's CPU work, process-wide instructions, a fresh process per run, serial; median of 5"
+  },
+  "mount.list1000": {
+   "kind": "instr",
+   "unit": "instr",
+   "value": 44328443,
+   "noise": {
+    "n": 5,
+    "min": 44241971,
+    "median": 44328443,
+    "max": 44402489
+   },
+   "method": "quick_life mount list1000: a column of 1,000 rows (box + two labels) through each(), not virtualised; App::new(view, cfg, gpu=false) + the first frame's CPU work, process-wide instructions, a fresh process per run, serial; median of 5"
+  },
+  "startup.counter.wall": {
+   "kind": "time",
+   "unit": "ms",
+   "value": 80.661834,
+   "noise": {
+    "n": 5,
+    "min": 74.616208,
+    "median": 80.661834,
+    "max": 86.82275
+   },
+   "method": "quick_life counter, headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); kernel process start (ri_proc_start_abstime) to the first frame complete on the GPU (CLOCK_UPTIME_RAW)",
+   "lock": true,
+   "load": [
+    43.53,
+    50.1,
+    59.06
+   ]
+  },
+  "startup.counter.instr": {
+   "kind": "instr",
+   "unit": "instr",
+   "value": 136086069,
+   "noise": {
+    "n": 5,
+    "min": 135476241,
+    "median": 136086069,
+    "max": 141249856
+   },
+   "method": "quick_life counter, headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); process-wide instructions at the first frame complete (dyld, runtime init, App::new, frame, sync)"
+  },
+  "shutdown.counter.wall": {
+   "kind": "time",
+   "unit": "ms",
+   "value": 3.511,
+   "noise": {
+    "n": 5,
+    "min": 2.207041,
+    "median": 3.511,
+    "max": 4.371875
+   },
+   "method": "quick_life counter, headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); close request (after 100 frames) to the parent's waitid seeing the exit",
+   "lock": true,
+   "load": [
+    43.53,
+    50.1,
+    59.06
+   ]
+  },
+  "shutdown.counter.instr": {
+   "kind": "instr",
+   "unit": "instr",
+   "value": 461323,
+   "noise": {
+    "n": 5,
+    "min": 431163,
+    "median": 461323,
+    "max": 475342
+   },
+   "method": "quick_life counter, headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); the exited process's total instructions minus those at the close request"
+  },
+  "memory.counter.footprint_first": {
+   "kind": "mem",
+   "unit": "MiB",
+   "value": 111.9859619140625,
+   "noise": {
+    "n": 5,
+    "min": 111.64202880859375,
+    "median": 111.9859619140625,
+    "max": 112.70465087890625
+   },
+   "method": "quick_life counter, headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); phys_footprint after the first frame (proc_pid_rusage)"
+  },
+  "memory.counter.rss_first": {
+   "kind": "mem",
+   "unit": "MiB",
+   "value": 19.234375,
+   "noise": {
+    "n": 5,
+    "min": 18.9375,
+    "median": 19.234375,
+    "max": 19.828125
+   },
+   "method": "quick_life counter, headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); resident size after the first frame (proc_pid_rusage)"
+  },
+  "memory.counter.footprint_100": {
+   "kind": "mem",
+   "unit": "MiB",
+   "value": 120.0484619140625,
+   "noise": {
+    "n": 5,
+    "min": 119.78271484375,
+    "median": 120.0484619140625,
+    "max": 120.20465087890625
+   },
+   "method": "quick_life counter, headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); phys_footprint after 100 more frames (proc_pid_rusage)"
+  },
+  "memory.counter.rss_100": {
+   "kind": "mem",
+   "unit": "MiB",
+   "value": 19.640625,
+   "noise": {
+    "n": 5,
+    "min": 19.421875,
+    "median": 19.640625,
+    "max": 19.828125
+   },
+   "method": "quick_life counter, headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); resident size after 100 more frames (proc_pid_rusage)"
+  },
+  "startup.heavy.wall": {
+   "kind": "time",
+   "unit": "ms",
+   "value": 79.380292,
+   "noise": {
+    "n": 5,
+    "min": 72.699541,
+    "median": 79.380292,
+    "max": 88.787542
+   },
+   "method": "heavy_life (ZGX_MODE=both), headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); kernel process start (ri_proc_start_abstime) to the first frame complete on the GPU (CLOCK_UPTIME_RAW)",
+   "lock": true,
+   "load": [
+    43.53,
+    50.1,
+    59.06
+   ]
+  },
+  "startup.heavy.instr": {
+   "kind": "instr",
+   "unit": "instr",
+   "value": 163635506,
+   "noise": {
+    "n": 5,
+    "min": 163380350,
+    "median": 163635506,
+    "max": 164879670
+   },
+   "method": "heavy_life (ZGX_MODE=both), headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); process-wide instructions at the first frame complete (dyld, runtime init, App::new, frame, sync)"
+  },
+  "shutdown.heavy.wall": {
+   "kind": "time",
+   "unit": "ms",
+   "value": 4.276959,
+   "noise": {
+    "n": 5,
+    "min": 2.947291,
+    "median": 4.276959,
+    "max": 7.543542
+   },
+   "method": "heavy_life (ZGX_MODE=both), headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); close request (after 100 frames) to the parent's waitid seeing the exit",
+   "lock": true,
+   "load": [
+    43.53,
+    50.1,
+    59.06
+   ]
+  },
+  "shutdown.heavy.instr": {
+   "kind": "instr",
+   "unit": "instr",
+   "value": 638563,
+   "noise": {
+    "n": 5,
+    "min": 589639,
+    "median": 638563,
+    "max": 703500
+   },
+   "method": "heavy_life (ZGX_MODE=both), headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); the exited process's total instructions minus those at the close request"
+  },
+  "memory.heavy.footprint_first": {
+   "kind": "mem",
+   "unit": "MiB",
+   "value": 108.048583984375,
+   "noise": {
+    "n": 5,
+    "min": 107.54833984375,
+    "median": 108.048583984375,
+    "max": 108.4078369140625
+   },
+   "method": "heavy_life (ZGX_MODE=both), headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); phys_footprint after the first frame (proc_pid_rusage)"
+  },
+  "memory.heavy.rss_first": {
+   "kind": "mem",
+   "unit": "MiB",
+   "value": 19.359375,
+   "noise": {
+    "n": 5,
+    "min": 19.046875,
+    "median": 19.359375,
+    "max": 19.71875
+   },
+   "method": "heavy_life (ZGX_MODE=both), headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); resident size after the first frame (proc_pid_rusage)"
+  },
+  "memory.heavy.footprint_100": {
+   "kind": "mem",
+   "unit": "MiB",
+   "value": 156.26739501953125,
+   "noise": {
+    "n": 5,
+    "min": 156.04852294921875,
+    "median": 156.26739501953125,
+    "max": 156.517333984375
+   },
+   "method": "heavy_life (ZGX_MODE=both), headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); phys_footprint after 100 more frames (proc_pid_rusage)"
+  },
+  "memory.heavy.rss_100": {
+   "kind": "mem",
+   "unit": "MiB",
+   "value": 20.25,
+   "noise": {
+    "n": 5,
+    "min": 20.09375,
+    "median": 20.25,
+    "max": 20.546875
+   },
+   "method": "heavy_life (ZGX_MODE=both), headless, App::new(view, cfg, gpu=true) as Application::run builds it; 5 cold processes, interleaved, after one unmeasured launch (the Metal shader cache warm); resident size after 100 more frames (proc_pid_rusage)"
+  },
+  "smoke.pixels": {
+   "kind": "gate",
+   "unit": "",
+   "value": 1,
+   "noise": {
+    "n": 1,
+    "min": 1,
+    "median": 1,
+    "max": 1
+   },
+   "method": "release test binaries, run directly: bough-vlist --test correctness scroll_is_pixel_exact; bough-heavy --test correctness both_is_pixel_exact_at_every_ring_age; bough --test counter three_clicks_count_to_three_and_repaint_exactly",
+   "seconds": 6.2,
+   "runs": [
+    {
+     "pkg": "bough-vlist",
+     "test": "correctness",
+     "names": [
+      "scroll_is_pixel_exact"
+     ],
+     "ok": true,
+     "s": 3.7,
+     "tail": null
+    },
+    {
+     "pkg": "bough-heavy",
+     "test": "correctness",
+     "names": [
+      "both_is_pixel_exact_at_every_ring_age"
+     ],
+     "ok": true,
+     "s": 2.2,
+     "tail": null
+    },
+    {
+     "pkg": "bough",
+     "test": "counter",
+     "names": [
+      "three_clicks_count_to_three_and_repaint_exactly"
+     ],
+     "ok": true,
+     "s": 0.3,
+     "tail": null
+    }
+   ]
+  }
+ },
+ "details": {
+  "life": {
+   "counter": {
+    "startup_ms": {
+     "n": 5,
+     "min": 74.616208,
+     "median": 80.661834,
+     "max": 86.82275
+    },
+    "premain_ms": {
+     "n": 5,
+     "min": 7.12175,
+     "median": 10.303,
+     "max": 16.652791
+    },
+    "new_ms": {
+     "n": 5,
+     "min": 54.780334,
+     "median": 65.010875,
+     "max": 66.258291
+    },
+    "frame_ms": {
+     "n": 5,
+     "min": 4.912417,
+     "median": 5.570375,
+     "max": 11.264875
+    },
+    "startup_instr": {
+     "n": 5,
+     "min": 135476241,
+     "median": 136086069,
+     "max": 141249856
+    },
+    "premain_instr": {
+     "n": 5,
+     "min": 27044940,
+     "median": 27172529,
+     "max": 27862523
+    },
+    "new_instr": {
+     "n": 5,
+     "min": 93071887,
+     "median": 93873194,
+     "max": 97037192
+    },
+    "frame_instr": {
+     "n": 5,
+     "min": 15113399,
+     "median": 15359414,
+     "max": 16350141
+    },
+    "shutdown_ms": {
+     "n": 5,
+     "min": 2.207041,
+     "median": 3.511,
+     "max": 4.371875
+    },
+    "shutdown_kernel_ms": {
+     "n": 5,
+     "min": 0.269709,
+     "median": 0.299541,
+     "max": 1.104958
+    },
+    "gpu_drop_us": {
+     "n": 5,
+     "min": 37.083,
+     "median": 54.584,
+     "max": 56.666
+    },
+    "app_drop_us": {
+     "n": 5,
+     "min": 16.375,
+     "median": 32.875,
+     "max": 34.083
+    },
+    "exit_ms": {
+     "n": 5,
+     "min": 2.153583,
+     "median": 3.421459,
+     "max": 4.282375
+    },
+    "shutdown_instr": {
+     "n": 5,
+     "min": 431163,
+     "median": 461323,
+     "max": 475342
+    },
+    "gpu_drop_instr": {
+     "n": 5,
+     "min": 49678,
+     "median": 49876,
+     "max": 52607
+    },
+    "app_drop_instr": {
+     "n": 5,
+     "min": 72452,
+     "median": 72919,
+     "max": 75840
+    },
+    "exit_instr": {
+     "n": 5,
+     "min": 308727,
+     "median": 338602,
+     "max": 349298
+    },
+    "footprint_first": {
+     "n": 5,
+     "min": 117065152,
+     "median": 117425792,
+     "max": 118179392
+    },
+    "rss_first": {
+     "n": 5,
+     "min": 19857408,
+     "median": 20168704,
+     "max": 20791296
+    },
+    "footprint_100": {
+     "n": 5,
+     "min": 125601280,
+     "median": 125879936,
+     "max": 126043712
+    },
+    "rss_100": {
+     "n": 5,
+     "min": 20365312,
+     "median": 20594688,
+     "max": 20791296
+    },
+    "max_footprint": {
+     "n": 5,
+     "min": 125666816,
+     "median": 125945472,
+     "max": 126109248
+    },
+    "warmup_launch_ms": 128.0
+   },
+   "heavy": {
+    "startup_ms": {
+     "n": 5,
+     "min": 72.699541,
+     "median": 79.380292,
+     "max": 88.787542
+    },
+    "premain_ms": {
+     "n": 5,
+     "min": 6.389416,
+     "median": 9.57075,
+     "max": 10.757083
+    },
+    "new_ms": {
+     "n": 5,
+     "min": 55.095959,
+     "median": 62.789917,
+     "max": 71.209583
+    },
+    "frame_ms": {
+     "n": 5,
+     "min": 8.007209,
+     "median": 8.864458,
+     "max": 12.517
+    },
+    "startup_instr": {
+     "n": 5,
+     "min": 163380350,
+     "median": 163635506,
+     "max": 164879670
+    },
+    "premain_instr": {
+     "n": 5,
+     "min": 27182224,
+     "median": 27274257,
+     "max": 27708690
+    },
+    "new_instr": {
+     "n": 5,
+     "min": 118802593,
+     "median": 119079840,
+     "max": 119850452
+    },
+    "frame_instr": {
+     "n": 5,
+     "min": 17135440,
+     "median": 17287961,
+     "max": 17511720
+    },
+    "shutdown_ms": {
+     "n": 5,
+     "min": 2.947291,
+     "median": 4.276959,
+     "max": 7.543542
+    },
+    "shutdown_kernel_ms": {
+     "n": 5,
+     "min": 0.202833,
+     "median": 0.394125,
+     "max": 1.792166
+    },
+    "gpu_drop_us": {
+     "n": 5,
+     "min": 39.791,
+     "median": 46.875,
+     "max": 75.583
+    },
+    "app_drop_us": {
+     "n": 5,
+     "min": 33.25,
+     "median": 35.417,
+     "max": 77.5
+    },
+    "exit_ms": {
+     "n": 5,
+     "min": 2.870208,
+     "median": 4.142584,
+     "max": 7.461375
+    },
+    "shutdown_instr": {
+     "n": 5,
+     "min": 589639,
+     "median": 638563,
+     "max": 703500
+    },
+    "gpu_drop_instr": {
+     "n": 5,
+     "min": 53324,
+     "median": 54581,
+     "max": 60360
+    },
+    "app_drop_instr": {
+     "n": 5,
+     "min": 310509,
+     "median": 311662,
+     "max": 315635
+    },
+    "exit_instr": {
+     "n": 5,
+     "min": 225038,
+     "median": 272320,
+     "max": 333267
+    },
+    "footprint_first": {
+     "n": 5,
+     "min": 112772608,
+     "median": 113297152,
+     "max": 113673856
+    },
+    "rss_first": {
+     "n": 5,
+     "min": 19972096,
+     "median": 20299776,
+     "max": 20676608
+    },
+    "footprint_100": {
+     "n": 5,
+     "min": 163628736,
+     "median": 163858240,
+     "max": 164120320
+    },
+    "rss_100": {
+     "n": 5,
+     "min": 21069824,
+     "median": 21233664,
+     "max": 21544960
+    },
+    "max_footprint": {
+     "n": 5,
+     "min": 163694144,
+     "median": 163891008,
+     "max": 164185856
+    },
+    "warmup_launch_ms": 348.4
+   }
+  },
+  "size": {
+   "skipped": "target/production/examples/counter not built (cargo build --profile production -p bough --example counter)"
+  }
+ },
+ "merge_base": {
+  "ref": "lead/round6-base",
+  "commit": "aa9943e7ae50595f6af026773ee82b46a4b85ae0",
+  "changed": [
+   "comparisons/bough-heavy/src/bin/heavy_headless.rs",
+   "comparisons/bough-heavy/src/bin/heavy_life.rs",
+   "comparisons/bough-scenes/src/bin/animate_headless.rs",
+   "comparisons/bough-scenes/src/bin/lab_headless.rs",
+   "comparisons/bough-vlist/src/bin/vlist_headless.rs",
+   "crates/bough-metal/src/perf.rs",
+   "crates/bough/examples/quick_life.rs",
+   "crates/bough/examples/redescribe_cost.rs"
+  ]
+ },
+ "build_s": 570.5,
+ "lock": {
+  "held": true,
+  "waited_s": 0.0,
+  "load": [
+   43.53,
+   50.1,
+   59.06
+  ]
+ },
+ "group_s": {
+  "r0": 1.0,
+  "r1": 6.4,
+  "redescribe": 0.2,
+  "mount": 0.4,
+  "life": 2.1,
+  "smoke": 6.2
+ },
+ "elapsed_s": 586.9
+}

@@ -193,10 +193,9 @@ def redescribe(paths):
         row = [l for l in p.stdout.splitlines() if l.startswith("1000,")][0].split(",")
         return int(row[1]), int(row[3]), int(row[5])
 
-    with ThreadPoolExecutor(JOBS) as ex:
-        res = list(ex.map(one, range(PAR_REPS)))
+    res = [one(k) for k in range(MOUNT_REPS)]  # serial (see mount)
     how = ("crates/bough/examples/redescribe_cost.rs 1000: a plain column of 1,000 rows, one plain field changed per "
-           "App::turn, no frame; main-thread instructions per turn by slope (48 vs 16 turns); shape {}; median of 3")
+           "App::turn, no frame; main-thread instructions per turn by slope (48 vs 16 turns); shape {}; 5 serial runs, median")
     return {f"redescribe.{s}.1000": cell("instr", "instr/turn", [r[i] for r in res], how.format(s))
             for i, s in enumerate(["owned", "static", "bare"])}
 
