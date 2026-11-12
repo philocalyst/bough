@@ -134,3 +134,28 @@ dashboard by host and renderer; reduce the two unreproduced defects to failing t
   400 x 260 px images (`image atlas full`, deco.rs:215). With the earlier two, four defect repros now.
 * Porting agents (Sonnet, one per framework: iced, egui, gpui-kit) and the canvas agent for bough's canvas edition
   are running.
+* Matrix r7-scenes-1 (sheet, canvas; bough, iced, egui, gpui-kit; ilo-prod, one session, 16 cells, 0 failed
+  measurements; `bench/results/r7/guibench/r7-scenes-1/`). Renderers differ: bough's CPU executor on one thread
+  (threads_max 1) against wgpu on lavapipe (72-93 threads, 144-386 % CPU). Every canvas report and about half the
+  sheet's fail only fakeland's `wake_lateness` check (a few compositor wakes > 2 ms; host load 9-11): shown hollow.
+  Headlines (total input-to-present p50): sheet 1,000 rows hover bough 12.7 ms, egui 14.6, gpui-kit 29.4, iced 29.8;
+  sheet 10,000 rows hover 14.6 / 15.5 / 29.4 / 174, resize configure-to-present bough 1,040 ms (relayout of 100 K
+  mounted cells) against 25 / 38 / 151; canvas 5,000 hover 889 / 106 / 189 / 78 (bough's single-threaded CPU
+  executor re-rasterising the whole canvas: `BOUGH_ONCE=1` is as slow, so not re-description). bough's idle RSS
+  is the lowest everywhere (sheet 1,000: 51 MB against 156-197; canvas 5,000: 26 MB against 277-1,450) and its idle
+  CPU ~0 (others 35-643 ms/s). Mac reference (Metal, same views, bough harness, re-describing): canvas 5,000 hover
+  5.1 M instructions / 4.8 ms per step.
+* Spec amended after the ports found it: the selected canvas node was covered by up to 249 later nodes, so the `m`
+  probe saw nothing at 5,000 nodes (two ports drew it last on their own, egui followed the spec and timed out); it
+  now draws last in every port. Blur semantics stated (CSS radius, sigma = blur / 2).
+* A virtualised bough sheet variant (`index_list` body) was built and measured, then discarded per Amendment 2 (no
+  virtualised layer; the plain mount-everything form is the product). Its Mac numbers stay here only as the target
+  exposure-proportional costs should approach at 100,000 cells: 894 records against 240,055, mount 95.6 M
+  instructions against 3.8 G, hover 93 K against 15.4 M, theme 245 K against 57.4 M, resize 5.6 M against 128 M.
+* Latency split (Amendment 2): `flatten.py` now splits every hover/theme/edit sample into the app's share (input to
+  its commit) and the wait after the commit (compositor latch at the next refresh, present), p50 and p95 over the
+  pooled samples; the dashboard draws it per probe. bough's sheet hover at 1,000 rows: 12.1 ms total = 1.0 ms app +
+  11.1 ms after commit (p95 16.8 = 1.3 + 15.7): at 60 Hz the refresh wait is the bulk of bough's latency, where it is
+  a half or a third for the others (egui 6.9 + 8.4, gpui-kit 17.1 + 10.6, iced 17.8 + 11.1). An after-commit median of
+  11 ms is above the 8.3 ms a uniformly random commit phase would give: worth the lead's look (commit timing against
+  the frame callback).

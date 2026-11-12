@@ -144,6 +144,11 @@ svg .guide { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharr
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18); }
 footer { margin-top: 2.4rem; color: var(--muted); font-size: 0.85rem; }
 .fb { fill: var(--k); }
+.seg-after { fill: var(--muted); fill-opacity: 0.45; }
+svg .p95 { stroke: var(--fg); stroke-width: 1.5; }
+.splits { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 16px; margin-top: 0.4rem; }
+.split { min-width: 0; }
+h4.sub { margin-top: 0.8rem; font-size: 0.9rem; }
 .fb-x { fill: var(--panel); stroke: var(--k); stroke-width: 1.5; stroke-dasharray: 2 2; }
 .k-x { fill: var(--panel); stroke: var(--measured); stroke-width: 1.5; stroke-dasharray: 2 2; }
 .warnbox { border: 2px solid var(--reported); border-radius: 10px; padding: 10px 14px; margin: 0.6rem 0; background: var(--panel); }
@@ -739,6 +744,69 @@ def fmt_ms(v):
     return f"{v:.2f} ms"
 
 
+def latency_split_svgs(fs, byfw, fws):
+    """Per probe, per framework: the median input-to-present time split into the app's share (input to its commit,
+    the framework's colour) and the wait after the commit (compositor, buffer readiness, the next refresh: grey),
+    with the 95th percentile of the total as a tick. Linear axis per probe."""
+    probes = [("hover", "hover fan-out"), ("theme", "theme switch"), ("edit", "edit")]
+    out = []
+    for probe, label in probes:
+        def g(f, k):
+            c = byfw.get(f, {}).get(f"{probe}.split.{k}")
+            return c["value"] if c else None
+        tops = [g(f, "total_p95") for f in fws if g(f, "total_p95") is not None]
+        if not tops:
+            continue
+        top = max(tops) * 1.08
+        w, left, right, rh = 300, 64, 12, 18
+        h = 10 + rh * len(fws) + 22
+        plot = w - left - right
+        X = lambda v: left + plot * v / top
+        svg = [f'<svg class="fit" viewBox="0 0 {w} {h}" role="img" aria-label="{esc(label)}: input to present split into app and after commit">']
+        svg.append(f'<text class="small" x="0" y="10">{esc(label)}</text>')
+        for t in nice_ticks({"mode": "linear", "a": 0, "b": top}, 3):
+            x = X(t)
+            svg.append(f'<line class="grid" x1="{x:.1f}" x2="{x:.1f}" y1="14" y2="{h - 18}"/>')
+            svg.append(f'<text class="lbl small mid" x="{x:.1f}" y="{h - 5}">{esc(fmt_ms(t) if t else "0")}</text>')
+        for i, f in enumerate(fws):
+            y = 16 + i * rh
+            app, aft, p95 = g(f, "app_p50"), g(f, "after_p50"), g(f, "total_p95")
+            svg.append(f'<text class="lbl small end" x="{left - 6}" y="{y + 10}">{esc(f)}</text>')
+            if app is None:
+                svg.append(f'<text class="lbl small" x="{left + 4}" y="{y + 10}">not measured</text>')
+                continue
+            valid = byfw[f].get(f"{probe}.split.app_p50", {}).get("valid", True)
+            cls = "fb" if valid else "fb-x"
+            st = f"--k: var({FW_TOKEN[f]})"
+            svg.append(f'<rect class="{cls}" style="{st}" x="{left}" y="{y + 2}" width="{max(X(app) - left, 1):.1f}" height="10" rx="1.5"/>')
+            svg.append(f'<rect class="seg-after" x="{X(app) + 1:.1f}" y="{y + 2}" width="{max(X(app + aft) - X(app) - 1, 1):.1f}" height="10" rx="1.5"/>')
+            if p95 is not None:
+                svg.append(f'<line class="p95" x1="{X(p95):.1f}" x2="{X(p95):.1f}" y1="{y}" y2="{y + 14}"/>')
+            tipt = tip(f"{label}, {f}", f"total p50 {fmt_ms(g(f, 'total_p50'))}, p95 {fmt_ms(p95)}", f"app (input to commit) p50 {fmt_ms(app)}, p95 {fmt_ms(g(f, 'app_p95'))}",
+                       f"after commit p50 {fmt_ms(aft)}, p95 {fmt_ms(g(f, 'after_p95'))}" + ("" if valid else " (report failed a check)"))
+            svg.append(f'<rect class="hit" x="0" y="{y}" width="{w}" height="{rh}" tabindex="0" data-tip="{esc(tipt)}"/>')
+        svg.append("</svg>")
+        out.append('<div class="split">' + "".join(svg) + "</div>")
+    if not out:
+        return ""
+    # the table: p50 / p95 of each part
+    th = "<th>framework</th>" + "".join(f"<th>{esc(l)}: total</th><th>app</th><th>after commit</th>" for _, l in probes)
+    trs = []
+    for f in fws:
+        tds = []
+        for probe, _ in probes:
+            for k in ("total", "app", "after"):
+                c50 = byfw.get(f, {}).get(f"{probe}.split.{k}_p50")
+                c95 = byfw.get(f, {}).get(f"{probe}.split.{k}_p95")
+                tds.append(f"<td>{fmt_ms(c50['value'])} / {fmt_ms(c95['value'])}</td>" if c50 and c95 else "<td>-</td>")
+        trs.append(f'<tr><th scope="row">{esc(f)}</th>{"".join(tds)}</tr>')
+    return ('<h4 class="sub">Where the time goes: input to present = the app (input to its commit) + after the commit</h4>'
+            '<p class="cap">Medians over every measured repeat (p95 as the tick). Coloured: the app, input to the commit of its '
+            'frame. Grey: after the commit, the compositor latching the buffer at the next refresh (60 Hz: up to 16.7 ms) and '
+            'presenting it.</p><div class="splits">' + "".join(out) + '</div>'
+            f'<details class="tbl"><summary>Table: p50 / p95</summary><div class="scroll"><table><thead><tr>{th}</tr></thead><tbody>{"".join(trs)}</tbody></table></div></details>')
+
+
 def frameworks_scenes_section(data):
     fs = data.get("frameworks_scenes")
     if not fs:
@@ -828,6 +896,7 @@ def frameworks_scenes_section(data):
                        f'hover {ph("hover")}, theme {ph("theme")}, edit {ph("steady")}, resize {ph("resize")}, mount {ph("mount")}.</p>')
         label = {"sheet": f"Sheet, {int(size):,} rows ({int(size) * 10:,} cells)", "canvas": f"Canvas, {int(size):,} nodes"}.get(scene, f"{scene} {size}")
         out.append(f'<article class="panel"><h4>{esc(label)}</h4>' + "".join(svg)
+                   + latency_split_svgs(fs, byfw, fws)
                    + f'<details class="tbl"><summary>More: the app\'s own share, memory, idle CPU (table)</summary><div class="scroll"><table><thead><tr>{th}</tr></thead><tbody>{"".join(trs)}</tbody></table></div></details>'
                    + refline + "</article>")
     out.append('<p class="small-note">† from a report that failed a validity check. Ports and every deviation from the spec: '

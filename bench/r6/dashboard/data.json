@@ -2144,6 +2144,66 @@
       "valid": true,
       "failed": ""
      },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 8.113504,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.total_p50": {
+      "value": 14.549965,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.total_p95": {
+      "value": 20.51432525,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.app_p50": {
+      "value": 5.205887000000001,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.app_p95": {
+      "value": 8.593481,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.after_p50": {
+      "value": 8.922955000000002,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.after_p95": {
+      "value": 15.123688000000001,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
      "scroll.scroll_smoothness.smoothness_score": {
       "value": 93.15275267604093,
       "unit": "score",
@@ -2228,6 +2288,66 @@
       "valid": true,
       "failed": ""
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 4.96644,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.total_p50": {
+      "value": 18.8681375,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.total_p95": {
+      "value": 28.570163700000002,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.app_p50": {
+      "value": 11.209052,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.app_p95": {
+      "value": 12.400750049999997,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.after_p50": {
+      "value": 6.8231605,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.after_p95": {
+      "value": 17.234731749999998,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
      "edit.latency.total_p50": {
       "value": 12.6328635,
       "unit": "ms",
@@ -2261,6 +2381,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 0.007,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 11.1768735,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p50": {
+      "value": 12.027671,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p95": {
+      "value": 15.8402487,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p50": {
+      "value": 0.22844,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p95": {
+      "value": 0.8105397999999991,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p50": {
+      "value": 11.7811155,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p95": {
+      "value": 15.5714934,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      }
@@ -2323,6 +2503,66 @@
      "hover.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 7.100216,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p50": {
+      "value": 15.881224,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p95": {
+      "value": 23.51973075,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p50": {
+      "value": 7.4589675,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p95": {
+      "value": 9.22402825,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p50": {
+      "value": 8.225381500000001,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p95": {
+      "value": 15.998029249999998,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      },
@@ -2416,6 +2656,66 @@
       "valid": false,
       "failed": "wake_lateness"
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 5.4164845,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p50": {
+      "value": 14.253949500000001,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p95": {
+      "value": 21.498908349999997,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p50": {
+      "value": 8.6038785,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p95": {
+      "value": 10.3433355,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p50": {
+      "value": 5.137154499999999,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p95": {
+      "value": 13.359679349999993,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
      "edit.latency.total_p50": {
       "value": 13.216884,
       "unit": "ms",
@@ -2449,6 +2749,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 5.3986455,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p50": {
+      "value": 13.637355,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p95": {
+      "value": 20.2495352,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p50": {
+      "value": 7.083349500000001,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p95": {
+      "value": 8.23088715,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p50": {
+      "value": 6.5792555,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p95": {
+      "value": 12.66871675,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      }
@@ -2511,6 +2871,66 @@
      "hover.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 9.596857499999999,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p50": {
+      "value": 29.634859,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p95": {
+      "value": 35.71994225,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p50": {
+      "value": 18.086272,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p95": {
+      "value": 23.0190025,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p50": {
+      "value": 11.442893999999999,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p95": {
+      "value": 17.335932,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      },
@@ -2604,6 +3024,66 @@
       "valid": false,
       "failed": "wake_lateness"
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 8.798079000000001,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p50": {
+      "value": 29.320023499999998,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p95": {
+      "value": 35.21202835,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p50": {
+      "value": 17.31774,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p95": {
+      "value": 20.616024449999998,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p50": {
+      "value": 10.3958075,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p95": {
+      "value": 16.945761849999997,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
      "edit.latency.total_p50": {
       "value": 29.3067075,
       "unit": "ms",
@@ -2637,6 +3117,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 10.7064795,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p50": {
+      "value": 28.970860000000002,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p95": {
+      "value": 32.67994105,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p50": {
+      "value": 17.0478085,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p95": {
+      "value": 19.150324349999998,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p50": {
+      "value": 10.96159,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p95": {
+      "value": 16.422249549999997,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      }
@@ -2699,6 +3239,66 @@
      "hover.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 8.976964500000001,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.total_p50": {
+      "value": 170.0971145,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.total_p95": {
+      "value": 187.36899775,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.app_p50": {
+      "value": 161.939931,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.app_p95": {
+      "value": 174.8666715,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.after_p50": {
+      "value": 10.703904500000007,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.after_p95": {
+      "value": 16.7661735,
+      "unit": "ms",
       "valid": true,
       "failed": ""
      },
@@ -2792,6 +3392,66 @@
       "valid": true,
       "failed": ""
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 9.2950315,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.total_p50": {
+      "value": 181.84614299999998,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.total_p95": {
+      "value": 197.2586158,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.app_p50": {
+      "value": 173.936976,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.app_p95": {
+      "value": 188.72007735,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.after_p50": {
+      "value": 9.1230015,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.after_p95": {
+      "value": 16.581649850000012,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
      "edit.latency.total_p50": {
       "value": 179.88117549999998,
       "unit": "ms",
@@ -2825,6 +3485,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": true,
+      "failed": ""
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 7.8427435,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": true,
+      "failed": ""
+     },
+     "edit.split.total_p50": {
+      "value": 180.320232,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "edit.split.total_p95": {
+      "value": 198.985938,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "edit.split.app_p50": {
+      "value": 172.50709899999998,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "edit.split.app_p95": {
+      "value": 185.98511324999998,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "edit.split.after_p50": {
+      "value": 8.830923500000011,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "edit.split.after_p95": {
+      "value": 16.33015280000002,
+      "unit": "ms",
       "valid": true,
       "failed": ""
      }
@@ -2889,6 +3609,66 @@
      "hover.frame_cost.damage_fraction_p50": {
       "value": 0.096,
       "unit": "fraction",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 10.6389745,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.total_p50": {
+      "value": 12.085185,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.total_p95": {
+      "value": 16.7600275,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.app_p50": {
+      "value": 1.013963,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.app_p95": {
+      "value": 1.2674435,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.after_p50": {
+      "value": 11.0713575,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.after_p95": {
+      "value": 15.706234249999998,
+      "unit": "ms",
       "valid": true,
       "failed": ""
      },
@@ -2982,6 +3762,66 @@
       "valid": true,
       "failed": ""
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 7.2831364999999995,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.total_p50": {
+      "value": 13.634781,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.total_p95": {
+      "value": 20.26438825,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.app_p50": {
+      "value": 4.917191000000001,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.app_p95": {
+      "value": 6.274270749999999,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.after_p50": {
+      "value": 8.3821405,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.after_p95": {
+      "value": 15.2428134,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
      "edit.latency.total_p50": {
       "value": 12.677938000000001,
       "unit": "ms",
@@ -3015,6 +3855,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 0.006,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 11.5203445,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p50": {
+      "value": 12.077051,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p95": {
+      "value": 15.88947345,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p50": {
+      "value": 0.1836295,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p95": {
+      "value": 0.21177184999999998,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p50": {
+      "value": 11.919687499999998,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p95": {
+      "value": 15.7513783,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      }
@@ -3077,6 +3977,66 @@
      "hover.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 6.969988,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.total_p50": {
+      "value": 14.8303095,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.total_p95": {
+      "value": 21.03577075,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.app_p50": {
+      "value": 6.9353560000000005,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.app_p95": {
+      "value": 8.5542345,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.after_p50": {
+      "value": 8.4018105,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "hover.split.after_p95": {
+      "value": 14.017108250000001,
+      "unit": "ms",
       "valid": true,
       "failed": ""
      },
@@ -3170,6 +4130,66 @@
       "valid": false,
       "failed": "wake_lateness"
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 5.652562,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p50": {
+      "value": 14.511351999999999,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p95": {
+      "value": 24.760636999999992,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p50": {
+      "value": 8.824749,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p95": {
+      "value": 10.238123049999999,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p50": {
+      "value": 6.128859500000001,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p95": {
+      "value": 16.473569099999988,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
      "edit.latency.total_p50": {
       "value": 13.221949,
       "unit": "ms",
@@ -3203,6 +4223,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 5.4483365,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p50": {
+      "value": 13.645906,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p95": {
+      "value": 20.250559,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p50": {
+      "value": 7.029093,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p95": {
+      "value": 8.24249605,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p50": {
+      "value": 6.7207895,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p95": {
+      "value": 13.365478999999999,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      }
@@ -3265,6 +4345,66 @@
      "hover.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 9.910139000000001,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p50": {
+      "value": 29.343179499999998,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p95": {
+      "value": 36.080372000000004,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p50": {
+      "value": 17.055253999999998,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p95": {
+      "value": 24.621638750000002,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p50": {
+      "value": 10.569461500000001,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p95": {
+      "value": 15.852422,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      },
@@ -3358,6 +4498,66 @@
       "valid": false,
       "failed": "wake_lateness"
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 9.919038,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p50": {
+      "value": 28.378632500000002,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p95": {
+      "value": 32.31150325,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p50": {
+      "value": 15.799669999999999,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p95": {
+      "value": 16.963388849999998,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p50": {
+      "value": 11.560923,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p95": {
+      "value": 16.30898775,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
      "edit.latency.total_p50": {
       "value": 29.313007499999998,
       "unit": "ms",
@@ -3391,6 +4591,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 9.701514,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p50": {
+      "value": 28.959976,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p95": {
+      "value": 32.6799399,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p50": {
+      "value": 17.3173995,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p95": {
+      "value": 19.02929085,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p50": {
+      "value": 10.936504500000002,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p95": {
+      "value": 16.971333349999995,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      }
@@ -3453,6 +4713,66 @@
      "hover.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 10.1716735,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p50": {
+      "value": 29.7408735,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p95": {
+      "value": 36.44110525,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p50": {
+      "value": 17.845786,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p95": {
+      "value": 26.03310275,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p50": {
+      "value": 11.06191,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p95": {
+      "value": 16.4194915,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      },
@@ -3546,6 +4866,66 @@
       "valid": true,
       "failed": ""
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 11.723405499999998,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.total_p50": {
+      "value": 28.7087675,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.total_p95": {
+      "value": 32.51641595,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.app_p50": {
+      "value": 15.852556,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.app_p95": {
+      "value": 17.28189985,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.after_p50": {
+      "value": 12.105747499999998,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
+     "theme.split.after_p95": {
+      "value": 16.8458696,
+      "unit": "ms",
+      "valid": true,
+      "failed": ""
+     },
      "edit.latency.total_p50": {
       "value": 29.3219925,
       "unit": "ms",
@@ -3579,6 +4959,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 10.7019145,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p50": {
+      "value": 28.7124295,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p95": {
+      "value": 32.4298791,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p50": {
+      "value": 16.147933,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p95": {
+      "value": 19.42754255,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p50": {
+      "value": 11.701914499999999,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p95": {
+      "value": 16.33323705,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      }
@@ -3643,6 +5083,66 @@
      "hover.frame_cost.damage_fraction_p50": {
       "value": 0.425,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 10.4041775,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p50": {
+      "value": 880.881304,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p95": {
+      "value": 938.2961947499999,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p50": {
+      "value": 871.2495855,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p95": {
+      "value": 926.1296535,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p50": {
+      "value": 10.907132499999989,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p95": {
+      "value": 15.658102250000013,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      },
@@ -3712,6 +5212,66 @@
       "valid": false,
       "failed": "wake_lateness"
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 9.19595,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p50": {
+      "value": 1063.6866685,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p95": {
+      "value": 1228.16112595,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p50": {
+      "value": 1052.1533565,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p95": {
+      "value": 1221.9447169,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p50": {
+      "value": 10.057735499999922,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p95": {
+      "value": 17.259674699999938,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
      "edit.latency.total_p50": {
       "value": 29.8883025,
       "unit": "ms",
@@ -3745,6 +5305,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 0.012,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 8.7172325,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p50": {
+      "value": 29.8883025,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p95": {
+      "value": 36.30919175,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p50": {
+      "value": 20.280266500000003,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p95": {
+      "value": 22.562234599999996,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p50": {
+      "value": 10.648403,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p95": {
+      "value": 15.277946349999995,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      }
@@ -3807,6 +5427,66 @@
      "hover.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 6.672082,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p50": {
+      "value": 108.882027,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p95": {
+      "value": 216.6896905,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p50": {
+      "value": 97.3998085,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p95": {
+      "value": 211.95347375,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p50": {
+      "value": 8.076668500000004,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p95": {
+      "value": 15.947217000000002,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      },
@@ -3876,6 +5556,66 @@
       "valid": false,
       "failed": "wake_lateness"
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 7.279424,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p50": {
+      "value": 210.740149,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p95": {
+      "value": 230.84363199999999,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p50": {
+      "value": 202.1148205,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p95": {
+      "value": 218.7671854,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p50": {
+      "value": 8.084753500000005,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p95": {
+      "value": 15.989036000000004,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
      "edit.latency.total_p50": {
       "value": 226.603277,
       "unit": "ms",
@@ -3909,6 +5649,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 9.7939095,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p50": {
+      "value": 214.3855365,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p95": {
+      "value": 242.71652795,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p50": {
+      "value": 206.0388405,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p95": {
+      "value": 228.26622815,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p50": {
+      "value": 11.01503000000001,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p95": {
+      "value": 16.605636950000015,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      }
@@ -3971,6 +5771,66 @@
      "hover.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 7.4040894999999995,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p50": {
+      "value": 185.690515,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p95": {
+      "value": 203.27007099999997,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p50": {
+      "value": 178.80227250000002,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p95": {
+      "value": 193.1458005,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p50": {
+      "value": 8.50005200000001,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p95": {
+      "value": 15.940130999999994,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      },
@@ -4040,6 +5900,66 @@
       "valid": false,
       "failed": "wake_lateness"
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 7.57066,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p50": {
+      "value": 181.81120900000002,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p95": {
+      "value": 196.2682901,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p50": {
+      "value": 174.57889999999998,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p95": {
+      "value": 182.1042555,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p50": {
+      "value": 8.122437500000018,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p95": {
+      "value": 16.832125600000015,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
      "edit.latency.total_p50": {
       "value": 192.91537399999999,
       "unit": "ms",
@@ -4073,6 +5993,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 7.819793000000001,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p50": {
+      "value": 193.73411349999998,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p95": {
+      "value": 201.61198155,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p50": {
+      "value": 182.5975965,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p95": {
+      "value": 193.0045061,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p50": {
+      "value": 9.279766500000008,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p95": {
+      "value": 16.939672350000002,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      }
@@ -4135,6 +6115,66 @@
      "hover.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 9.711539,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p50": {
+      "value": 78.11520200000001,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p95": {
+      "value": 83.75017275,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p50": {
+      "value": 66.9180205,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p95": {
+      "value": 72.49453275,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p50": {
+      "value": 8.535903999999995,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p95": {
+      "value": 17.063012500000003,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      },
@@ -4204,6 +6244,66 @@
       "valid": false,
       "failed": "wake_lateness"
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 10.569488,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p50": {
+      "value": 78.0678075,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p95": {
+      "value": 81.21072310000001,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p50": {
+      "value": 65.3237195,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p95": {
+      "value": 69.57508175,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p50": {
+      "value": 11.659487499999997,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p95": {
+      "value": 16.397289849999996,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
      "edit.latency.total_p50": {
       "value": 79.249226,
       "unit": "ms",
@@ -4237,6 +6337,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 10.104807,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p50": {
+      "value": 78.89067399999999,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p95": {
+      "value": 85.01602824999999,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p50": {
+      "value": 66.19646449999999,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p95": {
+      "value": 69.6416156,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p50": {
+      "value": 12.405204000000005,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p95": {
+      "value": 16.48278144999999,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      }
@@ -4301,6 +6461,66 @@
      "hover.frame_cost.damage_fraction_p50": {
       "value": 0.162,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 11.325291,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p50": {
+      "value": 93.827821,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p95": {
+      "value": 103.27637575,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p50": {
+      "value": 80.8391695,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p95": {
+      "value": 92.02756425000001,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p50": {
+      "value": 12.285686000000005,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p95": {
+      "value": 16.86267825,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      },
@@ -4370,6 +6590,66 @@
       "valid": false,
       "failed": "wake_lateness"
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 8.931526999999999,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p50": {
+      "value": 265.23983699999997,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p95": {
+      "value": 324.30935739999995,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p50": {
+      "value": 255.810298,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p95": {
+      "value": 313.59902265,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p50": {
+      "value": 9.993412000000006,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p95": {
+      "value": 13.225330449999996,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
      "edit.latency.total_p50": {
       "value": 13.2195065,
       "unit": "ms",
@@ -4403,6 +6683,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 0.012,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 7.726015,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p50": {
+      "value": 13.658583,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p95": {
+      "value": 20.23543045,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p50": {
+      "value": 4.505081000000001,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p95": {
+      "value": 5.5772564,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p50": {
+      "value": 9.1544475,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p95": {
+      "value": 15.080390099999997,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      }
@@ -4465,6 +6805,66 @@
      "hover.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 9.9734105,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p50": {
+      "value": 29.631324,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p95": {
+      "value": 35.724650749999995,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p50": {
+      "value": 18.628149999999998,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p95": {
+      "value": 20.4254445,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p50": {
+      "value": 10.7333385,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p95": {
+      "value": 16.24338675,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      },
@@ -4534,6 +6934,66 @@
       "valid": false,
       "failed": "wake_lateness"
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 8.892451999999999,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p50": {
+      "value": 29.8772735,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p95": {
+      "value": 36.26982235,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p50": {
+      "value": 19.882856,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p95": {
+      "value": 21.7991782,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p50": {
+      "value": 9.6384195,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p95": {
+      "value": 16.56847655,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
      "edit.latency.total_p50": {
       "value": 29.5887335,
       "unit": "ms",
@@ -4567,6 +7027,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 10.149075,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p50": {
+      "value": 29.5887335,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p95": {
+      "value": 35.62247155,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p50": {
+      "value": 18.531467,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p95": {
+      "value": 20.620108899999998,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p50": {
+      "value": 11.149075,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p95": {
+      "value": 17.21428965,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      }
@@ -4629,6 +7149,66 @@
      "hover.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 7.0771465,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p50": {
+      "value": 48.7657645,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p95": {
+      "value": 58.70069275,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p50": {
+      "value": 40.103455,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p95": {
+      "value": 47.05877975,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p50": {
+      "value": 7.651954,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p95": {
+      "value": 16.724433249999997,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      },
@@ -4698,6 +7278,66 @@
       "valid": false,
       "failed": "wake_lateness"
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 7.5597885,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p50": {
+      "value": 46.5054585,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p95": {
+      "value": 53.42939945,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p50": {
+      "value": 36.997728499999994,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p95": {
+      "value": 42.70159805,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p50": {
+      "value": 8.913470500000003,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p95": {
+      "value": 17.263387249999997,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
      "edit.latency.total_p50": {
       "value": 45.9093455,
       "unit": "ms",
@@ -4731,6 +7371,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 6.188902000000001,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p50": {
+      "value": 46.3693365,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p95": {
+      "value": 52.275705,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p50": {
+      "value": 38.7303845,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p95": {
+      "value": 43.026306700000006,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p50": {
+      "value": 7.079251000000003,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p95": {
+      "value": 13.907953499999998,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      }
@@ -4793,6 +7493,66 @@
      "hover.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.ready_to_latch_p50": {
+      "value": 8.722731,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.samples": {
+      "value": 36.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p50": {
+      "value": 30.3552065,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.total_p95": {
+      "value": 36.0697655,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p50": {
+      "value": 19.388997000000003,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.app_p95": {
+      "value": 25.18250725,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p50": {
+      "value": 10.3886115,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "hover.split.after_p95": {
+      "value": 16.4877535,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      },
@@ -4862,6 +7622,66 @@
       "valid": false,
       "failed": "wake_lateness"
      },
+     "theme.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.ready_to_latch_p50": {
+      "value": 10.0924,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p50": {
+      "value": 29.7658695,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.total_p95": {
+      "value": 36.86363985,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p50": {
+      "value": 18.962452,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.app_p95": {
+      "value": 26.435236549999992,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p50": {
+      "value": 10.1793425,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "theme.split.after_p95": {
+      "value": 16.759508849999996,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
      "edit.latency.total_p50": {
       "value": 30.528655999999998,
       "unit": "ms",
@@ -4895,6 +7715,66 @@
      "edit.frame_cost.damage_fraction_p50": {
       "value": 1.0,
       "unit": "fraction",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.commit_to_ready_p50": {
+      "value": 0.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.ready_to_latch_p50": {
+      "value": 10.5947025,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.latency.latch_to_present_p50": {
+      "value": 1.0,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.samples": {
+      "value": 24.0,
+      "unit": "count",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p50": {
+      "value": 30.320048999999997,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.total_p95": {
+      "value": 36.91986975,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p50": {
+      "value": 19.172602,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.app_p95": {
+      "value": 25.834403099999996,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p50": {
+      "value": 11.098637,
+      "unit": "ms",
+      "valid": false,
+      "failed": "wake_lateness"
+     },
+     "edit.split.after_p95": {
+      "value": 17.2090745,
+      "unit": "ms",
       "valid": false,
       "failed": "wake_lateness"
      }

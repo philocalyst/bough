@@ -11,7 +11,10 @@ The metrics kept per probe:
   hover, theme, edit
            latency.total_p50 / total_p95 (input to presented frame, ms), latency.input_to_commit_p50 (the app's own
            share: input to its commit, ms), resources.cpu_ms (app CPU per measured iteration), frame_cost.cpu_ms_per_frame,
-           frame_cost.damage_fraction_p50
+           frame_cost.damage_fraction_p50; and the split from the pooled samples of every measured iteration:
+           split.total_p50/p95, split.app_p50/p95 (input to the app's commit), split.after_p50/p95 (commit to presented
+           frame: the compositor, the buffer's readiness, the wait for the next refresh), and fakeland's own medians
+           of the after-commit parts (latency.commit_to_ready_p50, ready_to_latch_p50, latch_to_present_p50)
   scroll   scroll_smoothness.smoothness_score, frame_pacing.fps, frame_cost.cpu_ms_per_frame, resources.cpu_ms_per_s
   resize   resize.configure_to_present_p50, frame_pacing.fps, frame_cost.cpu_ms_per_frame, resources.cpu_ms_per_s,
            resources.rss_max
@@ -29,9 +32,43 @@ KEEP = {
     "resize": [("resize", "configure_to_present_p50"), ("frame_pacing", "fps"), ("frame_cost", "cpu_ms_per_frame"),
                ("resources", "cpu_ms_per_s"), ("resources", "rss_max")],
 }
+KEEP["hover"] += [("latency", "commit_to_ready_p50"), ("latency", "ready_to_latch_p50"), ("latency", "latch_to_present_p50")]
 KEEP["theme"] = KEEP["hover"]
 KEEP["edit"] = KEEP["hover"]
 SCENES = ("sheet", "canvas", "ide", "dash", "chat")
+
+
+def pct(xs, q):
+    """Linear-interpolated percentile of a non-empty list."""
+    xs = sorted(xs)
+    if len(xs) == 1:
+        return xs[0]
+    k = (len(xs) - 1) * q
+    f = int(k)
+    c = min(f + 1, len(xs) - 1)
+    return xs[f] + (xs[c] - xs[f]) * (k - f)
+
+
+def split(report):
+    """p50 and p95 of total, app (input to commit) and after-commit times over the pooled samples of a latency probe."""
+    for sec in report.get("sections", []):
+        if sec.get("name") != "latency":
+            continue
+        samples = []
+        for pooled in sec.get("pooled", []):
+            samples += [x for x in pooled.get("report", {}).get("samples", []) if not x.get("timed_out")]
+        samples = [x for x in samples if x.get("total_ms") is not None and x.get("input_to_commit_ms") is not None]
+        if not samples:
+            return {}
+        tot = [x["total_ms"] for x in samples]
+        app = [x["input_to_commit_ms"] for x in samples]
+        aft = [x["total_ms"] - x["input_to_commit_ms"] for x in samples]
+        out = {"split.samples": len(samples)}
+        for name, xs in (("total", tot), ("app", app), ("after", aft)):
+            out[f"split.{name}_p50"] = pct(xs, 0.5)
+            out[f"split.{name}_p95"] = pct(xs, 0.95)
+        return out
+    return {}
 
 
 def cells(run_dir):
@@ -70,6 +107,9 @@ def rows(run_dir):
             for key in keep:
                 if key in have and have[key][0] is not None:
                     yield scene, fw, size, probe, ".".join(key), have[key][0], have[key][1], valid, bad
+            if probe in ("hover", "theme", "edit"):
+                for name, v in split(r).items():
+                    yield scene, fw, size, probe, name, v, "count" if name.endswith("samples") else "ms", valid, bad
 
 
 def main():
