@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-11",
+ "updated": "2026-11-12",
  "series": [
   {
    "id": "redescribe_app_row",
@@ -750,7 +750,7 @@
    "title": "Numeric label write, 256 rows",
    "unit": "instructions per turn",
    "lower_is_better": true,
-   "note": "",
+   "note": "Bench lane, round 7: this cell was mismeasured. signal_cost warms 8 turns and takes one slope between 64 and 192 turns, so the first write to each row's label lands inside the measured batches (at 256 rows it is the slope; at 64 rows the slope is negative). See the stable-method series.",
    "points": [
     {
      "label": "before",
@@ -772,7 +772,7 @@
    "title": "String label write, 256 rows",
    "unit": "instructions per turn",
    "lower_is_better": true,
-   "note": "",
+   "note": "Bench lane, round 7: this cell was mismeasured. signal_cost warms 8 turns and takes one slope between 64 and 192 turns, so the first write to each row's label lands inside the measured batches (at 256 rows it is the slope; at 64 rows the slope is negative). See the stable-method series.",
    "points": [
     {
      "label": "before",
@@ -977,6 +977,76 @@
      "value": 95,
      "kind": "measured",
      "source": "lane/core/round6"
+    }
+   ]
+  },
+  {
+   "id": "sig_numeric_label_stable",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "Numeric label write, mount-once, stable method (SC_STABLE=1)",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "paired": false,
+   "note": "Every row written before measuring (3n+8 warm turns), values 1000 + k % 9000 (always four digits), median of five slopes 64 vs 192 turns. One of three runs; the three agree within 2 %.",
+   "points": [
+    {
+     "label": "1 rows",
+     "value": 6077,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
+    },
+    {
+     "label": "16 rows",
+     "value": 6033,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
+    },
+    {
+     "label": "64 rows",
+     "value": 6005,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
+    },
+    {
+     "label": "256 rows",
+     "value": 6015,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
+    }
+   ]
+  },
+  {
+   "id": "sig_string_label_stable",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "String label write, mount-once, stable method (SC_STABLE=1)",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "paired": false,
+   "note": "Every row written before measuring (3n+8 warm turns), values 1000 + k % 9000 (always four digits), median of five slopes 64 vs 192 turns. One of three runs; the three agree within 2 %.",
+   "points": [
+    {
+     "label": "1 rows",
+     "value": 6648,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
+    },
+    {
+     "label": "16 rows",
+     "value": 6883,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
+    },
+    {
+     "label": "64 rows",
+     "value": 6732,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
+    },
+    {
+     "label": "256 rows",
+     "value": 9957,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
     }
    ]
   }

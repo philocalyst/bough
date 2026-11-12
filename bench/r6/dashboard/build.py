@@ -18,7 +18,7 @@ DATA_PATH = os.path.join(HERE, "data.json")
 ARTIFACT_PATH = os.path.join(HERE, "artifact.html")
 INDEX_PATH = os.path.join(HERE, "index.html")
 
-TITLE = "Bough Round 6 Results"
+TITLE = "Bough Round 6 Results"  # the published artifact's name; kept across rounds
 KINDS = ("measured", "reported", "estimated")
 LOG_THRESHOLD = 50  # use a log scale when max/min exceeds this
 PAIR_LABEL = re.compile(r"(base|before|main)\b")
@@ -837,10 +837,13 @@ def build_body(data):
     workloads = workloads_section(data)
 
     body = f"""<main>
-<h1>bough round 6</h1>
+<h1>bough, rounds 6 and 7</h1>
 <p class="meta">Updated {esc(data.get("updated", ""))} · {len(data["series"])} series, {n_points} points · every chart is generated from data.json by build.py</p>
 <div class="tiles">{"".join(tiles)}{donut_tile}</div>
 {legend}
+
+<h2>Standing workloads (round 7) <span class="tag m">measured</span></h2>
+{workloads}
 
 <h2>Scaling with rows</h2>
 <p class="cap">Log-log. Each line is one operation family at N rows: dashed hollow = base (reported), solid filled = round6 (measured). A flat line means the cost does not grow with N. The dotted guide is slope 1, cost proportional to N.</p>
@@ -861,9 +864,6 @@ def build_body(data):
 <h2>Every series over commits</h2>
 <p class="cap">One card per series, grouped as in data.json. Connected lines are before/after or commit sequences; dots are scenes or values with no order. Scale is log when the range exceeds 50x, otherwise linear from zero.</p>
 {"".join(card_groups)}
-
-<h2>Standing workloads (round 7) <span class="tag m">measured</span></h2>
-{workloads}
 
 <h2>zortax gui-bench under fakeland <span class="tag n">rough baseline only</span></h2>
 {zq1}
