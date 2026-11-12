@@ -62,3 +62,27 @@ Branch `r7/bench` in `wt/r7-bench`, from `round6` `3b0b00c698`. Brief: `bough/ru
   lay_flush 67 %, resize 66 %. Layout dominates the text-heavy scenes, the GPU the canvas.
 * Running `workload all` in one process grows the footprint scene after scene (124 -> 386 MiB): an `App` drop
   does not return its memory (shutdown is the memory lane's item). The baseline runs each scene in its own process.
+* Baseline (Mac, `bench/results/r7/workloads/mac-6deab7e4e7/`, M3 Pro under load 17-27, dist, REPS=32, scale 1,
+  MODE=once, RENDER=1; instructions p50 on the calling thread / wall p50):
+
+  | scene | mount | first frame | steady | hover | theme | resize | resize+anim | anim | idle |
+  |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+  | sheet | 3.67 G / 389 ms | 10.7 M / 10.7 ms | 27 K / 0.33 ms | 15.7 M / 8.2 ms | 57.5 M / 6.0 ms | 126 M / 30 ms (p95 2.1 G) | 79 M / 27 ms | 277 | 534 |
+  | ide | 410 M / 83 ms | 6.6 M / 9.5 ms | 405 K / 0.61 ms | 804 K / 0.94 ms | 6.6 M / 3.5 ms | 63 M / 22 ms | 105 M / 24 ms | 42 M / 6.3 ms | 535 |
+  | dash | 133 M / 63 ms | 5.6 M / 13 ms | 1.56 M / 1.4 ms | 734 K / 0.99 ms | 1.32 M / 2.7 ms | 15 M / 7.1 ms | 16 M / 7.5 ms | 876 K / 2.1 ms | 543 |
+  | canvas | 127 M / 63 ms | 9.4 M / 48 ms | 46 K / 0.85 ms | 226 K / 7.7 ms | 579 K / 12.5 ms | 8.9 M / 16 ms | 8.8 M / 16 ms | 109 K / 3.8 ms | 541 |
+  | chat | 964 M / 140 ms | 11.7 M / 12 ms | 780 K / 1.6 ms | 145 K / 0.28 ms | 3.1 M / 2.9 ms | 187 M / 27 ms | 170 M / 24 ms | 787 K / 1.5 ms | 538 |
+
+  Cold start (hyperfine, 10 runs, exec to first frame; mean +- sd, peak RSS): sheet 666 +- 200 ms, 341 MiB; ide
+  117 +- 13 ms, 75 MiB; dash 94 +- 15 ms, 31 MiB; canvas 128 +- 9 ms, 38 MiB; chat 218 +- 18 ms, 88 MiB.
+  Allocations per step (`workload_alloc`): 0 on hover, theme and idle in every scene; resize 37 K (sheet), 33 K
+  (chat), 1.3 K (ide), 1.2 K (dash), 86 (canvas); dash steady 213; mount 1.04 M (sheet), 140 K (chat), 130 K (ide).
+  CPU share (RENDER=0): canvas resize 3.1 M / 0.20 ms against 8.9 M / 16 ms with the GPU; dash hover 41 us against
+  0.99 ms: the GPU path dominates wall time in the graphics scenes, layout in the text scenes.
+  Re-describing mode: idle 8-12 K instructions (106 K in the canvas) against ~540 once; other phases within a few %.
+* Dashboard version 4 published (same URL as round 6's page): workloads first, signal_cost's two mismeasured cells
+  annotated with stable-method series beside them, zortax quick run 1 as a labelled rough baseline.
+* The sheet's selection outline now glides (translate transition; the amendment wants transitions in every heavy
+  scene). Its baseline needs a rerun on that commit (the first rerun read a binary another build had replaced:
+  integration tests rebuild the package's binaries, so a `--no-default-features` test run leaves a scene-less
+  `target/dist/workload`; copy binaries out before measuring, as the agents did).

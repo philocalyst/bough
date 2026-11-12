@@ -11,7 +11,11 @@ set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 OUT=$1; shift
 SCENES=${*:-sheet ide dash canvas chat}
-T=${CARGO_TARGET_DIR:-$ROOT/target}/dist
+# copy the binaries first: another cargo invocation in the same target dir (an integration test of this crate
+# rebuilds its binaries, with whatever features it was given) must not swap them mid-run
+TT=$(mktemp -d); T=$TT/dist; mkdir -p "$T"   # keeps "/dist/" in the path, which the identity record reads
+cp "${CARGO_TARGET_DIR:-$ROOT/target}/dist/workload" "${CARGO_TARGET_DIR:-$ROOT/target}/dist/workload_alloc" "$T/"
+trap 'rm -rf "$TT"' EXIT
 mkdir -p "$OUT"
 export REPS=${REPS:-32} SCENE_SCALE=${SCENE_SCALE:-1}
 run() { # file env... : run every scene with the given environment into one file
