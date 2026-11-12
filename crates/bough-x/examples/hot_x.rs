@@ -95,7 +95,11 @@ const CELLS: &[Cell] = &[
         b.world.settle(&b.sheet);
     }),
     ("redescribe_idle", "re-describing mode: the exposed view described again and compared", |b, _| b.world.redescribe(&b.sheet)),
-    ("mount", "first mount into a fresh world (allocation included)", |b, _| {
+    ("world_new", "a world made and dropped: the arena's reservation and its release, nothing mounted", |_, _| {
+        let w = World::<Soft>::new(W, H, NWORDS);
+        black_box(&w);
+    }),
+    ("mount", "first mount into a fresh world (allocation included; the previous world is dropped)", |b, _| {
         let mut w = World::<Soft>::new(W, H, NWORDS);
         w.mount(&b.sheet);
         black_box(&w);

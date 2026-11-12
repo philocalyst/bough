@@ -533,7 +533,7 @@ pub fn list_sync<V, R: Row<V>, F: FnMut(usize) -> R, B: Backend>(parent: &mut St
 fn list_new(parent: &mut Store, l: &List<'_>) {
     let space = parent.space;
     let rows = (space.clip.y1 - space.clip.y0) / l.row_h + 2;
-    let mut st = Store::new(parent.ar, (rows as u32).next_power_of_two().max(64), space);
+    let mut st = Store::new_list(parent, (rows as u32).next_power_of_two().max(64));
     st.seen = l.edits.ver;
     parent.order.push(Pass::Sub(parent.subs.len() as u32));
     parent.subs.push(st);
@@ -567,7 +567,7 @@ fn list_adopt(st: &mut Store, l: &List<'_>, (lo, hi): (u32, u32)) {
         st.tmpl_at = l.shape.as_ptr() as usize;
     } else {
         st.row_live.fill(0);
-        st.live_dirty();
+        st.rows_dirty(0);
     }
 }
 
@@ -582,10 +582,8 @@ fn list_plan(st: &mut Store, cx: &mut Cx<'_>, l: &List<'_>, (lo, hi): (u32, u32)
     #[cfg(feature = "mutant_journal")]
     let (from, nupd) = (u32::MAX, 0 * nupd);
     st.seen = l.edits.ver;
-    if st.space != space {
-        st.space = space;
-        st.sync_space();
-    }
+    // the list's rows are in its parent's space, whose slot the parent keeps in step
+    st.space = space;
     st.plan.clear();
     let mk = Mk { org, clip: space.clip };
     assert!(hi - lo <= st.cap, "the window outgrew the list's capacity");
@@ -629,8 +627,6 @@ fn list_plan(st: &mut Store, cx: &mut Cx<'_>, l: &List<'_>, (lo, hi): (u32, u32)
         }
     }
     let mask = st.cap - 1;
-    // the slot pages (64 row slots each) that get a row written whole: every column's pages there are dirty
-    let mut wrote = 0u64;
     for r in lo..hi {
         let fresh = (r < olo) | (r >= ohi);
         if fresh | (r >= from) {
@@ -645,15 +641,23 @@ fn list_plan(st: &mut Store, cx: &mut Cx<'_>, l: &List<'_>, (lo, hi): (u32, u32)
             }
             cx.tiles.mark(row_rect(r));
             st.plan.push(r | 1 << 31);
-            wrote |= 1 << (((r & mask) >> 6) & 63);
         } else if cx.all | upd[..nupd].contains(&r) {
             st.plan.push(r);
         }
     }
-    if wrote != 0 {
-        st.rows_dirty(wrote);
+    // The slot pages (64 row slots each) that got a row written whole: every column's pages there are dirty.
+    // Worked out from the three runs of rows that are written (entered below, entered above, shifted), not
+    // row by row.
+    let mut wrote = 0u64;
+    for (a, b) in [(lo, hi.min(olo.max(lo))), (lo.max(ohi.min(hi)), hi), (lo.max(from.min(hi)), hi)] {
+        let mut r = a;
+        while r < b {
+            wrote |= 1 << (((r & mask) >> 6) & 63);
+            r = (r | 63) + 1;
+        }
     }
-    if (st.lo, st.hi) != (lo, hi) {
+    let moved = (st.lo, st.hi) != (lo, hi);
+    if moved {
         st.lo = lo;
         st.hi = hi;
         st.row_live.fill(0);
@@ -661,7 +665,9 @@ fn list_plan(st: &mut Store, cx: &mut Cx<'_>, l: &List<'_>, (lo, hi): (u32, u32)
             let s = r & mask;
             st.row_live[s as usize >> 6] |= 1 << (s & 63);
         }
-        st.live_dirty();
+    }
+    if moved | (wrote != 0) {
+        st.rows_dirty(wrote);
     }
     mk
 }

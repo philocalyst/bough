@@ -594,9 +594,10 @@ pub type RowSrc = (&'static core::panic::Location<'static>, u32, u32);
 pub struct Store {
     /// The scene's memory: this store's pages, live words and space slot are in its working half.
     pub ar: Ar,
-    /// Its slot in the half's spaces and its first live word there.
+    /// Its slot in the half's spaces and its first live word there; a list's id in the list bitmap.
     pub space_ix: u16,
     pub live_at: u32,
+    pub lid: u32,
     pub cols: Vec<RawCol>,
     pub sites: Vec<Site>,
     pub subs: Vec<Store>,
@@ -632,13 +633,24 @@ static COL_ID: AtomicU32 = AtomicU32::new(1);
 
 impl Store {
     pub fn new(ar: Ar, cap: u32, space: Space) -> Store {
+        Store::with_space(ar, cap, space, None)
+    }
+    /// A list's store: its rows are in the space of the store that holds the list, so it has that store's slot
+    /// of the half's spaces and never writes one.
+    pub fn new_list(parent: &Store, cap: u32) -> Store {
+        Store::with_space(parent.ar, cap, parent.space, Some(parent.space_ix))
+    }
+    fn with_space(ar: Ar, cap: u32, space: Space, shared: Option<u16>) -> Store {
         assert!(cap == 1 || (cap >= 64 && cap.is_power_of_two()));
         let n = (cap as usize / 64).max(1);
         let live_at = ar.new_live(n as u32);
-        let space_ix = ar.new_space();
+        let space_ix = shared.unwrap_or_else(|| ar.new_space());
         let row_live = LiveWords { p: ar.work().live(live_at), n };
-        let mut st = Store { ar, space_ix, live_at, cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live, space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), src: None, tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false };
-        if ar.head().adopt != 0 {
+        let lid = if cap > 1 { ar.new_list() } else { u32::MAX };
+        let mut st = Store { ar, space_ix, live_at, lid, cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live, space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), src: None, tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false };
+        if shared.is_some() {
+            // the slot is the parent's to write
+        } else if ar.head().adopt != 0 {
             // Found in a mapped image: it has the space the image had. What the view says now may differ, and
             // then the sink sees a change like any other.
             // SAFETY: a space index answered by the replay is below `MAX_SPACES`; the slot is plain words.
@@ -650,7 +662,7 @@ impl Store {
     }
     /// A store that owns nothing: what a world mapped from an image has until the view is described.
     pub fn placeholder(ar: Ar) -> Store {
-        Store { ar, space_ix: 0, live_at: 0, cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap: 1, row_live: LiveWords { p: ar.work().live(0), n: 0 }, space: Space::root(0, 0), disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), src: None, tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false }
+        Store { ar, space_ix: 0, live_at: 0, lid: u32::MAX, cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap: 1, row_live: LiveWords { p: ar.work().live(0), n: 0 }, space: Space::root(0, 0), disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), src: None, tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false }
     }
     /// `space` was assigned: put it where a frame reads it.
     #[cold]
@@ -677,12 +689,15 @@ impl Store {
             self.live_dirty();
         }
     }
-    /// Rows were written whole in the slot pages `mask` names: one note per column of this list.
-    #[inline]
+    /// This list wrote rows whole in the slot pages `mask` names, or moved its window (`mask` may be 0: the
+    /// live words alone). One note.
+    #[inline(always)]
     pub fn rows_dirty(&self, mask: u64) {
-        for c in &self.cols {
-            self.ar.dirty_col(c.cid, mask);
-        }
+        self.ar.dirty_list(self.lid, mask);
+    }
+    /// What the list bitmap knows this list by: its first column id, its columns, its live words.
+    fn list_desc(&self) -> [u32; 4] {
+        [self.cols.first().map_or(0, |c| c.cid), self.cols.len() as u32, self.live_at, self.row_live.n as u32]
     }
     #[inline(always)]
     pub fn view(&self) -> StoreView<'_> {
@@ -729,12 +744,19 @@ impl Store {
         for c in &mut self.cols {
             c.grow(c.nrec.div_ceil(64), ar, cap);
         }
+        if cap > 1 {
+            // a list's columns are discovered together, so their ids are consecutive: one note names them all
+            assert!(self.cols.iter().enumerate().all(|(i, c)| c.cid == self.cols[0].cid + i as u32));
+            ar.set_list(self.lid, self.list_desc());
+        }
         self.fix_sites();
     }
     /// After adopting an image: whether the columns of this store and of the stores under it are described in
     /// the image's column bitmap as they are here.
     pub fn cids_same(&self) -> bool {
-        self.cols.iter().all(|c| self.ar.cid_is(c.cid, c.rid, c.k, self.cap / 64)) && self.subs.iter().all(|s| s.cids_same())
+        self.cols.iter().all(|c| self.ar.cid_is(c.cid, c.rid, c.k, self.cap / 64))
+            && (self.cap == 1 || self.cols.is_empty() || self.ar.list_is(self.lid, self.list_desc()))
+            && self.subs.iter().all(|s| s.cids_same())
     }
     /// Point every site at its column's pages. Run whenever a column's pages may have moved.
     fn fix_sites(&mut self) {

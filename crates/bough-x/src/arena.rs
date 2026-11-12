@@ -33,14 +33,17 @@ pub const MAX_SPACES: usize = 512;
 pub const MAX_LIVE: usize = 2048;
 /// Ranges the page bitmap can name: every column page is one.
 pub const MAX_RANGES: usize = 16384;
-/// Columns the column bitmap can name (a column that moved to a larger span keeps its id).
+/// Columns the column bitmap can name (a column that moved to a larger span keeps its id), and lists (one
+/// note covers every column of a list).
 pub const MAX_CID: usize = 2048;
+pub const MAX_LISTS: usize = 1024;
 
 const HEAD: usize = 0;
 const DIRTY: usize = 4 << 10;
 const CMASK: usize = 8 << 10;
 const RANGES: usize = 32 << 10;
 const CDESC: usize = 160 << 10;
+const LDESC: usize = 192 << 10;
 /// Where the working half starts.
 const HALVES: usize = 256 << 10;
 /// An image's half is a whole number of these, so it maps at any VM page size up to 64 KiB.
@@ -63,7 +66,7 @@ const R_PAGES: u32 = R_LIVE + (MAX_LIVE / 8) as u32;
 
 pub const MAGIC: u64 = u64::from_le_bytes(*b"boughx02");
 /// The layout constants, folded: an image written with other constants is refused.
-pub const LAYOUT: u64 = (MAX_COLS as u64) << 48 ^ (MAX_SPACES as u64) << 36 ^ (MAX_LIVE as u64) << 24 ^ (MAX_RANGES as u64) << 4 ^ (HALVES as u64) << 8 ^ size_of::<Head>() as u64 ^ (size_of::<Space>() as u64) << 60 ^ (MAX_CID as u64) << 12;
+pub const LAYOUT: u64 = (MAX_COLS as u64) << 48 ^ (MAX_SPACES as u64) << 36 ^ (MAX_LIVE as u64) << 24 ^ (MAX_RANGES as u64) << 4 ^ (HALVES as u64) << 8 ^ size_of::<Head>() as u64 ^ (size_of::<Space>() as u64) << 60 ^ (MAX_CID as u64) << 12 ^ (MAX_LISTS as u64) << 20;
 
 /// The paint kernel of a column for one backend type, over a half.
 pub type PaintFn = unsafe fn(Half, &Entry, &U, *mut ());
@@ -163,7 +166,7 @@ pub struct Head {
     /// and checked against what the image holds. `bad`: the view asked for something else than the image has.
     pub adopt: u32,
     pub bad: u32,
-    pub cur: [u32; 5],
+    pub cur: [u32; 6],
     /// Bytes reserved for each half.
     pub half_len: u64,
     /// Entries of the plan.
@@ -176,13 +179,15 @@ pub struct Head {
     pub nranges: u32,
     /// Column ids handed out.
     pub ncid: u32,
+    /// List ids handed out.
+    pub nlist: u32,
     /// Lines abandoned by columns that outgrew their span and moved.
     pub wasted: u32,
     /// Publishes so far, times two; odd while one is copying.
     pub epoch: AtomicU32,
     /// Which words of the page bitmap have a bit set, and which columns of the column bitmap have a mask.
     pub sum: [u64; MAX_RANGES / 4096],
-    pub csum: [u64; MAX_CID / 64],
+    pub csum: [u64; MAX_LISTS / 64],
 }
 
 /// The arena: owns the mapping.
@@ -349,6 +354,7 @@ impl Arena {
             && (h.nlive as usize) <= MAX_LIVE
             && (h.nranges as usize) <= MAX_RANGES
             && (h.ncid as usize) <= MAX_CID
+            && (h.nlist as usize) <= MAX_LISTS
             && h.csum.iter().all(|&s| s == 0)
             && h.nranges >= R_PAGES
             && (COLS as usize..=top).contains(&(h.top as usize))
@@ -388,6 +394,12 @@ impl Arena {
         for c in 0..h.ncid {
             let (rid, k, stride) = ar.cdesc(c);
             if rid < R_PAGES || rid as u64 + k as u64 * stride as u64 > h.nranges as u64 {
+                return Err(Refused::Bounds);
+            }
+        }
+        for l in 0..h.nlist {
+            let [cid0, ncols, live, nlive] = ar.ldesc(l);
+            if cid0 as u64 + ncols as u64 > h.ncid as u64 || live as u64 + nlive as u64 > h.nlive as u64 {
                 return Err(Refused::Bounds);
             }
         }
@@ -496,15 +508,42 @@ impl Ar {
         unsafe { *(self.base.add(DIRTY) as *mut u64).add(w) |= 1 << (id & 63) };
         self.head().sum[w >> 6] |= 1 << (w & 63);
     }
-    /// Note that rows were written whole in the slot pages `mask` names (bit `p`: row slots `64p..64p+64`) of
-    /// list column `cid`: the page of every one of its sites there. One note per column per pass, whatever
-    /// the number of rows and sites; `publish` works out the pages.
+    /// Note that list `lid` wrote rows whole in the slot pages `mask` names (bit `p`: row slots `64p..64p+64`),
+    /// or moved its window: the page there of every site of every one of its columns, and its live words. One
+    /// note per list per pass, whatever the number of rows, sites and columns; `publish` works out the pages.
     #[inline(always)]
-    pub fn dirty_col(&self, cid: u32, mask: u64) {
-        debug_assert!(cid < self.head().ncid);
-        // SAFETY: `cid < MAX_CID` masks fit between CMASK and RANGES.
-        unsafe { *(self.base.add(CMASK) as *mut u64).add(cid as usize) |= mask };
-        self.head().csum[cid as usize >> 6] |= 1 << (cid & 63);
+    pub fn dirty_list(&self, lid: u32, mask: u64) {
+        debug_assert!(lid < self.head().nlist);
+        // SAFETY: `lid < MAX_LISTS` masks fit between CMASK and RANGES.
+        unsafe { *(self.base.add(CMASK) as *mut u64).add(lid as usize) |= mask };
+        self.head().csum[lid as usize >> 6] |= 1 << (lid & 63);
+    }
+    /// List `lid`: (its first column id, its columns, its first live word, its live words).
+    #[inline(always)]
+    fn ldesc(&self, lid: u32) -> [u32; 4] {
+        // SAFETY: `MAX_LISTS` descriptions of 16 bytes fit between LDESC and HALVES; the index is masked.
+        unsafe { (self.base.add(LDESC) as *const [u32; 4]).add(lid as usize & (MAX_LISTS - 1)).read() }
+    }
+    /// An id for a list in the list bitmap.
+    pub fn new_list(&self) -> u32 {
+        let h = self.head();
+        if h.adopt != 0 {
+            return self.replay(5, 1, h.nlist);
+        }
+        assert!((h.nlist as usize) < MAX_LISTS, "the scene has more than {MAX_LISTS} lists");
+        h.nlist += 1;
+        h.nlist - 1
+    }
+    /// Describe list `lid`. While adopting an image nothing is written (`list_is` checks afterwards).
+    pub fn set_list(&self, lid: u32, d: [u32; 4]) {
+        if self.head().adopt != 0 {
+            return;
+        }
+        // SAFETY: `lid < nlist <= MAX_LISTS`; see `ldesc`.
+        unsafe { (self.base.add(LDESC) as *mut [u32; 4]).add(lid as usize).write(d) }
+    }
+    pub fn list_is(&self, lid: u32, d: [u32; 4]) -> bool {
+        self.ldesc(lid) == d
     }
     #[inline(always)]
     pub fn dirty_live(&self, word: u32) {
@@ -598,12 +637,12 @@ impl Ar {
     /// Begin replaying allocations against the image this arena was opened from.
     pub fn adopt_begin(&self) {
         let h = self.head();
-        (h.adopt, h.bad, h.cur) = (1, 0, [0; 5]);
+        (h.adopt, h.bad, h.cur) = (1, 0, [0; 6]);
     }
     /// End it: whether the view asked for exactly what the image holds.
     pub fn adopt_end(&self) -> bool {
         let h = self.head();
-        let whole = h.cur == [h.nspaces, h.nlive, h.top - COLS, h.nranges - R_PAGES, h.ncid];
+        let whole = h.cur == [h.nspaces, h.nlive, h.top - COLS, h.nranges - R_PAGES, h.ncid, h.nlist];
         h.adopt = 0;
         h.bad == 0 && whole
     }
@@ -621,7 +660,7 @@ impl Ar {
             }
         };
         // the head without what changes while it is in use
-        let c = [h.magic ^ h.wasted as u64, h.layout, h.exe[0], h.exe[1], h.half_len, h.ncols as u64, h.nspaces as u64, h.nlive as u64, h.top as u64, h.nranges as u64, h.ncid as u64, h.size[0] as u64, h.size[1] as u64];
+        let c = [h.magic ^ h.wasted as u64, h.layout, h.exe[0], h.exe[1], h.half_len, h.ncols as u64, h.nspaces as u64, h.nlive as u64, h.top as u64, h.nranges as u64, h.ncid as u64, h.nlist as u64, h.size[0] as u64, h.size[1] as u64];
         eat(c.as_ptr() as *const u8, size_of_val(&c));
         eat(h.shown.as_ptr() as *const u8, 256);
         eat(h.sections.as_ptr() as *const u8, 64);
@@ -632,6 +671,7 @@ impl Ar {
         // SAFETY: both tables are in the shared part.
         eat(unsafe { self.base.add(RANGES) }, (h.nranges as usize).min(MAX_RANGES) * 8);
         eat(unsafe { self.base.add(CDESC) }, (h.ncid as usize).min(MAX_CID) * 16);
+        eat(unsafe { self.base.add(LDESC) }, (h.nlist as usize).min(MAX_LISTS) * 16);
         x
     }
 
@@ -674,20 +714,28 @@ impl Ar {
         for (si, s) in h.csum.iter_mut().enumerate() {
             let mut sm = core::mem::take(s);
             while sm != 0 {
-                let cid = (si * 64) as u32 + sm.trailing_zeros();
+                let lid = (si * 64) as u32 + sm.trailing_zeros();
                 sm &= sm - 1;
-                // SAFETY: `cid < MAX_CID`: a word of the column bitmap.
-                let m = unsafe { core::mem::take(&mut *(self.base.add(CMASK) as *mut u64).add(cid as usize)) };
-                let (rid, k, stride) = self.cdesc(cid);
-                for site in 0..k {
-                    if stride > 64 {
-                        // more slot pages than the mask names: all of them
-                        (0..stride).for_each(|p| copy(rid + site * stride + p));
-                    } else {
-                        let mut b = m;
-                        while b != 0 {
-                            copy(rid + site * stride + b.trailing_zeros());
-                            b &= b - 1;
+                // SAFETY: `lid < MAX_LISTS`: a word of the list bitmap.
+                let m = unsafe { core::mem::take(&mut *(self.base.add(CMASK) as *mut u64).add(lid as usize)) };
+                let [cid0, ncols, live, nlive] = self.ldesc(lid);
+                let mut w = live;
+                while w < live + nlive {
+                    copy(R_LIVE + w / 8);
+                    w = (w / 8 + 1) * 8;
+                }
+                for cid in cid0..cid0 + ncols {
+                    let (rid, k, stride) = self.cdesc(cid);
+                    for site in 0..k {
+                        if stride > 64 {
+                            // more slot pages than the mask names: all of them
+                            (0..stride).for_each(|p| copy(rid + site * stride + p));
+                        } else {
+                            let mut b = m;
+                            while b != 0 {
+                                copy(rid + site * stride + b.trailing_zeros());
+                                b &= b - 1;
+                            }
                         }
                     }
                 }
@@ -777,4 +825,4 @@ impl Half {
     }
 }
 const _: () = assert!(size_of::<Space>() <= SPACE_STRIDE && size_of::<Head>() <= DIRTY);
-const _: () = assert!(CDESC + MAX_CID * 16 <= HALVES && RANGES + MAX_RANGES * 8 <= CDESC && DIRTY + MAX_RANGES / 8 <= CMASK && CMASK + MAX_CID * 8 <= RANGES);
+const _: () = assert!(LDESC + MAX_LISTS * 16 <= HALVES && CDESC + MAX_CID * 16 <= LDESC && CMASK + MAX_LISTS * 8 <= RANGES && RANGES + MAX_RANGES * 8 <= CDESC && DIRTY + MAX_RANGES / 8 <= CMASK && CMASK + MAX_CID * 8 <= RANGES);
