@@ -1093,22 +1093,17 @@ impl<V, Ch: Element<V>> Element<V> for Clip<Ch> {
     }
     fn mount(self, m: &mut Mounter<'_, V>) {
         let prev = m.clip;
-        // any space but the root's exists because something moves it (a row, an offset, an anchor); a view's
-        // content keeps the view's own clip list
-        if m.rt.input.mounting_view.is_none() && (m.space != 0 || m.rt.clip_is_derived(prev)) {
+        // any space but the root's exists because something moves it (a row, an offset, an anchor, a view)
+        if m.space != 0 || m.rt.clip_is_derived(prev) {
             let (id, k) = m.rt.clip_derived(m.space, self.local(m), prev, false);
             m.scope.clips.push(k);
             m.tape_push(k);
             m.clip = id;
         } else {
+            // in the root space under a clip that cannot change: a shared absolute rect
             m.tape_push(NONE);
-            // nested clips compose (intersection, in `scoped_clip`); inside a scroll view's content the clip
-            // moves with the content and is re-cut against its parent when either moves (template.rs)
-            let s = m.rt.scale;
-            let o = m.rt.space(m.space);
-            let [x, y, w, h] = self.0;
-            let r = [o[0] + (m.ox + x) * s, o[1] + (m.oy + y) * s, o[0] + (m.ox + x + w) * s, o[1] + (m.oy + y + h) * s];
-            m.clip = m.rt.scoped_clip(r, prev);
+            let r = self.abs(m);
+            m.clip = m.rt.clip_rect(r);
         }
         self.1.mount(m);
         m.clip = prev;

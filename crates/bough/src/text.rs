@@ -682,6 +682,8 @@ impl Rt {
     /// that stays a digit rewrites one entry id). Returns `Some(width changed)`; `None` when the label kernel
     /// refuses the new text (the label is unchanged: the caller changes representation).
     pub(crate) fn label_set(&mut self, ti: u32, new: &str, placed: bool) -> Option<bool> {
+        // the record's page shows different text: its seal moves (`Bough::page_seal_at`)
+        self.bough.seal_touch(self.texts[ti as usize].handle);
         let Rt { glyphs, text: ts, bough, texts, ctr, .. } = self;
         let t = &mut texts[ti as usize];
         let TShape::Label(lb) = &mut t.shape else { unreachable!("label_set: a label") };
@@ -705,6 +707,8 @@ impl Rt {
     /// with `damage`, mark each line whose window changed (old and new extents, O(1) each). Grows the
     /// header range if needed (the payload changes then). Updates `t.ink`.
     pub(crate) fn lines_point(&mut self, ti: u32, block: Shaped, spans: &[(u32, u32)], damage: bool) {
+        // the record's page shows different text: its seal moves (`Bough::page_seal_at`)
+        self.bough.seal_touch(self.texts[ti as usize].handle);
         let strike = self.texts[ti as usize].strike as StrikeId;
         let b = self.text.bounds(strike);
         let scale = self.tscale(&self.texts[ti as usize]);
@@ -826,6 +830,8 @@ impl Rt {
     /// A text node's value changed. Labels patch (exact tile marks at update time); line windows re-point
     /// with per-line marks; glyph instances are rebuilt (old and new ink damaged).
     pub(crate) fn text_set(&mut self, ti: u32, new: &str) {
+        // the record's page shows different text: its seal moves (`Bough::page_seal_at`)
+        self.bough.seal_touch(self.texts[ti as usize].handle);
         // A label holds its own text (its 16-byte head and its bytes) and its patch starts with the comparison
         // of old and new: the node's `String` is neither compared nor copied on this path (the value was there
         // all along); it is refreshed only on a change of representation. A `\n` or an uncovered codepoint makes

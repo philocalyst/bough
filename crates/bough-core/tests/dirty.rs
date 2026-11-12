@@ -88,3 +88,37 @@ fn a_translated_record_is_projected_where_it_is() {
     assert!(b.project_paint());
     assert!(b.plane(0).tile(20, 10));
 }
+
+/// A page's seal moves when one of its records is written (a column, or a projected paint write) and not
+/// when another page's is.
+#[test]
+fn a_page_seal_moves_with_its_page_only() {
+    let mut rng = Rng::new(3);
+    let (mut b, hs) = build(&mut rng, 300);
+    let seals = |b: &Bough| {
+        let mut v = Vec::new();
+        b.page_seals(&mut v);
+        v
+    };
+    let s0 = seals(&b);
+    assert!(s0.len() >= 4, "several pages");
+    assert_eq!(s0.iter().map(|p| p.3).sum::<u32>(), 300);
+    // a paint write to a record of the last page: nothing moves until it is projected, then that page only
+    let h = *hs.last().unwrap();
+    b.mark_paint(h.idx);
+    assert_eq!(seals(&b), s0);
+    b.project_paint();
+    let s1 = seals(&b);
+    let changed: Vec<usize> = (0..s0.len()).filter(|&i| s0[i].1 != s1[i].1).collect();
+    assert_eq!(changed, vec![s0.len() - 1]);
+    assert_eq!(b.page_seal_at(299), (s1[s0.len() - 1].0, s1[s0.len() - 1].1));
+    // an ink write through a handle of the first page
+    b.set_ink_handle(hs[1], NRect::new(1, 1, 9, 9));
+    let s2 = seals(&b);
+    let changed: Vec<usize> = (0..s1.len()).filter(|&i| s1[i].1 != s2[i].1).collect();
+    assert_eq!(changed, vec![0]);
+    // text content: the façade's touch
+    b.seal_touch(hs[70]);
+    let s3 = seals(&b);
+    assert_eq!((0..s2.len()).filter(|&i| s2[i].1 != s3[i].1).count(), 1);
+}

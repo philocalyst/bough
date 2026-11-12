@@ -2866,6 +2866,44 @@ impl Bough {
         Some(self.visible_in(unsafe { &*p }, s))
     }
 
+    /// The **seal** of the page holding the record at `pos`: `(page id, generation)`. The generation moves
+    /// whenever something the page's records show may have changed *through the core*: any write to the
+    /// page's columns (ink, payload, clip id, depth, structure: every mutable access bumps it, so it may also
+    /// move when nothing did), and a paint write to one of its records once it has been projected
+    /// (`project_paint`). A consumer that keeps something derived from a page (staged kernel commands) and
+    /// finds the seal it stored can skip the page, provided it also keys on what the core does not see: the
+    /// rect of every clip the page's records name (`clip_rect`), the origin of every space their instances
+    /// are in, and text content written through the glyph pool, for which the façade calls `seal_touch`.
+    /// Paint order is not part of a seal: it is the directory's.
+    #[inline]
+    pub fn page_seal_at(&self, pos: usize) -> (u32, u32) {
+        let (d, _) = self.locate(pos);
+        let p = self.page(d);
+        (p.id, p.wgen)
+    }
+    /// Every page in paint order as `(page id, generation, first record position, records)`.
+    pub fn page_seals(&self, out: &mut Vec<(u32, u32, u32, u32)>) {
+        out.clear();
+        let mut pos = 0u32;
+        for d in 0..self.dir_len() {
+            if self.d_ptr[d].is_null() {
+                continue;
+            }
+            let (p, n) = (self.page(d), self.d_len[d]);
+            out.push((p.id, p.wgen, pos, n));
+            pos += n;
+        }
+    }
+    /// What the record of handle `h` shows changed outside the core's columns (text content): its page's
+    /// seal moves.
+    #[inline]
+    pub fn seal_touch(&mut self, h: Handle) {
+        if let Some((p, _)) = self.handle_ptr(h) {
+            // SAFETY: a bound handle's page is live; `&mut self` is exclusive over the pool's pages.
+            unsafe { (*p).wgen = (*p).wgen.wrapping_add(1) };
+        }
+    }
+
     /// A paint-only change of the record of handle index `idx` (colour, glyph alphas): one bit in the
     /// epoch's record-space paint plane. Nothing is projected here (`project_paint`).
     #[inline(always)]
@@ -2903,8 +2941,12 @@ impl Bough {
                 if e.page.is_null() {
                     continue;
                 }
-                // SAFETY: a bound entry points at a live page; its slot is below CAP.
-                let p = unsafe { &*e.page };
+                // SAFETY: a bound entry points at a live page (exclusive through `&mut self`); its slot is
+                // below CAP. The page's seal moves: one of its records paints differently.
+                let p = unsafe {
+                    (*e.page).wgen = (*e.page).wgen.wrapping_add(1);
+                    &*e.page
+                };
                 let s = e.slot as usize & (CAP - 1);
                 let r = p.ink[s];
                 if r.0[0] == crate::nrect::MAXC {

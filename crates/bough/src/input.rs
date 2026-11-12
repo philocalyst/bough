@@ -252,8 +252,6 @@ pub struct Input {
     pub(crate) mounting_view: Option<u32>,
     /// Layout placement hooks (`ltemplate::PlaceHook`, by `LInfo::hook`).
     pub(crate) lhooks: Vec<(crate::ltemplate::PlaceHook, u32)>,
-    /// Layout clips by parent clip id (re-cut when the parent changes).
-    pub(crate) clip_kids: std::collections::HashMap<u16, Vec<u32>>,
     /// Derived geometry (`template::WClip`): clips whose rect is a function of a local rect, a space's origin
     /// and a parent clip. A slab (released entries are reused) with
     /// the live entries listed per **level** (0: the parent clip is not derived; else the parent's level + 1):
@@ -315,7 +313,6 @@ impl Default for Input {
             views: Vec::new(),
             mounting_view: None,
             lhooks: Vec::new(),
-            clip_kids: Default::default(),
             wclips: Vec::new(),
             wclip_free: Vec::new(),
             wclip_levels: Vec::new(),
@@ -797,9 +794,6 @@ impl<T> Tooltip<T> {
         let k = m.rt.input.tips.len() as u32;
         m.rt.input.tips.push(Tip { ck, bubble, inst, label, ti, style: st, alpha: 0.0, fading: false });
         m.rt.input.acts[a as usize].tip = k;
-        if let Some(v) = m.rt.input.mounting_view {
-            m.rt.input.views[v as usize].tips.push(k);
-        }
     }
 }
 
@@ -932,15 +926,7 @@ impl<V: 'static> TextField<'_, V> {
         m.ox += x + 1.0;
         m.oy += y + 1.0;
         m.depth += 1;
-        let o = m.rt.space(m.space);
-        let inner = [o[0] + m.ox * s, o[1] + m.oy * s, o[0] + (m.ox + w - 2.0) * s, o[1] + (m.oy + h - 2.0) * s];
-        let r = if clip != 0 {
-            let p = m.rt.bough.clip_rect(clip).to_xyxy();
-            [inner[0].max(p[0] as f32), inner[1].max(p[1] as f32), inner[2].min(p[2] as f32), inner[3].min(p[3] as f32)]
-        } else {
-            inner
-        };
-        m.clip = m.rt.scoped_clip(r, clip);
+        m.clip = m.clip_here([m.ox * s, m.oy * s, (m.ox + w - 2.0) * s, (m.oy + h - 2.0) * s], clip);
         // the caret wire first: wires run newest first, so it runs after the label's patch
         let lh = (self.size * 1.4).ceil();
         let ty = ((h - 2.0) - lh) * 0.5;

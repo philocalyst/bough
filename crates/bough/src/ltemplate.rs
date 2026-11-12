@@ -547,7 +547,7 @@ impl<V: 'static> Element<V> for LTemplate<V> {
             }
             let mut clip = m.clip;
             if n.flags & L_CLIP != 0 {
-                clip = m.rt.layout_clip(lid, m.clip);
+                clip = m.layout_clip(lid);
             }
             if let Some(xf) = xform {
                 let h = m.rt.bough.handle_gen(m.recs[rec].handle);
@@ -574,7 +574,7 @@ impl<V: 'static> Element<V> for LTemplate<V> {
 pub(crate) enum PlaceHook {
     /// A clip that is the box (∩ the parent clip); inside a scroll view also registered with it. `abs` is
     /// the box's last absolute rect (re-cut when the parent clip changes).
-    Clip { clip: u16, parent: u16, view: u32, slot: u32, abs: [f32; 4] },
+    Clip { ck: u32 },
     /// A space whose origin is the box's top-left: non-layout content anchored to a layout box (a view).
     Anchor { view: u32 },
     /// A list region whose port is the box (`port_list` under a laid-out panel).
@@ -605,21 +605,12 @@ impl Rt {
         }
     }
 
-    /// A clip owned by layout node `lid`: its rect follows the laid-out box.
-    pub(crate) fn layout_clip(&mut self, lid: u32, parent: u16) -> u16 {
-        let id = self.bough.new_clip(NRect::EMPTY);
-        let (view, slot) = match self.input.mounting_view {
-            Some(v) => {
-                let views = &mut self.input.views[v as usize];
-                views.clips.push((id, parent, [0.0; 4]));
-                (v, (views.clips.len() - 1) as u32)
-            }
-            None => (NONE, NONE),
-        };
-        self.add_place_hook(lid, PlaceHook::Clip { clip: id, parent, view, slot, abs: [0.0; 4] });
-        let k = self.lay.info[lid as usize].hook;
-        self.input.clip_kids.entry(parent).or_default().push(k);
-        id
+    /// A clip owned by layout node `lid`, in `space` under clip `parent`: a derived clip (`template::WClip`)
+    /// whose local rect the layout's placement writes. Returns (clip id, entry).
+    pub(crate) fn layout_clip(&mut self, lid: u32, space: u16, parent: u16) -> (u16, u32) {
+        let (id, ck) = self.clip_derived(space, [0.0; 4], parent, false);
+        self.add_place_hook(lid, PlaceHook::Clip { ck });
+        (id, ck)
     }
 
     /// Chain a placement hook onto layout node `lid`.
@@ -638,33 +629,16 @@ impl Rt {
         }
     }
 
-    /// Re-cut clip hook `k` from its box and its parent clip, then every clip below it.
-    fn recut(&mut self, k: u32) {
-        let PlaceHook::Clip { clip, parent, abs, .. } = self.input.lhooks[k as usize].0 else { return };
-        let r = NRect::new(abs[0].floor() as i32, abs[1].floor() as i32, abs[2].ceil() as i32, abs[3].ceil() as i32);
-        let r = r.intersect(self.bough.clip_rect(parent)).canon();
-        if r == self.bough.clip_rect(clip) {
-            return;
-        }
-        self.set_clip(clip, r);
-        let kids = self.input.clip_kids.get(&clip).cloned().unwrap_or_default();
-        for c in kids {
-            self.recut(c);
-        }
-    }
-
     fn place_one(&mut self, k: u32, hk: PlaceHook, space: u16, ax: f32, ay: f32, w: f32, h: f32) {
         match hk {
-            PlaceHook::Clip { clip: _, parent, view, slot, .. } => {
-                let o = self.space(space);
-                if let PlaceHook::Clip { abs, .. } = &mut self.input.lhooks[k as usize].0 {
-                    *abs = [o[0] + ax, o[1] + ay, o[0] + ax + w, o[1] + ay + h];
-                }
-                let _ = parent;
-                if view != NONE {
-                    self.input.views[view as usize].clips[slot as usize].2 = [ax, ay, ax + w, ay + h];
-                }
-                self.recut(k);
+            PlaceHook::Clip { ck } => {
+                // the clip's input: its box in its space; the rect settles by level after the flush
+                let _ = k;
+                let e = &mut self.input.wclips[ck as usize];
+                debug_assert_eq!(e.space, space, "a layout clip is placed in the space it was mounted in");
+                e.local = [ax, ay, ax + w, ay + h];
+                let l = e.level as u32;
+                self.clips_raise(l);
             }
             PlaceHook::Anchor { view } => {
                 let o = self.space(space);
@@ -697,5 +671,14 @@ impl Rt {
                 unsafe { self.region_set_port(reg as usize, owner, [o[0] + ax, o[1] + ay, w, h]) };
             }
         }
+    }
+}
+
+impl<V> Mounter<'_, V> {
+    /// `Rt::layout_clip` in the current space under the current clip, owned by the scope being mounted.
+    pub(crate) fn layout_clip(&mut self, lid: u32) -> u16 {
+        let (id, ck) = self.rt.layout_clip(lid, self.space, self.clip);
+        self.scope.clips.push(ck);
+        id
     }
 }

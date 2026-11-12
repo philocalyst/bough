@@ -332,3 +332,60 @@ fn a_keyed_list_port_follows_an_offset_and_a_parent_clip() {
         let _ = before;
     }
 }
+
+// ---------------------------------------------------------------- scroll views under moving parents
+struct Scrolled {
+    pan: Signal<(f32, f32)>,
+    s1: Signal<f32>,
+    s2: Signal<f32>,
+}
+impl View for Scrolled {
+    fn view(&self) -> impl Element<Self> + '_ {
+        (
+            quad(0.0, 0.0, 400.0, 300.0).bg(rgb(0xffffff)),
+            // a raw scroll view inside an offset, with a constant clip and a nested scroll view in its content
+            offset(
+                sig!(self.pan),
+                scroll_y(
+                    sig!(self.s1),
+                    [20.0, 20.0, 150.0, 100.0],
+                    400.0,
+                    (
+                        quad(0.0, 0.0, 150.0, 500.0).bg(rgb(0xeeeeee)),
+                        clip(10.0, 40.0, 100.0, 30.0, quad(0.0, 30.0, 150.0, 60.0).bg(rgb(0x2f6bff))),
+                        scroll_y(sig!(self.s2), [10.0, 120.0, 120.0, 60.0], 200.0, quad(0.0, 0.0, 120.0, 260.0).bg(rgb(0xff8800))),
+                    ),
+                ),
+            ),
+            // a laid-out scroll box inside an offset
+            offset(sig!(self.pan), at(200.0, 150.0, column((block(120.0, 60.0).bg(rgb(0x00aa55)), block(120.0, 60.0).bg(rgb(0xaa0055)), block(120.0, 60.0).bg(rgb(0x5500aa)))).w(140.0).h(100.0).scroll(sig!(self.s2)))),
+        )
+    }
+}
+
+#[test]
+fn a_scroll_view_under_an_offset_keeps_its_place() {
+    let mk = |p: (f32, f32), s1: f32, s2: f32| {
+        let mut a = App::new(Scrolled { pan: Signal::new(p), s1: Signal::new(s1), s2: Signal::new(s2) }, cfg(), false);
+        a.frame();
+        a
+    };
+    let mut a = mk((0.0, 0.0), 0.0, 0.0);
+    let mut r = Lcg(31);
+    let (mut p, mut s1, mut s2) = ((0.0f32, 0.0f32), 0.0f32, 0.0f32);
+    for step in 0..120 {
+        match step % 3 {
+            0 => p = (r.f(-50.0, 50.0).round(), r.f(-50.0, 50.0).round()),
+            1 => s1 = r.f(0.0, 380.0).round(),
+            _ => s2 = r.f(0.0, 70.0).round(),
+        }
+        a.turn(|v| {
+            v.pan.set(p);
+            v.s1.set(s1);
+            v.s2.set(s2);
+        });
+        a.frame();
+        let f = mk(p, s1, s2);
+        assert_eq!(dump(&a), dump(&f), "step {step}: pan {p:?}, scrolls {s1} {s2}: retained != fresh mount");
+    }
+}

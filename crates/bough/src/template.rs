@@ -139,10 +139,8 @@ impl<V: 'static> Template<V> {
                 m.rt.input.ensure_act(h);
             }
             if n.flags & T_CLIP != 0 {
-                let o = m.rt.space(m.space);
                 let [x, y, w, h] = n.rect;
-                let r = [o[0] + (ox + x) * s, o[1] + (oy + y) * s, o[0] + (ox + x + w) * s, o[1] + (oy + y + h) * s];
-                let id = m.rt.scoped_clip(r, m.clip);
+                let id = m.clip_here([(ox + x) * s, (oy + y) * s, (ox + x + w) * s, (oy + y + h) * s], m.clip);
                 clips.push((n.depth, id));
             }
         }
@@ -180,16 +178,14 @@ pub(crate) struct ScrollView {
     pub handle: bough_core::Handle,
     pub space: u16,
     pub clip: u16,
-    /// Port origin (device px, in the parent's space terms: absolute).
+    /// The space the port is in, and the port's origin in it (device px from that space's origin). The
+    /// content's space is nested in it, so a move of it (an offset, an anchor, an outer scroll) carries this
+    /// view and everything in it; the content's clips are derived clips in the content's space.
+    pub pspace: u16,
     pub vx: f32,
     pub vy: f32,
     /// Current offset (device px).
     pub px: f32,
-    /// Clips owned by the content: (id, parent clip id, rect in content px at offset 0).
-    pub clips: Vec<(u16, u16, [f32; 4])>,
-    /// Views nested in this one's content (their origins follow this one's moves) and tooltips inside it.
-    pub nested: Vec<u32>,
-    pub tips: Vec<u32>,
     /// The content's layout group root (NONE: not laid out), and the width the window leaves it (the port
     /// follows the window when `follows`).
     pub root: u32,
@@ -197,50 +193,21 @@ pub(crate) struct ScrollView {
     pub inset_w: f32,
 }
 
-/// The content origin of view `v`.
+/// The content origin of view `v` (absolute device px): its port's place in its parent space, less the offset.
 #[inline]
 fn view_origin(rt: &Rt, v: usize) -> (f32, f32) {
     let view = &rt.input.views[v];
-    (view.vx, view.vy - view.px)
+    let o = rt.space(view.pspace);
+    (o[0] + view.vx, o[1] + view.vy - view.px)
 }
 
-/// Re-derive view `v`'s clips from its content origin (parents first: registration order is preorder).
-fn view_clips(rt: &mut Rt, v: usize) {
-    let (ox, oy) = view_origin(rt, v);
-    for k in 0..rt.input.views[v].clips.len() {
-        let (id, parent, r) = rt.input.views[v].clips[k];
-        let p = rt.bough.clip_rect(parent).to_xyxy();
-        let a = [r[0] + ox, r[1] + oy, r[2] + ox, r[3] + oy];
-        let c = NRect::new(a[0].max(p[0] as f32).floor() as i32, a[1].max(p[1] as f32).floor() as i32, a[2].min(p[2] as f32).ceil() as i32, a[3].min(p[3] as f32).ceil() as i32);
-        rt.set_clip(id, c);
-    }
-}
-
-/// Views nested in `v` (and their tooltips) follow a move of `v`'s content by (dx, dy): their records were
-/// moved with `v`'s, so only their spaces, clips and tooltip rects change.
-fn shift_nested(rt: &mut Rt, v: usize, dx: i32, dy: i32) {
-    for k in 0..rt.input.views[v].nested.len() {
-        let c = rt.input.views[v].nested[k] as usize;
-        {
-            let view = &mut rt.input.views[c];
-            view.vx += dx as f32;
-            view.vy += dy as f32;
-        }
-        let (ox, oy) = view_origin(rt, c);
-        let space = rt.input.views[c].space;
-        rt.set_space(space, [ox, oy]);
-        let port = rt.input.views[c].clip;
-        let _ = port;
-        view_clips(rt, c);
-        shift_nested(rt, c, dx, dy);
-    }
-}
-
-/// Move view `v`'s port origin to (vx, vy) device px (an anchor following its laid-out box): its space,
-/// its content's clips and records, and every view nested in it.
-pub(crate) fn move_view(rt: &mut Rt, v: u32, vx: f32, vy: f32) {
+/// Move view `v`'s port origin to the absolute point (ax, ay) device px (an anchor or a scroll port following
+/// its laid-out box): its content's space (and so every space, view and derived clip nested in it) and its
+/// content's records.
+pub(crate) fn move_view(rt: &mut Rt, v: u32, ax: f32, ay: f32) {
     let v = v as usize;
-    let (vx, vy) = (vx.round(), vy.round());
+    let o = rt.space(rt.input.views[v].pspace);
+    let (vx, vy) = (ax.round() - o[0], ay.round() - o[1]);
     let (ox, oy) = (rt.input.views[v].vx, rt.input.views[v].vy);
     if (vx, vy) == (ox, oy) {
         return;
@@ -254,45 +221,40 @@ pub(crate) fn move_view(rt: &mut Rt, v: u32, vx: f32, vy: f32) {
     let (cx, cy) = view_origin(rt, v);
     let space = rt.input.views[v].space;
     rt.set_space(space, [cx, cy]);
-    view_clips(rt, v);
     let h = rt.input.views[v].handle;
     if let Some(pos) = rt.bough.pos_of(h) {
         let end = rt.bough.subtree_end(pos);
         rt.bough.translate_run(pos + 1, end - pos - 1, dx, dy);
     }
-    shift_nested(rt, v, dx, dy);
 }
 
 impl Rt {
     /// A space for a transformed subtree mounted in `parent`: the same translation, registered as a view
     /// nested in the view being mounted so outer scrolls move it.
     pub(crate) fn xform_space(&mut self, parent: u16) -> u16 {
-        let s = self.alloc_space();
+        let s = self.alloc_space_in(parent);
         let o = self.space(parent);
         self.set_space(s, o);
         let hd = self.bough.new_handle();
-        let v = self.input.views.len() as u32;
-        self.input.views.push(ScrollView { handle: hd, space: s, clip: 0, vx: o[0], vy: o[1], px: 0.0, clips: Vec::new(), nested: Vec::new(), tips: Vec::new(), root: NONE, follows: false, inset_w: 0.0 });
-        if let Some(outer) = self.input.mounting_view {
-            self.input.views[outer as usize].nested.push(v);
-        }
+        self.input.views.push(ScrollView { handle: hd, space: s, clip: 0, pspace: parent, vx: 0.0, vy: 0.0, px: 0.0, root: NONE, follows: false, inset_w: 0.0 });
         s
     }
+}
 
-    /// A clip for an absolute rect inside the current clip `parent`. Inside a scroll view's content the
-    /// clip is fresh (it moves with the content) and registered with the view; elsewhere it is shared.
-    pub(crate) fn scoped_clip(&mut self, r: [f32; 4], parent: u16) -> u16 {
-        let p = self.bough.clip_rect(parent).to_xyxy();
-        let c = [r[0].max(p[0] as f32), r[1].max(p[1] as f32), r[2].min(p[2] as f32), r[3].min(p[3] as f32)];
-        if let Some(v) = self.input.mounting_view {
-            let view = &self.input.views[v as usize];
-            // content px at offset 0: absolute minus the port origin plus the offset
-            let (dx, dy) = (view.vx, view.vy - view.px);
-            let id = self.bough.new_clip(NRect::new(c[0].floor() as i32, c[1].floor() as i32, c[2].ceil() as i32, c[3].ceil() as i32));
-            self.input.views[v as usize].clips.push((id, parent, [r[0] - dx, r[1] - dy, r[2] - dx, r[3] - dy]));
-            return id;
+impl<V> Mounter<'_, V> {
+    /// A clip for `local` (edges in device px from the current space's origin) inside clip `parent`. In the
+    /// root space under a clip that cannot change it is a shared absolute rect; anywhere else it is a derived
+    /// clip (`WClip`) owned by the scope being mounted: it follows its space and its parent clip.
+    pub(crate) fn clip_here(&mut self, local: [f32; 4], parent: u16) -> u16 {
+        if self.space == 0 && !self.rt.clip_is_derived(parent) {
+            let o = self.rt.space(0);
+            let p = self.rt.bough.clip_rect(parent).to_xyxy();
+            let r = [o[0] + local[0], o[1] + local[1], o[0] + local[2], o[1] + local[3]];
+            return self.rt.clip_rect([r[0].max(p[0] as f32), r[1].max(p[1] as f32), r[2].min(p[2] as f32), r[3].min(p[3] as f32)]);
         }
-        self.clip_rect(c)
+        let (id, k) = self.rt.clip_derived(self.space, local, parent, false);
+        self.scope.clips.push(k);
+        id
     }
 }
 
@@ -308,21 +270,20 @@ unsafe fn patch_view(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
         return;
     }
     let dy = (new_px - old_px) as i32;
-    let (h, space, clip, vx, vy) = {
+    let (h, space, clip) = {
         let view = &mut rt.input.views[v];
         view.px = new_px;
-        (view.handle, view.space, view.clip, view.vx, view.vy)
+        (view.handle, view.space, view.clip)
     };
-    // absolute (no drift); `set_space` carries the delta to nested spaces and list regions
-    rt.set_space(space, [vx, vy - new_px]);
-    // the content's clips move with it (parents first: they were registered in preorder)
-    view_clips(rt, v);
+    // from the port's place (no drift); `set_space` carries the delta to nested spaces and list regions and
+    // raises the derived clips of the content (they settle when this cell's wires have run)
+    let (cx, cy) = view_origin(rt, v);
+    rt.set_space(space, [cx, cy]);
     if let Some(pos) = rt.bough.pos_of(h) {
         let end = rt.bough.subtree_end(pos);
         let port = rt.bough.clip_rect(clip);
         rt.bough.scroll_run(pos + 1, end - pos - 1, 0, -dy, port);
     }
-    shift_nested(rt, v, 0, -dy);
 }
 
 pub struct ScrollY<'a, V, C> {
@@ -370,17 +331,16 @@ impl<V: 'static, C: Element<V>> ScrollY<'_, V, C> {
         let hidx = m.recs[before].handle;
         let handle = m.rt.bough.handle_gen(hidx);
         let o = m.rt.space(m.space);
-        let (vx, vy) = (o[0] + (m.ox + x) * s, o[1] + (m.oy + y) * s);
-        let clip = m.rt.scoped_clip([vx, vy, vx + w * s, vy + h * s], m.clip);
+        // the port's place in the current space; its clip is cut there
+        let (lx, ly) = ((m.ox + x) * s, (m.oy + y) * s);
+        let (vx, vy) = (o[0] + lx, o[1] + ly);
+        let clip = m.clip_here([lx, ly, lx + w * s, ly + h * s], m.clip);
         let space = m.rt.alloc_space_in(m.space);
         let px = (*self.sig.get() * s).round();
         m.rt.set_space(space, [vx, vy - px]);
         let v = m.rt.input.views.len() as u32;
         let follows = vx == 0.0 && vy == 0.0 && (w * s).round() as i32 == m.rt.win_w && (h * s).round() as i32 == m.rt.win_h;
-        m.rt.input.views.push(ScrollView { handle, space, clip, vx, vy, px, clips: Vec::new(), nested: Vec::new(), tips: Vec::new(), root: NONE, follows, inset_w: 0.0 });
-        if let Some(outer) = m.rt.input.mounting_view {
-            m.rt.input.views[outer as usize].nested.push(v);
-        }
+        m.rt.input.views.push(ScrollView { handle, space, clip, pspace: m.space, vx: lx, vy: ly, px, root: NONE, follows, inset_w: 0.0 });
         m.wire(&self.sig, patch_view, v, [0; 16]);
         let saved = (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view);
         m.space = space;
@@ -444,15 +404,13 @@ impl<'a, V: 'static, Bg: crate::elem::IntoProp<Color, V>, Ch: Element<V>> Elemen
         self.port.scrolls(self.sig, self.line, 0.0).mount(m);
         let lid = m.rt.lay.last_box;
         let handle = m.rt.bough.handle_gen(m.recs[before].handle);
-        let clip = m.rt.layout_clip(lid, m.clip);
-        let space = m.rt.alloc_space();
+        let clip = m.layout_clip(lid);
+        let space = m.rt.alloc_space_in(m.space);
         let px = (*self.sig.get() * s).round();
-        m.rt.set_space(space, [0.0, -px]);
+        let o = m.rt.space(m.space);
+        m.rt.set_space(space, [o[0], o[1] - px]);
         let v = m.rt.input.views.len() as u32;
-        m.rt.input.views.push(ScrollView { handle, space, clip, vx: 0.0, vy: 0.0, px, clips: Vec::new(), nested: Vec::new(), tips: Vec::new(), root: NONE, follows: false, inset_w: 0.0 });
-        if let Some(outer) = m.rt.input.mounting_view {
-            m.rt.input.views[outer as usize].nested.push(v);
-        }
+        m.rt.input.views.push(ScrollView { handle, space, clip, pspace: m.space, vx: 0.0, vy: 0.0, px, root: NONE, follows: false, inset_w: 0.0 });
         let a = m.rt.input.act_of_handle(handle);
         let sc = m.rt.input.acts[a as usize].scroll;
         m.rt.add_place_hook(lid, crate::ltemplate::PlaceHook::ScrollPort { view: v, scroller: sc });
@@ -957,13 +915,11 @@ impl<V: 'static, C: Element<V>> Element<V> for Anchor<C> {
         let lid = m.rt.lay.eng.add(hd, &spec, s, None);
         let parent = attach(m, lid);
         m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: hd.idx, clip: m.clip });
-        let space = m.rt.alloc_space();
-        m.rt.set_space(space, [0.0, 0.0]);
+        let space = m.rt.alloc_space_in(m.space);
+        let o = m.rt.space(m.space);
+        m.rt.set_space(space, o);
         let v = m.rt.input.views.len() as u32;
-        m.rt.input.views.push(ScrollView { handle: hd, space, clip: m.clip, vx: 0.0, vy: 0.0, px: 0.0, clips: Vec::new(), nested: Vec::new(), tips: Vec::new(), root: NONE, follows: false, inset_w: 0.0 });
-        if let Some(outer) = m.rt.input.mounting_view {
-            m.rt.input.views[outer as usize].nested.push(v);
-        }
+        m.rt.input.views.push(ScrollView { handle: hd, space, clip: m.clip, pspace: m.space, vx: 0.0, vy: 0.0, px: 0.0, root: NONE, follows: false, inset_w: 0.0 });
         m.rt.add_place_hook(lid, crate::ltemplate::PlaceHook::Anchor { view: v });
         let saved = (m.space, m.ox, m.oy, m.depth, m.rt.input.mounting_view, m.rt.lay.cur);
         m.space = space;
