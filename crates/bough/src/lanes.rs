@@ -55,7 +55,8 @@ fn write_lanes<T, F: Fn(&T, usize) -> Lane>(rt: &mut Rt, node: u32, v: &T, f: F)
     let inst = &mut rt.inst[first..first + n];
     for (i, p) in inst.iter_mut().enumerate() {
         let l = f(v, i);
-        let (x, y, w, h) = (ox + l.x * s, oy + l.y * s, l.w * s, l.h * s);
+        // on the geometry grid (`snap`), as every quad: a lane draws what the same box as a `quad` draws
+        let (x, y, w, h) = (snap(ox + l.x * s), snap(oy + l.y * s), snap(l.w * s), snap(l.h * s));
         p.pos = [x, y];
         p.size = [w, h];
         p.color = l.color.0;
@@ -98,7 +99,7 @@ impl<'a, T: 'static, V: 'static, F: Fn(&T, usize) -> Lane + Copy + 'static> Elem
         let first = m.rt.runs[run as usize].first;
         let kind = if self.radius > 0.0 { KIND_RRECT } else { KIND_SOLID };
         for i in 0..self.n {
-            *m.rt.inst_mut(first + i as u32) = Instance { space: m.space, kind, radius: self.radius * s, ..Default::default() };
+            *m.rt.inst_mut(first + i as u32) = Instance { space: m.space, kind, radius: snap(self.radius * s), ..Default::default() };
         }
         {
             let n = &mut m.rt.nodes[node as usize];

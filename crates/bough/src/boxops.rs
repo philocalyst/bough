@@ -115,8 +115,15 @@ pub trait BoxOps<V>: Sized {
     fn install(self, m: &mut Mounter<'_, V>, lid: u32, node: u32, spec: &mut Spec);
     /// Re-description: apply the operands' current values.
     fn refresh(self, rt: &mut Rt, lid: u32, node: u32);
+    /// The operands' part of the box's seal (`seal.rs`); refuses by default.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.refuse()
+    }
 }
 impl<V> BoxOps<V> for () {
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, _: &mut S) {}
     const SIZE: bool = false;
     const PAINT: bool = false;
     #[inline]

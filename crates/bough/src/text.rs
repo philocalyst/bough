@@ -141,14 +141,14 @@ static FONTS: std::sync::Mutex<Vec<(u64, &'static [u8], std::sync::Arc<Shaper>)>
 
 /// The font's bytes (kept for the process: the faces borrow them) and its shaping tables, built on first use.
 fn font_tables(font: &[u8]) -> (&'static [u8], std::sync::Arc<Shaper>) {
-    let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for &b in font {
-        h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
-    }
+    // A known font is found by comparing bytes (one vectorised `memcmp` against the few fonts of the same
+    // length), never by hashing the file: the byte-at-a-time hash this replaced cost ~3 instructions per
+    // byte of the font on every `App::new` (round 6: the largest single item of a small app's start).
     let mut fonts = FONTS.lock().unwrap();
-    if let Some((_, b, s)) = fonts.iter().find(|f| f.0 == h && f.1 == font) {
+    if let Some((_, b, s)) = fonts.iter().find(|f| f.1.len() == font.len() && f.1 == font) {
         return (b, s.clone());
     }
+    let h = 0;
     // built once per process here, and once per font ever through bough-text's file cache
     let script = SimpleScript::build_cached(font, 0).expect("font has no simple-script table");
     let leaked: &'static [u8] = Box::leak(font.to_vec().into_boxed_slice());
