@@ -284,6 +284,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-workloads"
+version = "0.0.0"
+dependencies = [
+ "bough",
+ "bough-mem",
+ "bough-metal",
+ "libc",
+ "png",
+ "zgx-workload",
+]
+
+[[package]]
 name = "bough-zgui"
 version = "0.0.0"
 dependencies = [
