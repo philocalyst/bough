@@ -684,21 +684,25 @@ unsafe fn delta_col<A: Arch>(col: &mut RawCol, sv: &StoreView, old: &U, new: &U,
         let m = m & 0x5555_5555_5555_5555;
         if m != 0 {
             mark_page(pg, m, org, clip, old, new, tiles);
-            if A::TIMED {
-                // records set in motion by this change: until when, and inside which box
-                let mut k = m;
-                while k != 0 {
-                    let i = k.trailing_zeros() as usize;
-                    k &= k - 1;
-                    let t = pg.rec[i].until(new);
-                    if t > new.w[U_TIME] {
-                        let mut end = *new;
-                        end.w[U_TIME] = t;
-                        let r = pg.rect(i);
-                        let b = r.shift(pg.rec[i].offset(new)).or(r.shift(pg.rec[i].offset(&end)));
-                        sweep = if until == 0 { b } else { sweep.or(b) };
-                        until = until.max(t);
-                    }
+        }
+        if A::TIMED {
+            // Records in motion under the new block: until when, and inside which box. Every live record is
+            // asked, not only those `m` names: a motion that starts now shows, at this instant, exactly what
+            // was shown before it started.
+            let mut k = live;
+            while k != 0 {
+                let i = k.trailing_zeros() as usize;
+                k &= k - 1;
+                let t = pg.rec[i].until(new);
+                if t > new.w[U_TIME] {
+                    let mut end = *new;
+                    end.w[U_TIME] = t;
+                    let r = pg.rect(i);
+                    let b = r.shift(pg.rec[i].offset(new)).or(r.shift(pg.rec[i].offset(&end)));
+                    #[cfg(feature = "mutant_moves")]
+                    let b = r.shift(pg.rec[i].offset(&end));
+                    sweep = if until == 0 { b } else { sweep.or(b) };
+                    until = until.max(t);
                 }
             }
         }

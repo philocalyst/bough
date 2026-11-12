@@ -33,6 +33,8 @@ fn check(tag: &str, step: usize, sheet: &Sheet, world: &mut World<Soft>, retaine
     assert!(full.px == now.px, "{tag} step {step}: stores != immediate ({} pixels)", diff(&full.px, &now.px));
     if fresh {
         let mut w2 = World::<Soft>::new(W, H, NWORDS);
+        // a fresh mount of the same instant
+        w2.tick(world.now());
         w2.mount(sheet);
         let mut f = Soft::new(W, H);
         w2.paint(&mut f);
