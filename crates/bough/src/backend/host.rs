@@ -385,6 +385,10 @@ struct Pacer {
     noframe: bool,
     /// Frame-log builds only (`BOUGH_LATCH=tick`): present at the link callback instead of a latch.
     at_tick: bool,
+    /// Deadline commits (card 2026-11-11-deadline-commit): frames are drawn as soon as input is drained and
+    /// the presenter commits at most once per refresh, at the deadline, on the phase this pacer gives it.
+    /// Otherwise (X4) frames wait for the latch. Frame-log builds choose with `BOUGH_PACE=deadline|latch`.
+    deadline: bool,
     /// The caret-blink timer: armed only while a field is focused (otherwise it would wake an idle window
     /// twice a second), and whether it is armed.
     blink: RefCell<Option<objc2::rc::Retained<NSTimer>>>,
@@ -414,6 +418,7 @@ impl Pacer {
             }
             at_tick = std::env::var("BOUGH_LATCH").is_ok_and(|v| v == "tick");
         }
+        let deadline = fl::ON && std::env::var("BOUGH_PACE").is_ok_and(|v| v == "deadline");
         Pacer {
             q: RefCell::new(pace::InputQueue::new()),
             pending: Cell::new(false),
@@ -433,6 +438,7 @@ impl Pacer {
             latch_target: Cell::new(None),
             noframe: std::env::var_os("BOUGH_NOFRAME").is_some(),
             at_tick,
+            deadline,
             blink: RefCell::new(None),
             blink_on: Cell::new(false),
             blink_half: Cell::new(0.0),
@@ -548,6 +554,21 @@ impl Pacer {
             return;
         }
         let now = objc2_quartz_core::CACurrentMediaTime();
+        if self.deadline {
+            // draw now; the presenter paces the commit. A second present within two refreshes is a burst:
+            // the link runs to give the presenter the refresh phase.
+            if a.has_damage() {
+                let burst = now - self.last_present.get() < 2.0 * self.period.get();
+                self.present(app, &mut a, trim);
+                if burst {
+                    self.start_link(link);
+                }
+            }
+            if a.animating() {
+                self.start_link(link);
+            }
+            return;
+        }
         if a.has_damage() {
             if !self.link_on.get() && now - self.last_present.get() >= self.period.get() {
                 // the first present of a refresh: from the event
@@ -584,6 +605,30 @@ impl Pacer {
                 self.stop_link(link);
             }
             fl::turn_end();
+            return;
+        }
+        if self.deadline {
+            a.set_refresh(t, self.period.get(), 3.0 * self.period.get());
+            let now = objc2_quartz_core::CACurrentMediaTime();
+            let mut busy = now - self.last_present.get() < 2.0 * self.period.get();
+            if a.animating() {
+                fl::turn_begin(fl::K_TICK, 0);
+                self.animate(&mut a, t);
+                fl::turn_end();
+                busy = true;
+            }
+            if a.has_damage() {
+                self.present(app, &mut a, trim);
+                busy = true;
+            }
+            if busy {
+                self.idle_callbacks.set(0);
+            } else {
+                self.idle_callbacks.set(self.idle_callbacks.get() + 1);
+                if self.idle_callbacks.get() >= IDLE_CALLBACKS {
+                    self.stop_link(link);
+                }
+            }
             return;
         }
         let busy = self.pending.get() || a.has_damage() || a.animating();

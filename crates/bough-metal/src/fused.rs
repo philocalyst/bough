@@ -381,6 +381,57 @@ struct PubShared {
     held_back: AtomicU64,
     /// Host-clock seconds (f64 bits) when the last commit ended (a pacer sizes its latch's lead from it).
     last_commit: AtomicU64,
+    /// Commit pacing (`Fused::set_refresh`): a target vsync and the period (f64 bits), valid until `pace_until`
+    /// (host seconds; 0: off). While valid, the publisher commits at most once per refresh, at the deadline.
+    pace_t: AtomicU64,
+    pace_p: AtomicU64,
+    pace_until: AtomicU64,
+}
+
+/// How long before the target vsync a paced commit starts (the window server takes a commit until ~0.3-1.3 ms
+/// after the vsync on this Mac: docs/lanes/pacing/2026-11-11-compositor-deadline.md; a commit takes ~0.1 ms).
+const COMMIT_BEFORE: f64 = 0.0005;
+
+impl PubShared {
+    /// The next commit deadline at or after `now`, if commits are paced.
+    fn deadline(&self, now: f64) -> Option<(f64, f64)> {
+        if now >= f64::from_bits(self.pace_until.load(Relaxed)) {
+            return None;
+        }
+        let (t, p) = (f64::from_bits(self.pace_t.load(Relaxed)), f64::from_bits(self.pace_p.load(Relaxed)));
+        if p <= 0.0 {
+            return None;
+        }
+        let mut d = t - COMMIT_BEFORE;
+        let soon = now + 0.00005;
+        if d < soon {
+            d += ((soon - d) / p).ceil() * p;
+        }
+        Some((d, d + COMMIT_BEFORE))
+    }
+}
+
+unsafe extern "C" {
+    fn mach_thread_self() -> u32;
+    fn thread_policy_set(thread: u32, flavor: u32, info: *const u32, count: u32) -> i32;
+    fn mach_wait_until(deadline: u64) -> i32;
+    fn mach_timebase_info(info: *mut [u32; 2]) -> i32;
+}
+
+/// Host seconds to mach ticks.
+fn ticks(secs: f64) -> u64 {
+    let mut tb = [0u32; 2];
+    // SAFETY: fills the two-u32 struct.
+    unsafe { mach_timebase_info(&mut tb) };
+    (secs * 1e9 * tb[1] as f64 / tb[0] as f64) as u64
+}
+
+/// Time-constraint (real-time) scheduling for the calling thread: every `period` it needs `computation` within
+/// `constraint` (what CVDisplayLink's and Core Audio's threads use). The kernel demotes a thread that overruns.
+fn time_constraint(period: f64, computation: f64, constraint: f64) {
+    let info = [ticks(period) as u32, ticks(computation) as u32, ticks(constraint) as u32, 1];
+    // SAFETY: THREAD_TIME_CONSTRAINT_POLICY (2) with its four 32-bit fields, for this thread.
+    unsafe { thread_policy_set(mach_thread_self(), 2, info.as_ptr(), 4) };
 }
 struct PubState {
     job: Option<PubJob>,
@@ -418,6 +469,9 @@ impl Publisher {
             commits: AtomicU64::new(0),
             held_back: AtomicU64::new(0),
             last_commit: AtomicU64::new(0),
+            pace_t: AtomicU64::new(0),
+            pace_p: AtomicU64::new(0),
+            pace_until: AtomicU64::new(0),
         });
         let (s2, objs) = (sh.clone(), PubObjs { kern, layer });
         let thread = std::thread::Builder::new()
@@ -438,6 +492,7 @@ impl Publisher {
     }
 
     fn run(sh: &PubShared, o: &PubObjs) {
+        let mut realtime = false;
         loop {
             let job = {
                 let mut g = sh.m.lock().unwrap();
@@ -445,7 +500,25 @@ impl Publisher {
                     if g.quit {
                         return;
                     }
-                    if let Some(j) = g.job.take() {
+                    if g.job.is_some() {
+                        // paced commits: wait for the refresh's deadline, then take the newest job (older ones
+                        // were superseded while it slept, their surfaces freed)
+                        if let Some((d, t)) = sh.deadline(now()) {
+                            if !realtime {
+                                realtime = true;
+                                let p = f64::from_bits(sh.pace_p.load(Relaxed));
+                                time_constraint(p, 0.0005, 0.001);
+                            }
+                            fl::note(fl::N_LATCH, fl::secs_to_ns(t), fl::secs_to_ns(d));
+                            drop(g);
+                            // SAFETY: a plain wait on the host clock.
+                            unsafe { mach_wait_until(ticks(d)) };
+                            g = sh.m.lock().unwrap();
+                            if g.quit {
+                                return;
+                            }
+                        }
+                        let j = g.job.take().expect("only the publisher takes jobs");
                         sh.in_flight.store(j.surf, Relaxed);
                         sh.queued.store(NONE_SURF, Relaxed);
                         break j;
@@ -1330,6 +1403,17 @@ impl Fused {
     pub fn last_commit_time(&self) -> f64 {
         let p = self.publisher.as_ref().map_or(0.0, |p| f64::from_bits(p.sh.last_commit.load(Relaxed)));
         p.max(self.last_main_commit)
+    }
+
+    /// Pace commits by the display (the interactive host, at every display-link callback): `target` is the next
+    /// vsync, `period` the refresh period (host seconds); valid for `valid_for` seconds. While valid, the
+    /// publisher commits at most once per refresh, just before the vsync, the newest frame posted by then.
+    pub fn set_refresh(&self, target: f64, period: f64, valid_for: f64) {
+        if let Some(p) = &self.publisher {
+            p.sh.pace_t.store(target.to_bits(), Relaxed);
+            p.sh.pace_p.store(period.to_bits(), Relaxed);
+            p.sh.pace_until.store((now() + valid_for).to_bits(), Relaxed);
+        }
     }
 
     /// Publisher counters: (transactions committed, frames held back by a bin overflow).

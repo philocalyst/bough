@@ -738,6 +738,15 @@ impl<V: View> App<V> {
         None
     }
 
+    /// Pace the presenter's commits by the display (`bough_metal::fused::Fused::set_refresh`; direct Metal only).
+    pub fn set_refresh(&self, target: f64, period: f64, valid_for: f64) {
+        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+        if let Some(g) = self.gpu.as_ref() {
+            g.set_refresh(target, period, valid_for);
+        }
+        let _ = (target, period, valid_for);
+    }
+
     /// Does the current epoch have damage (would `frame` draw or publish)?
     pub fn has_damage(&self) -> bool {
         !self.rt.bough.plane(0).is_clear() || !self.rt.paint.plane(0).is_clear()
