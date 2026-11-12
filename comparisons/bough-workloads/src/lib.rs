@@ -19,6 +19,11 @@
 pub mod harness;
 pub mod sys;
 
+/// The gui-bench editions' shared spec (`comparisons/gui-bench-scenes`): the sheet's data and keys come from it, so
+/// bough's sheet is the scene every framework draws.
+#[path = "../../gui-bench-scenes/overlay/apps/shared/scenes.rs"]
+pub mod guibench_spec;
+
 #[cfg(feature = "canvas")]
 pub mod canvas;
 #[cfg(feature = "chat")]

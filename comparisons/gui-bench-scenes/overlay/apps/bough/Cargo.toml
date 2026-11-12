@@ -1,0 +1,30 @@
+[package]
+name = "bough-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+# bough's gui-bench port lives in bough's repository: the eight gui-bench scenarios in comparisons/bough-guibench
+# (the platform lane's) and the heavy scenes in comparisons/bough-guibench-scenes (the bench lane's); this app is
+# their binary, built from a checkout of bough next to this gui-bench (../../../bough).
+[workspace]
+
+[dependencies]
+bough-guibench = { path = "../../../bough/comparisons/bough-guibench" }
+bough-guibench-scenes = { path = "../../../bough/comparisons/bough-guibench-scenes" }
+
+[profile.release]
+debug = 1
+lto = "thin"
+
+# bough's vendored GPU stack and wgsl-rs (resolved even where unused, as bough's own manifests do)
+[patch.crates-io]
+wgpu-hal = { path = "../../../bough/vendor/wgpu-hal" }
+wgpu-types = { path = "../../../bough/vendor/wgpu-types" }
+naga = { path = "../../../bough/vendor/naga" }
+
+[patch."https://github.com/schell/wgsl-rs"]
+wgsl-rs = { path = "../../../bough/vendor/wgsl-rs/crates/wgsl-rs" }
+wgsl-rs-macros = { path = "../../../bough/vendor/wgsl-rs/crates/wgsl-rs-macros" }
+wgsl-rs-ir = { path = "../../../bough/vendor/wgsl-rs/crates/wgsl-rs-ir" }

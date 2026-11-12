@@ -15,6 +15,7 @@
 //!   cannot read the root's `look`;
 //! * hovering a column is meant to touch that column's cells only; with the hover packed into `look`, every
 //!   cell's two wires run on a hover (the fan-out is all 200,000 wires, of which 20,000 change a pixel).
+use crate::guibench_spec::sheet as spec;
 use crate::{scaled, Rng, Scene};
 use bough::prelude::*;
 use bough::raw::{App, Caps, Ev, NumFmt};
@@ -57,6 +58,10 @@ fn fill(look: u32, col: u32, row: u32) -> Color {
         (true, false, false) => rgb(0x1b1e24),
     }
 }
+/// The page right of the cells (a hovered column never reaches it).
+fn page(look: u32) -> Color {
+    if look & DARK != 0 { rgb(0x15171c) } else { rgb(0xffffff) }
+}
 fn ink(look: u32) -> Color {
     if look & DARK != 0 { rgb(0xe6e9ef) } else { rgb(0x1d2129) }
 }
@@ -67,10 +72,39 @@ fn chrome(look: u32) -> Color {
 const VALUE: NumFmt = NumFmt::new("", Some(2), "");
 
 impl Sheet {
+    /// A sheet of `rows` rows (1 to `MAX_ROWS`).
+    pub fn with_rows(rows: usize) -> Sheet {
+        let rows = rows.clamp(1, MAX_ROWS);
+        let rng = Rng::new(0x5ee7);
+        // the gui-bench spec's data (`guibench_spec::sheet::value`), so every framework shows the same numbers
+        let cells: [Signal<f32>; CELLS] = std::array::from_fn(|i| Signal::new(spec::value(i / COLS, i % COLS) as f32));
+        let mut sums = [0.0f32; COLS];
+        for (i, c) in cells.iter().enumerate().take(rows * COLS) {
+            sums[i % COLS] += **c;
+        }
+        Sheet { rows, cells, sums: sums.map(Signal::new), look: Signal::new(NO_HOVER), sel: Signal::new(0), scroll: Signal::new(0.0), rng }
+    }
+
     fn hover_header(&mut self, col: u32, on: bool) {
         let look = *self.look;
         let next = if on { (look & !0xff) | col } else if look & 0xff == col { (look & !0xff) | NO_HOVER } else { look };
         self.look.set(next);
+    }
+    fn key(&mut self, e: &Ev) {
+        match e.key {
+            Some(Key::Char('t')) => {
+                let l = *self.look ^ DARK;
+                self.look.set(l);
+            }
+            Some(Key::Char('e')) => {
+                let (r, c) = spec::EDIT;
+                let base = spec::value(r, c) as f32;
+                let i = r * COLS + c;
+                let v = if *self.cells[i] == base { base + spec::EDIT_DELTA as f32 } else { base };
+                self.edit(i, v);
+            }
+            _ => {}
+        }
     }
     fn edit(&mut self, i: usize, v: f32) {
         let c = i % COLS;
@@ -119,7 +153,8 @@ impl View for Sheet {
             .border(2.0, rgb(0x2f6bff))
             .abs(GUTTER, 0.0)
             .translate(sig!(self.sel).map(|i: &u32| (((i % COLS as u32) as f32) * CELL_W, ((i / COLS as u32) as f32) * CELL_H)).transition(Curve::out(0.18)));
-        let body = column((selection, column(each((0..self.rows).map(data_row)))))
+        // the outline after the rows, so it draws over its cell
+        let body = column((column(each((0..self.rows).map(data_row))), selection))
             .relative()
             .grow(1.0)
             .scroll(sig!(self.scroll));
@@ -128,7 +163,12 @@ impl View for Sheet {
             row(each((0..COLS).map(move |c| div().w(CELL_W).h(CELL_H).px(6.0).child(text(sig!(self.sums).at(c).num(|v: &f32| *v, VALUE)).font(12.0, CELL_H))))),
         ))
         .bg(sig!(self.look).map(|l: &u32| chrome(*l)));
-        column((toolbar, header, body, footer)).w_pct(1.0).h_pct(1.0).bg(sig!(self.look).map(|l: &u32| fill(*l, NO_HOVER, 0)))
+        column((toolbar, header, body, footer))
+            .w_pct(1.0)
+            .h_pct(1.0)
+            .bg(sig!(self.look).map(|l: &u32| page(*l)))
+            // the gui-bench keys (a window host focuses the root): `t` the theme, `e` the spec's edit
+            .on_key(|s: &mut Sheet, e: &Ev| s.key(e))
     }
 }
 
@@ -138,14 +178,7 @@ impl Scene for Sheet {
     const NAME: &'static str = "sheet";
 
     fn build(scale: f32) -> Sheet {
-        let rows = scaled(MAX_ROWS, scale, 10).min(MAX_ROWS);
-        let mut rng = Rng::new(0x5ee7);
-        let cells: [Signal<f32>; CELLS] = std::array::from_fn(|_| Signal::new((rng.below(1_000_000) as f32) / 100.0));
-        let mut sums = [0.0f32; COLS];
-        for (i, c) in cells.iter().enumerate().take(rows * COLS) {
-            sums[i % COLS] += **c;
-        }
-        Sheet { rows, cells, sums: sums.map(Signal::new), look: Signal::new(NO_HOVER), sel: Signal::new(0), scroll: Signal::new(0.0), rng }
+        Sheet::with_rows(scaled(MAX_ROWS, scale, 10))
     }
 
     fn caps(&self) -> Caps {
