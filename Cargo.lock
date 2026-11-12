@@ -234,6 +234,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-paint"
+version = "0.0.0"
+dependencies = [
+ "bough-kernel",
+ "wgsl-rs",
+]
+
+[[package]]
 name = "bough-scenes"
 version = "0.0.0"
 dependencies = [
