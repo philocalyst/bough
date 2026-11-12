@@ -24,6 +24,7 @@ use crate::text::TextSys;
 use bough_core::bough::Columns;
 use bough_core::damage::DamageRing;
 use bough_core::page::Page;
+use bough_core::nrect::WRect;
 use bough_core::{Bough, Handle, NRect, RecordInit};
 use bough_mem::{Col, Region};
 use bough_metal::fused::{Layout, Masks, HDR_BYTES};
@@ -995,13 +996,16 @@ impl Rt {
     // ------------------------------------------------------------------ geometry helpers
     /// Absolute ink (device px, outward rounded, with `margin`) of a space-local rect.
     #[inline]
-    pub fn ink_rect(&self, space: u16, x: f32, y: f32, w: f32, h: f32, margin: f32) -> NRect {
+    ///
+    /// An exact rect (`WRect`): content far from its scroll origin lies outside the 16-bit window domain
+    /// (`NRect`), and a clamped ink there could not be scrolled back into view (round 6, finding 3).
+    pub fn ink_rect(&self, space: u16, x: f32, y: f32, w: f32, h: f32, margin: f32) -> WRect {
         let o = self.space(space);
         let x0 = (o[0] + x - margin).floor() as i32;
         let y0 = (o[1] + y - margin).floor() as i32;
         let x1 = (o[0] + x + w + margin).ceil() as i32;
         let y1 = (o[1] + y + h + margin).ceil() as i32;
-        NRect::new(x0, y0, x1, y1)
+        WRect::new(x0, y0, x1, y1)
     }
 
     /// Move a quad node's box to `(x, y, w, h)` (space-local px; snapped to the geometry grid here): node,
@@ -1025,7 +1029,7 @@ impl Rt {
         p.size = [w, h];
         let band = edge_band_of(p);
         let ink = self.ink_rect(space, x + tx, y + ty, w, h, margin);
-        self.bough.set_ink_handle_edges(hd, ink, moved, band);
+        self.bough.set_ink_handle_edges_wide(hd, ink, moved, band);
     }
 
     /// Re-derive a quad node's ink and write it through: the old and the new ink are damaged even when the
@@ -1036,7 +1040,7 @@ impl Rt {
         let ink = self.ink_rect(n.space, n.x + n.tx, n.y + n.ty, n.w, n.h, n.margin);
         let h = n.handle;
         self.bough.touch_handle(h);
-        self.bough.set_ink_handle(h, ink);
+        self.bough.set_ink_handle_wide(h, ink);
     }
 
     /// A paint-only write to `h`'s record (colour, glyph alphas) from state hash `old` to `new`: its visible

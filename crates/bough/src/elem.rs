@@ -463,7 +463,7 @@ where
             m.rt.free_node(node);
         }
         m.scope.runs.push(run);
-        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: inst, handle: handle_idx, clip: m.clip });
+        m.recs.push(RecordInit { depth: m.depth, ink: ink.to_nrect(), kind: REC_QUAD, payload: inst, handle: handle_idx, clip: m.clip });
         // children: inside the border
         let bw = self.border.map_or(0.0, |b| b.0);
         let (ox, oy) = (m.ox, m.oy);
@@ -885,7 +885,7 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
             oy: base,
             space: m.space,
             handle: hd,
-            ink: NRect::EMPTY,
+            ink: bough_core::nrect::WRect::EMPTY,
             shape: TShape::None,
             per_glyph: G::PER_GLYPH,
             num,
@@ -908,7 +908,7 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
         self.g.install(m, node);
         m.scope.nodes.push(node);
         let ink = m.rt.texts[ti as usize].ink;
-        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_TEXT, payload, handle: hd.idx, clip: m.clip });
+        m.recs.push(RecordInit { depth: m.depth, ink: ink.to_nrect(), kind: REC_TEXT, payload, handle: hd.idx, clip: m.clip });
     }
 
     fn update(self, m: &mut Mounter<'_, V>) {
@@ -962,7 +962,7 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
             m.rt.bough.set_payload_handle(hd, payload);
             let ink = m.rt.texts[ti as usize].ink;
             m.rt.bough.damage_rect(old_ink);
-            m.rt.bough.set_ink_handle(hd, ink);
+            m.rt.bough.set_ink_handle_wide(hd, ink);
         }
         m.pos += 1;
     }
@@ -1179,7 +1179,7 @@ impl<F, V> Bars<'_, F, V> {
 /// instances; returns the union ink. With `damage`, each bar whose top moved marks only the strip between
 /// its old and new top (`Bough::damage_edges`, a solid's band): bars are bottom-anchored on the geometry
 /// grid, so the bottom edge `y + h` is the same exact value every tick and never damages.
-fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage: bool) -> NRect {
+fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage: bool) -> bough_core::nrect::WRect {
     let n = &mut rt.nodes[node as usize];
     let count = n.series.len();
     // The samples that leave or are overwritten: with the new series they bound every old and new bar top
@@ -1197,7 +1197,7 @@ fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage:
             *s = f(key + i as u64);
         }
     } else {
-        return rt.bough.visible_ink_handle(n.handle).unwrap_or(NRect::EMPTY);
+        return rt.bough.pos_of(n.handle).map_or(bough_core::nrect::WRect::EMPTY, |p| rt.bough.ink_wide_at(p));
     }
     n.series_ok = true;
     n.series_key = key;
@@ -1253,7 +1253,7 @@ unsafe fn patch_bars<F: Fn(u64) -> f32 + Copy>(rt: &mut Rt, w: &Wire, sig: *cons
     // each bar damages the strip its top moved through (inside write_bars); the record's ink is the union
     let ink = write_bars(rt, w.node, key, f, true);
     let h = rt.nodes[w.node as usize].handle;
-    rt.bough.set_ink_handle_nodamage(h, ink);
+    rt.bough.set_ink_handle_nodamage_wide(h, ink);
 }
 
 impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a, F, V> {
@@ -1290,7 +1290,7 @@ impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a,
         m.rt.nodes[node as usize].handle = hd;
         m.scope.nodes.push(node);
         m.scope.runs.push(run);
-        m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: pay_irun(first, self.count as u32), handle: hd.idx, clip: m.clip });
+        m.recs.push(RecordInit { depth: m.depth, ink: ink.to_nrect(), kind: REC_QUAD, payload: pay_irun(first, self.count as u32), handle: hd.idx, clip: m.clip });
     }
     /// The series is wire-driven; its geometry constants are taken as fixed for the owner's life.
     fn update(self, m: &mut Mounter<'_, V>) {

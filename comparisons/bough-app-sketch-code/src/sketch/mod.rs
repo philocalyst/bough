@@ -1036,7 +1036,7 @@ impl Sketch {
         let mut veil = block(0.0, 0.0).bg(on.map(veil_of));
         {
             let sp = veil.spec_mut();
-            sp.abs = Some((0.0, 0.0));
+            sp.set_abs(Some((0.0, 0.0)));
             sp.w = Dim::Pct(1.0);
             sp.h = Dim::Pct(1.0);
         }
