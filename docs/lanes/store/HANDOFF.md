@@ -133,6 +133,15 @@ hgen); the remaining ~110 of the applier's 159 instructions are bough-core's `vi
 * `rustfmt` was not run on the changed files.
 * The `Cargo.lock` change is one `libc` edge for `bough-mem`.
 
+* **The sibling-cursor defect the layout lane found** (`tests/seals.rs` failing at "remove middle" on
+  `b68c141937`: the fast loop of the Opus A1a experiment did not advance the sibling cursor) existed only on
+  the two cherry-pick commits `6f237e8` and `b68c141`. It was fixed in the next commit (`21d108e`), and the
+  cursor itself was removed in `a27229f` (children are index-addressed arrays again; the fast loop advances
+  `m.kid`). `tests/seals.rs` passes on the head, with both mutants caught. Anyone bisecting should skip those
+  two commits. The layout lane's differential test (`crates/bough/tests/lay_diff.rs` on `lane/layout/round6`
+  at `76817a1af1`) is **not** on this branch: it was written against the chain form and should be taken
+  when the lanes are integrated (its one-line fix is not needed here).
+
 ## Experiments (everything tried)
 
 | experiment | result | kept? |
