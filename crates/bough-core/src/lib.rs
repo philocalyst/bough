@@ -99,7 +99,7 @@ pub mod attr {
 pub use bough::{Bough, Handle, RecordInit};
 pub use bough::hit::{KF_FOCUS, KF_INTERACT, KF_MASK, KF_NOHIT};
 pub use damage::Plane;
-pub use nrect::NRect;
+pub use nrect::{NRect, WRect};
 
 /// Non-inlined entry points so the hot loops can be read in `--emit asm` output.
 #[doc(hidden)]
