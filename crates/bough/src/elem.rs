@@ -603,9 +603,7 @@ macro_rules! int_text {
             fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
                 // OPUS EXPERIMENT (IDEAS-OPUS.md, finding A1d): the text is a function of the integer, so the
                 // integer is the operand: two words, no decimal formatting to compare.
-                let v = *self as i128 as u64;
-                s.word(v as u32);
-                s.word((v >> 32) as u32);
+                s.int(*self as i128 as u64);
             }
         }
     )*};

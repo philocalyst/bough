@@ -29,6 +29,13 @@ pub trait Sealer {
     fn paint(&mut self, w: u32) {
         self.word(w)
     }
+    /// An integer operand (the text of `text(row.id)` is a function of the integer, so the integer is sealed, not
+    /// its decimal formatting: OPUS EXPERIMENT A1d).
+    #[inline(always)]
+    fn int(&mut self, v: u64) {
+        self.word(v as u32);
+        self.word((v >> 32) as u32);
+    }
     /// This description cannot be sealed.
     fn refuse(&mut self);
     #[inline(always)]
@@ -71,6 +78,9 @@ pub struct SealCheck<'a> {
     pub ok: bool,
     /// No paint operand differed (so far).
     pub paint_ok: bool,
+    /// A1d's negative control (feature `sabotage_seal_int`): integer operands compare equal.
+    #[cfg(feature = "sabotage_seal_int")]
+    pub(crate) mutant_int: bool,
 }
 impl<'a> SealCheck<'a> {
     #[inline(always)]
@@ -87,7 +97,14 @@ impl<'a> SealCheck<'a> {
         }
     }
     pub fn new(cur: &'a [u8], descs: &'a SpecTable) -> Self {
-        SealCheck { cur, descs, ok: true, paint_ok: true }
+        SealCheck {
+            cur,
+            descs,
+            ok: true,
+            paint_ok: true,
+            #[cfg(feature = "sabotage_seal_int")]
+            mutant_int: mutant_int(),
+        }
     }
     /// Bit-identical description.
     #[inline(always)]
@@ -140,6 +157,27 @@ impl Sealer for SealCheck<'_> {
     fn refuse(&mut self) {
         self.ok = false;
     }
+    #[inline(always)]
+    fn int(&mut self, v: u64) {
+        #[cfg(feature = "sabotage_seal_int")]
+        let before = self.ok;
+        self.word(v as u32);
+        self.word((v >> 32) as u32);
+        // the mutant undoes what the integer's words decided (compiled only with `sabotage_seal_int`)
+        #[cfg(feature = "sabotage_seal_int")]
+        {
+            self.ok |= before & self.mutant_int;
+        }
+    }
+}
+
+/// A1d's negative control (`tests/seals.rs`, feature `sabotage_seal_int`): `BOUGH_SEAL_MUTANT_INT` makes a check
+/// accept any integer operand, so a renumbered row inside a sealed item is missed.
+#[cfg(feature = "sabotage_seal_int")]
+#[inline]
+fn mutant_int() -> bool {
+    static M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *M.get_or_init(|| std::env::var_os("BOUGH_SEAL_MUTANT_INT").is_some())
 }
 
 /// The gate's negative control (`tests/seals.rs`): `BOUGH_SEAL_MUTANT` makes a check accept any bytes of the

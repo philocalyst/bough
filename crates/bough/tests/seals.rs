@@ -88,7 +88,7 @@ fn run() -> Result<(), String> {
 
 #[test]
 fn sealed_rows_equal_a_fresh_mount_after_every_change() {
-    if std::env::var_os("BOUGH_SEAL_MUTANT").is_some() {
+    if std::env::var_os("BOUGH_SEAL_MUTANT").is_some() || std::env::var_os("BOUGH_SEAL_MUTANT_INT").is_some() {
         return; // the mutant's own test below
     }
     run().unwrap();
@@ -103,4 +103,18 @@ fn a_seal_that_ignores_text_is_caught() {
     }
     let e = run().expect_err("the mutant passed the gate");
     assert!(e.contains("relabel 5"), "caught at the wrong step: {e}");
+}
+
+/// The negative control of integer seals (OPUS EXPERIMENT A1d: an integer label seals the integer): with the mutant
+/// on, a renumbered row inside a sealed item is missed and the gate says so.
+/// Run alone: `BOUGH_SEAL_MUTANT_INT=1 cargo test --release -p bough --features sabotage_seal_int --test seals --
+/// a_seal_that_ignores_integers`.
+#[cfg(feature = "sabotage_seal_int")]
+#[test]
+fn a_seal_that_ignores_integers_is_caught() {
+    if std::env::var_os("BOUGH_SEAL_MUTANT_INT").is_none() {
+        return;
+    }
+    let e = run().expect_err("the integer mutant passed the gate");
+    assert!(e.contains("renumber 2"), "caught at the wrong step: {e}");
 }
