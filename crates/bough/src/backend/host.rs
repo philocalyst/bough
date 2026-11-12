@@ -385,6 +385,11 @@ struct Pacer {
     noframe: bool,
     /// Frame-log builds only (`BOUGH_LATCH=tick`): present at the link callback instead of a latch.
     at_tick: bool,
+    /// The caret-blink timer: armed only while a field is focused (otherwise it would wake an idle window
+    /// twice a second), and whether it is armed.
+    blink: RefCell<Option<objc2::rc::Retained<NSTimer>>>,
+    blink_on: Cell<bool>,
+    blink_half: Cell<f64>,
 }
 
 /// Callbacks with nothing to do before the link pauses (hysteresis: a 240 Hz storm's gaps never pause it).
@@ -428,6 +433,22 @@ impl Pacer {
             latch_target: Cell::new(None),
             noframe: std::env::var_os("BOUGH_NOFRAME").is_some(),
             at_tick,
+            blink: RefCell::new(None),
+            blink_on: Cell::new(false),
+            blink_half: Cell::new(0.0),
+        }
+    }
+
+    /// Arm the caret-blink timer while a field is focused, disarm it otherwise.
+    fn sync_blink<V: View>(&self, a: &App<V>) {
+        let want = a.next_blink().is_some();
+        if want == self.blink_on.get() {
+            return;
+        }
+        self.blink_on.set(want);
+        if let Some(t) = self.blink.borrow().as_ref() {
+            let d = if want { objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(self.blink_half.get()) } else { objc2_foundation::NSDate::distantFuture() };
+            t.setFireDate(&d);
         }
     }
 
@@ -519,6 +540,7 @@ impl Pacer {
         }
         let Ok(mut a) = app.try_borrow_mut() else { return };
         pace::drain(&self.q, &mut a);
+        self.sync_blink(&a);
         if self.noframe {
             if a.animating() {
                 self.start_link(link);
@@ -594,6 +616,7 @@ impl Pacer {
         self.sample(&a);
         let start = objc2_quartz_core::CACurrentMediaTime();
         pace::drain(&self.q, &mut a);
+        self.sync_blink(&a);
         if a.animating() {
             fl::turn_begin(fl::K_TICK, 0);
             self.animate(&mut a, t);
@@ -740,20 +763,23 @@ pub fn run_interactive<V: View>(
                 let (app, trim, pacer) = (app.clone(), trim.clone(), pacer.clone());
                 let half = app.borrow().rt.input.blink_half as f64;
                 if half > 0.0 {
+                    let (pacer2, app2) = (pacer.clone(), app.clone());
                     let blk = RcBlock::new(move |_t: NonNull<NSTimer>| {
+                        let app = &app2;
                         if let Ok(mut a) = app.try_borrow_mut() {
                             fl::turn_begin(fl::K_TIMER, 0);
+                            pacer2.sync_blink(&a);
                             if a.next_blink().is_some() && a.tick(half as f32) {
-                                if pacer.link_on.get() {
+                                if pacer2.link_on.get() {
                                     if a.has_damage() {
-                                        pacer.pending.set(true);
-                                        pacer.arm(objc2_quartz_core::CACurrentMediaTime());
+                                        pacer2.pending.set(true);
+                                        pacer2.arm(objc2_quartz_core::CACurrentMediaTime());
                                     }
                                 } else {
                                     let drew = a.frame_paced();
-                                    after_frame(&app, &trim, &mut a, drew);
+                                    after_frame(app, &trim, &mut a, drew);
                                     if drew {
-                                        pacer.presented();
+                                        pacer2.presented();
                                     }
                                 }
                             }
@@ -762,8 +788,12 @@ pub fn run_interactive<V: View>(
                     });
                     let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(half, true, &blk) };
                     t.setTolerance(0.01);
+                    // disarmed until a field is focused (`Pacer::sync_blink`)
+                    t.setFireDate(&objc2_foundation::NSDate::distantFuture());
                     unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&t, objc2_foundation::NSRunLoopCommonModes) };
-                    std::mem::forget(t);
+                    pacer.blink_half.set(half);
+                    *pacer.blink.borrow_mut() = Some(t);
+                    pacer.sync_blink(&app.borrow());
                 }
             }
             start(host, app.clone());
