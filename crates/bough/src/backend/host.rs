@@ -48,8 +48,11 @@ fn after_frame<V: View>(app: &Rc<RefCell<App<V>>>, st: &Rc<Trim>, a: &mut App<V>
             a.trim(false);
         }
     });
+    // SAFETY: the block is an `RcBlock` (copied to the heap, retained by the timer); everything here runs on the main
+    // thread (`run_sized` requires it) and the timer fires on its run loop, so the block's `Rc` captures never cross threads.
     let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(TRIM_AFTER, false, &blk) };
     t.setTolerance(0.25);
+    // SAFETY: `t` is the valid timer just created; main thread, main run loop.
     unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&t, objc2_foundation::NSRunLoopCommonModes) };
     *st.timer.borrow_mut() = Some(t);
 }
@@ -117,8 +120,11 @@ pub fn run_window<V: View>(
                 let drew = a.frame_paced();
                 after_frame(&app_rc, &trim, &mut a, drew);
             });
+            // SAFETY: the block is an `RcBlock` (copied to the heap, retained by the timer); everything here runs on the main
+            // thread (`run_sized` requires it) and the timer fires on its run loop, so the block's `Rc` captures never cross threads.
             let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(p.as_secs_f64(), true, &blk) };
             t.setTolerance(0.0005);
+            // SAFETY: `t` is the valid timer just created; main thread, main run loop.
             unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&t, objc2_foundation::NSRunLoopCommonModes) };
             timers.push(t);
         }
@@ -134,7 +140,10 @@ pub fn run_window<V: View>(
                 host.close();
                 std::process::exit(0);
             });
+            // SAFETY: the block is an `RcBlock` (copied to the heap, retained by the timer); everything here runs on the main
+            // thread (`run_sized` requires it) and the timer fires on its run loop, so the block's `Rc` captures never cross threads.
             let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(seconds, false, &blk) };
+            // SAFETY: `t` is the valid timer just created; main thread, main run loop.
             unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&t, objc2_foundation::NSRunLoopCommonModes) };
             timers.push(t);
         }
@@ -178,7 +187,10 @@ pub fn run_window_linked<V: View>(
                     host.close();
                     std::process::exit(0);
                 });
+                // SAFETY: the block is an `RcBlock` (copied to the heap, retained by the timer); everything here runs on the main
+                // thread (`run_sized` requires it) and the timer fires on its run loop, so the block's `Rc` captures never cross threads.
                 let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(seconds, false, &blk) };
+                // SAFETY: `t` is the valid timer just created; main thread, main run loop.
                 unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&t, objc2_foundation::NSRunLoopCommonModes) };
                 std::mem::forget(t);
             }
@@ -364,7 +376,10 @@ pub fn run_interactive<V: View>(
                     host.close();
                     std::process::exit(0);
                 });
+                // SAFETY: the block is an `RcBlock` (copied to the heap, retained by the timer); everything here runs on the main
+                // thread (`run_sized` requires it) and the timer fires on its run loop, so the block's `Rc` captures never cross threads.
                 let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(seconds, false, &blk) };
+                // SAFETY: `t` is the valid timer just created; main thread, main run loop.
                 unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&t, objc2_foundation::NSRunLoopCommonModes) };
                 std::mem::forget(t);
             }
@@ -382,8 +397,11 @@ pub fn run_interactive<V: View>(
                             }
                         }
                     });
+                    // SAFETY: the block is an `RcBlock` (copied to the heap, retained by the timer); everything here runs on the main
+                    // thread (`run_sized` requires it) and the timer fires on its run loop, so the block's `Rc` captures never cross threads.
                     let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(half, true, &blk) };
                     t.setTolerance(0.01);
+                    // SAFETY: `t` is the valid timer just created; main thread, main run loop.
                     unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&t, objc2_foundation::NSRunLoopCommonModes) };
                     std::mem::forget(t);
                 }

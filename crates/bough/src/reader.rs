@@ -158,12 +158,18 @@ unsafe fn patch_rpmap<K: Apply, T: 'static, F: Fn(bool) -> K::P + Copy>(rt: &mut
     let f: F = unsafe { unrecipe(&w.recipe) };
     K::apply(rt, w.node, &f(r.is_pending()));
 }
+/// # Safety
+/// `PatchFn`'s contract: `sig` is the `head` (offset 0) of a `Reader<T>`; the recipe holds an `F`.
 unsafe fn patch_rmap_text<T: 'static, F: Fn(Option<&T>) -> String + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _o: *const u8) {
+    // SAFETY: the contract: `sig` is a `Reader<T>` (its head is the first field, `#[repr(C)]`); the recipe holds an `F`.
     let r = unsafe { &*(sig as *const Reader<T>) };
     let f: F = unsafe { unrecipe(&w.recipe) };
     crate::elem::set_node_text(rt, w.node, &f(r.latest()));
 }
+/// # Safety
+/// `PatchFn`'s contract: `sig` is the `phead` of a `Reader<T>` (offset 4); the recipe holds an `F`.
 unsafe fn patch_rpmap_text<T: 'static, F: Fn(bool) -> String + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _o: *const u8) {
+    // SAFETY: the contract: `phead` sits 4 bytes after the reader's start (`#[repr(C)]`); the recipe holds an `F`.
     let r = unsafe { &*(sig.sub(4) as *const Reader<T>) };
     let f: F = unsafe { unrecipe(&w.recipe) };
     crate::elem::set_node_text(rt, w.node, &f(r.is_pending()));
@@ -191,6 +197,7 @@ impl<'a, T: 'static, V, P: 'static, F: Fn(bool) -> P + Copy + 'static> IntoProp<
 }
 impl<'a, T: 'static, V, F: Fn(Option<&T>) -> String + Copy + 'static> TextSrc<V> for RMap<'a, T, V, F> {
     fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String {
+        // SAFETY: `self.w` is an `offset_of!`-proven `Reader<T>`; `patch_rmap_text` reads one.
         unsafe { m.wire_cell(&self.w.r.head, self.w.off, patch_rmap_text::<T, F>, node, recipe(self.f)) };
         (self.f)(self.w.r.latest())
     }
@@ -200,6 +207,7 @@ impl<'a, T: 'static, V, F: Fn(Option<&T>) -> String + Copy + 'static> TextSrc<V>
 }
 impl<'a, T: 'static, V, F: Fn(bool) -> String + Copy + 'static> TextSrc<V> for RPMap<'a, T, V, F> {
     fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String {
+        // SAFETY: `phead` sits at `off + 4` (`#[repr(C)]`); `patch_rpmap_text` reads the reader 4 bytes before it.
         unsafe { m.wire_cell(&self.w.r.phead, self.w.off + 4, patch_rpmap_text::<T, F>, node, recipe(self.f)) };
         (self.f)(self.w.r.is_pending())
     }
@@ -464,6 +472,8 @@ unsafe fn patch_produce<S: PartialEq + Clone + 'static, T: Send + 'static>(rt: &
         return;
     }
     p.last = Some(Box::new((**src).clone()));
+    // SAFETY: `p.f` was stored from a `fn(&S) -> Request<T>` of this same `S` and `T` when `Produce::mount` pushed
+    // the producer (`f: self.f as usize`); a fn pointer round-trips through `usize` on every supported target.
     let f: fn(&S) -> Request<T> = unsafe { std::mem::transmute::<usize, fn(&S) -> Request<T>>(p.f) };
     let addr = owner as usize + p.dst_off as usize;
     p.reader = addr;
