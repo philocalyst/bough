@@ -36,15 +36,18 @@ fn main() {
 
     if cmd == "asm-keep" {
         use bough_damage_lab::asm::*;
-        let f = [
+        #[allow(unused_mut)]
+        let mut f = vec![
             lab_plane_mark as *const () as usize,
             lab_plane_or as *const () as usize,
             lab_exact_slot_mark as *const () as usize,
             lab_cull_plane as *const () as usize,
             lab_cull_plane_runs as *const () as usize,
-            lab_cull_hw_neon as *const () as usize,
             lab_hw_mark as *const () as usize,
         ];
+        // the NEON cull exists on aarch64 only (`forms::hw` falls back to the scalar cull elsewhere)
+        #[cfg(target_arch = "aarch64")]
+        f.push(lab_cull_hw_neon as *const () as usize);
         println!("{:x?}", std::hint::black_box(f));
         return;
     }

@@ -194,16 +194,20 @@ impl Scheduler {
                 tree.cache_mut(node).clear();
                 continue;
             }
-            let placed_by_containing_block = tree.is_out_of_flow(node) && !in_hidden_subtree(tree, node);
+            let out_of_flow = tree.is_out_of_flow(node);
+            let placed_by_containing_block = out_of_flow && !in_hidden_subtree(tree, node);
+            // A parent reads an in-flow child's overflow only through its contribution; a containing
+            // block keeps an out-of-flow box's whole placement (see `answer_changed`).
+            let in_flow = !out_of_flow;
             // Whether boxes below may have moved: static positions recorded in this subtree, or
             // candidates laid out from them.
             let (change, moved) = if flags & OOF_PASS != 0 {
-                match self.partial_pass(tree, node, inflow) {
+                match self.partial_pass(tree, node, inflow, in_flow) {
                     Some(result) => result,
-                    None => (self.recompute(tree, node), true),
+                    None => (self.recompute(tree, node, in_flow), true),
                 }
             } else {
-                (self.recompute(tree, node), true)
+                (self.recompute(tree, node, in_flow), true)
             };
             if change != Change::None {
                 if placed_by_containing_block {
@@ -242,7 +246,7 @@ impl Scheduler {
     /// Re-runs `node`'s out-of-flow pass from its record and, with `inflow`, gathers its in-flow
     /// overflow again from its children's layouts; how its answer changed and whether it laid out
     /// candidates, or `None` when nothing is recorded to run it from.
-    fn partial_pass<T: Incremental + ?Sized>(&mut self, tree: &mut T, node: NodeId, inflow: bool) -> Option<(Change, bool)> {
+    fn partial_pass<T: Incremental + ?Sized>(&mut self, tree: &mut T, node: NodeId, inflow: bool, in_flow: bool) -> Option<(Change, bool)> {
         let old = tree.cache(node).final_output()?;
         let inflow_rect = if inflow {
             let gathered = gather_inflow_overflow(tree, node, &old);
@@ -266,13 +270,13 @@ impl Scheduler {
         };
         let mut new = old.with_overflow(inflow_rect, absolute);
         new.oof = bits;
-        let change = answer_changed(tree, node, RunMode::PerformLayout, new, old);
+        let change = answer_changed(tree, node, RunMode::PerformLayout, new, old, in_flow);
         tree.cache_mut(node).set_final_output(new);
         Some((change, !inflow || claims != 0))
     }
 
     /// Recomputes `node`'s cached answers in place; how they may differ from before.
-    fn recompute<T: Incremental + ?Sized>(&mut self, tree: &mut T, node: NodeId) -> Change {
+    fn recompute<T: Incremental + ?Sized>(&mut self, tree: &mut T, node: NodeId, in_flow: bool) -> Change {
         self.scratch.clear();
         let evicted = tree.cache_mut(node).had_eviction();
         tree.cache_mut(node).drain_observed(&mut self.scratch);
@@ -293,7 +297,7 @@ impl Scheduler {
         for i in 0..self.scratch.len() {
             let (input, old, old_observed) = self.scratch[i];
             let new = crate::compute::compute_child_layout(tree, node, input, None);
-            change = change.max(answer_changed(tree, node, input.run_mode, new, old));
+            change = change.max(answer_changed(tree, node, input.run_mode, new, old, in_flow));
             // An answer that now tells min-content from max-content no longer stands for the
             // questions it answered on axes it did not observe before.
             let observed = tree.cache(node).observed(&input).unwrap_or(crate::compute::OBSERVED_ALL);
@@ -321,20 +325,33 @@ fn in_hidden_subtree<T: Incremental + ?Sized>(tree: &T, node: NodeId) -> bool {
     false
 }
 
-/// How the parent could observe `new` differing from `old`.
+/// How the parent could observe `new` differing from `old`. For an `in_flow` node, an overflow that
+/// changed only inside the box its parent placed (see [`LayoutOutput::same_contribution`]) is no
+/// change.
 ///
 /// A final answer whose overflow rectangle moved only on clipped axes is invisible to the parent,
 /// which nevertheless stores that rectangle in the node's layout; it is patched here so the
 /// layout still equals a cold computation. So it is when the parent sees only the overflow move
 /// ([`Change::Overflow`]), as the parent then only gathers its own overflow again.
-fn answer_changed<T: Incremental + ?Sized>(tree: &mut T, node: NodeId, run_mode: RunMode, new: LayoutOutput, old: LayoutOutput) -> Change {
+fn answer_changed<T: Incremental + ?Sized>(tree: &mut T, node: NodeId, run_mode: RunMode, new: LayoutOutput, old: LayoutOutput, in_flow: bool) -> Change {
     // Size answers leave their overflow and out-of-flow bits unspecified: a cached one has none.
     let (new, old) = if run_mode == RunMode::ComputeSize { (new.size_answer(), old.size_answer()) } else { (new, old) };
     if new == old {
         return Change::None;
     }
     let style = tree.style(node);
-    let change = if new.same_for_parent(&old, style.overflow, style.contain) {
+    #[cfg(feature = "mutant-boundary")]
+    if style.size.width.raw().is_length() && style.size.height.raw().is_length() {
+        return Change::None;
+    }
+    // The size the parent placed an in-flow child at, which its contribution reads (a final answer's
+    // only: a size answer has no overflow).
+    let placed = if in_flow && run_mode == RunMode::PerformLayout { tree.unrounded_layout(node).map(|l| l.size) } else { None };
+    let same = match placed {
+        Some(placed) => new.same_contribution(&old, placed, style.overflow, style.contain),
+        None => new.same_for_parent(&old, style.overflow, style.contain),
+    };
+    let change = if same {
         Change::None
     } else if run_mode == RunMode::PerformLayout && new.same_except_overflow(&old) {
         Change::Overflow

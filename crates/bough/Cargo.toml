@@ -42,6 +42,8 @@ sabotage_views = ["bough-metal/sabotage_views"]
 # Gate sabotage (lane memory, round 6): the CPU backend blends with two roundings instead of one half FMA; every
 # pixel gate run with BOUGH_REPAIR=cpu must fail with it.
 sabotage_blend = []
+# cephal's query counters (`cephal::compute::stats`), for the layout probes in the cost examples.
+cephal-stats = ["cephal/stats"]
 
 [dev-dependencies]
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }

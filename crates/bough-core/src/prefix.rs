@@ -154,7 +154,7 @@ impl FlatPrefix {
 }
 
 #[inline(always)]
-fn add_suffix(s: &mut [u32], delta: i32) {
+pub(crate) fn add_suffix(s: &mut [u32], delta: i32) {
     #[cfg(target_arch = "aarch64")]
     unsafe {
         use core::arch::aarch64::*;

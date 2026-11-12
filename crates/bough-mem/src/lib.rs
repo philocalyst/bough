@@ -89,6 +89,8 @@ pub struct Region {
 impl Region {
     /// `len` bytes of zeroed memory, backed lazily: an anonymous private `mmap` (a page costs nothing until
     /// it is written), so a region can reserve its columns' largest capacities as address space.
+    /// (Before round 6 it was `alloc_zeroed` with a 16 KiB alignment, which is `posix_memalign` + `bzero` of the
+    /// whole block: lane `store` measured 39 M instructions for a 50 MB region at every `App::new`.)
     pub fn heap(len: usize) -> Region {
         let len = len.next_multiple_of(PAGE).max(PAGE);
         #[cfg(unix)]
@@ -171,10 +173,9 @@ impl Region {
     fn carve_aligned<T>(&mut self, name: &'static str, cap: usize, align: usize) -> Col<T> {
         let bytes = cap.checked_mul(size_of::<T>()).expect("column size");
         let off = self.reserve(bytes, align);
-        assert!(off <= u32::MAX as usize, "region offsets are u32");
         // SAFETY: off + bytes <= len (checked in `reserve`), base is valid for len bytes.
         let ptr = unsafe { NonNull::new_unchecked(self.inner.base.as_ptr().add(off) as *mut T) };
-        Col { ptr, len: 0, cap, off: off as u32, name, region: Some(self.inner.clone()), _t: PhantomData }
+        Col { ptr, len: 0, cap, off, name, region: Some(self.inner.clone()), _t: PhantomData }
     }
 }
 
@@ -183,8 +184,10 @@ pub struct Col<T> {
     ptr: NonNull<T>,
     len: usize,
     cap: usize,
-    /// Byte offset of element 0 in its region (`u32::MAX` when owned).
-    off: u32,
+    /// Byte offset of element 0 in its region (`usize::MAX` when owned). A region the GPU addresses keeps
+    /// its offsets below 2^32 (its user checks, bough `rt::gpu_off`); a CPU-only region (the façade's store
+    /// block) may be larger.
+    off: usize,
     name: &'static str,
     /// `None` = owned (heap, growable).
     region: Option<Rc<RegionInner>>,
@@ -194,7 +197,7 @@ pub struct Col<T> {
 impl<T> Col<T> {
     /// An empty owned column (grows like a `Vec`; never seen by the GPU).
     pub fn owned(name: &'static str) -> Col<T> {
-        Col { ptr: NonNull::dangling(), len: 0, cap: if size_of::<T>() == 0 { usize::MAX } else { 0 }, off: u32::MAX, name, region: None, _t: PhantomData }
+        Col { ptr: NonNull::dangling(), len: 0, cap: if size_of::<T>() == 0 { usize::MAX } else { 0 }, off: usize::MAX, name, region: None, _t: PhantomData }
     }
     pub fn owned_with_capacity(name: &'static str, cap: usize) -> Col<T> {
         let mut c = Col::owned(name);
@@ -215,7 +218,7 @@ impl<T> Col<T> {
     }
     /// Byte offset of element 0 in the region (`None` for an owned column).
     pub fn region_offset(&self) -> Option<usize> {
-        self.region.as_ref().map(|_| self.off as usize)
+        self.region.as_ref().map(|_| self.off)
     }
     pub fn is_carved(&self) -> bool {
         self.region.is_some()
@@ -595,6 +598,24 @@ impl<T> Default for Col<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Region::heap` is a mapping: zero when first read, writable at both ends, column-aligned, and far
+    /// larger than what is touched without anything being cleared up front (a 4 GiB region is made and
+    /// dropped here; an allocator's zeroed block of that size would be written whole).
+    #[test]
+    fn heap_region_is_zero_aligned_and_lazy() {
+        let mut r = Region::heap(4 << 30);
+        assert_eq!(r.base() as usize % COL_ALIGN, 0);
+        assert!(r.len() >= 4 << 30);
+        let mut c: Col<u64> = r.carve("probe", (4usize << 30) / 8 - 4096);
+        // SAFETY: mapped memory reads as zero and all-zero is a valid u64.
+        unsafe { c.set_len(c.capacity()) };
+        let last = c.len() - 1;
+        assert_eq!((c[0], c[last / 2], c[last]), (0, 0, 0));
+        c[0] = 7;
+        c[last] = 9;
+        assert_eq!((c[0], c[last]), (7, 9));
+    }
 
     #[test]
     fn owned_grows_like_vec() {

@@ -324,7 +324,10 @@ unsafe fn patch_view(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     if let Some(pos) = rt.bough.pos_of(h) {
         let end = rt.bough.subtree_end(pos);
         let port = rt.bough.clip_rect(clip);
-        rt.bough.scroll_run(pos + 1, end - pos - 1, 0, -dy, port);
+        // scroll by copy (the list regions' path): damage is the exposed strip and the static content's bands,
+        // the rest of the port is the previous frame's pixels moved (round 7, platform lane: a full-window
+        // `.scroll()` box repainted the whole port on every step, 1,000 tiles at 1280 x 800)
+        rt.scroll_copy(pos + 1, end - pos - 1, -dy, port);
     }
     shift_nested(rt, v, 0, -dy);
 }
@@ -440,8 +443,6 @@ impl<'a, V, Bg, Ch> ScrollBox<'a, V, Bg, Ch> {
 
 impl<'a, V: 'static, Bg: crate::elem::IntoProp<Color, V>, Ch: Element<V>> Element<V> for ScrollBox<'a, V, Bg, Ch> {
     fn mount(self, m: &mut Mounter<'_, V>) {
-        // state lives in signals, the atlas or the region: a re-description steps over it
-        crate::describe::mount_opaque(m, move |m: &mut Mounter<'_, V>| {
         let s = m.rt.scale;
         let before = m.recs.len();
         // the port: a box in the parent's flow, the wheel target (its limit comes from the laid-out content)
@@ -461,6 +462,8 @@ impl<'a, V: 'static, Bg: crate::elem::IntoProp<Color, V>, Ch: Element<V>> Elemen
         let sc = m.rt.input.acts[a as usize].scroll;
         m.rt.add_place_hook(lid, crate::ltemplate::PlaceHook::ScrollPort { view: v, scroller: sc });
         m.wire(&self.sig, patch_view, v, [0; 16]);
+        // the view's index on the tape: a re-description finds its space and clip again (`update`)
+        m.tape_push(v);
         let saved = (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view);
         m.space = space;
         m.ox = 0.0;
@@ -478,10 +481,32 @@ impl<'a, V: 'static, Bg: crate::elem::IntoProp<Color, V>, Ch: Element<V>> Elemen
             m.rt.input.scrollers[sc as usize].root = root;
         }
         (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view) = saved;
-    })
     }
+
+    /// Re-described like any box (round 7, platform lane; generalization OVERFIT 1: plain state inside a scroll
+    /// box was never re-described, so a coarse table showed its first state forever): the port updates in the
+    /// parent's flow, the content in the view's space and clip as a layout group of its own, exactly the context
+    /// `mount` gave it. The scroll offset is a wire (`patch_view`), not an operand.
     fn update(self, m: &mut Mounter<'_, V>) {
-        crate::describe::update_opaque(m);
+        self.port.scrolls(self.sig, self.line, 0.0).update(m);
+        let v = m.tape_next();
+        let (space, clip) = {
+            let view = &m.rt.input.views[v as usize];
+            (view.space, view.clip)
+        };
+        let saved = (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view, m.kid);
+        m.space = space;
+        m.ox = 0.0;
+        m.oy = 0.0;
+        m.clip = clip;
+        m.depth += 1;
+        m.rt.input.mounting_view = Some(v);
+        let lay_cur = m.rt.lay.cur;
+        m.rt.lay.cur = NONE;
+        m.kid = 0;
+        self.content.update(m);
+        m.rt.lay.cur = lay_cur;
+        (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view, m.kid) = saved;
     }
 }
 

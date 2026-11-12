@@ -108,7 +108,6 @@ impl Bough {
     /// eight NOHIT bits, gathered from the kind column by one multiply.
     pub fn hit_top(&self, x: i32, y: i32) -> Option<usize> {
         let t = Thresh::of_point(x, y)?;
-        let n = self.d_ptr.len();
         let nc = self.c_ink.len();
         let mut chi = nc;
         while chi > 0 {
@@ -119,8 +118,10 @@ impl Bough {
                 let c = cb + 63 - cm.leading_zeros() as usize;
                 cm &= !(1u64 << (c - cb));
                 let b = c * CHUNK;
-                let cnt = (n - b).min(CHUNK);
-                // SAFETY: b + cnt <= n = d_ink.len(); cnt <= 64.
+                // the block's live pages (its holes are EMPTY and would fail anyway: a short block is a
+                // short scan)
+                // SAFETY: c is a block; its live entries are in bounds; cnt <= 64.
+                let cnt = unsafe { *self.r_len.get_unchecked(c) } as usize;
                 let mut pm = unsafe { lt_mask(self.d_ink.as_ptr().add(b), cnt, t) };
                 while pm != 0 {
                     let bit = 63 - pm.leading_zeros() as usize;
@@ -179,7 +180,7 @@ impl Bough {
                 (s, dpt) = (j, p.depth[j]);
                 continue;
             }
-            let Some(d2) = find_last_lt(&self.d_min_depth, d, dpt) else { break };
+            let Some(d2) = self.depth_prev_lt(d, dpt) else { break };
             (d, s, base) = (d2, CAP, self.start_of(d2));
         }
     }
@@ -202,7 +203,7 @@ impl Bough {
         if !c.contains_point(x, y) {
             return px;
         }
-        let n = self.d_ptr.len();
+        let n = self.dir_len();
         let mut budget = CELL_BUDGET;
         let mut b = d0;
         while b < n {
@@ -299,8 +300,8 @@ impl Bough {
                 return Some(base + m.trailing_zeros() as usize);
             }
             base += self.d_len[d] as usize;
-            d += 1;
-            if d >= self.d_ptr.len() {
+            d = self.next_dir(d);
+            if d >= self.dir_len() {
                 return None;
             }
             m = page_flags(&self.page(d).kind, flag);
@@ -319,10 +320,7 @@ impl Bough {
             if m != 0 {
                 return Some(base + 63 - m.leading_zeros() as usize);
             }
-            if d == 0 {
-                return None;
-            }
-            d -= 1;
+            d = self.prev_dir(d)?;
             base -= self.d_len[d] as usize;
             m = page_flags(&self.page(d).kind, flag);
         }
@@ -369,6 +367,7 @@ impl Bough {
                 // SAFETY: bound handles point at live pages; s < CAP; &mut self is exclusive.
                 let pg = unsafe { &mut *p };
                 pg.wgen = pg.wgen.wrapping_add(1);
+                self.mgen = self.mgen.wrapping_add(1);
                 pg.kind[s] = (pg.kind[s] | set) & !clear;
                 true
             }

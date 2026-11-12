@@ -48,8 +48,8 @@ impl<T, V, F> Lanes<'_, T, V, F> {
 #[inline(always)]
 fn write_lanes<T, F: Fn(&T, usize) -> Lane>(rt: &mut Rt, node: u32, v: &T, f: F) -> bough_core::nrect::WRect {
     let (first, n, ox, oy, space, s) = {
-        let nd = &rt.nodes[node as usize];
-        (rt.runs[nd.run as usize].first as usize, rt.runs[nd.run as usize].len as usize, nd.x, nd.y, nd.space, rt.scale)
+        let nd = rt.cold_of(node);
+        (nd.inst as usize, rt.runs[nd.run as usize].len as usize, nd.x, nd.y, nd.space, rt.scale)
     };
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     let inst = &mut rt.inst[first..first + n];
@@ -65,7 +65,7 @@ fn write_lanes<T, F: Fn(&T, usize) -> Lane>(rt: &mut Rt, node: u32, v: &T, f: F)
         x1 = x1.max(x + w);
         y1 = y1.max(y + h);
     }
-    let margin = rt.nodes[node as usize].margin;
+    let margin = rt.cold_of(node).margin;
     rt.ink_rect(space, x0, y0, x1 - x0, y1 - y0, margin)
 }
 
@@ -76,7 +76,7 @@ unsafe fn patch_lanes<T: 'static, F: Fn(&T, usize) -> Lane + Copy>(rt: &mut Rt, 
     let v = unsafe { &*(sig as *const Signal<T>) };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
     let ink = write_lanes(rt, w.node, &**v, f);
-    let h = rt.nodes[w.node as usize].handle;
+    let h = rt.handle(w.node);
     // the lanes changed inside the old union too: old and new ink, even when the union is the same
     rt.bough.touch_handle(h);
     rt.bough.set_ink_handle_wide(h, ink);
@@ -102,20 +102,17 @@ impl<'a, T: 'static, V: 'static, F: Fn(&T, usize) -> Lane + Copy + 'static> Elem
             *m.rt.inst_mut(first + i as u32) = Instance { space: m.space, kind, radius: snap(self.radius * s), ..Default::default() };
         }
         {
-            let n = &mut m.rt.nodes[node as usize];
-            n.run = run;
+            m.rt.hot[node as usize] = Hot { kind: NK_BARS, flags: 0, clip: m.clip, link: 0 };
+            let n = m.rt.alloc_cold(node);
+            (n.run, n.inst) = (run, first);
             n.space = m.space;
-            n.clip = m.clip;
-            n.kind = NK_BARS;
             n.x = m.ox * s;
             n.y = m.oy * s;
             n.margin = if self.radius > 0.0 { 1.0 } else { 0.0 };
         }
         let ink = write_lanes(m.rt, node, self.sig.get(), self.f);
         m.wire(&self.sig, patch_lanes::<T, F>, node, recipe_of(self.f));
-        let hd = m.rt.bough.new_handle();
-        m.rt.nodes[node as usize].handle = hd;
-        m.scope.nodes.push(node);
+        let hd = m.rt.handle(node);
         m.scope.runs.push(run);
         m.tape_push(node);
         m.recs.push(RecordInit { depth: m.depth, ink: ink.to_nrect(), kind: REC_QUAD, payload: pay_irun(first, self.n as u32), handle: hd.idx, clip: m.clip });

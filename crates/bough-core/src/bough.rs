@@ -17,7 +17,7 @@ use crate::emit::compact8;
 use crate::nrect::{COORD_MAX, COORD_MIN, NRect, Thresh, WRect, lt_mask, lt8, translate_union, union_all};
 use crate::page::{F_FAR, F_WIDE, F_XF, CAP, GROUP, NGROUPS, PAD_DEPTH, Page, PagePool, Record, find_first_le, find_last_lt, page_find_first_le, page_find_last_lt};
 pub use crate::page::RecordInit;
-use crate::prefix::Prefix;
+use crate::state::{STATE_PLANES, StatePool, low};
 use bough_mem::Col;
 
 /// Pointer and focus queries (hit test, hit cell, flagged chains, tab order): `bough/hit.rs`.
@@ -36,8 +36,18 @@ pub struct Columns {
 pub const MIN_FILL: usize = 8;
 /// After an end-biased split the side that keeps receiving inserts holds `min(2*MIN_FILL, CAP/2)`.
 pub const RECEIVER_KEEPS: usize = if 2 * MIN_FILL < CAP / 2 { 2 * MIN_FILL } else { CAP / 2 };
-/// Directory pages per chunk summary.
+/// Directory entries per block. The directory's columns are flat arrays cut into blocks of `CHUNK`
+/// entries in paint order; a block holds 1..=CHUNK consecutive pages at its front and sentinel holes after
+/// them (EMPTY ink, depth 0xFFFF, a null pointer). A page's directory index is `block * CHUNK + slot`: a
+/// physical position, which changes only when a page is inserted or removed before it *in its own
+/// block*, so a structural edit moves at most one block's entries. Every per-block scan runs at capacity.
 pub const CHUNK: usize = 64;
+const RUN_SHIFT: usize = 6;
+const _: () = assert!(CHUNK == 1 << RUN_SHIFT);
+/// A bulk build, and appends at the end, fill blocks to this many pages: the headroom is the number of
+/// page splits a block absorbs before it is cut in two (the one event that still moves the later blocks).
+pub const RUN_FILL: usize = 56;
+const LOCAL_PAD: u16 = 0xFFFF;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Handle {
@@ -57,6 +67,8 @@ struct HEntry {
 pub struct Bough {
     pool: PagePool,
     // Directory, SoA (index = directory position).
+    /// The page of each directory entry; null in holes, and one more null after the last block (so the
+    /// entry after any live one can be read: `next_dir`).
     d_ptr: Vec<*mut Page>,
     /// Page id per directory entry and the page's absolute union ink: the two directory columns the
     /// GPU's cull reads (carved from the shared region by [`Bough::with_columns`]).
@@ -64,9 +76,27 @@ pub struct Bough {
     d_ink: Col<NRect>,
     d_min_depth: Vec<u16>,
     d_len: Vec<u32>,
+    /// Records before each page inside its block (`0xFFFF` in holes): rank inside a block is a count of
+    /// the lanes `<= rel` over all 64, no tail mask.
+    d_local: Vec<u16>,
+    /// Per block (index = block number, paint order): live entries, records, records before the block
+    /// (`r_start` has one more entry: the total), and the least depth in the block.
+    r_len: Vec<u32>,
+    r_recs: Vec<u32>,
+    r_start: Vec<u32>,
+    r_min_depth: Vec<u16>,
+    /// Blocks whose derived columns are stale after a structural edit (inclusive; empty when lo > hi).
+    pend: (usize, usize),
+    /// Live directory entries (pages).
+    np: usize,
+    /// Counts every change to what a replica holds (pages, directory, clips): `freeze_into` a replica
+    /// that already has this count copies only the damage ring. `uid` tells Boughs apart.
+    mgen: u64,
+    uid: u64,
+    /// For a replica: the (uid, mgen) of the source it last copied.
+    frozen: (u64, u64),
     /// Union of `d_ink` per chunk of 64 directory entries.
     c_ink: Vec<NRect>,
-    prefix: Prefix,
     htab: Vec<HEntry>,
     hfree: Vec<u32>,
     ring: DamageRing,
@@ -77,6 +107,10 @@ pub struct Bough {
     /// The exact rects of the records in wide pages (`F_WIDE`: one record no 16-bit frame can hold), by
     /// page id. A handful at most (a document's background, a dormant run's extent).
     wide: Vec<(u32, WRect)>,
+    /// Record state planes (`state.rs`): the state pages by page id, and per plane the ids of the pages
+    /// whose bits differ from what the plane's consumer last acknowledged.
+    state: StatePool,
+    flip: [Vec<u32>; STATE_PLANES],
     dirty_scratch: Vec<u32>,
     /// Clip rects by id (absolute); id 0 = the whole domain (unclipped). GPU-visible (the shader clamps
     /// every record to `clips[page.clip[slot]]`).
@@ -186,13 +220,25 @@ impl Bough {
         clips.push(NRect::new(crate::nrect::COORD_MIN, crate::nrect::COORD_MIN, crate::nrect::COORD_MAX, crate::nrect::COORD_MAX));
         Bough {
             pool,
-            d_ptr: Vec::new(),
+            d_ptr: vec![core::ptr::null_mut()],
             d_id,
             d_ink,
             d_min_depth: Vec::new(),
             d_len: Vec::new(),
+            d_local: Vec::new(),
+            r_len: Vec::new(),
+            r_recs: Vec::new(),
+            r_start: vec![0],
+            r_min_depth: Vec::new(),
+            pend: (usize::MAX, 0),
+            np: 0,
+            mgen: 0,
+            uid: {
+                static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+            },
+            frozen: (0, 0),
             c_ink: Vec::new(),
-            prefix: Prefix::new(),
             htab: vec![HEntry { page: core::ptr::null_mut(), slot: 0, generation: 0, live: false }],
             hfree: Vec::new(),
             ring: DamageRing::new(window_w, window_h),
@@ -200,6 +246,8 @@ impl Bough {
             scratch: Vec::new(),
             rel_scratch: Vec::new(),
             wide: Vec::new(),
+            state: StatePool::default(),
+            flip: Default::default(),
             dirty_scratch: Vec::new(),
             clips,
             uniform: [0; 4],
@@ -216,18 +264,26 @@ impl Bough {
     pub fn is_empty(&self) -> bool {
         self.total == 0
     }
+    /// Live pages.
     #[inline(always)]
     pub fn num_pages(&self) -> usize {
-        self.d_ptr.len()
+        self.np
+    }
+    /// Entries of the directory columns (`d_id`, `d_ink`): blocks of 64, each with its live pages first and
+    /// holes after (EMPTY ink, which fails every test). What a reader that scans the columns must cover.
+    #[inline(always)]
+    pub fn dir_len(&self) -> usize {
+        self.r_len.len() << RUN_SHIFT
     }
     pub fn pool(&self) -> &PagePool {
         &self.pool
     }
-    /// High-water marks of the GPU-read columns: (pages ever created, clip ids ever made). A presenter whose
-    /// GPU view of a column is its used prefix must cover these (bough-metal `Fused::ensure_columns`).
+    /// High-water marks of the GPU-read columns: (pages ever created, directory entries, clip ids ever
+    /// made). A presenter whose GPU view of a column is its used prefix must cover these (bough-metal
+    /// `Fused::ensure_columns`). The directory runs ahead of the page count (blocks of 64 with holes).
     #[inline]
-    pub fn gpu_extent(&self) -> (usize, usize) {
-        (self.pool.created().max(self.d_ptr.len()), self.clips.len())
+    pub fn gpu_extent(&self) -> (usize, usize, usize) {
+        (self.pool.created(), self.d_ptr.len(), self.clips.len())
     }
     /// Every column and table this Bough holds, as memory-ledger lines (diagnostics; never on a frame path).
     pub fn ledger(&self, l: &mut bough_mem::Ledger) {
@@ -241,7 +297,13 @@ impl Bough {
         l.vec(G, "dir min depth", &self.d_min_depth, self.d_min_depth.capacity(), Content);
         l.vec(G, "dir lengths", &self.d_len, self.d_len.capacity(), Content);
         l.vec(G, "dir chunk inks", &self.c_ink, self.c_ink.capacity(), Content);
-        l.many(G, "page-start prefix", Content, self.prefix.heap_bytes(), self.prefix.heap_bytes());
+        l.vec(G, "dir local ranks", &self.d_local, self.d_local.capacity(), Content);
+        l.vec(G, "block lengths", &self.r_len, self.r_len.capacity(), Content);
+        l.vec(G, "block records", &self.r_recs, self.r_recs.capacity(), Content);
+        l.vec(G, "block starts", &self.r_start, self.r_start.capacity(), Content);
+        l.vec(G, "block min depth", &self.r_min_depth, self.r_min_depth.capacity(), Content);
+        l.many(G, "state planes", Content, self.state.heap_bytes(), self.state.heap_bytes());
+        l.vec(G, "wide records", &self.wide, self.wide.capacity(), Content);
         l.vec(G, "handle table", &self.htab, self.htab.capacity(), Content);
         l.vec(G, "handle free list", &self.hfree, self.hfree.capacity(), Content);
         l.vec(G, "insert scratch", &self.scratch, self.scratch.capacity(), Content);
@@ -254,6 +316,7 @@ impl Bough {
     /// Mark `kind` as uniform content (solid / tinted rects): its ink changes damage only
     /// `old XOR new` instead of `old UNION new`.
     pub fn set_kind_uniform(&mut self, kind: u8, uniform: bool) {
+        self.mgen = self.mgen.wrapping_add(1);
         let (w, b) = ((kind >> 6) as usize, kind & 63);
         if uniform {
             self.uniform[w] |= 1 << b;
@@ -271,6 +334,7 @@ impl Bough {
     /// A clip rect (absolute) records can reference by id: visible ink = ink ∩ clip.
     pub fn new_clip(&mut self, r: NRect) -> u16 {
         assert!(self.clips.len() < u16::MAX as usize);
+        self.mgen = self.mgen.wrapping_add(1);
         self.clips.push(r.canon());
         (self.clips.len() - 1) as u16
     }
@@ -281,6 +345,7 @@ impl Bough {
     pub fn set_clip_rect(&mut self, id: u16, r: NRect) {
         assert!(id != 0);
         let old = self.clips[id as usize];
+        self.mgen = self.mgen.wrapping_add(1);
         self.clips[id as usize] = r.canon();
         self.damage_xor(old, r);
     }
@@ -303,7 +368,7 @@ impl Bough {
             }
             self.page_mut(d).regroup_range(s, s + n);
             rem -= n;
-            d += 1;
+            d = self.next_dir(d);
             s = 0;
         }
     }
@@ -379,6 +444,7 @@ impl Bough {
         // SAFETY: &mut self gives exclusive access to all pool pages.
         let p = unsafe { &mut **self.d_ptr.get_unchecked(d) };
         p.wgen = p.wgen.wrapping_add(1);
+        self.mgen = self.mgen.wrapping_add(1);
         p
     }
 
@@ -392,12 +458,45 @@ impl Bough {
     #[inline(always)]
     fn locate_base(&self, pos: usize) -> (usize, usize, usize) {
         debug_assert!(pos < self.total, "position {pos} out of range {}", self.total);
-        let (d, base) = self.prefix.locate(pos, &self.d_len);
-        (d, pos - base, base)
+        // the block: the last one that starts at or before pos (branchless binary search over the
+        // block starts; no iteration while there is one block)
+        let (mut lo, mut size) = (0usize, self.r_len.len());
+        while size > 1 {
+            let half = size / 2;
+            let mid = lo + half;
+            // SAFETY: mid < nr < r_start.len().
+            let m = unsafe { *self.r_start.get_unchecked(mid) } as usize;
+            lo = if m <= pos { mid } else { lo };
+            size -= half;
+        }
+        // SAFETY: lo < nr; the block's 64 local starts are in bounds; holes are 0xFFFF.
+        unsafe {
+            let rb = *self.r_start.get_unchecked(lo) as usize;
+            let rel = (pos - rb) as u16;
+            let lp = self.d_local.as_ptr().add(lo << RUN_SHIFT);
+            // the page inside the block: the number of pages that start at or before rel, minus one
+            // (a count over all 64 lanes; a hole's 0xFFFF is never <= rel, which is < 4096)
+            #[cfg(target_arch = "aarch64")]
+            let cnt = {
+                use core::arch::aarch64::*;
+                let rv = vdupq_n_u16(rel);
+                let mut acc = vdupq_n_u16(0);
+                for i in 0..8 {
+                    acc = vsubq_u16(acc, vcleq_u16(vld1q_u16(lp.add(i * 8)), rv));
+                }
+                vaddvq_u16(acc) as usize
+            };
+            #[cfg(not(target_arch = "aarch64"))]
+            let cnt = (0..CHUNK).filter(|&i| *lp.add(i) <= rel).count();
+            let d = (lo << RUN_SHIFT) + cnt - 1;
+            let base = rb + *self.d_local.get_unchecked(d) as usize;
+            (d, pos - base, base)
+        }
     }
     #[inline(always)]
     fn start_of(&self, d: usize) -> usize {
-        self.prefix.get(d, &self.d_len)
+        // SAFETY: d is a live directory index.
+        unsafe { (*self.r_start.get_unchecked(d >> RUN_SHIFT) + *self.d_local.get_unchecked(d) as u32) as usize }
     }
 
     pub fn record(&self, pos: usize) -> Record {
@@ -423,7 +522,7 @@ impl Bough {
     }
     pub fn records(&self) -> Vec<Record> {
         let mut v = Vec::with_capacity(self.total);
-        for d in 0..self.d_ptr.len() {
+        for d in self.dirs() {
             let p = self.page(d);
             for s in 0..self.d_len[d] as usize {
                 v.push(p.read(s));
@@ -433,10 +532,10 @@ impl Bough {
     }
     /// Start offsets of every directory page (the chunking removal damage is recorded at).
     pub fn page_starts(&self) -> Vec<usize> {
-        (0..self.d_ptr.len()).map(|d| self.start_of(d)).collect()
+        self.dirs().map(|d| self.start_of(d)).collect()
     }
     pub fn page_versions(&self) -> Vec<(u32, u32)> {
-        (0..self.d_ptr.len()).map(|d| (self.page(d).id, self.page(d).version)).collect()
+        self.dirs().map(|d| (self.page(d).id, self.page(d).version)).collect()
     }
 
     // ------------------------------------------------------------------ epochs & damage
@@ -569,34 +668,300 @@ impl Bough {
         self.ring.repair(age)
     }
 
-    // ------------------------------------------------------------------ directory plumbing
+    // ------------------------------------------------------------------ record state planes
 
-    /// Recompute the chunk summaries covering directory entries `[lo, hi)` (and resize the column).
+    /// The words of `pp`'s state page were written: summaries, flip lists, and the page's state byte.
     #[inline]
-    fn fix_chunks(&mut self, lo: usize, hi: usize) {
-        let n = self.d_ink.len();
-        let nc = n.div_ceil(CHUNK);
-        self.c_ink.resize(nc, NRect::EMPTY);
-        if n == 0 {
+    fn st_settle(&mut self, pp: *mut Page) {
+        // SAFETY: pp is a live page of this Bough; &mut self is exclusive.
+        let id = unsafe { (*pp).id };
+        let sp = self.state.get_mut(id);
+        sp.summarise();
+        let mut new = sp.changed & !sp.listed;
+        sp.listed |= new;
+        let blank = sp.is_blank();
+        while new != 0 {
+            self.flip[new.trailing_zeros() as usize].push(id);
+            new &= new - 1;
+        }
+        unsafe { (*pp).state = !blank as u8 };
+    }
+    /// Plane `f` of page `pp` becomes `new`: the word, its two summary bits, the flip list and the page's
+    /// state byte, without touching the other fifteen planes.
+    #[inline(always)]
+    fn st_write(&mut self, pp: *mut Page, f: u8, new: u64) {
+        // SAFETY: pp is a live page of this Bough; &mut self is exclusive.
+        let (id, has) = unsafe { ((*pp).id, (*pp).state != 0) };
+        let sp = if has { self.state.get_mut(id) } else { self.state.ensure(id) };
+        let (fi, bit) = (f as usize, 1u16 << f);
+        if sp.bits[fi] == new {
             return;
         }
-        // Pages may have been removed at the tail: the chunk that held them still needs a refresh.
-        let lo = lo.min(n - 1);
-        let hi = hi.min(n).max(lo + 1);
-        for c in lo / CHUNK..hi.div_ceil(CHUNK) {
-            let e = ((c + 1) * CHUNK).min(n);
-            self.c_ink[c] = union_all(&self.d_ink[c * CHUNK..e]);
+        sp.bits[fi] = new;
+        let ch = new != sp.seen[fi];
+        sp.any = (sp.any & !bit) | ((new != 0) as u16) << f;
+        sp.changed = (sp.changed & !bit) | (ch as u16) << f;
+        let blank = sp.any | sp.changed == 0;
+        if ch && sp.listed & bit == 0 {
+            sp.listed |= bit;
+            self.flip[fi].push(id);
+        }
+        unsafe { (*pp).state = !blank as u8 };
+    }
+    /// The state half of `copy_virtual`: virtual slots `[lo, hi)` of `old[0..s) ++ k new ++ old[s..)` to
+    /// `dst[0..]` (new records have no state).
+    fn st_copy_virtual(&mut self, dst: *mut Page, lo: usize, hi: usize, old: *mut Page, s: usize, k: usize) {
+        // SAFETY: both are live pages; the caller checked `(*old).state != 0`.
+        let (di, oi) = unsafe { ((*dst).id, (*old).id) };
+        let src = *self.state.get(oi);
+        let sp = self.state.ensure(di);
+        let b = hi.min(s);
+        if lo < b {
+            sp.copy(0, &src, lo, b - lo);
+        }
+        let a = lo.max(s + k);
+        if a < hi {
+            sp.copy(a - lo, &src, a - k, hi - a);
+        }
+        self.st_settle(dst);
+    }
+    /// A freed page keeps no state (its flip-list entries, if any, find nothing changed).
+    #[inline]
+    fn st_free(&mut self, pp: *mut Page) {
+        // SAFETY: a live page about to be freed.
+        if unsafe { (*pp).state } != 0 {
+            let sp = self.state.get_mut(unsafe { (*pp).id });
+            (sp.bits, sp.seen, sp.any, sp.changed) = ([0; STATE_PLANES], [0; STATE_PLANES], 0, 0);
         }
     }
-    /// Page `d`'s summary changed from `old` to `self.d_ink[d]`: keep its chunk exact.
+    /// The (bits, seen) of every record of `[start, start + len)`, or `None` if no page of the run has state.
+    fn st_read_run(&self, start: usize, len: usize) -> Option<Vec<(u16, u16)>> {
+        let (mut d, mut s) = self.locate(start);
+        let mut rem = len;
+        let mut any = false;
+        let mut out = Vec::new();
+        while rem > 0 {
+            let n = rem.min(self.d_len[d] as usize - s);
+            let p = self.page(d);
+            if p.state != 0 {
+                any = true;
+                let sp = self.state.get(p.id);
+                out.extend((s..s + n).map(|i| sp.get(i)));
+            } else {
+                out.extend(core::iter::repeat_n((0, 0), n));
+            }
+            rem -= n;
+            d = self.next_dir(d);
+            s = 0;
+        }
+        any.then_some(out)
+    }
+    fn st_put(&mut self, pos: usize, v: (u16, u16)) {
+        let (d, s) = self.locate(pos);
+        let pp = self.page_ptr(d);
+        // SAFETY: a live page.
+        self.state.ensure(unsafe { (*pp).id }).put(s, v);
+        self.st_settle(pp);
+    }
+
+    /// Set or clear state plane `f` for the records `[start, start + len)`: one mask write per page.
+    pub fn set_state_run(&mut self, start: usize, len: usize, f: u8, on: bool) {
+        assert!((f as usize) < STATE_PLANES && start + len <= self.total);
+        if len == 0 {
+            return;
+        }
+        let (mut d, mut s) = self.locate(start);
+        let mut rem = len;
+        while rem > 0 {
+            let n = rem.min(self.d_len[d] as usize - s);
+            let pp = self.page_ptr(d);
+            // SAFETY: a live page; &mut self is exclusive.
+            let (id, has) = unsafe { ((*pp).id, (*pp).state != 0) };
+            if on || has {
+                let m = low(n) << s;
+                let w = if has { self.state.get(id).bits[f as usize] } else { 0 };
+                self.st_write(pp, f, if on { w | m } else { w & !m });
+            }
+            rem -= n;
+            d = self.next_dir(d);
+            s = 0;
+        }
+    }
+    pub fn set_state(&mut self, pos: usize, f: u8, on: bool) {
+        self.set_state_run(pos, 1, f, on);
+    }
+    pub fn set_state_handle(&mut self, h: Handle, f: u8, on: bool) -> bool {
+        let Some((pp, s)) = self.handle_ptr(h) else { return false };
+        assert!((f as usize) < STATE_PLANES);
+        // SAFETY: bound handles point at live pages.
+        let (id, has) = unsafe { ((*pp).id, (*pp).state != 0) };
+        if on || has {
+            let w = if has { self.state.get(id).bits[f as usize] } else { 0 };
+            self.st_write(pp, f, if on { w | 1 << s } else { w & !(1 << s) });
+        }
+        true
+    }
+    /// Is state `f` set for the record at `pos`?
+    pub fn state(&self, pos: usize, f: u8) -> bool {
+        let (d, s) = self.locate(pos);
+        let p = self.page(d);
+        p.state != 0 && self.state.get(p.id).bits[f as usize] >> s & 1 != 0
+    }
+    pub fn state_handle(&self, h: Handle, f: u8) -> Option<bool> {
+        let (pp, s) = self.handle_ptr(h)?;
+        // SAFETY: bound handles point at live pages.
+        let p = unsafe { &*pp };
+        Some(p.state != 0 && self.state.get(p.id).bits[f as usize] >> s & 1 != 0)
+    }
+    /// The records of `[start, start + len)` with state `f`, per page: `g(page start, mask of slots)`.
+    /// Pages without state, or without plane `f` (the page summary), are skipped on one test.
+    #[inline]
+    fn st_scan(&self, start: usize, len: usize, f: u8, mut g: impl FnMut(usize, u64) -> bool) {
+        if len == 0 {
+            return;
+        }
+        let (mut d, mut s, mut base) = self.locate_base(start);
+        let mut rem = len;
+        while rem > 0 {
+            let l = self.d_len[d] as usize;
+            let n = rem.min(l - s);
+            let p = self.page(d);
+            if p.state != 0 {
+                let sp = self.state.get(p.id);
+                if sp.any >> f & 1 != 0 {
+                    let m = sp.bits[f as usize] & (low(n) << s);
+                    if m != 0 && g(base, m) {
+                        return;
+                    }
+                }
+            }
+            rem -= n;
+            base += l;
+            d = self.next_dir(d);
+            s = 0;
+        }
+    }
+    /// Does any record of `[start, start + len)` have state `f`? (focus-within, "anything selected here")
+    pub fn any_state(&self, start: usize, len: usize, f: u8) -> bool {
+        let mut any = false;
+        self.st_scan(start, len, f, |_, _| {
+            any = true;
+            true
+        });
+        any
+    }
+    pub fn count_state(&self, start: usize, len: usize, f: u8) -> usize {
+        let mut c = 0;
+        self.st_scan(start, len, f, |_, m| {
+            c += m.count_ones() as usize;
+            false
+        });
+        c
+    }
+    /// The first record at or after `pos` with state `f`.
+    pub fn next_state(&self, pos: usize, f: u8) -> Option<usize> {
+        let mut r = None;
+        if pos < self.total {
+            self.st_scan(pos, self.total - pos, f, |base, m| {
+                r = Some(base + m.trailing_zeros() as usize);
+                true
+            });
+        }
+        r
+    }
+    /// Every record whose state `f` differs from what the plane's consumer last acknowledged
+    /// (`commit_state`): `g(position, now)`. Visits only the pages that hold such a record.
+    pub fn flips(&self, f: u8, mut g: impl FnMut(usize, bool)) {
+        for &id in &self.flip[f as usize] {
+            let sp = self.state.get(id);
+            if sp.changed >> f & 1 == 0 {
+                continue;
+            }
+            // SAFETY: a page with a changed plane is live (a freed page's state is cleared).
+            let base = self.start_of(unsafe { (*self.pool.ptr(id)).dir } as usize);
+            let now = sp.bits[f as usize];
+            let mut m = now ^ sp.seen[f as usize];
+            while m != 0 {
+                let s = m.trailing_zeros() as usize;
+                m &= m - 1;
+                g(base + s, now >> s & 1 != 0);
+            }
+        }
+    }
+    /// The consumer of plane `f` has applied its flips.
+    pub fn commit_state(&mut self, f: u8) {
+        let list = core::mem::take(&mut self.flip[f as usize]);
+        for &id in &list {
+            let sp = self.state.get_mut(id);
+            sp.seen[f as usize] = sp.bits[f as usize];
+            sp.listed &= !(1 << f);
+            sp.changed &= !(1 << f);
+            let blank = sp.is_blank();
+            let pp = self.pool.ptr(id);
+            // SAFETY: a pool page (valid for the pool's life); a free page's state byte is 0 and stays 0.
+            unsafe {
+                if (*pp).state != 0 {
+                    (*pp).state = !blank as u8;
+                }
+            }
+        }
+        let mut list = list;
+        list.clear();
+        self.flip[f as usize] = list;
+    }
+
+    // ------------------------------------------------------------------ directory plumbing
+
+    /// The next live directory entry after `d` in paint order (`dir_len()` after the last).
+    #[inline(always)]
+    fn next_dir(&self, d: usize) -> usize {
+        // the entry after a live one is live, a hole (the block's live entries are over: the next page is
+        // the next block's first), or the null after the last block
+        let e = d + 1;
+        // SAFETY: d is a live directory index and d_ptr has one entry more than the directory.
+        if unsafe { *self.d_ptr.get_unchecked(e) }.is_null() { (e + CHUNK - 1) & !(CHUNK - 1) } else { e }
+    }
+    /// The live entry before `d`.
+    #[inline]
+    fn prev_dir(&self, d: usize) -> Option<usize> {
+        if d & (CHUNK - 1) != 0 {
+            return Some(d - 1);
+        }
+        let r = d >> RUN_SHIFT;
+        (r > 0).then(|| ((r - 1) << RUN_SHIFT) + self.r_len[r - 1] as usize - 1)
+    }
+    /// The last live entry.
+    #[inline]
+    fn last_dir(&self) -> Option<usize> {
+        let nr = self.r_len.len();
+        (nr > 0).then(|| ((nr - 1) << RUN_SHIFT) + self.r_len[nr - 1] as usize - 1)
+    }
+    /// Every live directory index, in paint order.
+    fn dirs(&self) -> impl Iterator<Item = usize> + '_ {
+        self.r_len.iter().enumerate().flat_map(|(r, &l)| (r << RUN_SHIFT)..(r << RUN_SHIFT) + l as usize)
+    }
+
+    /// Recompute the block summaries of the blocks holding directory entries `[lo, hi)`.
+    #[inline]
+    fn fix_chunks(&mut self, lo: usize, hi: usize) {
+        let nr = self.r_len.len();
+        if nr == 0 || lo >= hi {
+            return;
+        }
+        for c in (lo >> RUN_SHIFT).min(nr - 1)..=((hi - 1) >> RUN_SHIFT).min(nr - 1) {
+            let b = c << RUN_SHIFT;
+            self.c_ink[c] = union_all(&self.d_ink[b..b + self.r_len[c] as usize]);
+        }
+    }
+    /// Page `d`'s summary changed from `old` to `self.d_ink[d]`: keep its block's exact.
     #[inline(always)]
     fn chunk_update(&mut self, d: usize, old: NRect) {
         let new = self.d_ink[d];
         if new == old {
             return;
         }
-        let c = d / CHUNK;
-        // SAFETY: c < c_ink.len() because d < n.
+        let c = d >> RUN_SHIFT;
+        // SAFETY: c is a block because d is a live index.
         let cs = unsafe { self.c_ink.get_unchecked_mut(c) };
         if new.union(old) == new {
             // grew (or stayed): monotone
@@ -604,6 +969,12 @@ impl Bough {
         } else {
             self.fix_chunks(d, d + 1);
         }
+    }
+    /// Page `d`'s least depth changed: its block's is the least of its 64 entries (holes are 0xFFFF).
+    #[inline]
+    fn depth_update(&mut self, d: usize) {
+        let r = d >> RUN_SHIFT;
+        self.r_min_depth[r] = block_min(&self.d_min_depth[r << RUN_SHIFT..(r + 1) << RUN_SHIFT]);
     }
 
     fn refresh(&mut self, d: usize) {
@@ -616,86 +987,343 @@ impl Bough {
         self.d_min_depth[d] = md;
     }
 
-    fn reindex_pages(&mut self, from: usize) {
-        for i in from..self.d_ptr.len() {
-            // SAFETY: live page.
+    /// Page `d` gained (lost) `delta` records and nothing else changed: the pages after it in its block
+    /// start `delta` later (one masked lane add over the block: holes keep their sentinel), and so does
+    /// every later block (one vector add over the block starts).
+    #[inline]
+    fn len_delta(&mut self, d: usize, delta: i32) {
+        self.mgen = self.mgen.wrapping_add(1);
+        let (r, s) = (d >> RUN_SHIFT, d & (CHUNK - 1));
+        let b = r << RUN_SHIFT;
+        // SAFETY: the block's 64 local starts are in bounds; lanes are touched only past slot s.
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            use core::arch::aarch64::*;
+            let lp = self.d_local.as_mut_ptr().add(b);
+            // the lanes up to the next vector boundary one by one, then whole vectors with the holes
+            // masked out (a hole is 0xFFFF and stays it)
+            let l = *self.r_len.get_unchecked(r) as usize;
+            let mut i = s + 1;
+            while i & 7 != 0 && i < l {
+                *lp.add(i) = (*lp.add(i)).wrapping_add(delta as u16);
+                i += 1;
+            }
+            let (dv, pad) = (vdupq_n_u16(delta as u16), vdupq_n_u16(LOCAL_PAD));
+            while i < l {
+                let v = vld1q_u16(lp.add(i));
+                vst1q_u16(lp.add(i), vaddq_u16(v, vbicq_u16(dv, vceqq_u16(v, pad))));
+                i += 8;
+            }
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let l = self.r_len[r] as usize;
+            for v in &mut self.d_local[b + s + 1..b + l] {
+                *v = v.wrapping_add(delta as u16);
+            }
+        }
+        self.r_recs[r] = self.r_recs[r].wrapping_add(delta as u32);
+        crate::prefix::add_suffix(&mut self.r_start[r + 1..], delta);
+    }
+    /// Mark block `r` stale (its derived columns are rebuilt by `dir_settle`).
+    #[inline]
+    fn pend_run(&mut self, r: usize) {
+        self.pend = (self.pend.0.min(r), self.pend.1.max(r));
+    }
+    /// After a structural edit and the page writes that follow it: rebuild the derived columns of the stale
+    /// blocks (local starts, record count, union ink, least depth) from their entries, then the block
+    /// starts from the first stale block on (a running sum over the block counts).
+    fn dir_settle(&mut self) {
+        self.mgen = self.mgen.wrapping_add(1);
+        let nr = self.r_len.len();
+        let (lo, hi) = (self.pend.0.min(nr), self.pend.1.min(nr.wrapping_sub(1)));
+        self.pend = (usize::MAX, 0);
+        if lo > hi || nr == 0 {
+            if nr == 0 {
+                self.r_start[0] = 0;
+            }
+            return;
+        }
+        // what the block after the stale ones started at before (blocks that were inserted or removed
+        // moved the later starts with them, unchanged)
+        let old_next = self.r_start[hi + 1];
+        // the first stale block starts where the block before it ends (its own entry may be a fresh
+        // block's zero, or what stood there before blocks were removed)
+        let mut start = if lo == 0 { 0 } else { self.r_start[lo - 1] + self.r_recs[lo - 1] };
+        for r in lo..=hi {
+            let b = r << RUN_SHIFT;
+            let l = self.r_len[r] as usize;
+            // (the holes hold their sentinels already: `dir_holes`)
+            let mut acc = 0u32;
+            for s in 0..l {
+                // SAFETY: b + s is a live entry of block r.
+                unsafe {
+                    *self.d_local.get_unchecked_mut(b + s) = acc as u16;
+                    acc += *self.d_len.get_unchecked(b + s);
+                }
+            }
+            self.r_recs[r] = acc;
+            self.r_start[r] = start;
+            start += acc;
+            self.c_ink[r] = union_all(&self.d_ink[b..b + l]);
+            self.r_min_depth[r] = block_min(&self.d_min_depth[b..b + CHUNK]);
+        }
+        // every later block starts later (earlier) by what the stale blocks gained (lost): one vector add
+        crate::prefix::add_suffix(&mut self.r_start[hi + 1..], start.wrapping_sub(old_next) as i32);
+    }
+
+    /// Write the sentinel into entries `[lo, hi)` of the directory columns (holes).
+    fn dir_holes(&mut self, lo: usize, hi: usize) {
+        self.d_ptr[lo..hi].fill(core::ptr::null_mut());
+        self.d_id[lo..hi].fill(0);
+        self.d_ink[lo..hi].fill(NRect::EMPTY);
+        self.d_min_depth[lo..hi].fill(PAD_DEPTH);
+        self.d_len[lo..hi].fill(0);
+        self.d_local[lo..hi].fill(LOCAL_PAD);
+    }
+    /// Move `n` entries of the directory columns from `src` to `dst` (memmove) and tell the pages.
+    fn dir_move(&mut self, src: usize, dst: usize, n: usize) {
+        if n == 0 {
+            return;
+        }
+        self.d_ptr.copy_within(src..src + n, dst);
+        self.d_id.copy_within(src..src + n, dst);
+        self.d_ink.copy_within(src..src + n, dst);
+        self.d_min_depth.copy_within(src..src + n, dst);
+        self.d_len.copy_within(src..src + n, dst);
+        for i in dst..dst + n {
+            // SAFETY: a live page.
             unsafe { (*self.d_ptr[i]).dir = i as u32 };
         }
     }
-
-    /// Insert `count` blank, empty pages at directory index `at`.
-    fn dir_insert_blank(&mut self, at: usize, count: usize) {
-        let mut ptrs = Vec::with_capacity(count);
-        attr!(0, for _ in 0..count {
-            ptrs.push(self.pool.alloc());
+    /// A fresh blank page at directory entry `d`.
+    fn dir_fresh(&mut self, d: usize) {
+        let p = self.pool.alloc();
+        self.d_ptr[d] = p;
+        // SAFETY: a live pool page.
+        unsafe {
+            self.d_id[d] = (*p).id;
+            (*p).dir = d as u32;
+        }
+        self.d_ink[d] = NRect::EMPTY;
+        self.d_min_depth[d] = PAD_DEPTH;
+        self.d_len[d] = 0;
+    }
+    /// Insert `count` blocks of holes before block `r`. The later blocks move up (one memmove per column)
+    /// and their pages learn their new index: the one directory operation that is O(pages after), paid when
+    /// a block overflows, not on every page split.
+    fn blocks_insert(&mut self, r: usize, count: usize) {
+        let (at, n) = (r << RUN_SHIFT, count << RUN_SHIFT);
+        attr!(2, drop(self.d_ptr.splice(at..at, core::iter::repeat_n(core::ptr::null_mut(), n))));
+        attr!(1, self.d_id.insert_n(at, n, 0));
+        attr!(3, self.d_ink.insert_n(at, n, NRect::EMPTY));
+        attr!(4, drop(self.d_min_depth.splice(at..at, core::iter::repeat_n(PAD_DEPTH, n))));
+        attr!(5, {
+            drop(self.d_len.splice(at..at, core::iter::repeat_n(0, n)));
+            drop(self.d_local.splice(at..at, core::iter::repeat_n(LOCAL_PAD, n)));
         });
+        attr!(6, {
+            drop(self.r_len.splice(r..r, core::iter::repeat_n(0, count)));
+            drop(self.r_recs.splice(r..r, core::iter::repeat_n(0, count)));
+            drop(self.r_start.splice(r..r, core::iter::repeat_n(0, count)));
+            drop(self.r_min_depth.splice(r..r, core::iter::repeat_n(PAD_DEPTH, count)));
+            drop(self.c_ink.splice(r..r, core::iter::repeat_n(NRect::EMPTY, count)));
+        });
+        attr!(7, self.reindex_from(r + count));
+    }
+    /// Remove blocks `[r, r + count)` (all holes by now).
+    fn blocks_remove(&mut self, r: usize, count: usize) {
+        let (at, n) = (r << RUN_SHIFT, count << RUN_SHIFT);
+        let len = self.d_ink.len();
+        attr!(2, drop(self.d_ptr.drain(at..at + n)));
         attr!(1, {
-            self.d_id.insert_n(at, count, 0);
-            for (k, &p) in ptrs.iter().enumerate() {
-                // SAFETY: a live pool page.
-                self.d_id[at + k] = unsafe { (*p).id };
+            self.d_id.copy_within(at + n..len, at);
+            self.d_id.truncate(len - n);
+        });
+        attr!(3, {
+            self.d_ink.copy_within(at + n..len, at);
+            self.d_ink.truncate(len - n);
+        });
+        attr!(4, drop(self.d_min_depth.drain(at..at + n)));
+        attr!(5, {
+            drop(self.d_len.drain(at..at + n));
+            drop(self.d_local.drain(at..at + n));
+        });
+        attr!(6, {
+            drop(self.r_len.drain(r..r + count));
+            drop(self.r_recs.drain(r..r + count));
+            drop(self.r_start.drain(r..r + count));
+            drop(self.r_min_depth.drain(r..r + count));
+            drop(self.c_ink.drain(r..r + count));
+        });
+        attr!(7, self.reindex_from(r));
+    }
+    /// The pages of blocks `r..` learn their directory index again.
+    fn reindex_from(&mut self, r: usize) {
+        for rr in r..self.r_len.len() {
+            let b = rr << RUN_SHIFT;
+            for i in b..b + self.r_len[rr] as usize {
+                // SAFETY: a live page.
+                unsafe { (*self.d_ptr[i]).dir = i as u32 };
             }
-        });
-        attr!(2, drop(self.d_ptr.splice(at..at, ptrs)));
-        attr!(3, self.d_ink.insert_n(at, count, NRect::EMPTY));
-        attr!(4, drop(self.d_min_depth.splice(at..at, core::iter::repeat_n(PAD_DEPTH, count))));
-        attr!(5, drop(self.d_len.splice(at..at, core::iter::repeat_n(0, count))));
-        attr!(6, for _ in 0..count {
-            self.prefix.grow();
-        });
-        attr!(7, self.reindex_pages(at));
+        }
     }
 
-    /// Remove directory entries `[d, d+k)` (whole pages emptied by one `remove_run`) in one pass: each
-    /// column shifts its tail once and the pages after are re-indexed once (removing them one at a time
-    /// shifted the tail and re-indexed the rest `k` times).
-    fn dir_remove_range(&mut self, d: usize, k: usize) {
+    /// Insert `count` blank, empty pages after directory entry `prev` in paint order (`None`: at the very
+    /// front). Returns the index of the first; the others follow it (`next_dir`). The entries after `prev`
+    /// in its block move up inside the block. A block that would exceed `CHUNK` is cut: its pages and the
+    /// new ones are laid out again over as many blocks as they need (at the end of the directory filled to
+    /// `RUN_FILL`, anywhere else evenly), which inserts blocks after it. The blocks touched are left stale
+    /// (`pend`): the caller writes the pages, then `dir_settle`.
+    fn dir_insert_after(&mut self, prev: Option<usize>, count: usize) -> usize {
+        self.mgen = self.mgen.wrapping_add(1);
+        if self.r_len.is_empty() {
+            self.blocks_insert(0, 1);
+        }
+        let (r, s) = match prev {
+            None => (0, 0),
+            Some(p) => (p >> RUN_SHIFT, (p & (CHUNK - 1)) + 1),
+        };
+        let len = self.r_len[r] as usize;
+        let b = r << RUN_SHIFT;
+        self.np += count;
+        if len + count <= CHUNK {
+            attr!(1, self.dir_move(b + s, b + s + count, len - s));
+            attr!(0, for k in 0..count {
+                self.dir_fresh(b + s + k);
+            });
+            self.r_len[r] = (len + count) as u32;
+            self.pend_run(r);
+            return b + s;
+        }
+        let nr = self.r_len.len();
+        if r + 1 == nr && s == len && count <= CHUNK {
+            // an append at the very end: fresh blocks after the last one (nothing moves)
+            let q = count.div_ceil(RUN_FILL);
+            self.blocks_insert(nr, q);
+            for j in 0..q {
+                let (rb, sz) = ((nr + j) << RUN_SHIFT, RUN_FILL.min(count - j * RUN_FILL));
+                for t in 0..sz {
+                    self.dir_fresh(rb + t);
+                }
+                self.r_len[nr + j] = sz as u32;
+                self.pend_run(nr + j);
+            }
+            return nr << RUN_SHIFT;
+        }
+        // the block overflows: its pages and the new ones are laid out evenly over as many blocks as they
+        // need at `RUN_FILL`, inserted right after it. The later blocks move up once and their pages learn
+        // their index: the directory's one O(pages after) event, once per block's worth of headroom.
+        // (Measured against the alternative of rebalancing a doubling window of neighbours, a packed-memory
+        // array: with blocks this full the windows rebalance too often; 256 page splits at the front of
+        // 1e6 records cost 52.7 k each amortised and 1.2 M at worst that way, against the cut's numbers in
+        // TABLE-R6.)
+        let q = (len + count).div_ceil(RUN_FILL);
+        self.blocks_insert(r + 1, q - 1);
+        self.relayout(r, r + q, b + s, count)
+    }
+
+    /// Lay the pages of blocks `[lo, hi)` out again, evenly, with `count` fresh blank pages inserted
+    /// before the entry now at directory index `at` (or at the end of its block's live entries). Every
+    /// page in the window learns its index; the blocks are left stale. Returns the index of the first new
+    /// page.
+    fn relayout(&mut self, lo: usize, hi: usize, at: usize, count: usize) -> usize {
+        let mut old: Vec<(*mut Page, u32, NRect, u16, u32)> = Vec::new();
+        let mut ins = 0usize;
+        for r in lo..hi {
+            let b = r << RUN_SHIFT;
+            let l = self.r_len[r] as usize;
+            if at >= b && at <= b + l && at >> RUN_SHIFT == r {
+                ins = old.len() + (at - b);
+            }
+            old.extend((b..b + l).map(|i| (self.d_ptr[i], self.d_id[i], self.d_ink[i], self.d_min_depth[i], self.d_len[i])));
+        }
+        let total = old.len() + count;
+        let q = hi - lo;
+        debug_assert!(total <= q * CHUNK && total >= q);
+        let mut v = 0usize;
+        let mut first = 0usize;
+        for j in 0..q {
+            let rb = (lo + j) << RUN_SHIFT;
+            let sz = total / q + usize::from(j < total % q);
+            for t in 0..sz {
+                let d = rb + t;
+                if v >= ins && v < ins + count {
+                    if v == ins {
+                        first = d;
+                    }
+                    self.dir_fresh(d);
+                } else {
+                    let e = old[if v < ins { v } else { v - count }];
+                    (self.d_ptr[d], self.d_id[d], self.d_ink[d], self.d_min_depth[d], self.d_len[d]) = e;
+                    // SAFETY: a live page.
+                    unsafe { (*e.0).dir = d as u32 };
+                }
+                v += 1;
+            }
+            self.dir_holes(rb + sz, rb + CHUNK);
+            self.r_len[lo + j] = sz as u32;
+            self.pend_run(lo + j);
+        }
+        first
+    }
+
+    /// Remove the `k` directory entries from `d` on in paint order (whole pages emptied by one
+    /// `remove_run`, possibly across blocks) and free their pages. Inside a block the entries after them
+    /// move down; a block left empty goes (the later blocks move down); a block left small is merged into
+    /// its neighbour when both fit in half a block. The blocks touched are left stale: `dir_settle`.
+    fn dir_remove_seq(&mut self, d: usize, k: usize) {
         if k == 0 {
             return;
         }
-        if k == 1 {
-            return self.dir_remove(d);
-        }
-        for i in d..d + k {
-            // SAFETY: live page.
-            let (id, fl) = unsafe { ((*self.d_ptr[i]).id, (*self.d_ptr[i]).flags) };
-            if fl & F_WIDE != 0 {
-                self.wide_drop(id);
+        self.mgen = self.mgen.wrapping_add(1);
+        let r0 = d >> RUN_SHIFT;
+        let (mut r, mut s, mut rem) = (r0, d & (CHUNK - 1), k);
+        while rem > 0 {
+            let len = self.r_len[r] as usize;
+            let n = rem.min(len - s);
+            let b = r << RUN_SHIFT;
+            for i in b + s..b + s + n {
+                // SAFETY: live page.
+                let (id, fl) = unsafe { ((*self.d_ptr[i]).id, (*self.d_ptr[i]).flags) };
+                if fl & F_WIDE != 0 {
+                    self.wide_drop(id);
+                }
+                self.st_free(self.d_ptr[i]);
+                attr!(0, self.pool.free(id));
             }
-            self.pool.free(id);
+            attr!(1, self.dir_move(b + s + n, b + s, len - s - n));
+            self.dir_holes(b + len - n, b + len);
+            self.r_len[r] = (len - n) as u32;
+            rem -= n;
+            r += 1;
+            s = 0;
         }
-        let n = self.d_ptr.len();
-        attr!(2, drop(self.d_ptr.drain(d..d + k)));
-        attr!(1, {
-            self.d_id.copy_within(d + k..n, d);
-            self.d_id.truncate(n - k);
-        });
-        attr!(3, {
-            self.d_ink.copy_within(d + k..n, d);
-            self.d_ink.truncate(n - k);
-        });
-        attr!(4, drop(self.d_min_depth.drain(d..d + k)));
-        attr!(5, drop(self.d_len.drain(d..d + k)));
-        attr!(6, for _ in 0..k {
-            self.prefix.shrink();
-        });
-        attr!(7, self.reindex_pages(d));
-    }
-
-    fn dir_remove(&mut self, d: usize) {
-        // SAFETY: live page.
-        let (id, fl) = unsafe { ((*self.d_ptr[d]).id, (*self.d_ptr[d]).flags) };
-        if fl & F_WIDE != 0 {
-            self.wide_drop(id);
+        self.np -= k;
+        // blocks r0..r were touched; the emptied ones are contiguous among them
+        let lo = if self.r_len[r0] == 0 { r0 } else { r0 + 1 };
+        let hi = if self.r_len[r - 1] == 0 { r } else { r - 1 };
+        if lo < hi {
+            self.blocks_remove(lo, hi - lo);
         }
-        attr!(2, self.d_ptr.remove(d));
-        attr!(1, self.d_id.remove(d));
-        attr!(3, self.d_ink.remove(d));
-        attr!(4, self.d_min_depth.remove(d));
-        attr!(5, self.d_len.remove(d));
-        attr!(6, self.prefix.shrink());
-        attr!(0, self.pool.free(id));
-        attr!(7, self.reindex_pages(d));
+        // the survivors next to the cut: blocks lo - 1 and lo (when they exist)
+        let nr = self.r_len.len();
+        if lo > 0 && lo < nr && (self.r_len[lo - 1] + self.r_len[lo]) as usize <= CHUNK / 2 {
+            let (a, c) = (self.r_len[lo - 1] as usize, self.r_len[lo] as usize);
+            let (src, dst) = (lo << RUN_SHIFT, ((lo - 1) << RUN_SHIFT) + a);
+            self.dir_move(src, dst, c);
+            self.dir_holes(src, src + c);
+            self.r_len[lo - 1] = (a + c) as u32;
+            self.r_len[lo] = 0;
+            self.blocks_remove(lo, 1);
+        }
+        let nr = self.r_len.len();
+        if nr > 0 {
+            self.pend_run(lo.saturating_sub(1).min(nr - 1));
+            self.pend_run(lo.min(nr - 1));
+        } else {
+            self.pend = (0, 0);
+        }
     }
 
     /// Re-point handle-table entries for every live handle in slots `[lo, hi)` of page `d`.
@@ -829,10 +1457,9 @@ impl Bough {
                 }
             }
         }
-        if self.d_ptr.is_empty() {
-            self.dir_insert_blank(0, 1);
-            self.prefix.invalidate_from(0, &self.d_len);
-            self.fix_chunks(0, 1);
+        if self.np == 0 {
+            self.dir_insert_after(None, 1);
+            self.dir_settle();
         }
         // Insert after the record at pos-1 (same page); at 0, at the front of page 0.
         let (d, s) = if pos == 0 {
@@ -877,18 +1504,25 @@ impl Bough {
             self.total += k;
             return;
         }
-        if flags == 0 {
+        if flags & (F_XF | F_WIDE) == 0 {
+            // a plain page takes records inside the domain that fit its frame; a far page takes any that
+            // fit its frame and keep its frame rule (blank records, the next rows of its column)
             let mut rel = core::mem::take(&mut self.rel_scratch);
             rel.clear();
             let p = self.page(d);
+            let mut u = if flags == 0 { WRect::EMPTY } else { p.abs_wide(p.union_ink()) };
             for (i, r) in recs.iter().enumerate() {
                 let w = wide.map_or(WRect::from(r.ink.canon()), |w| w[i]);
                 match p.rel_of(w) {
-                    Some(ink) if w.in_domain() => rel.push(RecordInit { ink, ..*r }),
+                    Some(ink) if flags != 0 || w.in_domain() => {
+                        rel.push(RecordInit { ink, ..*r });
+                        u = u.union(w);
+                    }
                     _ => break,
                 }
             }
-            let fits = rel.len() == k;
+            let off = p.off;
+            let fits = rel.len() == k && (flags == 0 || (0..2).all(|a| off[a].abs() <= 32767 || u.is_empty() || u.0[a] > COORD_MAX || u.0[a + 2] < COORD_MIN));
             if fits {
                 if l + k <= CAP {
                     self.insert_in_page(d, s, &rel);
@@ -925,14 +1559,17 @@ impl Bough {
         let mut off = [0i32; 2];
         for a in 0..2 {
             let (lo, hi) = (u.0[a], u.0[a + 2]);
-            let (min, max) = (hi - COORD_MAX, lo - COORD_MIN);
+            // offsets that put both edges in 16 bits; on an axis where the union is not wholly beyond the
+            // domain the offset itself must be in 16 bits too
+            let (mut min, mut max) = (hi - COORD_MAX, lo - COORD_MIN);
+            if !(lo > COORD_MAX || hi < COORD_MIN) {
+                (min, max) = (min.max(-32767), max.min(32767));
+            }
             if min > max {
                 return None;
             }
-            off[a] = 0.clamp(min, max);
-            if off[a].abs() > 32767 && !(lo > COORD_MAX || hi < COORD_MIN) {
-                return None;
-            }
+            // the middle of the union, so later records on either side (the next rows of a column) still fit
+            off[a] = (lo + (hi - lo) / 2).clamp(min, max);
         }
         Some((off, F_FAR))
     }
@@ -996,10 +1633,11 @@ impl Bough {
         if frame.is_none() && l > 1 {
             let runs = Self::frame_runs(rects);
             let j = runs[0].1;
-            let pos = self.start_of(d) + j;
-            self.split_at(pos);
-            let a = self.reencode(d, &rects[..j]);
-            return a + self.reencode(d + a, &rects[j..]);
+            // (by position: a cut may lay the block's entries out again)
+            let pos = self.start_of(d);
+            self.split_at(pos + j);
+            let a = self.reencode(self.locate(pos).0, &rects[..j]);
+            return a + self.reencode(self.locate(pos + j).0, &rects[j..]);
         }
         if was_wide {
             self.wide_drop(id);
@@ -1034,16 +1672,17 @@ impl Bough {
     /// pages of their own, cut where their frames change.
     fn insert_cold(&mut self, pos: usize, recs: &[RecordInit], rects: &[WRect]) {
         let k = recs.len();
-        if self.total == 0 && !self.d_ptr.is_empty() {
+        if self.total == 0 && self.np != 0 {
             // the blank page a first insert opened: these records bring their own
-            self.dir_remove(0);
+            self.dir_remove_seq(0, 1);
+            self.dir_settle();
         }
         self.split_at(pos);
-        let at = if pos == self.total { self.d_ptr.len() } else { self.locate(pos).0 };
+        let prev = if pos == self.total { self.last_dir() } else { self.prev_dir(self.locate(pos).0) };
         let runs = Self::frame_runs(rects);
-        self.dir_insert_blank(at, runs.len());
-        for (j, &(a, b)) in runs.iter().enumerate() {
-            let d = at + j;
+        let mut d = self.dir_insert_after(prev, runs.len());
+        let mut pages = Vec::with_capacity(runs.len());
+        for &(a, b) in &runs {
             let p = self.page_mut(d);
             p.version += 1;
             let mut md = PAD_DEPTH;
@@ -1054,14 +1693,16 @@ impl Bough {
             self.d_len[d] = (b - a) as u32;
             self.d_min_depth[d] = md;
             self.fixup_handles(d, 0, b - a);
+            pages.push(self.page_ptr(d));
+            d = self.next_dir(d);
         }
-        self.prefix.invalidate_from(at, &self.d_len);
+        self.dir_settle();
         self.total += k;
-        for (j, &(a, b)) in runs.iter().enumerate() {
-            let n = self.reencode(at + j, &rects[a..b]);
+        for (&pp, &(a, b)) in pages.iter().zip(&runs) {
+            // SAFETY: a live page (reencode of an earlier one moves no entry: each has a frame).
+            let n = self.reencode(unsafe { (*pp).dir } as usize, &rects[a..b]);
             debug_assert_eq!(n, 1);
         }
-        self.fix_chunks(at, self.d_ptr.len());
     }
 
     fn insert_in_page(&mut self, d: usize, s: usize, recs: &[RecordInit]) {
@@ -1079,13 +1720,27 @@ impl Bough {
         }
         p.regroup_range(s, l + k);
         let u = p.union_abs();
+        if p.state != 0 {
+            // the records above the gap take their state with them; the new ones have none
+            let (pp, id) = (p as *mut Page, p.id);
+            let sp = self.state.get_mut(id);
+            if s < l {
+                sp.shift(s, s + k, l - s);
+            }
+            sp.clear(s, s + k);
+            self.st_settle(pp);
+        }
         self.fixup_handles(d, s, l + k);
         self.d_len[d] = (l + k) as u32;
         let old = self.d_ink[d];
         self.d_ink[d] = u;
-        self.d_min_depth[d] = self.d_min_depth[d].min(md);
+        if md < self.d_min_depth[d] {
+            self.d_min_depth[d] = md;
+            let r = d >> RUN_SHIFT;
+            self.r_min_depth[r] = self.r_min_depth[r].min(md);
+        }
         self.chunk_update(d, old);
-        self.prefix.delta(d, k as i32, &self.d_len);
+        self.len_delta(d, k as i32);
     }
 
     fn insert_split(&mut self, d: usize, s: usize, recs: &[RecordInit]) {
@@ -1094,12 +1749,18 @@ impl Bough {
         let t = l + k;
         let m = t.div_ceil(CAP);
         let sizes = Sizes::new(t, m, s, l);
-        self.dir_insert_blank(d + 1, m - 1);
+        // (the block may be laid out again: page d is found by its pointer afterwards)
+        let dp = self.page_ptr(d);
+        let first = self.dir_insert_after(Some(d), m - 1);
+        // SAFETY: a live page.
+        let d = unsafe { (*dp).dir } as usize;
+        debug_assert_eq!(self.next_dir(d), first);
         let sz0 = sizes.size(0);
         let mut off = sz0;
+        let mut di = d;
         for i in 1..m {
             let szi = sizes.size(i);
-            let di = d + i;
+            di = self.next_dir(di);
             // SAFETY: di != d, both live distinct pool pages.
             let (newp, oldp) = unsafe { (&mut *self.page_ptr(di), &*self.page_ptr(d)) };
             newp.wgen = newp.wgen.wrapping_add(1);
@@ -1109,6 +1770,9 @@ impl Bough {
             newp.flags = oldp.flags;
             copy_virtual(newp, off, off + szi, oldp, s, k, recs);
             newp.version += 1;
+            if oldp.state != 0 {
+                self.st_copy_virtual(self.page_ptr(di), off, off + szi, self.page_ptr(d), s, k);
+            }
             self.d_len[di] = szi as u32;
             self.fixup_handles(di, 0, szi);
             off += szi;
@@ -1130,15 +1794,30 @@ impl Bough {
                 p.write(s + i, r);
             }
         }
+        if p.state != 0 {
+            let (pp, id) = (p as *mut Page, p.id);
+            let sp = self.state.get_mut(id);
+            if sz0 > s {
+                let tail_n = sz0.saturating_sub(s + k);
+                if tail_n > 0 {
+                    sp.shift(s, s + k, tail_n);
+                }
+                sp.clear(s, (s + k).min(sz0));
+            }
+            sp.clear(sz0, CAP);
+            self.st_settle(pp);
+        }
         self.d_len[d] = sz0 as u32;
         if sz0 > s {
             self.fixup_handles(d, s, sz0);
         }
-        for i in 0..m {
-            self.refresh(d + i);
+        let mut di = d;
+        for _ in 0..m {
+            self.refresh(di);
+            self.pend_run(di >> RUN_SHIFT);
+            di = self.next_dir(di);
         }
-        attr!(8, self.prefix.invalidate_from(d, &self.d_len));
-        attr!(9, self.fix_chunks(d, self.d_ptr.len()));
+        attr!(8, self.dir_settle());
     }
 
     // ------------------------------------------------------------------ remove
@@ -1156,6 +1835,7 @@ impl Bough {
         let (d0, mut s) = self.locate(start);
         let mut d = d0;
         let mut remaining = len;
+        let d0_full = s == 0 && len >= self.d_len[d0] as usize;
         let mut freed = false;
         let mut trimmed: [(usize, usize); 4] = [(0, 0); 4];
         let mut ntrim = 0usize;
@@ -1193,7 +1873,7 @@ impl Bough {
                     full_at = d;
                 }
                 full_n += 1;
-                d += 1;
+                d = self.next_dir(d);
             } else {
                 if ntrim < 4 {
                     trimmed[ntrim] = (d, n);
@@ -1206,48 +1886,88 @@ impl Bough {
                 }
                 p.set_sentinel(l - n, CAP);
                 p.regroup_range(s, l);
+                if p.state != 0 {
+                    let (pp, id) = (p as *mut Page, p.id);
+                    let sp = self.state.get_mut(id);
+                    if s + n < l {
+                        sp.shift(s + n, s, l - s - n);
+                    }
+                    sp.clear(l - n, CAP);
+                    self.st_settle(pp);
+                }
                 self.d_len[d] = (l - n) as u32;
                 let old = self.d_ink[d];
                 self.d_ink[d] = self.page(d).union_abs();
-                self.d_min_depth[d] = self.page(d).min_depth();
+                let md = self.page(d).min_depth();
+                let md_changed = md != self.d_min_depth[d];
+                self.d_min_depth[d] = md;
                 if !freed {
                     self.chunk_update(d, old);
+                    if md_changed {
+                        self.depth_update(d);
+                    }
                 }
+                self.pend_run(d >> RUN_SHIFT);
                 if s + n < l {
                     self.fixup_handles(d, s, l - n);
                 }
-                d += 1;
+                d = self.next_dir(d);
             }
             s = 0;
             remaining -= n;
         }
-        self.dir_remove_range(full_at, full_n);
+        // the page the merges are tried around: the first one touched, if it was only trimmed; and the page
+        // after the last one touched, if there is one
+        let anchor0 = if d0_full { core::ptr::null_mut() } else { self.page_ptr(d0) };
+        let after = if d < self.dir_len() { self.page_ptr(d) } else { core::ptr::null_mut() };
         self.total -= len;
         if !freed && ntrim <= 4 {
-            // Pure trims: add each page's negative delta instead of rebuilding.
+            // Pure trims: add each page's negative delta instead of rebuilding (the blocks are not stale).
+            self.pend = (usize::MAX, 0);
             for &(td, n) in &trimmed[..ntrim] {
-                self.prefix.delta(td, -(n as i32), &self.d_len);
+                self.len_delta(td, -(n as i32));
             }
         } else {
-            attr!(8, self.prefix.invalidate_from(d0.min(self.d_len.len()), &self.d_len));
-            attr!(9, self.fix_chunks(d0, self.d_ptr.len()));
+            self.dir_remove_seq(full_at, full_n);
+            attr!(8, self.dir_settle());
         }
-        // Underflow: merge small neighbours around the cut.
-        let mut j = (d0 + 1).min(self.d_ptr.len().saturating_sub(1)) as isize;
-        let lo = d0.saturating_sub(1) as isize;
-        while j >= lo {
-            let i = j as usize;
-            if i + 1 < self.d_ptr.len() {
-                let (a, b) = (self.d_len[i] as usize, self.d_len[i + 1] as usize);
-                // pages of different transforms never merge (a transformed page holds one subtree)
-                if a + b <= CAP && (a < MIN_FILL || b < MIN_FILL) && self.mergeable(i) {
+        // Underflow: merge small neighbours around the cut: the first page touched if it survives (else
+        // the page after the cut, else the last page), its successor and its predecessor, each with the
+        // page after it (pages are named by pointer: a merge moves directory entries).
+        if self.np == 0 {
+            return;
+        }
+        // SAFETY: both are live pages when they are used (anchor0 survived; after was not touched).
+        let x = if !anchor0.is_null() {
+            unsafe { (*anchor0).dir as usize }
+        } else if !after.is_null() {
+            unsafe { (*after).dir as usize }
+        } else {
+            self.last_dir().unwrap()
+        };
+        let mut cand = [core::ptr::null_mut::<Page>(); 3];
+        let nx = self.next_dir(x);
+        if nx < self.dir_len() {
+            cand[0] = self.page_ptr(nx);
+        }
+        cand[1] = self.page_ptr(x);
+        if let Some(pv) = self.prev_dir(x) {
+            cand[2] = self.page_ptr(pv);
+        }
+        for p in cand {
+            if p.is_null() {
+                continue;
+            }
+            // SAFETY: a candidate is freed only as the second of a pair, after its own turn.
+            let i = unsafe { (*p).dir } as usize;
+            let e = self.next_dir(i);
+            if e < self.dir_len() {
+                let (a, b) = (self.d_len[i] as usize, self.d_len[e] as usize);
+                // pages of different frames or transforms never merge
+                if a + b <= CAP && (a < MIN_FILL || b < MIN_FILL) && self.mergeable(i, e) {
                     self.merge_next(i);
                 }
             }
-            j -= 1;
-        }
-        if self.d_ptr.is_empty() {
-            self.c_ink.clear();
         }
     }
 
@@ -1255,20 +1975,21 @@ impl Bough {
     /// (always, when neither has an offset); transformed pages of the same transform; never a far or
     /// wide page (it keeps its own frame).
     #[inline]
-    fn mergeable(&self, i: usize) -> bool {
-        let (p, q) = (self.page(i), self.page(i + 1));
+    fn mergeable(&self, i: usize, e: usize) -> bool {
+        let (p, q) = (self.page(i), self.page(e));
         match (p.flags, q.flags) {
-            (0, 0) => p.off == q.off || self.d_ink[i + 1].translate_checked(-p.off[0], -p.off[1]).is_some(),
+            (0, 0) => p.off == q.off || self.d_ink[e].translate_checked(-p.off[0], -p.off[1]).is_some(),
             (F_XF, F_XF) => p.xm == q.xm && p.xv == q.xv,
             _ => false,
         }
     }
 
     fn merge_next(&mut self, d: usize) {
-        let (la, lb) = (self.d_len[d] as usize, self.d_len[d + 1] as usize);
+        let e = self.next_dir(d);
+        let (la, lb) = (self.d_len[d] as usize, self.d_len[e] as usize);
         {
             // SAFETY: d and d+1 are distinct live pages.
-            let (a, b) = unsafe { (&mut *self.page_ptr(d), &mut *self.page_ptr(d + 1)) };
+            let (a, b) = unsafe { (&mut *self.page_ptr(d), &mut *self.page_ptr(e)) };
             a.wgen = a.wgen.wrapping_add(1);
             b.wgen = b.wgen.wrapping_add(1);
             a.normalize();
@@ -1282,13 +2003,21 @@ impl Bough {
             }
             a.regroup_range(la, la + lb);
         }
+        if self.page(e).state != 0 {
+            let (pa, src) = (self.page_ptr(d), *self.state.get(self.page(e).id));
+            // SAFETY: a live page.
+            self.state.ensure(unsafe { (*pa).id }).copy(la, &src, 0, lb);
+            self.st_settle(pa);
+        }
         self.fixup_handles(d, la, la + lb);
         self.d_len[d] = (la + lb) as u32;
-        self.d_ink[d] = self.d_ink[d].union(self.d_ink[d + 1]);
-        self.d_min_depth[d] = self.d_min_depth[d].min(self.d_min_depth[d + 1]);
-        self.dir_remove(d + 1);
-        attr!(8, self.prefix.invalidate_from(d, &self.d_len));
-        attr!(9, self.fix_chunks(d, self.d_ptr.len()));
+        self.d_ink[d] = self.d_ink[d].union(self.d_ink[e]);
+        self.d_min_depth[d] = self.d_min_depth[d].min(self.d_min_depth[e]);
+        let dp = self.page_ptr(d);
+        self.dir_remove_seq(e, 1);
+        // SAFETY: a live page (its entry may have moved with its block).
+        self.pend_run(unsafe { (*dp).dir } as usize >> RUN_SHIFT);
+        attr!(8, self.dir_settle());
     }
 
     // ------------------------------------------------------------------ move
@@ -1312,7 +2041,10 @@ impl Bough {
         assert!(start + len <= self.total && to <= self.total - len);
         let mut stage = core::mem::take(&mut self.scratch);
         stage.clear();
-        if self.read_run_impl(start, len, ddepth, &mut stage) {
+        let (far, has_state) = self.read_run_impl(start, len, ddepth, &mut stage);
+        // the records pass through a staging buffer: their state bits ride beside it
+        let st = if has_state { self.st_read_run(start, len) } else { None };
+        if far {
             // some of the run is outside the domain: its 16-bit inks are views; carry the exact rects
             let wide: Vec<WRect> = (start..start + len).map(|pos| self.ink_wide_at(pos)).collect();
             self.remove_impl(start, len, false, true);
@@ -1321,15 +2053,24 @@ impl Bough {
             self.remove_impl(start, len, false, true);
             self.insert_impl(to, &stage, false);
         }
+        if let Some(st) = st {
+            for (i, v) in st.into_iter().enumerate() {
+                if v != (0, 0) {
+                    self.st_put(to + i, v);
+                }
+            }
+        }
         stage.clear();
         self.scratch = stage;
     }
 
-    /// Returns whether any page of the run is far or wide (then the inks pushed are clamped views).
-    fn read_run_impl(&self, start: usize, len: usize, ddepth: i32, out: &mut Vec<RecordInit>) -> bool {
+    /// Returns whether any page of the run is far or wide (then the inks pushed are clamped views), and
+    /// whether any has state bits.
+    fn read_run_impl(&self, start: usize, len: usize, ddepth: i32, out: &mut Vec<RecordInit>) -> (bool, bool) {
         if len == 0 {
-            return false;
+            return (false, false);
         }
+        let mut st = 0u8;
         let (mut d, mut s) = self.locate(start);
         let mut rem = len;
         let mut far = 0u8;
@@ -1338,6 +2079,7 @@ impl Bough {
             let n = rem.min(l - s);
             let p = self.page(d);
             far |= p.flags;
+            st |= p.state;
             for i in s..s + n {
                 out.push(RecordInit {
                     depth: (p.depth[i] as i32 + ddepth) as u16,
@@ -1349,10 +2091,10 @@ impl Bough {
                 });
             }
             rem -= n;
-            d += 1;
+            d = self.next_dir(d);
             s = 0;
         }
-        far & (F_FAR | F_WIDE) != 0
+        (far & (F_FAR | F_WIDE) != 0, st != 0)
     }
 
     /// Append the records `[start, start+len)` to `out` (absolute ink, handles kept): the input of a
@@ -1373,8 +2115,10 @@ impl Bough {
         if recs.is_empty() {
             return;
         }
+        let st = self.st_read_by_handle(start, recs.len());
         self.remove_impl(start, recs.len(), false, true);
         self.insert_core(start, recs, Some(wide), true);
+        self.st_put_by_handle(start, recs, st);
     }
 
     /// Replace the run `[start, start+recs.len())` by `recs`, a rearrangement of the same records (their
@@ -1383,8 +2127,36 @@ impl Bough {
         if recs.is_empty() {
             return;
         }
+        let st = self.st_read_by_handle(start, recs.len());
         self.remove_impl(start, recs.len(), false, true);
         self.insert_impl(start, recs, true);
+        self.st_put_by_handle(start, recs, st);
+    }
+    /// The state of the run's records that have a handle, by handle index (a rewrite restates the run in
+    /// another order; a record is recognised by its handle).
+    fn st_read_by_handle(&self, start: usize, len: usize) -> Vec<(u32, (u16, u16))> {
+        let Some(st) = self.st_read_run(start, len) else { return Vec::new() };
+        let mut out = Vec::new();
+        for (i, v) in st.into_iter().enumerate() {
+            if v != (0, 0) {
+                let (d, s) = self.locate(start + i);
+                let h = self.page(d).handle[s];
+                if h != 0 {
+                    out.push((h, v));
+                }
+            }
+        }
+        out
+    }
+    fn st_put_by_handle(&mut self, start: usize, recs: &[RecordInit], st: Vec<(u32, (u16, u16))>) {
+        if st.is_empty() {
+            return;
+        }
+        for (i, r) in recs.iter().enumerate() {
+            if let Some(&(_, v)) = st.iter().find(|e| e.0 == r.handle && r.handle != 0) {
+                self.st_put(start + i, v);
+            }
+        }
     }
 
     // ------------------------------------------------------------------ translate / ink / touch
@@ -1404,15 +2176,27 @@ impl Bough {
     /// Translate the run's ink; returns (old union, new union) of its unclipped ink.
     fn translate_impl(&mut self, start: usize, len: usize, dx: i32, dy: i32) -> (NRect, NRect) {
         assert!(start + len <= self.total);
-        let (d0, mut s) = self.locate(start);
+        let (mut d0, mut s) = self.locate(start);
         let mut d = d0;
         let mut rem = len;
+        // (the position of the next record to move: the exact path may lay directory entries out again)
+        let mut pos = start;
         let (mut uo, mut un) = (NRect::EMPTY, NRect::EMPTY);
         while rem > 0 {
             let l = self.d_len[d] as usize;
+            #[cfg(target_arch = "aarch64")]
+            if s == 0 && rem >= l {
+                // a run of whole pages: the vector loop takes every leading plain one
+                let (o, w, nd, nrem) = self.translate_pages(d, rem, dx, dy);
+                if nd != d {
+                    pos += rem - nrem;
+                    (uo, un, d, rem) = (uo.union(o), un.union(w), nd, nrem);
+                    continue;
+                }
+            }
             let n = rem.min(l - s);
             let old_d = self.d_ink[d];
-            let mut pages = 1;
+            let mut pages = 0;
             if s == 0 && n == l {
                 // Whole page: the offset moves, the records do not (O(1) per page). The page stays plain
                 // while its offset stays in 16 bits and its ink inside the domain (one saturating lane add
@@ -1438,10 +2222,16 @@ impl Bough {
                         uo = uo.union(old_d);
                         un = un.union(new_d);
                     }
-                    None => {
-                        let (o, w, np) = self.translate_exact(d, 0, l, dx, dy);
-                        (uo, un, pages) = (uo.union(o), un.union(w), np);
-                    }
+                    None => match self.translate_far(d, dx, dy) {
+                        // a page with its own frame whose frame stays valid: its offset moves, like a
+                        // plain page's
+                        Some((o, w)) => (uo, un) = (uo.union(o), un.union(w)),
+                        None => {
+                            self.fix_chunks(d0, d + 1);
+                            let (o, w, np) = self.translate_exact(d, 0, l, dx, dy);
+                            (uo, un, pages) = (uo.union(o), un.union(w), np);
+                        }
+                    },
                 }
             } else {
                 let p = self.page_mut(d);
@@ -1462,6 +2252,7 @@ impl Bough {
                     } else {
                         // SAFETY: as above; the wrapping add is its own inverse.
                         unsafe { translate_union(p.ink.as_mut_ptr().add(s), n, -dx, -dy) };
+                        self.fix_chunks(d0, d + 1);
                         let (o, w, np) = self.translate_exact(d, s, n, dx, dy);
                         (uo, un, pages) = (uo.union(o), un.union(w), np);
                     }
@@ -1475,16 +2266,113 @@ impl Bough {
                     uo = uo.union(old);
                     un = un.union(new);
                 } else {
-                    let (o, w, np) = self.translate_exact(d, s, n, dx, dy);
+                    self.fix_chunks(d0, d + 1);
+                        let (o, w, np) = self.translate_exact(d, s, n, dx, dy);
                     (uo, un, pages) = (uo.union(o), un.union(w), np);
                 }
             }
             rem -= n;
-            d += pages;
+            pos += n;
             s = 0;
+            if pages == 0 {
+                d = self.next_dir(d);
+            } else {
+                // the exact path ran (and settled its own blocks): find the next page by position
+                d = if rem > 0 { self.locate(pos).0 } else { 0 };
+                d0 = d;
+            }
         }
         self.fix_chunks(d0, d);
         (uo, un)
+    }
+
+    /// Whole plain pages from directory index `d`, while `rem` records cover the next page whole, in
+    /// vector form (overfitting finding 13: a scroll is this loop over the content's pages; it was ~109
+    /// scalar instructions a page). The page summary moves by one saturating lane add, the offset by one
+    /// 32-bit pair add, the offset lanes are that pair and its negation narrowed, both damage unions are a
+    /// lane min, and one compare pair proves the result is still a plain page (summary inside the domain,
+    /// offset in 16 bits). Stops at the first page that is not (the caller's general path takes it).
+    /// Returns (old union, new union, next directory index, records left).
+    #[cfg(target_arch = "aarch64")]
+    #[inline(never)]
+    fn translate_pages(&mut self, mut d: usize, mut rem: usize, dx: i32, dy: i32) -> (NRect, NRect, usize, usize) {
+        use core::arch::aarch64::*;
+        if (dx.unsigned_abs() | dy.unsigned_abs()) > 32766 {
+            return (NRect::EMPTY, NRect::EMPTY, d, rem);
+        }
+        self.mgen = self.mgen.wrapping_add(1);
+        let nr = self.r_len.len();
+        // SAFETY: d is a live directory index inside the loops (below its block's live count: d_len, d_ink
+        // and d_ptr have an entry for it and the page is live); `off` is two i32 and `offl` four i16 of the
+        // page header; &mut self is exclusive.
+        unsafe {
+            let dl = [dx as i16, dy as i16, (-dx) as i16, (-dy) as i16];
+            let (dlv, d32) = (vld1_s16(dl.as_ptr()), vld1_s32([dx, dy].as_ptr()));
+            let (mut uov, mut unv) = (vdup_n_s16(i16::MAX), vdup_n_s16(i16::MAX));
+            let (lens, inks, ptrs) = (self.d_len.as_ptr(), self.d_ink.as_mut_ptr() as *mut i16, self.d_ptr.as_ptr());
+            let rl = self.r_len.as_ptr();
+            'blocks: while d >> RUN_SHIFT < nr {
+                let r = d >> RUN_SHIFT;
+                let end = (r << RUN_SHIFT) + *rl.add(r) as usize;
+                while d < end {
+                let l = *lens.add(d) as usize;
+                if rem < l {
+                    break 'blocks;
+                }
+                let pp = *ptrs.add(d);
+                let dip = inks.add(d * 4);
+                let v = vld1_s16(dip);
+                let r = vqadd_s16(v, dlv);
+                let no = vadd_s32(vld1_s32((*pp).off.as_ptr()), d32);
+                // (an empty summary has saturated lanes: it is `out`, and the general path keeps it empty)
+                let out = vget_lane_u64::<0>(vreinterpret_u64_u16(vcgt_s16(vqabs_s16(r), vdup_n_s16(COORD_MAX as i16))))
+                    | vget_lane_u64::<0>(vreinterpret_u64_u32(vcgt_s32(vabs_s32(no), vdup_n_s32(32767))));
+                if out != 0 || (*pp).flags & !F_XF != 0 {
+                    break 'blocks;
+                }
+                (*pp).wgen = (*pp).wgen.wrapping_add(1);
+                vst1_s32((*pp).off.as_mut_ptr(), no);
+                vst1_s16((*pp).offl.as_mut_ptr(), vmovn_s32(vcombine_s32(no, vneg_s32(no))));
+                vst1_s16(dip, r);
+                uov = vmin_s16(uov, v);
+                unv = vmin_s16(unv, r);
+                rem -= l;
+                d += 1;
+                }
+                // the block's live entries are done: the next page is the next block's first
+                d = (r + 1) << RUN_SHIFT;
+            }
+            // an int16x4 is four i16 lanes, the layout of NRect
+            (core::mem::transmute::<int16x4_t, NRect>(uov), core::mem::transmute::<int16x4_t, NRect>(unv), d, rem)
+        }
+    }
+
+    /// A whole page that is plain or far (not transformed, not wide) moves by `(dx, dy)`, in i32: its
+    /// offset moves if the frame rule still holds afterwards (the offset in 16 bits on every axis where
+    /// the page is not wholly beyond the domain). `None`: the page must choose its frame again. The
+    /// block summary is left to the caller's `fix_chunks` over the run.
+    #[inline]
+    fn translate_far(&mut self, d: usize, dx: i32, dy: i32) -> Option<(NRect, NRect)> {
+        let p = self.page_mut(d);
+        if p.flags & (F_XF | F_WIDE) != 0 {
+            return None;
+        }
+        let uo = p.abs_wide(p.union_ink());
+        if uo.is_empty() {
+            // nothing drawn here: nothing moves (the offset stays where a plain page may have it)
+            return Some((NRect::EMPTY, NRect::EMPTY));
+        }
+        let un = uo.translate(dx, dy);
+        let no = [p.off[0] + dx, p.off[1] + dy];
+        let valid = (0..2).all(|a| no[a].abs() <= 32767 || un.0[a] > COORD_MAX || un.0[a + 2] < COORD_MIN);
+        if !valid {
+            return None;
+        }
+        p.set_off(no[0], no[1]);
+        p.flags = if un.in_domain() { 0 } else { F_FAR };
+        let v = un.to_nrect();
+        self.d_ink[d] = v;
+        Some((uo.to_nrect(), v))
     }
 
     /// The exact path of a translation: slots `[s, s + n)` of page `d` (not transformed) move by
@@ -1494,26 +2382,6 @@ impl Bough {
     /// of directory pages the page became.
     #[inline(never)]
     fn translate_exact(&mut self, d: usize, s: usize, n: usize, dx: i32, dy: i32) -> (NRect, NRect, usize) {
-        let l = self.d_len[d] as usize;
-        let (flags, off) = { let p = self.page(d); (p.flags, p.off) };
-        if s == 0 && n == l && flags & F_WIDE == 0 {
-            let p = self.page(d);
-            let uo = p.abs_wide(p.union_ink());
-            if uo.is_empty() {
-                // nothing drawn here: nothing moves (the offset stays where a plain page may have it)
-                return (NRect::EMPTY, NRect::EMPTY, 1);
-            }
-            let un = uo.translate(dx, dy);
-            let no = [off[0] + dx, off[1] + dy];
-            let valid = (0..2).all(|a| no[a].abs() <= 32767 || un.0[a] > COORD_MAX || un.0[a + 2] < COORD_MIN);
-            if valid {
-                let p = self.page_mut(d);
-                p.set_off(no[0], no[1]);
-                p.flags = if un.in_domain() { 0 } else { F_FAR };
-                self.d_ink[d] = un.to_nrect();
-                return (uo.to_nrect(), un.to_nrect(), 1);
-            }
-        }
         let mut rects = self.page_rects(d);
         let (mut uo, mut un) = (WRect::EMPTY, WRect::EMPTY);
         for r in &mut rects[s..s + n] {
@@ -1581,7 +2449,11 @@ impl Bough {
         let moved: u8 = if dx != 0 { 1 | 4 } else { 0 } | if dy != 0 { 2 | 8 } else { 0 };
         let th = Thresh::of_rect(c);
         let mut pos0 = 0usize;
-        for d in 0..self.d_ptr.len() {
+        let (mut d, end) = (0usize, if self.np == 0 { 0 } else { self.dir_len() });
+        while d < end {
+            let cur = d;
+            d = self.next_dir(d);
+            let d = cur;
             let l = self.d_len[d] as usize;
             let (p0, p1) = (pos0, pos0 + l);
             pos0 = p1;
@@ -1711,6 +2583,39 @@ impl Bough {
     /// and the new ink (both whole: no symmetric-difference refinement out here).
     #[inline(never)]
     fn set_ink_exact(&mut self, d: usize, s: usize, ink: WRect, damage: bool) {
+        // A page with a frame of its own (or a plain page taking its first ink outside the domain): when
+        // the new ink fits the frame and the frame rule still holds, this is the same store as on a plain
+        // page, with the absolute forms made in i32.
+        let p = self.page_mut(d);
+        if p.flags & (F_XF | F_WIDE) == 0 {
+            if let Some(rel) = p.rel_of(ink) {
+                let (old_rel, id) = (p.ink[s], p.clip[s]);
+                if old_rel == rel {
+                    return;
+                }
+                let old = p.abs_wide(old_rel);
+                p.ink[s] = rel;
+                p.regroup(s / GROUP);
+                let u = p.abs_wide(p.union_ink());
+                let off = p.off;
+                let valid = (0..2).all(|a| off[a].abs() <= 32767 || u.is_empty() || u.0[a] > COORD_MAX || u.0[a + 2] < COORD_MIN);
+                if valid {
+                    p.flags = if u.in_domain() && off[0].abs() <= 32767 && off[1].abs() <= 32767 { 0 } else { F_FAR };
+                    let od = self.d_ink[d];
+                    self.d_ink[d] = u.to_nrect();
+                    self.chunk_update(d, od);
+                    if damage {
+                        let (o, w) = (self.clipped(old.to_nrect(), id), self.clipped(ink.to_nrect(), id));
+                        self.ring.add(o);
+                        self.ring.add(w);
+                    }
+                    return;
+                }
+                // the frame rule broke: put the ink back and let the page choose its frame again
+                p.ink[s] = old_rel;
+                p.regroup(s / GROUP);
+            }
+        }
         let mut rects = self.page_rects(d);
         if rects[s] == ink {
             return;
@@ -1847,6 +2752,7 @@ impl Bough {
         // SAFETY: p is a live page of this Bough (from the directory or a bound handle); s < CAP.
         let pg = unsafe { &mut *p };
         pg.wgen = pg.wgen.wrapping_add(1);
+        self.mgen = self.mgen.wrapping_add(1);
         let old = pg.abs(pg.ink[s]);
         if old == ink && pg.flags & !F_XF == 0 {
             return;
@@ -1917,6 +2823,7 @@ impl Bough {
                 // SAFETY: bound handles point at live pages; s < CAP; &mut self is exclusive.
                 let pg = unsafe { &mut *p };
                 pg.wgen = pg.wgen.wrapping_add(1);
+                self.mgen = self.mgen.wrapping_add(1);
                 pg.payload[s] = payload;
                 true
             }
@@ -2005,10 +2912,13 @@ impl Bough {
             return;
         }
         let l = self.d_len[d] as usize;
-        self.dir_insert_blank(d + 1, 1);
+        let dp = self.page_ptr(d);
+        let e = self.dir_insert_after(Some(d), 1);
+        // SAFETY: a live page (its entry may have moved with its block).
+        let d = unsafe { (*dp).dir } as usize;
         {
             // SAFETY: d and d+1 are distinct live pages.
-            let (newp, oldp) = unsafe { (&mut *self.page_ptr(d + 1), &*self.page_ptr(d)) };
+            let (newp, oldp) = unsafe { (&mut *self.page_ptr(e), &*self.page_ptr(d)) };
             newp.wgen = newp.wgen.wrapping_add(1);
             // the same frame: stored inks are copied as they are
             (newp.xm, newp.xv) = (oldp.xm, oldp.xv);
@@ -2017,8 +2927,15 @@ impl Bough {
             copy_virtual(newp, s, l, oldp, s, 0, &[]);
             newp.version += 1;
         }
-        self.d_len[d + 1] = (l - s) as u32;
-        self.fixup_handles(d + 1, 0, l - s);
+        if self.page(d).state != 0 {
+            let (po, pn) = (self.page_ptr(d), self.page_ptr(e));
+            self.st_copy_virtual(pn, s, l, po, s, 0);
+            // SAFETY: a live page.
+            self.state.get_mut(unsafe { (*po).id }).clear(s, CAP);
+            self.st_settle(po);
+        }
+        self.d_len[e] = (l - s) as u32;
+        self.fixup_handles(e, 0, l - s);
         {
             let p = self.page_mut(d);
             p.version += 1;
@@ -2027,9 +2944,10 @@ impl Bough {
         }
         self.d_len[d] = s as u32;
         self.refresh(d);
-        self.refresh(d + 1);
-        self.prefix.invalidate_from(d, &self.d_len);
-        self.fix_chunks(d, self.d_ptr.len());
+        self.refresh(e);
+        self.pend_run(d >> RUN_SHIFT);
+        self.pend_run(e >> RUN_SHIFT);
+        self.dir_settle();
     }
 
     /// Transform the run `[start, start+len)` (a subtree): its records' inks are taken as untransformed and
@@ -2066,7 +2984,7 @@ impl Bough {
             self.d_ink[d] = self.page(d).union_abs();
             self.chunk_update(d, od);
             rem -= l.min(rem);
-            d += 1;
+            d = self.next_dir(d);
         }
         self.fix_chunks(d0, d);
     }
@@ -2092,6 +3010,41 @@ impl Bough {
 
     // ------------------------------------------------------------------ structure queries
 
+    /// The first page after `d` (paint order) holding a record of depth `<= dpt`: the rest of `d`'s block
+    /// (its live entries), then the first later block whose least depth qualifies, then inside that block.
+    /// Two short column scans and one over the block summaries, instead of one over every later page.
+    #[inline]
+    fn depth_next_le(&self, d: usize, dpt: u16) -> Option<usize> {
+        let r = d >> RUN_SHIFT;
+        // SAFETY: d is a live directory index: r is a block, and a block's live entries are in bounds.
+        unsafe {
+            let (b, l) = (r << RUN_SHIFT, *self.r_len.get_unchecked(r) as usize);
+            let col = self.d_min_depth.as_ptr();
+            if let Some(j) = find_first_le(core::slice::from_raw_parts(col.add(b), l), d - b + 1, dpt) {
+                return Some(b + j);
+            }
+            let r2 = find_first_le(&self.r_min_depth, r + 1, dpt)?;
+            let b2 = r2 << RUN_SHIFT;
+            Some(b2 + find_first_le(core::slice::from_raw_parts(col.add(b2), *self.r_len.get_unchecked(r2) as usize), 0, dpt).unwrap_unchecked())
+        }
+    }
+    /// The last page before `d` holding a record of depth `< dpt`.
+    #[inline]
+    fn depth_prev_lt(&self, d: usize, dpt: u16) -> Option<usize> {
+        let r = d >> RUN_SHIFT;
+        let b = r << RUN_SHIFT;
+        // SAFETY: as in `depth_next_le`.
+        unsafe {
+            let col = self.d_min_depth.as_ptr();
+            if let Some(j) = find_last_lt(core::slice::from_raw_parts(col.add(b), d - b), d - b, dpt) {
+                return Some(b + j);
+            }
+            let r2 = find_last_lt(&self.r_min_depth, r, dpt)?;
+            let (b2, l2) = (r2 << RUN_SHIFT, *self.r_len.get_unchecked(r2) as usize);
+            Some(b2 + find_last_lt(core::slice::from_raw_parts(col.add(b2), l2), l2, dpt).unwrap_unchecked())
+        }
+    }
+
     /// First index `j > pos` with `depth[j] <= depth[pos]`, or `len()`.
     pub fn subtree_end(&self, pos: usize) -> usize {
         let (d, s, base) = self.locate_base(pos);
@@ -2105,7 +3058,7 @@ impl Bough {
         if let Some(j) = page_find_first_le(&p.depth, s + 1, dpt) {
             return base + j;
         }
-        match find_first_le(&self.d_min_depth, d + 1, dpt) {
+        match self.depth_next_le(d, dpt) {
             Some(d2) => {
                 let j = page_find_first_le(&self.page(d2).depth, 0, dpt).unwrap();
                 self.start_of(d2) + j
@@ -2125,7 +3078,7 @@ impl Bough {
         if let Some(j) = page_find_last_lt(&p.depth, s, dpt) {
             return Some(base + j);
         }
-        let d2 = find_last_lt(&self.d_min_depth, d, dpt)?;
+        let d2 = self.depth_prev_lt(d, dpt)?;
         let j = page_find_last_lt(&self.page(d2).depth, CAP, dpt).unwrap();
         Some(self.start_of(d2) + j)
     }
@@ -2144,7 +3097,7 @@ impl Bough {
                 (s, dpt) = (j, p.depth[j]);
                 continue;
             }
-            let Some(d2) = find_last_lt(&self.d_min_depth, d, dpt) else { break };
+            let Some(d2) = self.depth_prev_lt(d, dpt) else { break };
             (d, s, base) = (d2, CAP, self.start_of(d2));
         }
     }
@@ -2170,7 +3123,7 @@ impl Bough {
                     out.push(base + i);
                 }
             }
-            match find_first_le(&self.d_min_depth, d + 1, tgt) {
+            match self.depth_next_le(d, tgt) {
                 Some(d2) => (d, base, from) = (d2, self.start_of(d2), 0),
                 None => return,
             }
@@ -2199,7 +3152,6 @@ impl Bough {
     /// page tests the inverse of the point against its records' untransformed inks.
     pub fn hit(&self, x: i32, y: i32) -> Option<usize> {
         let t = Thresh::of_point(x, y)?;
-        let n = self.d_ptr.len();
         let nc = self.c_ink.len();
         let mut chi = nc;
         while chi > 0 {
@@ -2210,8 +3162,10 @@ impl Bough {
                 let c = cb + 63 - cm.leading_zeros() as usize;
                 cm &= !(1u64 << (c - cb));
                 let b = c * CHUNK;
-                let cnt = (n - b).min(CHUNK);
-                // SAFETY: b + cnt <= n = d_ink.len(); cnt <= 64.
+                // the block's live pages (its holes are EMPTY and would fail anyway: a short block is a
+                // short scan)
+                // SAFETY: c is a block; its live entries are in bounds; cnt <= 64.
+                let cnt = unsafe { *self.r_len.get_unchecked(c) } as usize;
                 let mut pm = unsafe { lt_mask(self.d_ink.as_ptr().add(b), cnt, t) };
                 while pm != 0 {
                     let bit = 63 - pm.leading_zeros() as usize;
@@ -2307,7 +3261,6 @@ impl Bough {
         }
         let t = Thresh::of_rect(bbox);
         let tclip = if GENERAL { Thresh::of_rect(clip) } else { t };
-        let n = self.d_ptr.len();
         let nc = self.c_ink.len();
         let mut cb = 0;
         let mut iota = [0u32; CAP];
@@ -2319,8 +3272,10 @@ impl Bough {
                 let c = cb + cm.trailing_zeros() as usize;
                 cm &= cm - 1;
                 let b = c * CHUNK;
-                let cnt = (n - b).min(CHUNK);
-                // SAFETY: b + cnt <= n = d_ink.len(); cnt <= 64.
+                // the block's live pages (its holes are EMPTY and would fail anyway: a short block is a
+                // short scan)
+                // SAFETY: c is a block; its live entries are in bounds; cnt <= 64.
+                let cnt = unsafe { *self.r_len.get_unchecked(c) } as usize;
                 let mut pm = unsafe { lt_mask(self.d_ink.as_ptr().add(b), cnt, t) };
                 // One reservation per chunk: every surviving page emits <= 64 + 8 (overstore).
                 out.reserve(pm.count_ones() as usize * CAP + GROUP);
@@ -2432,10 +3387,17 @@ impl Bough {
     /// window and only ever be written by `freeze_into`. Handles are not replicated. Returns the
     /// number of pages copied.
     pub fn freeze_into(&self, dst: &mut Bough) -> usize {
-        let n = self.d_ptr.len();
+        if dst.frozen == (self.uid, self.mgen) {
+            // nothing a replica holds has changed since it last copied this Bough: only damage and the
+            // epoch can have moved
+            dst.ring.copy_from(&self.ring);
+            return 0;
+        }
+        dst.frozen = (self.uid, self.mgen);
         let mut copied = 0;
         dst.d_ptr.clear();
-        for d in 0..n {
+        dst.d_ptr.resize(self.d_ptr.len(), core::ptr::null_mut());
+        for d in self.dirs() {
             let sp = self.page(d);
             let dp = dst.pool.ensure(sp.id);
             // SAFETY: dp is a live page of dst's pool, distinct from every page of self.
@@ -2445,7 +3407,7 @@ impl Bough {
                     copied += 1;
                 }
             }
-            dst.d_ptr.push(dp);
+            dst.d_ptr[d] = dp;
         }
         dst.d_id.clone_from_slice_of(&self.d_id);
         dst.d_ink.clone_from_slice_of(&self.d_ink);
@@ -2453,7 +3415,12 @@ impl Bough {
         dst.d_len.clone_from(&self.d_len);
         dst.c_ink.clone_from(&self.c_ink);
         dst.wide.clone_from(&self.wide);
-        dst.prefix.copy_from(&self.prefix);
+        dst.d_local.clone_from(&self.d_local);
+        dst.r_len.clone_from(&self.r_len);
+        dst.r_recs.clone_from(&self.r_recs);
+        dst.r_start.clone_from(&self.r_start);
+        dst.r_min_depth.clone_from(&self.r_min_depth);
+        dst.np = self.np;
         dst.clips.clone_from_slice_of(&self.clips);
         dst.ring.copy_from(&self.ring);
         dst.total = self.total;
@@ -2469,25 +3436,52 @@ impl Bough {
         self.pool.heap_bytes()
             + n * (8 + 8 + 2 + 4)
             + self.c_ink.capacity() * 8
-            + self.prefix.heap_bytes()
+            + self.state.heap_bytes()
+            + self.d_local.capacity() * 2
+            + (self.r_len.capacity() + self.r_recs.capacity() + self.r_start.capacity()) * 4
+            + self.r_min_depth.capacity() * 2
             + self.htab.capacity() * core::mem::size_of::<HEntry>()
             + core::mem::size_of::<Plane>() * RING
     }
 
     /// Exhaustive structural validation (tests / debug).
     pub fn check_invariants(&self) {
-        let n = self.d_ptr.len();
-        assert_eq!(self.d_ink.len(), n);
-        assert_eq!(self.d_id.len(), n);
-        assert_eq!(self.d_min_depth.len(), n);
-        assert_eq!(self.d_len.len(), n);
-        assert_eq!(self.c_ink.len(), n.div_ceil(CHUNK));
+        // the directory: blocks of CHUNK entries, live pages first, sentinel holes after; the per-block
+        // columns are what their entries say
+        let nr = self.r_len.len();
+        let n = nr << RUN_SHIFT;
+        assert_eq!(self.pend, (usize::MAX, 0), "stale blocks left");
+        assert!(self.d_ptr[n].is_null());
+        assert_eq!((self.d_ptr.len() - 1, self.d_ink.len(), self.d_id.len(), self.d_min_depth.len(), self.d_len.len(), self.d_local.len()), (n, n, n, n, n, n));
+        assert_eq!((self.c_ink.len(), self.r_recs.len(), self.r_min_depth.len(), self.r_start.len()), (nr, nr, nr, nr + 1));
+        assert_eq!(self.r_start[0], 0);
+        let mut live = 0usize;
+        for r in 0..nr {
+            let (b, l) = (r << RUN_SHIFT, self.r_len[r] as usize);
+            assert!((1..=CHUNK).contains(&l), "block {r} holds {l} pages");
+            live += l;
+            let mut acc = 0u32;
+            for i in 0..CHUNK {
+                if i < l {
+                    assert_eq!(self.d_local[b + i] as u32, acc, "block {r} local start {i}");
+                    acc += self.d_len[b + i];
+                } else {
+                    assert!(self.d_ptr[b + i].is_null() && self.d_ink[b + i] == NRect::EMPTY && self.d_min_depth[b + i] == PAD_DEPTH && self.d_len[b + i] == 0 && self.d_local[b + i] == LOCAL_PAD, "block {r} hole {i}");
+                }
+            }
+            assert_eq!(self.r_recs[r], acc, "block {r} record count");
+            assert_eq!(self.r_start[r + 1], self.r_start[r] + acc, "block {r} start");
+            assert_eq!(self.r_min_depth[r], self.d_min_depth[b..b + l].iter().copied().min().unwrap(), "block {r} least depth");
+        }
+        assert_eq!(live, self.np, "live page count");
         let mut sum = 0usize;
         let mut live_handles = 0usize;
         let mut prev_depth: Option<u16> = None;
-        let starts = self.prefix.snapshot(&self.d_len);
-        assert_eq!(starts.len(), n + 1);
-        for d in 0..n {
+        let mut starts: Vec<u32> = self.dirs().map(|d| self.start_of(d) as u32).collect();
+        starts.push(self.total as u32);
+        let mut seq = 0usize;
+        for d in self.dirs() {
+            seq += 1;
             let p = self.page(d);
             assert_eq!(p.dir, d as u32, "page dir index");
             assert_eq!(self.d_id[d], p.id, "directory page id column");
@@ -2498,6 +3492,24 @@ impl Bough {
             }
             let l = self.d_len[d] as usize;
             assert!((1..=CAP).contains(&l), "page {d} has len {l}");
+            // state planes: a page's state byte says whether its state page holds anything; bits only in
+            // live slots; the summaries are the words'; a changed plane is on its flip list
+            if self.state.has(p.id) {
+                let sp = self.state.get(p.id);
+                let mut q = *sp;
+                q.summarise();
+                assert_eq!((q.any, q.changed), (sp.any, sp.changed), "page {d} state summaries");
+                assert_eq!(p.state != 0, !sp.is_blank(), "page {d} state byte");
+                assert_eq!(sp.changed & !sp.listed, 0, "page {d}: a changed plane is not listed");
+                for f in 0..STATE_PLANES {
+                    assert_eq!((sp.bits[f] | sp.seen[f]) & !low(l), 0, "page {d} plane {f}: state in padding");
+                    if sp.listed >> f & 1 != 0 {
+                        assert!(self.flip[f].contains(&p.id), "page {d} plane {f}: listed but not on the list");
+                    }
+                }
+            } else {
+                assert_eq!(p.state, 0, "page {d}: state byte without a state page");
+            }
             // frames (round 6): a plain page's ink is inside the domain and its offset in 16 bits; a far
             // page's offset is in 16 bits on every axis where it is not wholly beyond the domain; a wide
             // page is one record whose exact rect is in the table
@@ -2519,7 +3531,11 @@ impl Bough {
                     f => panic!("page {d} flags {f}"),
                 }
             }
-            assert_eq!(starts[d] as usize, sum);
+            assert_eq!(starts[seq - 1] as usize, sum, "page {d} start");
+            if sum < self.total {
+                assert_eq!(self.locate_base(sum), (d, 0, sum), "locate of page {d}'s first record");
+                assert_eq!(self.locate(sum + l - 1), (d, l - 1), "locate of page {d}'s last record");
+            }
             for s in l..CAP {
                 assert_eq!(p.depth[s], PAD_DEPTH, "pad depth p{d} s{s}");
                 assert_eq!(p.ink[s], NRect::EMPTY);
@@ -2552,12 +3568,10 @@ impl Bough {
             sum += l;
         }
         for c in 0..self.c_ink.len() {
-            let e = ((c + 1) * CHUNK).min(n);
-            assert_eq!(self.c_ink[c], union_all(&self.d_ink[c * CHUNK..e]), "chunk {c} summary");
+            assert_eq!(self.c_ink[c], union_all(&self.d_ink[c << RUN_SHIFT..(c + 1) << RUN_SHIFT]), "block {c} summary");
         }
-        assert_eq!(starts[n] as usize, sum);
         assert_eq!(sum, self.total);
-        let wide_pages = (0..n).filter(|&d| self.page(d).flags & F_WIDE != 0).count();
+        let wide_pages = self.dirs().filter(|&d| self.page(d).flags & F_WIDE != 0).count();
         assert_eq!(wide_pages, self.wide.len(), "wide table");
         let bound = self.htab.iter().filter(|e| e.live && !e.page.is_null()).count();
         assert_eq!(bound, live_handles, "bound handle count");
@@ -2683,6 +3697,25 @@ fn refine(ink: *const NRect, mut rm: u32, plane: &Plane, clip: NRect, dl: [i16; 
         keep |= (plane.test_span(tx0, ty0, tx1, ty1) as u32) << l;
     }
     keep
+}
+
+/// The least of a block's 64 depths (holes are 0xFFFF): eight loads, seven lane mins, one reduction.
+#[inline(always)]
+fn block_min(b: &[u16]) -> u16 {
+    debug_assert_eq!(b.len(), CHUNK);
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: 64 u16 in bounds.
+    unsafe {
+        use core::arch::aarch64::*;
+        let p = b.as_ptr();
+        let mut a = vld1q_u16(p);
+        for i in 1..8 {
+            a = vminq_u16(a, vld1q_u16(p.add(i * 8)));
+        }
+        vminvq_u16(a)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    b.iter().copied().min().unwrap()
 }
 
 pub struct Children<'a> {

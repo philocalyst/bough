@@ -1677,26 +1677,12 @@ impl<'a, S: RowSource<V>, V: 'static> Element<V> for LList<'a, S, V> {
         let parent = crate::layout::attach(m, lid);
         match self.bg {
             Some(bg) => {
-                let node = m.rt.alloc_node();
+                let node = m.rt.node_at(hd);
                 let (ins, _kind, margin) = quad_instance(bg, self.radius * s, None, s, m.space);
-                let run = m.rt.alloc_run(1);
-                m.rt.runs[run as usize].len = 1;
-                let inst = m.rt.runs[run as usize].first;
+                let inst = m.rt.inst_of(node);
                 *m.rt.inst_mut(inst) = ins;
-                {
-                    let n = &mut m.rt.nodes[node as usize];
-                    n.handle = hd;
-                    n.run = run;
-                    n.space = m.space;
-                    n.clip = m.clip;
-                    n.kind = NK_QUAD;
-                    n.color = bg.0;
-                    n.margin = margin;
-                    n.lnode = lid;
-                }
-                m.scope.nodes.push(node);
-                m.scope.runs.push(run);
-                m.rt.lay.info[lid as usize].rtn = node;
+                let _ = margin;
+                m.rt.hot[node as usize] = Hot { kind: NK_QUAD, flags: 0, clip: m.clip, link: 0 };
                 m.rt.lay.info[lid as usize].kind = 1;
                 m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_QUAD, payload: inst, handle: hd.idx, clip: m.clip });
             }
@@ -1775,9 +1761,9 @@ impl<'a, S: RowSource<V>, V: 'static> Element<V> for LList<'a, S, V> {
     fn update(self, m: &mut Mounter<'_, V>) {
         let reg = m.tape_next() as usize;
         let lid = m.rt.lists.regs[reg].lid;
-        if let (Some(bg), rtn) = (self.bg, m.rt.lay.info[lid as usize].rtn) {
-            if rtn != NONE {
-                <crate::elem::ApplyBg as crate::elem::Apply>::apply(m.rt, rtn, &bg);
+        if let Some(bg) = self.bg {
+            if m.rt.lay.info[lid as usize].kind == 1 {
+                <crate::elem::ApplyBg as crate::elem::Apply>::apply(m.rt, lid, &bg);
             }
         }
         m.pos += 1 + m.rt.lists.regs[reg].rows.iter().map(|r| r.nrec as usize).sum::<usize>();

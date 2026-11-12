@@ -12,9 +12,6 @@ swash = "0.2"
 parley = { path = "../../vendor/parley", default-features = false, features = ["std", "system"] }
 
 [dev-dependencies]
-objc2 = "0.6"
-objc2-foundation = "0.3"
-objc2-metal = "0.3"
 rustybuzz = "0.20"
 libc = "0.2"
 zgx-workload = { package = "zgx-workload", git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }
@@ -25,3 +22,9 @@ parley_upstream = { package = "parley", version = "=0.11.1", default-features = 
 # ICU's segmenters, the oracle for graft 3b's boundary machines (tests/breaks.rs).
 icu_segmenter = { version = "2.4", default-features = false, features = ["compiled_data"] }
 
+# examples/gpu_shape.rs (Metal compute): macOS only, so the crate's tests build on other hosts
+# (`cargo test -p bough-text --lib --tests`; the other examples read macOS instruction counters)
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-metal = "0.3"

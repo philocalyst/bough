@@ -443,13 +443,7 @@ impl GlyphPool {
         let bounds = cache.line_bounds(strike, tt, sh.script.upem);
         assert!(bounds.bottom - bounds.top <= 3 * 32 + 1, "line taller than 4 tile rows");
         assert_eq!(origin[1], origin[1].floor(), "baseline must be integral");
-        cache.prepare_tokens(strike, &tt.gid, 0x20..0x7F);
-        let ib = &cache.tok(strike).ibox;
-        let mut dcell = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
-        for d in b'0'..=b'9' {
-            let b = ib[d as usize];
-            dcell = [dcell[0].min(b[0]), dcell[1].min(b[1]), dcell[2].max(-b[2]), dcell[3].max(-b[3])];
-        }
+        let dcell = cache.label_strike(strike, &tt.gid);
         if self.spaces.len() <= space as usize {
             self.spaces.resize(space as usize + 1, [0, 0]);
         }
@@ -478,6 +472,45 @@ impl GlyphPool {
             trow_end: -1,
             tspace: [i32::MIN, i32::MIN],
             text: vec![0u8; 32].into_boxed_slice(),
+        }
+    }
+
+    /// Move a label's pen origin to `origin` (pixels relative to its space; `origin[1]` integral): the run
+    /// header, the label's snapped pens (they are `pen_px` of the slots at the origin) and its cached tile
+    /// spans (stale: recomputed by the next digit patch). No slot is rewritten and nothing is marked: the
+    /// caller damages the line's old and new extents (it holds both inks). What a layout write-back does
+    /// to a one-line text whose box moved.
+    pub fn move_label(&mut self, lb: &mut Label, origin: [f32; 2]) {
+        debug_assert_eq!(origin[1], origin[1].floor(), "baseline must be integral");
+        let h = &mut self.runs[lb.run as usize];
+        h.origin = origin;
+        let (base, len) = (h.base as usize, h.len as usize);
+        lb.oxh = origin[0] + 0.5;
+        lb.oy = origin[1] as i32;
+        // pens are maintained only while the text fits 16 slots (`window`, `replace`)
+        if len <= 16 {
+            for k in 0..len {
+                lb.pen[k] = pen_px(self.x[base + k], lb.scale, lb.oxh) as i16;
+            }
+        }
+        lb.tspace = [i32::MIN, i32::MIN];
+    }
+
+    /// The label's width on one line with trailing spaces excluded (font units): the pen at its first
+    /// trailing space, or its end pen (as `Para::line_width`; a label whose slots are not its bytes, a
+    /// ligature or Latin-1 text, answers its whole width).
+    pub fn label_line_width(&self, lb: &Label) -> i32 {
+        let t = lb.text();
+        let mut e = t.len();
+        while e > 0 && t[e - 1] == b' ' {
+            e -= 1;
+        }
+        if e == t.len() || !lb.is_identity() {
+            lb.width
+        } else if e == 0 {
+            0
+        } else {
+            self.x[self.runs[lb.run as usize].base as usize + e]
         }
     }
 
