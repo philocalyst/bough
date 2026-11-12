@@ -374,3 +374,16 @@ impl Dispatch {
 pub fn env_bit(u: &U, bit: u32) -> bool {
     u.w[U_ENV] & bit != 0
 }
+
+/// Two handler faces are the same handlers when they hear the same kinds with the same captures: the same
+/// source handler is a different instantiation in each sink's `view` (see `sink::list_sync`).
+impl PartialEq for Ons {
+    fn eq(&self, o: &Ons) -> bool {
+        self.kinds == o.kinds && self.caps == o.caps
+    }
+}
+impl core::fmt::Debug for Ons {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Ons {{ kinds: {:#x}, caps: {} }}", self.kinds, self.caps)
+    }
+}

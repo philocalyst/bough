@@ -144,9 +144,18 @@ pub enum Kind {
     List(ListInfo),
 }
 
+/// What a store's view described, in order: a row of its fixed shape (by row call), or a child store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    Row(u32),
+    Sub(u32),
+}
+
 /// A store as reflection knows it.
 pub struct StoreInfo {
     pub kind: Kind,
+    /// Rows and child stores in the order the view described them.
+    pub seq: Vec<Part>,
     /// Where the scope or list was described.
     pub loc: Option<&'static Location<'static>>,
     pub sites: Vec<Option<SiteInfo>>,
@@ -155,7 +164,7 @@ pub struct StoreInfo {
 }
 impl StoreInfo {
     fn new(kind: Kind, loc: Option<&'static Location<'static>>) -> StoreInfo {
-        StoreInfo { kind, loc, sites: Vec::new(), cols: Vec::new(), subs: Vec::new() }
+        StoreInfo { kind, seq: Vec::new(), loc, sites: Vec::new(), cols: Vec::new(), subs: Vec::new() }
     }
     fn child(&mut self, q: usize, st: &Store, kind: Kind, loc: &'static Location<'static>) -> &mut StoreInfo {
         while self.subs.len() <= q {
@@ -164,6 +173,7 @@ impl StoreInfo {
         let c = &mut self.subs[q];
         c.kind = kind;
         c.loc = Some(loc);
+        c.seq.clear();
         c.sites.resize_with(st.sites.len(), || None);
         c.cols.resize_with(st.cols.len(), || None);
         c
@@ -234,6 +244,7 @@ impl<'a, V> Sink<V> for Learn<'a> {
         let loc = Location::caller();
         let k = self.rowc;
         self.rowc += 1;
+        self.out.seq.push(Part::Row(k));
         let Some(&(_, p0)) = self.st.rows.get(k as usize) else { return };
         let (_, row) = f();
         row.visit(&mut LearnLeaf { st: self.st, out: self.out, site: p0, row: k, pos: 0, loc });
@@ -243,6 +254,7 @@ impl<'a, V> Sink<V> for Learn<'a> {
         let loc = Location::caller();
         let q = self.sub as usize;
         self.sub += 1;
+        self.out.seq.push(Part::Sub(q as u32));
         let Some(st) = self.st.subs.get(q) else { return };
         let out = self.out.child(q, st, Kind::Scope, loc);
         f(&mut Learn { st, out, rowc: 0, sub: 0 });
@@ -252,6 +264,7 @@ impl<'a, V> Sink<V> for Learn<'a> {
         let loc = Location::caller();
         let q = self.sub as usize;
         self.sub += 1;
+        self.out.seq.push(Part::Sub(q as u32));
         let Some(st) = self.st.subs.get(q) else { return };
         let info = ListInfo { n: l.n, row_h: l.row_h, x: l.x, y: l.y, shape: l.shape.to_vec() };
         let out = self.out.child(q, st, Kind::List(info), loc);
@@ -352,7 +365,7 @@ impl<'w> Item<'w> {
     }
     /// An owned description of the record.
     pub fn snap(&self) -> Snap {
-        Snap { ent: self.ent, kind: self.info.kind, loc: self.site.loc, rect: self.rect, ops: self.info.ops, vals: self.ops().map(|o| o.val).collect() }
+        Snap { ent: self.ent, kind: self.info.kind, on: self.info.on, words: self.words().to_vec(), loc: self.site.loc, rect: self.rect, ops: self.info.ops, vals: self.ops().map(|o| o.val).collect() }
     }
 }
 
@@ -361,6 +374,10 @@ impl<'w> Item<'w> {
 pub struct Snap {
     pub ent: Ent,
     pub kind: &'static str,
+    /// Its handlers, if any.
+    pub on: Option<Hov>,
+    /// The record's words.
+    pub words: Vec<u32>,
     pub loc: &'static Location<'static>,
     /// In the store's space.
     pub rect: Rect,
@@ -551,10 +568,10 @@ struct DLeaf<'a> {
     out: &'a mut Vec<Snap>,
 }
 impl<V> Leaf<V> for DLeaf<'_> {
-    fn leaf<A: Arch>(&mut self, a: &A, _: TypeId, _: Option<Hov>) {
+    fn leaf<A: Arch>(&mut self, a: &A, _: TypeId, hov: Option<Hov>) {
         let k = self.ent.pos as usize;
         let vals = (0..A::OPS.len()).map(|i| a.val(i, self.u)).collect();
-        self.out.push(Snap { ent: self.ent, kind: A::NAME, loc: self.loc, rect: self.shape.get(k).map_or(Rect::default(), |r| r.shift(self.at)), ops: A::OPS, vals });
+        self.out.push(Snap { ent: self.ent, kind: A::NAME, on: hov, words: a.words().to_vec(), loc: self.loc, rect: self.shape.get(k).map_or(Rect::default(), |r| r.shift(self.at)), ops: A::OPS, vals });
         self.ent.pos += 1;
     }
 }

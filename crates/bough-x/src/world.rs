@@ -467,6 +467,38 @@ impl<B: Backend> World<B> {
         Dispatch { kind: kind::WHEEL, place: NONE, consumed: to != at }
     }
 
+    /// Activate a place as a click would, with no pointer: what an assistive technology's "press" does. The
+    /// place's own click handler runs, or the nearest under its centre.
+    pub fn activate<V: View>(&mut self, v: &mut V, place: u32) -> Dispatch {
+        let e = Event { kind: kind::CLICK, ev: Ev::at(0.0, 0.0), text: "" };
+        if self.call(v, place, &e) {
+            return Dispatch { kind: kind::CLICK, place, consumed: true };
+        }
+        let Some((x, y)) = self.center(place) else { return Dispatch::NOTHING };
+        let chain = self.chain(x, y, kind::CLICK);
+        let d = self.bubble(v, chain.iter().rev().copied(), &e);
+        self.done(chain);
+        d
+    }
+
+    /// Scroll the list at `path` so that row `r` is exposed (as little as needed): what an assistive
+    /// technology's "scroll into view" does. Writes the scroll word of the list's space; the next settle
+    /// exposes the row. Returns whether the word changed.
+    pub fn scroll_into_view<V: View>(&mut self, v: &mut V, path: &Path, r: u32) -> bool {
+        let Some(st) = self.root.at(path) else { return false };
+        let (sp, (_, y, h)) = (st.space, st.geo);
+        if sp.scroll == crate::store::NO_WORD || h == 0 {
+            return false;
+        }
+        let Some(u) = v.block_mut() else { return false };
+        let at = u.w[sp.scroll as usize] as i32;
+        let view = sp.clip.y1 - sp.clip.y0;
+        let (top, bot) = (y + r as i32 * h, y + (r as i32 + 1) * h);
+        let to = if top < at { top } else if bot > at + view { bot - view } else { at };
+        u.w[sp.scroll as usize] = to as u32;
+        to != at
+    }
+
     /// The centre of a place's record on screen.
     fn center(&self, place: u32) -> Option<(i32, i32)> {
         let (st, col, rec) = self.at_place(place)?;
