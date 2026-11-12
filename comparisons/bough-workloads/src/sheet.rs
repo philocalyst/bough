@@ -4,7 +4,8 @@
 //! The fan-out: hovering a column header highlights that column's 10,000 cells, and the theme recolours every
 //! cell's fill and text. Both are one root signal (`look`: theme bit and hovered column) that each cell's fill
 //! and text colour read through `sig!(self.look).map(..)`, i.e. 200,000 wires on one signal. Steady interaction:
-//! a value edit (the cell and its column total change), a selection move, a wheel scroll.
+//! a value edit (the cell and its column total change), a selection move, a wheel scroll. Animation: the selection
+//! outline glides to its new cell (a translate transition); `animate` jumps it across the sheet.
 //!
 //! Wanted and not expressible today (results, not workarounds):
 //! * a cell's colour from two signals (theme and hover) needs them packed into one `u32` by hand: there is no
@@ -117,7 +118,7 @@ impl View for Sheet {
         let selection = block(CELL_W, CELL_H)
             .border(2.0, rgb(0x2f6bff))
             .abs(GUTTER, 0.0)
-            .translate(sig!(self.sel).map(|i: &u32| (((i % COLS as u32) as f32) * CELL_W, ((i / COLS as u32) as f32) * CELL_H)));
+            .translate(sig!(self.sel).map(|i: &u32| (((i % COLS as u32) as f32) * CELL_W, ((i / COLS as u32) as f32) * CELL_H)).transition(Curve::out(0.18)));
         let body = column((selection, column(each((0..self.rows).map(data_row)))))
             .relative()
             .grow(1.0)
@@ -207,7 +208,7 @@ impl Scene for Sheet {
     }
 
     fn animate(app: &mut App<Self>, k: usize) {
-        // the sheet has no transitions of its own: a selection jump stands in (a paint-only move)
+        // the selection outline glides to a far cell (a paint-only translate transition)
         app.turn(|s| {
             let n = (s.rows * COLS) as u32;
             s.sel.set((k as u32 * 37) % n);
