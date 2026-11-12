@@ -1,0 +1,20 @@
+[package]
+name = "bough-lay"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Round 8: layout staged by type. An element's layout is a monomorphised function of available space and leaf sizes; every answer carries the interval of available space over which it holds; extents of unmaterialised rows"
+
+[dependencies]
+bough-expr = { path = "../bough-expr" }
+
+[dev-dependencies]
+cephal = { path = "../../vendor/cephal" }
+bough-mem = { path = "../bough-mem" }
+
+[features]
+# Negative controls for tests/oracle.rs.
+# the flex line forgets the gap before the last item
+mutant_gap = []
+# a decision on a size that follows the available width does not narrow the validity interval
+mutant_valid = []
