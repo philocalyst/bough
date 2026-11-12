@@ -19,10 +19,15 @@
 pub mod harness;
 pub mod sys;
 
+#[cfg(feature = "canvas")]
 pub mod canvas;
+#[cfg(feature = "chat")]
 pub mod chat;
+#[cfg(feature = "dash")]
 pub mod dash;
+#[cfg(feature = "ide")]
 pub mod ide;
+#[cfg(feature = "sheet")]
 pub mod sheet;
 
 use bough::raw::{App, Caps};
@@ -64,16 +69,21 @@ pub trait Scene: bough::app::View + Sized + 'static {
     fn animate(app: &mut App<Self>, k: usize);
 }
 
-/// The scene names in their default order (`workload all`).
+/// The scene names in their default order (`workload all`); a scene whose feature is off reports as unknown.
 pub const SCENES: [&str; 5] = ["sheet", "ide", "dash", "canvas", "chat"];
 
 /// Run the named scene's phases (`harness::run` with the scene's type).
 pub fn run_scene(name: &str, cfg: &harness::RunCfg) -> bool {
     match name {
+        #[cfg(feature = "sheet")]
         "sheet" => harness::run::<sheet::Sheet>(cfg),
+        #[cfg(feature = "ide")]
         "ide" => harness::run::<ide::Ide>(cfg),
+        #[cfg(feature = "dash")]
         "dash" => harness::run::<dash::Dash>(cfg),
+        #[cfg(feature = "canvas")]
         "canvas" => harness::run::<canvas::Canvas>(cfg),
+        #[cfg(feature = "chat")]
         "chat" => harness::run::<chat::Chat>(cfg),
         _ => return false,
     }

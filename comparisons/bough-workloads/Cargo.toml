@@ -19,6 +19,14 @@ libc = "0.2"
 bough-metal = { path = "../../crates/bough-metal" }
 
 [features]
+default = ["sheet", "ide", "dash", "canvas", "chat"]
+# One feature per scene, so a scene can be built alone (`--no-default-features --features ide`) while another
+# is being edited.
+sheet = []
+ide = []
+dash = []
+canvas = []
+chat = []
 # hotpath's phase profile of the turn (bough's own measure sites) printed at exit: instrumented, never a
 # release number (docs/lanes/bench/MEASUREMENT.md).
 hotpath = ["bough/hotpath"]
