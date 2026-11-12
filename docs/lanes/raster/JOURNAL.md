@@ -103,3 +103,63 @@ continuation, and each sink method is one kind, so no kernel tests a kind).
 * Sharing an operand between layers of a composed paint except through the rect lanes: `Over<Shadow<B, ..>,
   RRect<B, ..>>` holds `B`'s record words twice (the canvas's animated node holds its phase and period three
   times). A `Let` combinator, or operands hoisted into a paint struct by a macro, would fix it. Not built.
+
+## 3. The first back-to-back table, and where the GPU's time goes (2026-11-12, second session)
+
+(The lane changed hands here. Sections 0 to 2 are the first session's; the code it left ran ahead of this
+journal: `emit.rs`, `metal.rs`, `plan.rs`, `scenes.rs`, `driver.rs` and `pbench` existed and their gates were
+green. `r8/expr` `0e0ec02e9e` is merged.)
+
+**Against the façade on the same window** (M3 Pro, `dist`, one command, load average 12 to 20: busy; canvas at
+2560 x 1600 px; the façade's scene is `comparisons/bough-workloads` from `r7/bench` `56e6a6a229` built in this
+worktree, 10,856 records; this lane's is the re-description in `scenes.rs`, 19,476 records because every
+glyph is a record; wall medians, input to pixels, GPU waited for):
+
+| step | façade, Metal presenter (`BOUGH_REPAIR=gpu`) | façade, round-7 kernel (`=kernel`) | this lane, GPU resident (AG) |
+|---|---|---|---|
+| hover (a component's 200 instances) | 12.5 ms, 262 K instr | 36.2 ms, 15.2 M instr | 23 to 30 ms, 76 K instr |
+| theme (everything) | 19.2 ms, 565 K | 55.1 ms, 18.1 M | 23 to 34 ms, 70 K |
+| first frame | 60 ms (cold pipelines) | 190 ms | 31 to 37 ms |
+
+**The gate fails as the code stood: the resident path is 1.5 to 2 times slower than the Metal presenter on
+hover and theme**, with 4 to 8 times fewer frame-thread instructions. (The 5.5 ms the round-7 compute lane
+quoted for a canvas frame was its own smaller kernel scene, not this window.)
+
+**Where the 24 ms of a full frame goes** (`examples/gprobe.rs`: the generated source with parts removed, same
+frame, GPU time, median of 12):
+
+| variant | GPU ms |
+|---|---|
+| as generated | 24.3 to 27.5 |
+| the per-pixel cut removed | 32.5 |
+| shadows shaded as solids (staging and everything else live) | 6.7 |
+| every layer shaded as a solid | 5.9 |
+| the entry loop, window test and record load, no shade | 3.1 |
+| no entry loop (window passes, bin, compact, store) | 2.0 to 2.7 |
+
+So: the loop over a tile's entries, which a hardware rasteriser would remove, is under 1 ms; staging in every
+pixel thread is not the cost either; **18 of 24 ms is the shadow's corner integral** (`km::corner3`: a
+four-point quadrature with an integer square root per node, four corners, at every pixel within 1.5 blur
+widths of a corner, which for the canvas's blurs of up to 40 px is most of every shadow).
+
+Two things measured on the way: Metal keeps its own cache of compiled libraries keyed by source: the canvas's
+639 ms compile is 5 to 17 ms in every later process (a new variant: 400 to 1,100 ms). And the hover's 1,661
+tiles are real: the component's 200 instances with their shadows' windows, not every record of the columns
+that read `Pick` (the window pass already damages only records whose operand values differ).
+
+### R12 (written before the code): corner tables
+
+`corner3` is a function of the pixel's offset from the corner and of (radius, blur width) only: not of the
+box's size or position. For a box whose edges are on whole pixels the offsets of pixel centres are the same
+for every box, so the correction is one table per distinct (radius, blur), filled once by the leaf itself and
+read by both executors: exact against the oracle by construction (a table entry *is* the closed form at
+that offset; a box off the pixel grid, or a table not yet filled, takes the closed form). The table's key is
+stored in its header and checked while shading, so a stale handle can only cost time. This is the glyph
+atlas's idea applied to a second resident: a content-addressed memo of a pure coverage function.
+
+| | prediction | kill |
+|---|---|---|
+| canvas full frame, GPU | <= 9 ms | > 15 ms |
+| canvas hover (1,661 tiles), GPU | <= 5 ms | > 10 ms (the presenter's step is 12.5 ms wall) |
+| exactness | 0 differing words on every gate, boxes off the pixel grid included; a mutant that adds one to a table entry is caught | any mismatch |
+| table memory, canvas | <= 2 MB | > 8 MB |
