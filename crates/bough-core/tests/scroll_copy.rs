@@ -132,3 +132,137 @@ fn scroll_run_copy_damage_covers_every_wrong_pixel() {
         let _ = wrong;
     }
 }
+
+/// Round 7: an epoch holds a list of rigid moves. Two moves over disjoint clips are both copies: after
+/// copying each clip from the previous frame, every wrong pixel is in a marked tile. Two that meet poison
+/// the epoch: no copy is offered and both clips are marked whole.
+#[test]
+fn several_moves_in_one_epoch_are_independent_copies() {
+    let (w, h) = (1440, 1600);
+    let mut rng = Rng(0x30_7e5);
+    let paint = |recs: &[(NRect, u8, u32)], x: i32, y: i32| -> u64 {
+        let mut v = 0u64;
+        for &(r, kind, id) in recs {
+            let [x0, y0, x1, y1] = r.to_xyxy();
+            if x >= x0 && x < x1 && y >= y0 && y < y1 {
+                v = if kind == 0 { id as u64 + 1 } else { ((id as u64 + 1) << 32) ^ ((x - x0) as u64 * 7919 + (y - y0) as u64) };
+            }
+        }
+        v
+    };
+    let (mut copies, mut poisons) = (0, 0);
+    for case in 0..160 {
+        let mut b = Bough::new(w, h);
+        let n = 60 + rng.below(60) as usize;
+        b.insert_run(0, &scene(&mut rng, n));
+        b.next_epoch();
+        // two runs of records, two clips: side by side (disjoint) or overlapping
+        let overlap = case % 4 == 3;
+        let ca = NRect::new(0, rng.range(0, 300), 600, rng.range(700, 1500));
+        let cb = if overlap { NRect::new(500, rng.range(0, 300), 1200, rng.range(700, 1500)) } else { NRect::new(640, rng.range(0, 300), 1400, rng.range(700, 1500)) };
+        let (sa, la) = (rng.below(n as u64 / 4) as usize, 1 + rng.below(n as u64 / 4) as usize);
+        let (sb, lb) = (n / 2 + rng.below(n as u64 / 4) as usize, 1 + rng.below(n as u64 / 4 - 1) as usize);
+        let (da, db) = (rng.range(-120, 120), rng.range(-120, 120));
+        if da == 0 || db == 0 {
+            continue;
+        }
+        let before: Vec<(NRect, u8, u32)> = (0..n).map(|i| (b.ink_at(i), b.kind_at(i), b.payload_at(i))).collect();
+        let band = |kind: u8, _: u32| if kind == 0 { 2 } else { -1 };
+        b.scroll_run_copy(sa, la, 0, da, ca, band);
+        b.scroll_run_copy(sb, lb, 0, db, cb, band);
+        let after: Vec<(NRect, u8, u32)> = (0..n).map(|i| (b.ink_at(i), b.kind_at(i), b.payload_at(i))).collect();
+        let marks = b.repair(1);
+        let moves = b.moves(0).to_vec();
+        if overlap {
+            poisons += 1;
+            assert!(moves.is_empty() && b.scroll_rec(0).is_none(), "case {case}: moves that meet offer no copy");
+            for c in [ca, cb] {
+                let [x0, y0, x1, y1] = c.intersect(NRect::new(0, 0, w, h)).to_xyxy();
+                for y in (y0..y1).step_by(16) {
+                    for x in (x0..x1).step_by(16) {
+                        assert!(marks.tile((x / TILE) as usize, (y / TILE) as usize), "case {case}: ({x}, {y}) of a poisoned clip unmarked");
+                    }
+                }
+            }
+            continue;
+        }
+        copies += 1;
+        assert_eq!(moves.len(), 2, "case {case}");
+        assert!(b.scroll_rec(0).is_none(), "the one-copy form is offered only for a single move");
+        for mv in &moves {
+            let [x0, y0, x1, y1] = mv.clip.to_xyxy();
+            for y in y0..y1 {
+                for x in (x0..x1).step_by(3) {
+                    let sy = y - mv.dy;
+                    if sy < y0 || sy >= y1 {
+                        assert!(marks.tile((x / TILE) as usize, (y / TILE) as usize), "case {case}: exposed pixel ({x}, {y}) unmarked");
+                        continue;
+                    }
+                    if paint(&before, x, sy) != paint(&after, x, y) {
+                        assert!(marks.tile((x / TILE) as usize, (y / TILE) as usize), "case {case}: pixel ({x}, {y}) wrong after its copy and unmarked");
+                    }
+                }
+            }
+        }
+        // outside both clips nothing was copied: every changed pixel is marked
+        for y in (0..h).step_by(5) {
+            for x in (0..w).step_by(7) {
+                let inside = moves.iter().any(|m| {
+                    let [x0, y0, x1, y1] = m.clip.to_xyxy();
+                    x >= x0 && x < x1 && y >= y0 && y < y1
+                });
+                if !inside && paint(&before, x, y) != paint(&after, x, y) {
+                    assert!(marks.tile((x / TILE) as usize, (y / TILE) as usize), "case {case}: pixel ({x}, {y}) outside the clips changed and is unmarked");
+                }
+            }
+        }
+    }
+    assert!(copies > 50 && poisons > 20);
+}
+
+/// A move written record by record between `move_begin` and `move_end` leaves the marks, the records and
+/// the move that `scroll_run_copy` leaves; `move_abort` keeps the writes' own marks instead.
+#[test]
+fn a_move_written_record_by_record_is_the_core_s_own_move() {
+    let (w, h) = (1440, 1600);
+    let mut rng = Rng(0xbe91);
+    for case in 0..120 {
+        let n = 40 + rng.below(60) as usize;
+        let recs = scene(&mut rng, n);
+        let (mut a, mut b, mut x) = (Bough::new(w, h), Bough::new(w, h), Bough::new(w, h));
+        for t in [&mut a, &mut b, &mut x] {
+            t.insert_run(0, &recs);
+            t.next_epoch();
+        }
+        let start = rng.below(n as u64 / 2) as usize;
+        let len = 1 + rng.below((n - start) as u64 - 1) as usize;
+        let c = NRect::new(rng.range(0, 400), rng.range(0, 400), rng.range(700, 1440), rng.range(800, 1600));
+        let (dx, dy) = if case % 3 == 0 { (rng.range(-60, 60), 0) } else { (0, rng.range(-150, 150)) };
+        if dx == 0 && dy == 0 {
+            continue;
+        }
+        let band = |kind: u8, _: u32| if kind == 0 { 2 } else { -1 };
+        a.scroll_run_copy(start, len, dx, dy, c, band);
+        b.move_begin();
+        x.move_begin();
+        for p in start..start + len {
+            let ink = b.ink_at(p).translate(dx, dy);
+            b.set_ink(p, ink);
+            x.set_ink(p, ink);
+        }
+        b.move_end(start, len, dx, dy, c, band);
+        x.move_abort();
+        assert_eq!(a.records(), b.records(), "case {case}");
+        assert_eq!(a.moves(0), b.moves(0), "case {case}");
+        assert_eq!(a.repair(1).rows, b.repair(1).rows, "case {case}: marks of the written move");
+        // aborted: the writes' own marks (old and new ink of every record), and no move
+        assert!(x.moves(0).is_empty());
+        let m = x.repair(1);
+        for p in start..start + len {
+            let [x0, y0, x1, y1] = x.ink_at(p).intersect(NRect::new(0, 0, w, h)).to_xyxy();
+            if x0 < x1 && y0 < y1 {
+                assert!(m.tile((x0 / TILE) as usize, (y0 / TILE) as usize), "case {case}: an aborted move keeps its writes' marks");
+            }
+        }
+    }
+}

@@ -610,6 +610,28 @@ impl<V: View> App<V> {
         if !b.any_scroll() {
             return SlotCopy::NONE;
         }
+        // The slot carries one copy. An epoch of the window with several rigid moves (`Bough::moves`: a
+        // splice beside a scroll, two lists scrolled in one frame) made its marks assuming each clip is
+        // copied; until the executors take a list of copies, every move clip of the window is repaired
+        // whole instead (the "no source" rule below, applied to all of them).
+        if (0..age).any(|k| b.moves(k).len() > 1) {
+            self.occ = (0, self.rows.len());
+            let rows = self.rows.len();
+            for k in 0..age {
+                for r in b.moves(k) {
+                    let c = r.clip;
+                    if c.is_empty() {
+                        continue;
+                    }
+                    let (tx0, ty0, tx1, ty1) = bough_core::damage::tile_span(c);
+                    let m = (u128::MAX >> (128 - (tx1 - tx0))) << tx0;
+                    for row in &mut self.rows[ty0 as usize..(ty1 as usize).min(rows)] {
+                        *row |= m;
+                    }
+                }
+            }
+            return SlotCopy::NONE;
+        }
         let Some((b0, r0)) = (0..age).find_map(|k| b.scroll_rec(k).map(|r| (k, r))) else { return SlotCopy::NONE };
         // a scroll in the window marks and clears rows by its clips: the occupied range is no longer known
         self.occ = (0, self.rows.len());

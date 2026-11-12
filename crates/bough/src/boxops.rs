@@ -202,6 +202,7 @@ impl<V, P: IntoProp<f32, V>> BoxOps<V> for HeightOp<P> {
 pub struct ApplyTextColor;
 impl Apply for ApplyTextColor {
     type P = crate::color::Color;
+    const COMMUTES: bool = true;
     fn apply(rt: &mut Rt, node: u32, v: &crate::color::Color) {
         if rt.hot[node as usize].kind == 0 {
             return; // mounting: the element's text is created after its operands are lowered

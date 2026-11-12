@@ -519,6 +519,11 @@ pub struct Rt {
     /// (every offset is an `offset_of!`-proven `Signal<_>` field, every recipe the closure its patch reads).
     pub(crate) wires: Col<Wire>,
     pub(crate) wire_free: Vec<u32>,
+    /// Segments of commuting wires (`add_seg_wire`): the segment wire of (cell address, runner), behind a
+    /// four-entry cache.
+    pub(crate) segs: std::collections::HashMap<(usize, usize), u32, crate::layout::FxBuild>,
+    seg_cache: [(usize, usize, u32); 4],
+    seg_next: u8,
     /// Per owner class: the offsets of its wired cells (class 0 is the app's root owner; every list
     /// region adds one class shared by all its rows, `list.rs`).
     pub(crate) classes: Vec<Vec<u32>>,
@@ -713,6 +718,9 @@ impl Rt {
             spans,
             wires,
             wire_free: Vec::new(),
+            segs: Default::default(),
+            seg_cache: [(0, 0, 0); 4],
+            seg_next: 0,
             classes: vec![Vec::new()],
             class_rank: vec![Vec::new()],
             log_home: crate::signal::LOG.with(|l| {
@@ -1308,6 +1316,52 @@ impl Rt {
         } else {
             self.wires[after as usize].next = idx;
         }
+        idx
+    }
+
+    /// Install `node` as a member of the segment of cell `head` for `runner` (`Mounter::wire_seg`): the
+    /// segment wire is found (a four-entry cache, then a map) or made and linked into the cell's chain like
+    /// any wire; the member is a wire outside that chain, linked from the segment wire's `node` field.
+    ///
+    /// # Safety
+    /// As `add_wire`; `runner` reads members' recipes as written here.
+    pub(crate) unsafe fn add_seg_wire(&mut self, head: &std::cell::Cell<u32>, off: u32, cls: u32, runner: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
+        let key = (head as *const _ as usize, runner as usize);
+        let valid = |rt: &Rt, i: u32| rt.wires.get(i as usize).is_some_and(|w| !w.dead && w.head == key.0 && w.patch as usize == key.1);
+        let mut seg = 0u32;
+        for &(a, r, i) in &self.seg_cache {
+            if (a, r) == key && valid(self, i) {
+                seg = i;
+                break;
+            }
+        }
+        if seg == 0 {
+            seg = match self.segs.get(&key) {
+                Some(&i) if valid(self, i) => i,
+                _ => {
+                    // SAFETY: this fn's contract is `add_wire`'s.
+                    let i = unsafe { self.add_wire(head, off, cls, runner, 0, [0; 16]) };
+                    self.wires[i as usize].recipe[..4].copy_from_slice(&i.to_ne_bytes());
+                    self.segs.insert(key, i);
+                    i
+                }
+            };
+            self.seg_cache[self.seg_next as usize & 3] = (key.0, key.1, seg);
+            self.seg_next = self.seg_next.wrapping_add(1);
+        }
+        // the member: the newest first, as in a cell's chain
+        let w = Wire { next: self.wires[seg as usize].node, dead: false, latest: false, node, head: key.0, cls, patch: runner, recipe };
+        let idx = if let Some(i) = self.wire_free.pop() {
+            self.wires[i as usize] = w;
+            i
+        } else {
+            self.wires.push(w);
+            (self.wires.len() - 1) as u32
+        };
+        assert!(idx <= HEAD_IDX, "wire arena full");
+        self.wires[seg as usize].node = idx;
+        // a new member has not seen the cached value of a captureless projection: the next run applies
+        self.wires[seg as usize].recipe[4] = 0;
         idx
     }
 

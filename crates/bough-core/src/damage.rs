@@ -315,12 +315,39 @@ pub struct ScrollRec {
     pub dy: i32,
 }
 
+/// Moves an epoch can hold; one more is damaged whole instead of copied.
+pub const MAX_MOVES: usize = 8;
+
+/// The rigid moves of one epoch (`Bough::scroll_run_copy`, `Bough::move_end`): content inside each `clip`
+/// moved by its delta, so a presenter copies `clip ∩ (clip + d)` from the surface showing the previous epoch
+/// and repairs only the tiles the epoch marked. The clips of one epoch are pairwise disjoint (a copy reads
+/// the previous frame inside its own clip only, so the copies are independent of each other and of their
+/// order). `poisoned`: two moves met; every clip was marked whole and no copy is offered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Moves {
+    pub n: u8,
+    pub poisoned: bool,
+    pub r: [ScrollRec; MAX_MOVES],
+}
+impl Moves {
+    pub const NONE: Moves = Moves { n: 0, poisoned: false, r: [ScrollRec { clip: NRect::EMPTY, dx: 0, dy: 0 }; MAX_MOVES] };
+    /// The moves a presenter may copy (none when poisoned).
+    #[inline]
+    pub fn list(&self) -> &[ScrollRec] {
+        if self.poisoned { &[] } else { &self.r[..self.n as usize] }
+    }
+}
+
 pub struct DamageRing {
     planes: Box<[Plane; RING]>,
-    /// One scroll record per epoch (`epoch % RING`), next to its plane; cleared with it.
-    scrolls: [Option<ScrollRec>; RING],
-    /// Bit `e % RING`: that epoch has a scroll record (so "no scroll in the ring" is one test).
+    /// The rigid moves of each epoch (`epoch % RING`), next to its plane; cleared with it.
+    moves: [Moves; RING],
+    /// Bit `e % RING`: that epoch has a move or is poisoned (so "no move in the ring" is one test).
     scroll_bits: u8,
+    /// While a move is being written record by record (`Bough::move_begin`), the marks those writes make
+    /// go here and are dropped: `cur` points at it. `home` is the epoch's plane then, null otherwise.
+    scratch: Box<Plane>,
+    home: *mut Plane,
     /// `&mut planes[epoch % RING]`, kept so a mark does no index arithmetic.
     cur: *mut Plane,
     pub epoch: u32,
@@ -346,7 +373,9 @@ impl DamageRing {
         }
         let window = NRect::new(0, 0, w, h);
         let cur = &mut planes[1 % RING] as *mut Plane;
-        DamageRing { planes, scrolls: [None; RING], scroll_bits: 0, cur, epoch: 1, window, wthresh: Thresh::of_rect(window), tw: ((w + TILE - 1) >> TILE_SHIFT) as u32, rows }
+        let mut scratch = Box::new(Plane::EMPTY);
+        scratch.n = rows;
+        DamageRing { planes, moves: [Moves::NONE; RING], scroll_bits: 0, scratch, home: core::ptr::null_mut(), cur, epoch: 1, window, wthresh: Thresh::of_rect(window), tw: ((w + TILE - 1) >> TILE_SHIFT) as u32, rows }
     }
     /// Mark a rect (any form; empty and off-window rects mark nothing), clipped to the window, into
     /// the current epoch. Clipping is done in tile units: the window starts at 0 and its last tile
@@ -385,6 +414,7 @@ impl DamageRing {
     /// A new window size (up to 4096 x 4096): window, tile columns and rows. The planes keep their marks
     /// (rows past the new height are never read); the caller damages what the resize repaints.
     pub fn set_window(&mut self, w: i32, h: i32) {
+        self.scratch.n = ((h + TILE - 1) >> TILE_SHIFT) as u32;
         assert!(w > 0 && h > 0 && w <= (MAX_TILES_X as i32) * TILE && h <= (MAX_TILES_Y as i32) * TILE, "window up to 4096x4096");
         let rows = ((h + TILE - 1) >> TILE_SHIFT) as u32;
         for p in self.planes.iter_mut() {
@@ -399,10 +429,36 @@ impl DamageRing {
     pub fn advance(&mut self) {
         self.epoch += 1;
         let e = self.epoch as usize % RING;
+        debug_assert!(self.home.is_null(), "an epoch ends outside a move");
         self.planes[e].clear();
-        self.scrolls[e] = None;
+        self.moves[e] = Moves::NONE;
         self.scroll_bits &= !(1 << e);
         self.cur = &mut self.planes[e] as *mut Plane;
+    }
+    /// Send the marks made from now on to a scratch plane (they are dropped at `divert_end`): the writes of
+    /// a rigid move, whose damage is the move's own.
+    pub fn divert_begin(&mut self) {
+        assert!(self.home.is_null(), "moves do not nest");
+        self.scratch.clear();
+        self.scratch.n = self.rows;
+        self.home = self.cur;
+        self.cur = &mut *self.scratch as *mut Plane;
+    }
+    pub fn divert_end(&mut self) {
+        assert!(!self.home.is_null());
+        self.cur = self.home;
+        self.home = core::ptr::null_mut();
+    }
+    /// The moves of the epoch `back` epochs ago (0 = current).
+    #[inline]
+    pub fn moves(&self, back: u32) -> &Moves {
+        &self.moves[self.epoch.wrapping_sub(back) as usize % RING]
+    }
+    #[inline]
+    pub fn moves_mut(&mut self) -> &mut Moves {
+        let e = self.epoch as usize % RING;
+        self.scroll_bits |= 1 << e;
+        &mut self.moves[e]
     }
     /// Does any epoch still in the ring have a scroll record?
     #[inline(always)]
@@ -437,17 +493,12 @@ impl DamageRing {
         }
         if lo < hi { (lo, hi, any != 0) } else { (0, 0, false) }
     }
-    /// The scroll record of the epoch `back` epochs ago (0 = current).
+    /// The single move of the epoch `back` epochs ago (0 = current): `Some` only when the epoch has exactly
+    /// one and is not poisoned (the form a one-copy presenter consumes); see `moves` for the list.
     #[inline]
     pub fn scroll(&self, back: u32) -> Option<ScrollRec> {
-        self.scrolls[self.epoch.wrapping_sub(back) as usize % RING]
-    }
-    /// Set (or clear) the current epoch's scroll record.
-    #[inline]
-    pub fn set_scroll(&mut self, r: Option<ScrollRec>) {
-        let e = self.epoch as usize % RING;
-        self.scroll_bits = (self.scroll_bits & !(1 << e)) | (r.is_some() as u8) << e;
-        self.scrolls[e] = r;
+        let m = self.moves(back);
+        (m.n == 1 && !m.poisoned).then(|| m.r[0])
     }
     /// [`Plane::shift_within`] on the current epoch's plane.
     #[inline]
@@ -462,7 +513,7 @@ impl DamageRing {
             d.rows[lo..hi].copy_from_slice(&s.rows[lo..hi]);
             (d.y0, d.y1, d.solid, d.n) = (s.y0, s.y1, s.solid, s.n);
         }
-        self.scrolls = o.scrolls;
+        self.moves = o.moves;
         self.scroll_bits = o.scroll_bits;
         self.epoch = o.epoch;
         self.cur = &mut self.planes[self.epoch as usize % RING] as *mut Plane;

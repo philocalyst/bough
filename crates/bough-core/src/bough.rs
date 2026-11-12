@@ -2420,37 +2420,63 @@ impl Bough {
     ///   [`Bough::damage_edges`] of its visible ink and that ink moved by `d`. Anything else (`band < 0`: text,
     ///   images, gradients) marks its visible ink and its moved copy.
     ///
-    /// The epoch keeps a [`ScrollRec`] (`scroll_rec`). A second scroll in the same epoch that is not the same
-    /// clip and delta cannot share the one copy: both clips are marked whole and the record is dropped (a
-    /// bounds condition, never a policy). `band` is the caller's per-record edge band (monomorphised).
-    pub fn scroll_run_copy(&mut self, start: usize, len: usize, dx: i32, dy: i32, clip: NRect, mut band: impl FnMut(u8, u32) -> i16) {
+    /// The epoch keeps the move (`moves`, and `scroll_rec` when it is the epoch's only one). Moves of one
+    /// epoch over disjoint clips are independent copies; two that meet are marked whole and the epoch offers
+    /// no copy (`move_admit`). `band` is the caller's per-record edge band (monomorphised).
+    pub fn scroll_run_copy(&mut self, start: usize, len: usize, dx: i32, dy: i32, clip: NRect, band: impl FnMut(u8, u32) -> i16) {
         if len == 0 || (dx == 0 && dy == 0) {
             return;
         }
         let c = clip.intersect(self.ring.window).canon();
-        let rec = ScrollRec { clip: c, dx, dy };
-        match self.ring.scroll(0) {
-            Some(r) if r == rec => {
-                // another run of the same move (a split run): the first call's marks cover it
-                self.translate_impl(start, len, dx, dy);
-                return;
-            }
-            Some(r) => {
-                self.translate_impl(start, len, dx, dy);
+        if self.move_admit(ScrollRec { clip: c, dx, dy }) {
+            self.move_marks(start, len, dx, dy, c, band);
+        }
+        self.translate_impl(start, len, dx, dy);
+    }
+
+    /// Admit a rigid move to the current epoch (see [`crate::damage::Moves`]). Returns whether its marks are
+    /// still to be made (`move_marks`): not for a repeat of a move already recorded (another run of the same
+    /// move: the first call's marks cover it), not when the clip is empty, and not when it cannot be a copy
+    /// (it meets another move's clip, or the epoch's list is full): then the clips involved are marked whole
+    /// and, if two moves met, the epoch is poisoned (no copy is offered for it; a bounds condition, never a
+    /// policy).
+    fn move_admit(&mut self, rec: ScrollRec) -> bool {
+        let c = rec.clip;
+        let m = *self.ring.moves(0);
+        if m.poisoned {
+            self.ring.add(c);
+            return false;
+        }
+        if m.r[..m.n as usize].contains(&rec) || c.is_empty() {
+            return false;
+        }
+        if let Some(k) = m.r[..m.n as usize].iter().position(|r| r.clip.intersects(c)) {
+            // two moves over common pixels: no copy can serve both
+            let _ = k;
+            for r in &m.r[..m.n as usize] {
                 self.ring.add(r.clip);
-                self.ring.add(c);
-                // poisoned: every later scroll of this epoch is marked whole too (`scroll_rec` reports none)
-                self.ring.set_scroll(Some(ScrollRec { clip: NRect::EMPTY, dx: 0, dy: 0 }));
-                return;
             }
-            None => {}
+            self.ring.add(c);
+            self.ring.moves_mut().poisoned = true;
+            return false;
         }
-        if c.is_empty() {
-            self.translate_impl(start, len, dx, dy);
-            return;
+        if m.n as usize == crate::damage::MAX_MOVES {
+            self.ring.add(c);
+            return false;
         }
+        let mv = self.ring.moves_mut();
+        mv.r[mv.n as usize] = rec;
+        mv.n += 1;
+        true
+    }
+
+    /// The damage of a rigid move of records `[start, start + len)` by `(dx, dy)` inside `c` that a copy of
+    /// the previous frame cannot supply (see `scroll_run_copy`): this epoch's earlier marks also at their
+    /// moved place, the static content's bands, the exposed strips. The static records are read where they
+    /// are; the run's records are skipped by position, so it does not matter whether they have moved yet.
+    fn move_marks(&mut self, start: usize, len: usize, dx: i32, dy: i32, c: NRect, mut band: impl FnMut(u8, u32) -> i16) {
         self.ring.shift_within(c, dx, dy);
-        // the static content: every record outside the run whose visible ink meets the clip, before the move
+        // the static content: every record outside the run whose visible ink meets the clip
         let moved: u8 = if dx != 0 { 1 | 4 } else { 0 } | if dy != 0 { 2 | 8 } else { 0 };
         let th = Thresh::of_rect(c);
         let mut pos0 = 0usize;
@@ -2506,7 +2532,6 @@ impl Bough {
                 }
             }
         }
-        self.translate_impl(start, len, dx, dy);
         // the exposed strips: clip \ (clip + d)
         let [cx0, cy0, cx1, cy1] = c.to_xyxy();
         if dy > 0 {
@@ -2519,7 +2544,45 @@ impl Bough {
         } else if dx < 0 {
             self.ring.add(NRect::new((cx1 + dx).max(cx0), cy0, cx1, cy1));
         }
-        self.ring.set_scroll(Some(rec));
+    }
+
+    /// A rigid move written record by record (round 7): between `move_begin` and `move_end` the caller moves
+    /// every record of a run by one integral `(dx, dy)` through the ordinary writers (inks, instances, text
+    /// origins) and changes nothing else about them; the marks those writes make are dropped, and `move_end`
+    /// gives the run the damage of a move instead: inside `clip` (which must contain the run's visible ink
+    /// before and after) the presenter copies the previous frame's pixels by `(dx, dy)`, and only the exposed
+    /// strip, the static content's bands and what the epoch marked otherwise are repaired. A list splice, a
+    /// sibling that grew, an offset, a sliding panel: any change that is a translation of an unchanged
+    /// subtree. `scroll_run_copy` is the same move with the translation done by the core.
+    ///
+    /// The caller's contract is the rigidity: a record of the run that changed in any other way between the
+    /// two calls would show the previous frame's pixels at its new place.
+    pub fn move_begin(&mut self) {
+        self.ring.divert_begin();
+    }
+    /// See `move_begin`. `band` as in `scroll_run_copy`.
+    pub fn move_end(&mut self, start: usize, len: usize, dx: i32, dy: i32, clip: NRect, band: impl FnMut(u8, u32) -> i16) {
+        self.ring.divert_end();
+        if len == 0 || (dx == 0 && dy == 0) {
+            return;
+        }
+        let c = clip.intersect(self.ring.window).canon();
+        if self.move_admit(ScrollRec { clip: c, dx, dy }) {
+            self.move_marks(start, len, dx, dy, c, band);
+        }
+    }
+    /// Give up a move begun with `move_begin`: the marks its writes made are kept as ordinary damage (the
+    /// caller found the run was not rigid after all).
+    pub fn move_abort(&mut self) {
+        let scratch: *const Plane = self.ring.cur_mut();
+        self.ring.divert_end();
+        // SAFETY: the scratch plane is a separate allocation from the epoch's planes; it is only read here.
+        self.ring.cur_mut().or_assign(unsafe { &*scratch });
+    }
+    /// The rigid moves of the epoch `back` epochs ago (0 = current) a presenter may copy.
+    #[inline]
+    pub fn moves(&self, back: u32) -> &[ScrollRec] {
+        self.ring.moves(back).list()
     }
 
     /// `DamageRing::or_last_into` on this Bough's ring: the last `age` epochs' damaged tile rows OR-ed into
@@ -2536,7 +2599,7 @@ impl Bough {
     /// The scroll-by-copy record of the epoch `back` epochs ago (0 = current), if it had one.
     #[inline]
     pub fn scroll_rec(&self, back: u32) -> Option<ScrollRec> {
-        self.ring.scroll(back).filter(|r| !r.clip.is_empty())
+        self.ring.scroll(back)
     }
 
     pub fn set_ink(&mut self, pos: usize, ink: NRect) {
