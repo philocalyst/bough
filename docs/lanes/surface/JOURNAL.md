@@ -129,3 +129,48 @@ product but waits for text and layout, so the model and a query protocol come fi
 first client; dev-only pins that print as source edits are accepted; pointer transparency as in S1; screen
 readers get the exposed window plus a page each side plus counts, other rows described on demand, scrolling only
 on an explicit action. Events wait for raster and expr to answer S1-S3.
+
+## 2. Amendment 3: reflection in the core first (2026-11-12)
+
+The user narrowed the inspector to a thin proof and made reflection in the core the first deliverable: "if more
+reflection was moved into the core it would become trivial". No style editors; source locations welcome. The
+plan of section 1 is superseded where it differs: no code view, no edit-through-code, no pins for now.
+
+### 2.1 What was built (`bough-x/src/reflect.rs`, commit `ecb4185a8e`; merged with r8/expr `8af3f228d0` at `feb3214293`)
+
+* **Reflection is a sink.** `Learn` is driven once over the same `view` (the counters the writing sink keeps)
+  and, at each record, is handed the record's type. It keeps per column what only the type knows: the paint
+  kind, the record type's name, stage, words read, whether it moves, whether it hears the pointer, the operands
+  (`Arch::OPS`: name, expression code, the expression *type* as the compiler writes it, stage, words read,
+  record word range), and three monomorphised readers (value of an operand now, the core's own derivative,
+  the offset). Per site it keeps where in the view the row, scope or list was described: `Sink::row`,
+  `scope`, `list` are `#[track_caller]`, the other sinks never read the location.
+* **The walk.** `Reflect::items` / `each`: every live record in paint order as an `Item`: entity (store path,
+  row, position in the row's shape), place (column, record: what a pick id names), rect (layout answer),
+  screen rect, clip, operands with values now, location, record words. `stack(x, y)`: every record under a
+  point, top first, handler or not. `find(ent)`. `lists()`.
+* **Rows on demand.** `Reflect::rows(view, block, list path, range)`: rows of a list described from the
+  view's own row function, whether materialised or not, writing nothing and scrolling nothing. The test holds
+  a stored row's description equal to its on-demand description.
+* **Names come from the compiler.** An operand's `ty` is `core::any::type_name` of its expression type:
+  `Map<sheet::fill, (Un<sheet::Theme>, Un<sheet::Hover>, Rec<u32>)>`. The functions and lenses it was built
+  from are named with no table and no macro.
+
+Tests (`crates/bough-x/tests/reflect.rs`, 6): the walk is exactly the live records; pick a cell and read its
+entity, value, colour stage and type, location, record word, rect; locations are the view's own lines (header,
+footer, the outline inside the body's scope, the list); 10,000-row list rows 5,000-5,001 described with nothing
+materialised; an entity survives scrolling past the ring (row 75 lives at slot 11); the thin inspector: pick the
+header, write `Theme`, every record whose colour changed was damaged and agrees with the core's derivative,
+every record that does not read the word kept its values. Negative control: `mutant_reflect` (a list record's
+ring slot taken for its row) fails `an_entity_survives_scrolling`. The pixel gates (`tests/sheet.rs`) pass.
+
+### 2.2 Cost when unused (measured, prediction written before: identical cells, `__text` within 64 bytes)
+
+`sheet_x`, 10,000 rows, `dist`, M3 Pro, load 13.8, two runs each, base `0e0ec02e9e` against `ecb4185a8e`:
+every steady cell identical to the instruction (idle 55, hover 7,104, pointer between headers 8,315, theme
+31,203, exposed edit 1,611, unexposed edit 1,083, select 773, frame in motion 631, at rest 6, scroll three rows
+5,408, a page 30,062, re-describing idle 15,975, re-describing edit 16,035); mount (183 K to 208 K) and
+insert/remove (85.1 K to 85.7 K) vary run to run in both binaries alike (page faults; the app's `Vec`). Binary:
+the same 621 text symbols, the same `__const` and `__cstring` bytes, `__text` 128 bytes *smaller* (394,164
+against 394,292: code layout, no function added or removed). Resident bytes: no field was added to any core
+structure. Prediction held.
