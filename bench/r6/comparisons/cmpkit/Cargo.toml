@@ -1,0 +1,11 @@
+[package]
+name = "cmpkit"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "bough round 6 comparisons: one measurement method for every framework (instructions on the calling thread, wall p50/p99, rows as JSON lines)"
+
+[dependencies]
+libc = "0.2"
+
+[workspace]
