@@ -16,7 +16,7 @@ fn main() {
         app.frame();
     }
     let px = app.presented_pixels();
-    let fw = app.gpu.as_ref().unwrap().w;
+    let fw = app.surface_width();
     let (x0, y0, w, h) = if crop.len() == 4 { (crop[0], crop[1], crop[2], crop[3]) } else { (0, 0, WIDTH as usize, HEIGHT as usize) };
     let mut rgba = Vec::with_capacity(w * h * 4);
     for y in y0..y0 + h {

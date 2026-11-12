@@ -144,6 +144,8 @@ fn bin_overflow_grows_the_bins_and_redraws_exactly() {
             assert!(px == r, "tick {t}: presented != full redraw after bin growth");
         }
     }
+    // the GPU's row bins (the CPU executor has none)
+    #[cfg(target_os = "macos")]
     assert!(app.gpu.as_ref().unwrap().bin_growths > 0, "the small bins never overflowed");
     assert!(!app.bins_overflowed());
 }
