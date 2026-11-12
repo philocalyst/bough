@@ -448,9 +448,21 @@ impl Store {
         assert!(cap == 1 || (cap >= 64 && cap.is_power_of_two()));
         let live = ar.new_live((cap / 64).max(1));
         let space_ix = ar.new_space();
+        if ar.head().adopt != 0 {
+            // SAFETY: a space index answered by the replay is below `MAX_SPACES`; the slot is plain words.
+            let had = unsafe { ar.work().space(space_ix).read() };
+            let mut st = Store { ar, cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, live, space: had, space_ix, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false };
+            // what the image had here and what the view says now may differ: that is a change like any other
+            st.set_space(space);
+            return st;
+        }
         let mut st = Store { ar, cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, live, space: Space::root(0, 0), space_ix, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false };
         st.put_space(space);
         st
+    }
+    /// A store that owns nothing: what a world mapped from an image has until the view is described.
+    pub fn placeholder(ar: Ar) -> Store {
+        Store { ar, cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap: 1, live: 0, space: Space::root(0, 0), space_ix: 0, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false }
     }
     #[inline(always)]
     pub fn space(&self) -> Space {
@@ -553,7 +565,7 @@ impl Store {
             }
             let lines = (c.desc.page.size() / LINE) as u32;
             let (at, rid) = ar.new_span(need, lines);
-            if c.alloc != 0 {
+            if c.alloc != 0 && ar.head().adopt == 0 {
                 // SAFETY: both spans are inside the working half and do not overlap (the new one was just
                 // handed out); the old one holds `alloc` pages.
                 unsafe { core::ptr::copy_nonoverlapping(w.at(c.pages), w.at(at), c.alloc as usize * c.desc.page.size()) };
@@ -564,12 +576,13 @@ impl Store {
             }
             (c.alloc, c.pages, c.rid) = (need, at, rid);
         }
-        for c in &self.cols {
-            // SAFETY: `pass` is this column's entry (`new_col`); written whole here before any pass reads it.
-            unsafe {
-                w.entry(c.pass as usize).write(Entry { reads: c.desc.reads, skip: self.space.reads(), delta: c.desc.delta, paint: c.desc.paint, pages: c.pages, nrec: c.nrec, live: self.live, cap: self.cap, space: self.space_ix, flags: if c.desc.timed { TIMED } else { 0 }, rid: c.rid, desc: c.desc })
-            };
-            ar.dirty_plan(c.pass);
+        if ar.head().adopt == 0 {
+            for c in &self.cols {
+                // SAFETY: `pass` is this column's entry (`new_col`); written whole here before any pass
+                // reads it.
+                unsafe { w.entry(c.pass as usize).write(self.entry_of(c)) };
+                ar.dirty_plan(c.pass);
+            }
         }
         for s in &mut self.sites {
             let c = &self.cols[s.col as usize];
@@ -578,6 +591,32 @@ impl Store {
             s.page_size = c.desc.page.size() as u32;
             s.rid = c.rid + (s.base >> 6);
         }
+    }
+
+    /// The plan entry of one of this store's columns.
+    fn entry_of(&self, c: &RawCol) -> Entry {
+        Entry::new(c.desc, c.desc.delta, c.desc.paint, self.space.reads(), c.pages, c.nrec, self.live, self.cap, self.space_ix, c.rid)
+    }
+    /// After adopting an image: whether every column of this store and of the stores under it is, entry for
+    /// entry, what the image's plan holds, and the paint order is the image's.
+    pub fn same_as_image(&self) -> bool {
+        let w = self.ar.work();
+        let mut k = 0;
+        let mut same = true;
+        self.walk(&mut |c| {
+            // SAFETY: column numbers answered by the replay are below `ncols`; the plan and the order are
+            // mapped.
+            unsafe {
+                same &= *w.order().add(k) == c.pass as u16;
+            }
+            k += 1;
+        });
+        same && self.entries_same()
+    }
+    fn entries_same(&self) -> bool {
+        let w = self.ar.work();
+        // SAFETY: as above.
+        self.cols.iter().all(|c| unsafe { *w.entry(c.pass as usize) == self.entry_of(c) }) && self.subs.iter().all(|s| s.entries_same())
     }
 
     /// Write the paint order: the column numbers in the order the view first described columns and child
@@ -697,10 +736,10 @@ pub fn delta(ar: Ar, old: &U, new: &U, ch: u64, tiles: &mut Tiles) {
             // SAFETY: `delta` and `active` were instantiated for the archetype the entry was sealed with.
             unsafe {
                 if e.skip & ch == 0 {
-                    (e.delta)(w, e, old, new, tiles);
+                    (e.delta())(w, e, old, new, tiles);
                 }
                 if e.flags & TIMED != 0 {
-                    tiles.set_sweep(i as u32, *w.space(e.space), (e.desc.active)(w, e, new));
+                    tiles.set_sweep(i as u32, *w.space(e.space), (e.desc().active)(w, e, new));
                 }
             }
         }
@@ -716,7 +755,7 @@ pub unsafe fn paint<B: Backend>(h: Half, n: usize, u: &U, b: &mut B) {
         let (plan, ord) = (h.plan(n), core::slice::from_raw_parts(h.order(), n));
         for &c in ord {
             let e = &plan[c as usize];
-            (e.paint)(h, e, u, b as *mut B as *mut ())
+            (e.paint())(h, e, u, b as *mut B as *mut ())
         }
     }
 }
@@ -731,7 +770,8 @@ pub fn stats(ar: Ar) -> (usize, usize, usize) {
         let live = Live { cap: e.cap, rows: unsafe { core::slice::from_raw_parts(ar.work().live(e.live), (e.cap as usize / 64).max(1)) }, nrec: e.nrec };
         t.0 += (0..np).map(|p| live.page(p).count_ones() as usize).sum::<usize>();
         t.1 += np;
-        t.2 += np * e.desc.page.size();
+        // SAFETY: a sealed entry of this binary.
+        t.2 += np * unsafe { e.desc() }.page.size();
     }
     t
 }

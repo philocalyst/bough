@@ -194,6 +194,66 @@ impl<B: Backend> World<B> {
         unsafe { store::paint(self.ar.front(), self.ar.head().ncols as usize, u, b) }
     }
 
+    /// Write the scene to `path` as an image a later run of this binary can map (`World::open`). Publishes
+    /// first: the image is the published scene and the block it was shaded with.
+    pub fn save(&mut self, path: &std::path::Path) -> std::io::Result<usize> {
+        self.publish();
+        self._arena.save(path, &self.shown, [self.tiles.w, self.tiles.h])
+    }
+
+    /// Map an image as this world's scene. What comes back can be painted at once (`paint_front`, with
+    /// `shown`): nothing was mounted, nothing was read but the image's structural part, and no page of it was
+    /// written. It cannot take a turn until [`World::adopt`] has run.
+    #[cfg(unix)]
+    pub fn open(path: &std::path::Path) -> Result<World<B>, crate::arena::Refused> {
+        let arena = Arena::open(path, RESERVE)?;
+        let ar = arena.ar();
+        let h = ar.head();
+        let (shown, size) = (crate::expr::U { w: h.shown }, h.size);
+        // The store tree is found again by `adopt`; until then it is a placeholder that owns nothing.
+        Ok(World { _arena: arena, ar, root: Store::placeholder(ar), shown, tiles: Tiles::new(size[0], size[1]), nwords: 0, lists: 0, epoch: 0, hot: None, _b: PhantomData })
+    }
+
+    /// Make a mapped scene this view's: the view is described against the image, with the same code as a
+    /// re-description. The store tree is found again (the same requests get the same columns), and every
+    /// operand and rect the view gives is compared with what the image holds; what differs is written and
+    /// damaged like any change. So an image of another state is repaired, not trusted.
+    ///
+    /// `Err` when the view's shape is not the image's (another view, another window size class): the caller
+    /// drops this world and mounts.
+    pub fn adopt<V: View>(&mut self, v: &V, nwords: usize) -> Result<(), crate::arena::Refused> {
+        self.nwords = nwords;
+        self.ar.adopt_begin();
+        self.root = Store::new(self.ar, 1, Space::root(self.tiles.w, self.tiles.h));
+        self.root.live_one();
+        let u = &self.block(v);
+        let ch = self.shown.diff(u, self.nwords) & !HOT;
+        self.epoch = REL_EPOCH.load(Ordering::Relaxed);
+        let mut cx = Cx { ar: self.ar, tiles: &mut self.tiles, u, all: true, lists: 0 };
+        v.view(&mut Write::<V, B>::new(&mut self.root, &mut cx, false));
+        self.lists = cx.lists;
+        if !(self.ar.adopt_end() && self.root.same_as_image()) {
+            return Err(crate::arena::Refused::Bounds);
+        }
+        // records compared equal under the image's block; what the block's change shows is the delta's
+        if ch != 0 {
+            store::delta(self.ar, &self.shown, u, ch, &mut self.tiles);
+            self.shown = *u;
+        }
+        self.tiles.sweeps.clear();
+        self.resweep_all(u);
+        Ok(())
+    }
+    fn resweep_all(&mut self, u: &crate::expr::U) {
+        fn go(s: &Store, u: &crate::expr::U, t: &mut Tiles) {
+            if s.timed {
+                s.resweep(u, t);
+            }
+            s.subs.iter().for_each(|q| go(q, u, t));
+        }
+        go(&self.root, u, &mut self.tiles);
+    }
+
     /// Records, pages and bytes of columns.
     pub fn stats(&self) -> (usize, usize, usize) {
         store::stats(self.ar)

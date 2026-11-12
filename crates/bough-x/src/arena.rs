@@ -39,6 +39,8 @@ const DIRTY: usize = 4 << 10;
 const RANGES: usize = 32 << 10;
 /// Where the working half starts.
 const HALVES: usize = 256 << 10;
+/// An image's half is a whole number of these, so it maps at any VM page size up to 64 KiB.
+const IMAGE_ALIGN: usize = 64 << 10;
 
 const PLAN: usize = 0;
 const ORDER: usize = MAX_COLS * 64;
@@ -57,6 +59,8 @@ const R_LIVE: u32 = R_SPACES + (MAX_SPACES / 128) as u32;
 const R_PAGES: u32 = R_LIVE + (MAX_LIVE / 8) as u32;
 
 pub const MAGIC: u64 = u64::from_le_bytes(*b"boughx01");
+/// The layout constants, folded: an image written with other constants is refused.
+pub const LAYOUT: u64 = (MAX_COLS as u64) << 48 ^ (MAX_SPACES as u64) << 36 ^ (MAX_LIVE as u64) << 24 ^ (MAX_RANGES as u64) << 4 ^ (HALVES as u64) << 8 ^ size_of::<Head>() as u64 ^ (size_of::<Space>() as u64) << 60;
 
 /// The delta kernel of a column: the damage of a change of the block, over the column's exposed pages.
 pub type DeltaFn = unsafe fn(Half, &Entry, &U, &U, &mut Tiles);
@@ -66,18 +70,36 @@ pub type ActiveFn = unsafe fn(Half, &Entry, &U) -> (u32, Rect);
 /// The paint kernel of a column for one backend type.
 pub type PaintFn = unsafe fn(Half, &Entry, &U, *mut ());
 
+/// What code and constants in the binary are named relative to, so that a half holds no address: a kernel is
+/// `anchor + offset`. The offsets are the same in every run of one binary, wherever it is loaded.
+static ANCHOR: u8 = 0;
+#[inline(always)]
+fn anchor() -> isize {
+    &raw const ANCHOR as isize
+}
+/// An address in this binary as an offset from the anchor. Text and constants lie within 2 GiB of each other.
+#[inline]
+pub fn rel(addr: usize) -> i32 {
+    i32::try_from(addr as isize - anchor()).expect("the binary's text and constants span more than 2 GiB")
+}
+
 /// One column, as every pass meets it: one cache line. The page a pass wants is reached from here in one
 /// dependent load, and the entries of a scene are contiguous. A column's number (its index in the plan) is
 /// fixed when it is created: it names the column in a pick id and in the list of sweeps.
+///
+/// Nothing in it is an address: pages are lines from the half's base, kernels and the descriptor are offsets
+/// from the binary's anchor. So a half can be written to a file and mapped by another run of the same binary.
 #[repr(C, align(64))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Entry {
     /// The block words a record of this column reads.
     pub reads: u64,
     /// The block words that move the column's space: when one of them changed, the space as a whole is
     /// damaged and the column is not differentiated.
     pub skip: u64,
-    pub delta: DeltaFn,
-    pub paint: PaintFn,
+    delta: i32,
+    paint: i32,
+    desc: i32,
     /// The column's pages: lines from the half's base.
     pub pages: u32,
     /// Records the column has room for.
@@ -91,15 +113,65 @@ pub struct Entry {
     pub flags: u16,
     /// The dirty-range id of page 0.
     pub rid: u32,
-    pub desc: &'static Desc,
+    /// The shape of a page, for a reader that walks records without the archetype's code: lines per page,
+    /// where the record lane starts in a page, bytes per record.
+    pub page_lines: u16,
+    pub rec_off: u16,
+    pub rec_size: u16,
+    _spare: [u16; 3],
 }
 const _: () = assert!(size_of::<Entry>() == 64);
+impl Entry {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(desc: &'static Desc, delta: DeltaFn, paint: PaintFn, skip: u64, pages: u32, nrec: u32, live: u32, cap: u32, space: u16, rid: u32) -> Entry {
+        Entry { reads: desc.reads, skip, delta: rel(delta as usize), paint: rel(paint as usize), desc: rel(desc as *const Desc as usize), pages, nrec, live, cap, space, flags: if desc.timed { TIMED } else { 0 }, rid, page_lines: (desc.page.size() / LINE) as u16, rec_off: desc.rec_off as u16, rec_size: desc.rec_size.min(u16::MAX as usize) as u16, _spare: [0; 3] }
+    }
+    /// SAFETY (all three): the entry was sealed by this binary (`Entry::new`), or comes from an image whose
+    /// header names this binary and whose structural checksum holds.
+    #[inline(always)]
+    pub unsafe fn delta(&self) -> DeltaFn {
+        // SAFETY: `anchor + delta` is the address `Entry::new` was given.
+        unsafe { core::mem::transmute::<isize, DeltaFn>(anchor() + self.delta as isize) }
+    }
+    #[inline(always)]
+    pub unsafe fn paint(&self) -> PaintFn {
+        // SAFETY: as `delta`.
+        unsafe { core::mem::transmute::<isize, PaintFn>(anchor() + self.paint as isize) }
+    }
+    #[inline(always)]
+    pub unsafe fn desc(&self) -> &'static Desc {
+        // SAFETY: as `delta`; a descriptor is a constant of the binary.
+        unsafe { &*((anchor() + self.desc as isize) as *const Desc) }
+    }
+    /// Whether the entry names no descriptor (never sealed).
+    #[inline(always)]
+    pub fn unsealed(&self) -> bool {
+        self.desc == 0 && self.delta == 0
+    }
+}
 
 pub const TIMED: u16 = 1;
 
 #[repr(C)]
 pub struct Head {
     pub magic: u64,
+    /// What must be equal for an image to be this binary's: the layout constants of this module.
+    pub layout: u64,
+    /// The binary that wrote it (size and modification time of the executable); kernels are named relative to
+    /// its anchor.
+    pub exe: [u64; 2],
+    /// A checksum of everything a pass trusts without checking: the head, the plan, the order, the spaces, the
+    /// live words, the ranges. Record words are not covered: any bytes are a record.
+    pub check: u64,
+    /// The surface the scene was laid out for.
+    pub size: [i32; 2],
+    /// The block the published half was shaded with.
+    pub shown: [u32; 64],
+    /// Replaying the allocations of a mapped image (`World::adopt`): requests are answered from these cursors
+    /// and checked against what the image holds. `bad`: the view asked for something else than the image has.
+    pub adopt: u32,
+    pub bad: u32,
+    pub cur: [u32; 5],
     /// Bytes reserved for each half.
     pub half_len: u64,
     pub ncols: u32,
@@ -141,6 +213,7 @@ mod sys {
     }
     pub const PROT_RW: i32 = 1 | 2;
     pub const MAP_PRIVATE: i32 = 2;
+    pub const MAP_FIXED: i32 = 0x10;
     #[cfg(target_os = "macos")]
     pub const MAP_ANON_NORESERVE: i32 = 0x1000 | 0x40;
     #[cfg(not(target_os = "macos"))]
@@ -151,6 +224,30 @@ impl Arena {
     /// Reserve address space for two halves of `half_len` bytes. Memory is committed by the first touch of
     /// each page and is zero.
     pub fn new(half_len: usize) -> Arena {
+        let a = Arena::reserve(half_len);
+        let ar = a.ar();
+        let h = ar.head();
+        h.magic = MAGIC;
+        h.layout = LAYOUT;
+        h.half_len = a.half_len() as u64;
+        h.top = COLS;
+        h.nranges = R_PAGES;
+        // the fixed ranges
+        for c in 0..(MAX_COLS / 64) as u32 {
+            ar.set_range(R_PLAN + c, ((PLAN / LINE) as u32 + c * 64, 64));
+        }
+        for c in 0..(MAX_COLS / 512) as u32 {
+            ar.set_range(R_ORDER + c, ((ORDER / LINE) as u32 + c * 16, 16));
+        }
+        for c in 0..(MAX_SPACES / 128) as u32 {
+            ar.set_range(R_SPACES + c, ((SPACES / LINE) as u32 + c * 64, 64));
+        }
+        for l in 0..(MAX_LIVE / 8) as u32 {
+            ar.set_range(R_LIVE + l, ((LIVE / LINE) as u32 + l, 1));
+        }
+        a
+    }
+    fn reserve(half_len: usize) -> Arena {
         let half_len = half_len.next_multiple_of(64 << 10).max(1 << 20);
         let len = HALVES + 2 * half_len;
         #[cfg(unix)]
@@ -170,27 +267,7 @@ impl Arena {
             }
             p
         };
-        let a = Arena { base, len };
-        let ar = a.ar();
-        let h = ar.head();
-        h.magic = MAGIC;
-        h.half_len = half_len as u64;
-        h.top = COLS;
-        h.nranges = R_PAGES;
-        // the fixed ranges
-        for c in 0..(MAX_COLS / 64) as u32 {
-            ar.set_range(R_PLAN + c, ((PLAN / LINE) as u32 + c * 64, 64));
-        }
-        for c in 0..(MAX_COLS / 512) as u32 {
-            ar.set_range(R_ORDER + c, ((ORDER / LINE) as u32 + c * 16, 16));
-        }
-        for c in 0..(MAX_SPACES / 128) as u32 {
-            ar.set_range(R_SPACES + c, ((SPACES / LINE) as u32 + c * 64, 64));
-        }
-        for l in 0..(MAX_LIVE / 8) as u32 {
-            ar.set_range(R_LIVE + l, ((LIVE / LINE) as u32 + l, 1));
-        }
-        a
+        Arena { base, len }
     }
     #[inline(always)]
     pub fn ar(&self) -> Ar {
@@ -200,6 +277,149 @@ impl Arena {
         self.len
     }
 }
+/// Why an image was not taken.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Refused {
+    Io,
+    /// Not an image, or one with other layout constants.
+    Layout,
+    /// Written by another binary: its kernels are not ours.
+    Binary,
+    /// A count or an offset points outside the image.
+    Bounds,
+    /// The structural part is not what was written.
+    Checksum,
+}
+
+/// Size and modification time of the running executable: what an image's kernels offsets are valid for.
+fn exe_id() -> [u64; 2] {
+    let Ok(m) = std::env::current_exe().and_then(std::fs::metadata) else { return [0, 0] };
+    let t = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64);
+    [m.len(), t]
+}
+
+impl Arena {
+    /// Bytes of a half that are in use, rounded to the file's alignment.
+    fn used(&self) -> usize {
+        (self.ar().head().top as usize * LINE).next_multiple_of(IMAGE_ALIGN)
+    }
+    /// Write the scene as an image: the shared part, then the working half up to its last used line. The
+    /// caller has published (nothing is dirty), so the published half is the same bytes.
+    ///
+    /// The file is the memory, byte for byte: mapping it needs no fix-up, so every page of it stays shared
+    /// with the file until someone writes it.
+    pub fn save(&self, path: &std::path::Path, shown: &U, size: [i32; 2]) -> std::io::Result<usize> {
+        use std::io::Write;
+        let (ar, used) = (self.ar(), self.used());
+        let h = ar.head();
+        assert!(h.sum.iter().all(|&s| s == 0), "publish before saving: the image is the published scene");
+        (h.shown, h.size, h.exe) = (shown.w, size, exe_id());
+        h.check = ar.checksum();
+        let tmp = path.with_extension("tmp");
+        let mut f = std::fs::File::create(&tmp)?;
+        // SAFETY: the shared part and the used prefix of W are inside the mapping and initialised (zero or
+        // written); the turn thread is the caller.
+        f.write_all(unsafe { core::slice::from_raw_parts(self.base, HALVES + used) })?;
+        f.sync_data().ok();
+        drop(f);
+        std::fs::rename(&tmp, path)?;
+        Ok(HALVES + used)
+    }
+
+    /// Map an image as a scene: the shared part and the working half are the file, copy on write; the
+    /// published half is the same file pages again. Nothing is read but the head and the structural part
+    /// (to check them), and nothing is written.
+    ///
+    /// Everything a pass follows without checking is covered by the checksum, and each count and offset is
+    /// bounded here, so an image that is accepted cannot lead a pass out of the mapping. Record words are not
+    /// checked: a kernel indexes nothing with them.
+    #[cfg(unix)]
+    pub fn open(path: &std::path::Path, half_len: usize) -> Result<Arena, Refused> {
+        use std::os::fd::AsRawFd;
+        let f = std::fs::File::open(path).map_err(|_| Refused::Io)?;
+        let flen = f.metadata().map_err(|_| Refused::Io)?.len() as usize;
+        if flen < HALVES + COLS as usize * LINE || (flen - HALVES) % IMAGE_ALIGN != 0 {
+            return Err(Refused::Layout);
+        }
+        let a = Arena::reserve(half_len);
+        if flen - HALVES > a.half_len() {
+            return Err(Refused::Bounds);
+        }
+        // SAFETY: both targets are inside our own reservation; MAP_FIXED replaces those pages with private
+        // (copy-on-write) views of the file. The results are checked.
+        unsafe {
+            let p = sys::mmap(a.base as *mut _, flen, sys::PROT_RW, sys::MAP_PRIVATE | sys::MAP_FIXED, f.as_raw_fd(), 0);
+            let q = sys::mmap(a.base.add(HALVES + a.half_len()) as *mut _, flen - HALVES, sys::PROT_RW, sys::MAP_PRIVATE | sys::MAP_FIXED, f.as_raw_fd(), HALVES as i64);
+            if p as isize == -1 || q as isize == -1 {
+                return Err(Refused::Io);
+            }
+        }
+        // SAFETY: the head is mapped; it is read as plain words before anything in it is believed.
+        let h = unsafe { &*(a.base as *const Head) };
+        if h.magic != MAGIC || h.layout != LAYOUT {
+            return Err(Refused::Layout);
+        }
+        if h.half_len as usize != a.half_len() {
+            // the reservation is a property of the process, not of the image
+            return Err(Refused::Layout);
+        }
+        if h.exe != exe_id() || h.exe == [0, 0] {
+            return Err(Refused::Binary);
+        }
+        let top = (flen - HALVES) / LINE;
+        let ok = (h.ncols as usize) <= MAX_COLS
+            && (h.nspaces as usize) <= MAX_SPACES
+            && (h.nlive as usize) <= MAX_LIVE
+            && (h.nranges as usize) <= MAX_RANGES
+            && h.nranges >= R_PAGES
+            && (COLS as usize..=top).contains(&(h.top as usize))
+            && h.sum.iter().all(|&s| s == 0)
+            && h.adopt == 0;
+        if !ok {
+            return Err(Refused::Bounds);
+        }
+        let ar = a.ar();
+        if ar.checksum_with(h) != h.check {
+            return Err(Refused::Checksum);
+        }
+        // every entry: its pages, live words, space and ranges inside what the image holds
+        let w = ar.work();
+        for i in 0..h.ncols as usize {
+            // SAFETY: `i < ncols <= MAX_COLS`; the plan is mapped.
+            let e = unsafe { &*w.entry(i) };
+            // SAFETY: the checksum holds and the header names this binary, so the entry was sealed by it.
+            let d = unsafe { e.desc() };
+            let np = (e.nrec as usize).div_ceil(64);
+            let ok = !e.unsealed()
+                && (e.cap == 1 || (e.cap >= 64 && e.cap.is_power_of_two()))
+                && e.pages >= COLS
+                && e.pages as usize + np * (d.page.size() / LINE) <= h.top as usize
+                && e.live as usize + (e.cap as usize / 64).max(1) <= h.nlive as usize
+                && (e.space as u32) < h.nspaces
+                && e.rid >= R_PAGES
+                && e.rid as usize + np <= h.nranges as usize;
+            if !ok {
+                return Err(Refused::Bounds);
+            }
+        }
+        // the order is a list of column numbers
+        // SAFETY: `ncols` numbers of the order are mapped.
+        if (0..h.ncols as usize).any(|k| unsafe { *w.order().add(k) } as u32 >= h.ncols) {
+            return Err(Refused::Bounds);
+        }
+        for id in 0..h.nranges {
+            let (at, n) = ar.range(id);
+            if at as usize + n as usize > h.top as usize {
+                return Err(Refused::Bounds);
+            }
+        }
+        Ok(a)
+    }
+    pub fn half_len(&self) -> usize {
+        (self.len - HALVES) / 2
+    }
+}
+
 impl Drop for Arena {
     fn drop(&mut self) {
         #[cfg(unix)]
@@ -302,6 +522,9 @@ impl Ar {
     /// A new column: its number.
     pub fn new_col(&self) -> u32 {
         let h = self.head();
+        if h.adopt != 0 {
+            return self.replay(0, 1, h.ncols);
+        }
         assert!((h.ncols as usize) < MAX_COLS, "the scene has more than {MAX_COLS} columns");
         h.ncols += 1;
         h.unordered = 1;
@@ -309,6 +532,9 @@ impl Ar {
     }
     pub fn new_space(&self) -> u16 {
         let h = self.head();
+        if h.adopt != 0 {
+            return self.replay(1, 1, h.nspaces) as u16;
+        }
         assert!((h.nspaces as usize) < MAX_SPACES, "the scene has more than {MAX_SPACES} spaces");
         h.nspaces += 1;
         (h.nspaces - 1) as u16
@@ -316,6 +542,9 @@ impl Ar {
     /// `words` live words, zero.
     pub fn new_live(&self, words: u32) -> u32 {
         let h = self.head();
+        if h.adopt != 0 {
+            return self.replay(2, words, h.nlive);
+        }
         assert!((h.nlive + words) as usize <= MAX_LIVE, "the scene has more than {} row slots", MAX_LIVE * 64);
         h.nlive += words;
         h.nlive - words
@@ -324,6 +553,14 @@ impl Ar {
     pub fn new_span(&self, npages: u32, page_lines: u32) -> (u32, u32) {
         let h = self.head();
         let lines = npages * page_lines;
+        if h.adopt != 0 {
+            let (at, rid) = (COLS + self.replay(3, lines, h.top - COLS), R_PAGES + self.replay(4, npages, h.nranges - R_PAGES));
+            // the image must hold exactly this span: every page a range of this size, in place
+            if h.bad == 0 && (0..npages).any(|p| self.range(rid + p) != (at + p * page_lines, page_lines)) {
+                h.bad = 1;
+            }
+            return (at, rid);
+        }
         assert!((h.top as u64 + lines as u64) * LINE as u64 <= h.half_len, "the scene outgrew its reservation of {} bytes per half", h.half_len);
         let (at, rid) = (h.top, h.nranges);
         h.top += lines;
@@ -332,6 +569,58 @@ impl Ar {
             self.set_range(rid + p, (at + p * page_lines, page_lines));
         }
         (at, rid)
+    }
+    /// Answer an allocation from cursor `k` while adopting an image: the same requests in the same order get
+    /// the same answers as when the image was made. A request the image has no room for marks the adoption
+    /// bad and is answered with 0, which is inside the arena, so whatever follows stays in bounds.
+    #[cold]
+    fn replay(&self, k: usize, n: u32, have: u32) -> u32 {
+        let h = self.head();
+        if h.cur[k] + n > have {
+            h.bad = 1;
+            return 0;
+        }
+        h.cur[k] += n;
+        h.cur[k] - n
+    }
+    /// Begin replaying allocations against the image this arena was opened from.
+    pub fn adopt_begin(&self) {
+        let h = self.head();
+        (h.adopt, h.bad, h.cur) = (1, 0, [0; 5]);
+    }
+    /// End it: whether the view asked for exactly what the image holds.
+    pub fn adopt_end(&self) -> bool {
+        let h = self.head();
+        let whole = h.cur == [h.ncols, h.nspaces, h.nlive, h.top - COLS, h.nranges - R_PAGES];
+        h.adopt = 0;
+        h.bad == 0 && whole
+    }
+
+    /// The checksum of the structural part, with the head as it is.
+    pub fn checksum(&self) -> u64 {
+        self.checksum_with(self.head())
+    }
+    fn checksum_with(&self, h: &Head) -> u64 {
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut eat = |p: *const u8, bytes: usize| {
+            // SAFETY: the callers below pass ranges inside the shared part or a half's fixed regions.
+            for k in 0..bytes / 8 {
+                x = (x ^ unsafe { (p as *const u64).add(k).read_unaligned() }).wrapping_mul(0x0000_0100_0000_01B3).rotate_left(23);
+            }
+        };
+        // the head without what changes while it is in use
+        let mut c = [h.magic, h.layout, h.exe[0], h.exe[1], h.half_len, h.ncols as u64, h.nspaces as u64, h.nlive as u64, h.top as u64, h.nranges as u64, h.size[0] as u64, h.size[1] as u64, h.scrolls, h.reads];
+        c[0] ^= h.wasted as u64;
+        eat(c.as_ptr() as *const u8, size_of_val(&c));
+        eat(h.shown.as_ptr() as *const u8, 256);
+        let w = self.work();
+        eat(w.entry(0) as *const u8, (h.ncols as usize).min(MAX_COLS) * 64);
+        eat(w.order() as *const u8, ((h.ncols as usize).min(MAX_COLS) * 2).next_multiple_of(8));
+        eat(w.space(0) as *const u8, (h.nspaces as usize).min(MAX_SPACES) * SPACE_STRIDE);
+        eat(w.live(0) as *const u8, (h.nlive as usize).min(MAX_LIVE) * 8);
+        // SAFETY: the ranges table is in the shared part.
+        eat(unsafe { self.base.add(RANGES) }, (h.nranges as usize).min(MAX_RANGES) * 8);
+        x
     }
 
     /// Publish: copy every range the turn thread dirtied from W to F, and return how many lines that was.

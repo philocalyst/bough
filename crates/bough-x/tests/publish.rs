@@ -51,17 +51,16 @@ fn stamps_of(ar: Ar, h: Half, out: &mut Vec<u32>) {
     out.clear();
     let n = (ar.ncols_racy() as usize).min(bough_x::arena::MAX_COLS);
     for c in 0..n {
-        // SAFETY: entries below `MAX_COLS` are inside the half; an entry is plain words and a `&'static Desc`
-        // that is either null (never sealed: skipped) or a descriptor of this binary.
+        // SAFETY: entries below `MAX_COLS` are inside the half; an entry is plain words, copied out whole and
+        // bounded before anything is read through it. No code offset in it is followed.
         unsafe {
-            let e = h.entry(c);
-            let (cap, nrec, pages, live) = ((*e).cap, (*e).nrec, (*e).pages, (*e).live);
-            let desc = (&raw const (*e).desc).cast::<*const bough_x::store::Desc>().read();
-            if desc.is_null() || cap < 64 || cap > 4096 || nrec > cap || (live as usize) + (cap as usize / 64) > bough_x::arena::MAX_LIVE {
+            let e = h.entry(c).read_volatile();
+            let (cap, nrec, pages, live) = (e.cap, e.nrec, e.pages, e.live);
+            let (off, size, psize) = (e.rec_off as usize, e.rec_size as usize, e.page_lines as usize * 64);
+            if cap < 64 || cap > 4096 || nrec > cap || (live as usize) + (cap as usize / 64) > bough_x::arena::MAX_LIVE {
                 continue;
             }
-            let (off, size, psize) = ((*desc).rec_off, (*desc).rec_size, (*desc).page.size());
-            if size < 4 || !ar.in_half(pages, (nrec as usize).div_ceil(64) * psize) {
+            if size < 4 || off + 64 * size > psize || !ar.in_half(pages, (nrec as usize).div_ceil(64) * psize) {
                 continue;
             }
             for slot in 0..nrec {

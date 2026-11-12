@@ -440,7 +440,8 @@ impl<'w, 'c, V, B: Backend> Sink<V> for Write<'w, 'c, V, B> {
         if q == self.st.subs.len() {
             self.st.subs.push(Store::new(self.st.ar, 1, space));
             self.st.order.push(Pass::Sub(q as u32));
-            fresh = true;
+            // a store found in a mapped image is not fresh: its records are there to be compared
+            fresh = self.st.ar.head().adopt == 0;
         }
         let st = &mut self.st.subs[q];
         if st.space() != space {
@@ -528,6 +529,9 @@ pub fn list_sync<V, R: Row<V>, F: FnMut(usize) -> R, B: Backend>(parent: &mut St
     }
     if st.rows.is_empty() && lo < hi {
         row_new::<V, R, B>(st, l.shape, &f(lo as usize));
+        if st.ar.head().adopt != 0 {
+            list_adopt(st, l, (lo, hi));
+        }
     }
     let mk = list_plan(st, cx, l, (lo, hi), org, space, R::LEAVES as usize, TypeId::of::<R>());
     let (sites, mask) = (st.sites.as_ptr(), st.cap - 1);
@@ -561,6 +565,37 @@ fn list_new(parent: &mut Store, l: &List<'_>) {
     st.seen = l.edits.ver;
     parent.order.push(Pass::Sub(parent.subs.len() as u32));
     parent.subs.push(st);
+}
+
+/// A list found in a mapped image: if the image's window is the one exposed now and its rows lie where this
+/// layout puts them, the window is taken as it is and the pass that follows compares operands only. If not,
+/// nothing is taken and the pass writes every exposed row, as for a new list. Cold.
+#[cold]
+#[inline(never)]
+fn list_adopt(st: &mut Store, l: &List<'_>, (lo, hi): (u32, u32)) {
+    let mask = st.cap - 1;
+    let mut want = vec![0u64; (st.cap as usize / 64).max(1)];
+    for r in lo..hi {
+        let s = r & mask;
+        want[s as usize >> 6] |= 1 << (s & 63);
+    }
+    let same = hi - lo <= st.cap
+        && st.live_mut() == &want[..]
+        && (lo..hi).all(|r| {
+            let at = (l.x, l.y + r as i32 * l.row_h);
+            // SAFETY: sealed sites of this list; the slot is under `cap`.
+            st.sites.iter().zip(l.shape).all(|(s, t)| unsafe { s.rect(r & mask) } == t.shift(at))
+        });
+    if same {
+        (st.lo, st.hi) = (lo, hi);
+        st.geo = (l.x, l.y, l.row_h);
+        st.tmpl.clear();
+        st.tmpl.extend_from_slice(l.shape);
+        st.tmpl_at = l.shape.as_ptr() as usize;
+    } else {
+        st.live_mut().fill(0);
+        st.live_dirty();
+    }
 }
 
 /// Decide what a list pass does, and do everything that does not need the row's type: replay the relation's

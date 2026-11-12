@@ -36,6 +36,8 @@ struct Bed {
     sheet: Sheet,
     soft: Soft,
     rows: usize,
+    /// An image of the sheet as first mounted, for the start-up cells.
+    image: std::path::PathBuf,
 }
 
 type Cell = (&'static str, &'static str, fn(&mut Bed, usize));
@@ -99,6 +101,17 @@ const CELLS: &[Cell] = &[
         black_box(&w);
         b.world = w;
     }),
+    ("image_open", "start-up: map the image of the mounted scene; it can be painted (the view has not run)", |b, _| {
+        let w = World::<Soft>::open(&b.image).expect("the image this run saved");
+        black_box(w.shown.w[0]);
+        drop(w);
+    }),
+    ("image_adopt", "start-up: map the image, then describe the view against it (exact; the world can take turns)", |b, _| {
+        let mut w = World::<Soft>::open(&b.image).expect("the image this run saved");
+        w.adopt(&b.sheet, NWORDS).expect("its own view");
+        black_box(&w);
+        b.world = w;
+    }),
     ("frame_full", "a full frame through the reference raster (oracle; 2560 x 1600)", |b, _| {
         b.soft.records = 0;
         b.world.paint(&mut b.soft);
@@ -152,7 +165,9 @@ fn main() {
         let mut world = World::<Soft>::new(W, H, NWORDS);
         world.mount(&sheet);
         world.tiles.clear();
-        Bed { world, sheet, soft: Soft::new(W, H), rows }
+        let image = std::env::temp_dir().join(format!("hot_x-{}.bx", std::process::id()));
+        world.save(&image).expect("writing the image");
+        Bed { world, sheet, soft: Soft::new(W, H), rows, image }
     };
     let mut wall = vec![0u8; evict_kb * 1024];
     for &(name, _, f) in CELLS {
@@ -196,4 +211,5 @@ fn main() {
         t.sort();
         println!("{line}\t{}", t[t.len() / 2]);
     }
+    std::fs::remove_file(&bed.image).ok();
 }
