@@ -84,7 +84,7 @@ impl<T> Meta for T {
 
 /// Types the value walk does not open structurally: std's containers and bough's cells (their fields are
 /// implementation). Shown by `Debug`; their children, if any, come from `Items`.
-trait Opaque {}
+pub(crate) trait Opaque {}
 impl Opaque for String {}
 impl Opaque for std::ffi::OsString {}
 impl Opaque for std::path::PathBuf {}
@@ -476,7 +476,7 @@ fn emit_node(s: &mut Schema, t: std::any::TypeId, kind: Kind, name: &'static str
 
 /// Tuples, recognised by a trait: this toolchain's `TypeId::info` ICEs on a tuple type (rustc_abi index
 /// out of bounds), so `kind_of` asks this first and never calls `info` on one.
-trait IsTuple {}
+pub(crate) trait IsTuple {}
 macro_rules! tuples {
     ($(($($t:ident),*))*) => {$(impl<$($t),*> IsTuple for ($($t,)*) {})*};
 }

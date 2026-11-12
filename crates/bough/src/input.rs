@@ -905,6 +905,7 @@ impl<V: 'static> TextField<'_, V> {
         root_owner_only(m, "text_field");
         let [x, y, w, h] = self.rect;
         let (before, nodes_before) = (m.recs.len(), m.scope.nodes.len());
+        let before_wires = m.scope.wires.len();
         let s = m.rt.scale;
         // the box (a node with a handle: the caret colour and focus need it addressable)
         quad(x, y, w, h).bg(self.bg).rounded(self.radius).border(1.0, self.border).children(()).mount(m);
@@ -942,8 +943,21 @@ impl<V: 'static> TextField<'_, V> {
         let len = m.rt.texts[m.rt.input.fields[f as usize].ti as usize].bytes().len();
         m.rt.input.fields[f as usize].caret = len;
         (m.ox, m.oy, m.depth, m.clip) = (ox, oy, depth, clip);
+        // an input shows what was typed: its wires on the signal run while the signal is held (status group), in
+        // the order they had
+        let addr = self.sig.sig as *const crate::signal::Signal<String> as usize;
+        for i in nodes_wires_from(m, before_wires) {
+            if m.rt.wires[i as usize].head == addr {
+                m.rt.regroup(i, crate::rt::G_STATUS);
+            }
+        }
         // the caret sits at the start, transparent, until the field is focused (`place_caret`)
     }
+}
+
+/// The wires a mount installed since `from` (oldest first).
+fn nodes_wires_from<V>(m: &Mounter<'_, V>, from: usize) -> Vec<u32> {
+    m.scope.wires[from..].to_vec()
 }
 
 /// The caret's colour operand: a wire on the field's signal that only re-places the caret (its colour is
@@ -978,13 +992,9 @@ impl<V: View> App<V> {
 
     /// Settle what routes queued and lay out what changed (the end of an input turn).
     fn settle_input(&mut self) {
-        let owner = &mut *self.owner as *mut V as *const u8;
-        // SAFETY: the owner is the mounted view (uniquely borrowed: list patches write their cell); every
-        // wire was installed from a `sig!` proof for it.
-        unsafe { self.rt.settle(owner) };
-        // an arbitrary handler: `changed` waves, then a re-describing owner describes again (API.md)
-        self.effects();
-        self.redescribe();
+        // an arbitrary handler: settle, its questions published together, `changed` waves, then a re-describing
+        // owner describes again (API.md; `App::after_handler`)
+        self.after_handler();
         self.rt.lay_flush();
         self.sync_ring();
     }

@@ -19,9 +19,14 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
 pub const QUEUED: u32 = 1 << 31;
-/// The head's cell is held by a pending async cohort (`reader.rs`): only `latest` wires run until the
-/// cohort commits, which re-queues it.
+/// The head's cell is held: a question reading it is out (`ask.rs`, or a `reader.rs` cohort). Only its status
+/// wires (`latest`, `pending`) and questions run until the publication releases it, which re-queues it; a
+/// description reads its shown value (`keep`).
 pub const HELD: u32 = 1 << 30;
+/// The cell is a source of a holding question: its first write of a turn keeps a pre-image (`keep`).
+pub const KEEP: u32 = 1 << 29;
+/// A question about this cell is in the air (`pending(..)` is true).
+pub const LOADING: u32 = 1 << 28;
 
 /// A reactive cell whose first field is its wire head: `Signal`, `List`, `Reader`, `Entities`. `sig!`
 /// proves any of them at an `offset_of!` offset and hands back the cell's operand type `At`.
@@ -139,6 +144,38 @@ impl<T> Signal<T> {
     }
 }
 
+impl<T: 'static> Signal<T> {
+    /// Is a question about this cell in the air, or is the cell held (what shows it waits for an answer)?
+    #[inline]
+    pub fn pending(&self) -> bool {
+        self.head.get() & (HELD | LOADING) != 0
+    }
+    /// What was last written, even while the cell is held: inside a description a held cell reads the value
+    /// on screen (`*cell`), and this reads intent. Everywhere else the two are the same.
+    #[inline]
+    pub fn latest(&self) -> &T {
+        if self.head.get() & HELD != 0 {
+            if let Some(p) = keep::intent(self as *const Self as usize) {
+                // SAFETY: the kept value is a `T` (registered for this cell) and stays in the table until the
+                // description that swapped it ends, which outlives this borrow of the cell.
+                return unsafe { &*(p as *const T) };
+            }
+        }
+        &self.value
+    }
+    /// Ask again every question about this cell (its `into` destination, or the cell a `then` question is
+    /// `about`), with the same input and holding nothing: stale-while-revalidate, a retry. Takes effect when the
+    /// handler's turn settles.
+    pub fn refresh(&mut self) {
+        REFRESH.with(|r| r.borrow_mut().push(self as *const Self as usize));
+    }
+}
+
+thread_local! {
+    /// Cells whose questions a handler asked to re-ask (`Signal::refresh`), taken by the turn's settle.
+    pub(crate) static REFRESH: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 impl<T: PartialEq> Signal<T> {
     /// Equality cut-off, then mark. Returns whether the value changed.
     #[inline]
@@ -191,7 +228,10 @@ thread_local! {
 
 #[cold]
 #[inline(never)]
-fn log(addr: usize) {
+fn log(addr: usize, h: u32) {
+    if h & (KEEP | HELD) != 0 {
+        keep::capture(addr);
+    }
     LOG.with(|l| {
         let n = l.n.get() as usize;
         if n == LOG_CAP {
@@ -211,7 +251,219 @@ pub(crate) fn queue(head: &Cell<u32>) {
     let h = head.get();
     if h != 0 && h & QUEUED == 0 {
         head.set(h | QUEUED);
-        log(head as *const _ as usize);
+        log(head as *const _ as usize, h);
+    }
+}
+
+/// Queue a head for the runtime's own reasons (a hold or a release, a status change): no pre-image is kept.
+pub(crate) fn queue_quiet(head: &Cell<u32>) {
+    let h = head.get();
+    if h != 0 && h & QUEUED == 0 {
+        head.set(h | QUEUED);
+        log(head as *const _ as usize, 0);
+    }
+}
+
+/// Pre-images and kept values of held cells (DESIGN.md of lane `async`, section 4).
+///
+/// A cell whose head has `KEEP` (a source of a holding question) or `HELD` keeps a clone of its value at its
+/// first write of a turn, before the write changes it (the write log's cold path is that event). When a
+/// question holds the cell, the pre-image becomes the hold's kept value: what the screen shows. A description
+/// runs with every held cell's kept value swapped in (`swap_held`), and the release drops it. Pre-images of
+/// cells that end the turn unheld are dropped (`end_turn`). One thread-local table, touched only by cells with
+/// one of the two bits.
+pub(crate) mod keep {
+    use std::any::Any;
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashMap;
+
+    /// Clone a cell's value; swap a cell's value with a kept one. Monomorphised per cell type.
+    #[derive(Clone, Copy)]
+    pub(crate) struct Fns {
+        pub clone: unsafe fn(*const u8) -> Box<dyn Any>,
+        pub swap: unsafe fn(*mut u8, &mut Box<dyn Any>),
+        pub value: unsafe fn(&Box<dyn Any>) -> *const u8,
+    }
+
+    #[derive(Default)]
+    pub(crate) struct Table {
+        /// Cell -> its functions, how many questions asked for them, and the runtime they belong to.
+        fns: HashMap<usize, (Fns, u32, u64)>,
+        /// Cell -> its kept value (a pre-image of this turn, or a held cell's shown value).
+        kept: HashMap<usize, Box<dyn Any>>,
+        /// Cells whose kept value is only this turn's pre-image.
+        turn: Vec<usize>,
+    }
+
+    thread_local! {
+        static T: RefCell<Table> = RefCell::new(Table::default());
+        /// A description is running with the kept values swapped in.
+        static SWAPPED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// # Safety
+    /// `p` is a `Signal<T>`.
+    pub(crate) unsafe fn clone_of<T: Clone + 'static>(p: *const u8) -> Box<dyn Any> {
+        Box::new(unsafe { (*(p as *const crate::signal::Signal<T>)).value.clone() })
+    }
+    /// # Safety
+    /// `p` is a `Signal<T>` and `k` holds a `T`.
+    pub(crate) unsafe fn swap_of<T: 'static>(p: *mut u8, k: &mut Box<dyn Any>) {
+        let s = unsafe { &mut *(p as *mut crate::signal::Signal<T>) };
+        std::mem::swap(&mut s.value, k.downcast_mut::<T>().expect("kept value of the cell's type"));
+    }
+    /// # Safety
+    /// `k` holds a `T`.
+    pub(crate) unsafe fn value_of<T: 'static>(k: &Box<dyn Any>) -> *const u8 {
+        k.downcast_ref::<T>().expect("kept value of the cell's type") as *const T as *const u8
+    }
+    pub(crate) fn fns<T: Clone + 'static>() -> Fns {
+        Fns { clone: clone_of::<T>, swap: swap_of::<T>, value: value_of::<T> }
+    }
+
+    /// Register `cell` as a source of a holding question (its head gets `KEEP` from the caller).
+    pub(crate) fn register(cell: usize, f: Fns, rt: u64) {
+        T.with(|t| {
+            let mut t = t.borrow_mut();
+            let e = t.fns.entry(cell).or_insert((f, 0, rt));
+            if e.2 != rt {
+                // a cell of a runtime that is gone, at an address reused by this one
+                *e = (f, 0, rt);
+            }
+            e.1 += 1;
+        });
+    }
+
+    /// Runtime `rt` is dropped: its cells leave the table.
+    pub(crate) fn forget_runtime(rt: u64) {
+        let _ = T.try_with(|t| {
+            let mut t = t.borrow_mut();
+            let t = &mut *t;
+            let gone: Vec<usize> = t.fns.iter().filter(|(_, e)| e.2 == rt).map(|(&c, _)| c).collect();
+            for c in gone {
+                t.fns.remove(&c);
+                t.kept.remove(&c);
+                t.turn.retain(|&x| x != c);
+            }
+        });
+    }
+    /// One question fewer; returns whether none is left (the caller clears `KEEP`).
+    pub(crate) fn unregister(cell: usize) -> bool {
+        T.with(|t| {
+            let mut t = t.borrow_mut();
+            let gone = match t.fns.get_mut(&cell) {
+                Some(e) => {
+                    e.1 -= 1;
+                    e.1 == 0
+                }
+                None => true,
+            };
+            if gone {
+                t.fns.remove(&cell);
+            }
+            gone
+        })
+    }
+
+    /// The write log's cold path, for a head with `KEEP` or `HELD`: keep the value before this first write.
+    pub(crate) fn capture(cell: usize) {
+        T.with(|t| {
+            let mut t = t.borrow_mut();
+            if t.kept.contains_key(&cell) {
+                return;
+            }
+            let Some(&(f, _, _)) = t.fns.get(&cell) else { return };
+            // SAFETY: registered for this cell's type by the question that set its `KEEP` bit.
+            let v = unsafe { (f.clone)(cell as *const u8) };
+            t.kept.insert(cell, v);
+            // SAFETY: a registered cell's head is live (its question unregisters before its scope goes).
+            let held = unsafe { &*(cell as *const Cell<u32>) }.get() & super::HELD != 0;
+            if !held {
+                t.turn.push(cell);
+            }
+        })
+    }
+
+    /// `cell` is now held: its pre-image of this turn (if it was written) is the hold's kept value.
+    pub(crate) fn held(cell: usize) {
+        T.with(|t| t.borrow_mut().turn.retain(|&c| c != cell));
+    }
+    /// `cell` is released: the screen shows its intent again. Call while its head still has `HELD`: during a
+    /// description (kept values swapped in) the intent is swapped back into the cell before the kept value goes.
+    pub(crate) fn release(cell: usize) {
+        T.with(|t| {
+            let mut t = t.borrow_mut();
+            let t = &mut *t;
+            if let Some(mut k) = t.kept.remove(&cell) {
+                // SAFETY: as in `capture`.
+                let held = unsafe { &*(cell as *const Cell<u32>) }.get() & super::HELD != 0;
+                if held && SWAPPED.with(|s| s.get()) {
+                    if let Some(&(f, _, _)) = t.fns.get(&cell) {
+                        // SAFETY: registered for this cell's type.
+                        unsafe { (f.swap)(cell as *mut u8, &mut k) };
+                    }
+                }
+            }
+            t.turn.retain(|&c| c != cell);
+        })
+    }
+    /// The turn is over: pre-images of cells that are not held go.
+    pub(crate) fn end_turn() {
+        T.with(|t| {
+            let mut t = t.borrow_mut();
+            let turn = std::mem::take(&mut t.turn);
+            for c in turn {
+                // SAFETY: as in `capture`.
+                if unsafe { &*(c as *const Cell<u32>) }.get() & super::HELD == 0 {
+                    t.kept.remove(&c);
+                }
+            }
+        })
+    }
+    /// Is anything kept (a hold, or a pre-image of this turn)?
+    pub(crate) fn any() -> bool {
+        T.with(|t| !t.borrow().kept.is_empty())
+    }
+
+    /// Swap every held cell of runtime `rt` with its kept value (call twice: before and after a description).
+    pub(crate) fn swap_held(on: bool, rt: u64) {
+        T.with(|t| {
+            let mut t = t.borrow_mut();
+            let t = &mut *t;
+            for (&c, k) in t.kept.iter_mut() {
+                // SAFETY: as in `capture`.
+                if unsafe { &*(c as *const Cell<u32>) }.get() & super::HELD == 0 {
+                    continue;
+                }
+                if let Some(&(f, _, r)) = t.fns.get(&c) {
+                    if r != rt {
+                        continue;
+                    }
+                    // SAFETY: registered for this cell's type.
+                    unsafe { (f.swap)(c as *mut u8, k) };
+                }
+            }
+        });
+        SWAPPED.with(|s| s.set(on));
+    }
+
+    /// While a description runs: the intent of held cell `cell` (swapped out into the table).
+    pub(crate) fn intent(cell: usize) -> Option<*const u8> {
+        if !SWAPPED.with(|s| s.get()) {
+            return None;
+        }
+        T.with(|t| {
+            let t = t.borrow();
+            let k = t.kept.get(&cell)?;
+            let &(f, _, _) = t.fns.get(&cell)?;
+            // SAFETY: registered for this cell's type.
+            Some(unsafe { (f.value)(k) })
+        })
+    }
+
+    /// Kept values (tests, the ledger).
+    pub(crate) fn len() -> usize {
+        T.with(|t| t.borrow().kept.len())
     }
 }
 

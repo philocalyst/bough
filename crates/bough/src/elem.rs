@@ -108,6 +108,17 @@ impl<V> Mounter<'_, V> {
         self.scope.wires.push(i);
         i
     }
+    /// `wire_cell` into group `group` of the head's chain (`G_QUESTION`, `G_STATUS`, `G_PLAIN`).
+    ///
+    /// # Safety
+    /// As `wire_cell`.
+    pub(crate) unsafe fn wire_cell_in(&mut self, group: u8, head: &std::cell::Cell<u32>, off: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
+        debug_assert_eq!(head as *const _ as usize, self.owner as usize + off as usize, "operand is not a field of the mounted owner");
+        // SAFETY: as `wire_cell`.
+        let i = unsafe { self.rt.add_wire_in(group, head, off, self.cls, patch, node, recipe) };
+        self.scope.wires.push(i);
+        i
+    }
 }
 
 pub trait Element<V>: Sized {

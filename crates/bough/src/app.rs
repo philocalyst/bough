@@ -50,11 +50,15 @@ pub struct Config {
     /// benchmarks set it to measure the wire path alone; `Application::run` never does, so every
     /// application view re-describes after its handlers (`designs/reactivity/final/01-state.md` §2).
     pub mount_once: bool,
+    /// A harness option: questions mount but never ask (a reference app built from a published state, for the
+    /// async oracle).
+    #[doc(hidden)]
+    pub inert_async: bool,
 }
 
 impl Config {
     pub fn new(width_pt: f32, height_pt: f32, scale: f32, font: Vec<u8>) -> Config {
-        Config { width_pt, height_pt, scale, font, ring: 0, caps: Caps::DEFAULT, faces: Vec::new(), mount_once: false }
+        Config { width_pt, height_pt, scale, font, ring: 0, caps: Caps::DEFAULT, faces: Vec::new(), mount_once: false, inert_async: false }
     }
     /// Surfaces of the ring.
     pub fn surfaces(&self) -> usize {
@@ -63,6 +67,12 @@ impl Config {
     /// `mount_once` set (a scene benchmark measuring the wire path alone).
     pub fn once(mut self) -> Config {
         self.mount_once = true;
+        self
+    }
+    /// Questions mount but never ask (see `inert_async`).
+    #[doc(hidden)]
+    pub fn inert(mut self) -> Config {
+        self.inert_async = true;
         self
     }
 }
@@ -372,11 +382,14 @@ impl<V: View> App<V> {
         let once = cfg.mount_once;
         let ptr = &*owner as *const V;
         rt.owner = ptr as *const u8;
+        rt.asks.inert = cfg.inert_async;
         {
             let el = owner.view();
             let tp: *mut Vec<u32> = if once { std::ptr::null_mut() } else { &mut tape };
             let mut m = Mounter { rt: &mut rt, owner: ptr, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None, cls: 0, tape: tp, ti: 0, pos: 0, kid: 0, keep: false };
             el.mount(&mut m);
+            // the owner's `Action` fields, found in its layout (action.rs)
+            crate::action::mount_actions::<V>(&mut m);
         }
         rt.bough.insert_run(0, &recs);
         // layout groups of the first mount (list regions mount their first rows between its passes)
@@ -385,6 +398,10 @@ impl<V: View> App<V> {
         // wires queued while mounting (a producer's first request flips its reader to pending)
         // SAFETY: the owner just mounted, uniquely borrowed here.
         unsafe { rt.settle(&mut *owner as *mut V as *const u8) };
+        // first answers ready on their first poll land before the first frame
+        // SAFETY: as above.
+        unsafe { rt.finish_async(&mut *owner as *mut V as *const u8) };
+        crate::signal::keep::end_turn();
         rt.lay_flush();
         drop(scope); // the root scope lives as long as the app: nothing of it is ever released
         let mut startup = Startup { mount_ns: t_mount.elapsed().as_nanos() as u64, ..Startup::default() };
@@ -494,12 +511,12 @@ impl<V: View> App<V> {
         self.prof.reset();
         self.rt.pubs.clear();
         self.rt.admit();
-        f(&mut self.owner);
         let owner = &mut *self.owner as *mut V as *const u8;
+        // async completions (answers, actions) land first, each settled (ask.rs)
         // SAFETY: the owner is the mounted view; every wire was installed from a `sig!` proof for it.
-        unsafe { self.rt.settle(owner) };
-        self.effects();
-        self.redescribe();
+        unsafe { self.rt.admit_async(owner) };
+        f(&mut self.owner);
+        self.after_handler();
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
         self.prof.mark(PH_TEXT);
@@ -523,12 +540,89 @@ impl<V: View> App<V> {
     /// The rest of a turn after `write`: settle the queued signals' wires and lay out what changed.
     pub fn flush(&mut self) {
         self.sync();
+        self.after_handler();
+        self.rt.lay_flush();
+    }
+
+    /// The part of every turn after its handler: the refreshes it asked for, settle, the turn's questions
+    /// published together (what is ready lands), `changed`, re-description (reading held cells' shown values),
+    /// and whatever the description mounted that answered at once.
+    pub(crate) fn after_handler(&mut self) {
         let owner = &mut *self.owner as *mut V as *const u8;
+        self.rt.take_refreshes();
         // SAFETY: as in `turn`.
         unsafe { self.rt.settle(owner) };
+        unsafe { self.rt.finish_async(owner) };
         self.effects();
         self.redescribe();
-        self.rt.lay_flush();
+        // a description mounts and releases questions (scopes): what that made ready lands now, before the frame
+        for _ in 0..4 {
+            // SAFETY: as above.
+            if !unsafe { self.rt.finish_async(owner) } {
+                break;
+            }
+            self.effects();
+            self.redescribe();
+        }
+        crate::signal::keep::end_turn();
+    }
+
+    /// `f` on the state as the screen shows it: every held cell reads its kept (shown) value. For oracles: a
+    /// fresh app built from what `f` returns must look like this one.
+    pub fn published<R>(&mut self, f: impl FnOnce(&V) -> R) -> R {
+        let swap = crate::signal::keep::any();
+        if swap {
+            crate::signal::keep::swap_held(true, self.rt.asks.id);
+        }
+        let r = f(&self.owner);
+        if swap {
+            crate::signal::keep::swap_held(false, self.rt.asks.id);
+        }
+        r
+    }
+
+    /// Copy `other`'s hold and loading bits onto this app's cells at the same offsets (both apps of the same
+    /// view type; this one inert), then run a turn: what shows `pending` shows it here too. For oracles.
+    #[doc(hidden)]
+    pub fn mirror_status_from(&mut self, other: &App<V>) {
+        use crate::signal::{HELD, LOADING};
+        let (src, dst) = (&*other.owner as *const V as *const u8, &mut *self.owner as *mut V as *const u8);
+        for &off in &other.rt.classes[0] {
+            // SAFETY: both owners are `V`; `off` is a wired cell's offset in `V` (its head first).
+            let (a, b) = unsafe { (&*(src.add(off as usize) as *const std::cell::Cell<u32>), &*(dst.add(off as usize) as *const std::cell::Cell<u32>)) };
+            let bits = a.get() & (HELD | LOADING);
+            if b.get() & (HELD | LOADING) != bits {
+                b.set((b.get() & !(HELD | LOADING)) | bits);
+                crate::signal::queue_quiet(b);
+            }
+        }
+        self.turn(|_| {});
+    }
+
+    /// Values kept for held cells and this turn's pre-images (diagnostics).
+    #[doc(hidden)]
+    pub fn kept_values(&self) -> usize {
+        crate::signal::keep::len()
+    }
+
+    /// Use a clock that only `advance` moves (tests: sleeps and intervals in a fixed order, in no time).
+    pub fn use_fake_clock(&mut self) {
+        self.rt.asks.fake = Some(self.rt.asks.now());
+    }
+    /// Move the fake clock on by `d` and run a turn (what fell due lands).
+    pub fn advance(&mut self, d: std::time::Duration) {
+        let now = self.rt.asks.now() + d;
+        self.rt.asks.fake = Some(now);
+        self.turn(|_| {});
+    }
+    /// Turns until no flight has rung (bounded): what is ready lands, streams step one item per turn.
+    pub fn run_until_stalled(&mut self) -> usize {
+        let mut n = 0;
+        while n < 10_000 && self.rt.asks.engine.woken() {
+            self.turn(|_| {});
+            n += 1;
+        }
+        n
     }
 
     /// A turn with no handler: admit async completions (a committed cohort's wires run in this turn).
@@ -573,8 +667,16 @@ impl<V: View> App<V> {
     /// Describe the view again and patch the retained records (`describe.rs`); not when mounted once.
     pub(crate) fn redescribe(&mut self) {
         if !self.once {
+            // a description reads what the screen shows: held cells' kept values are swapped in around it
+            let swap = crate::signal::keep::any();
+            if swap {
+                crate::signal::keep::swap_held(true, self.rt.asks.id);
+            }
             // SAFETY: the tape was recorded by this owner's mount at the start of the Bough.
             unsafe { crate::describe::redescribe(&mut self.rt, &*self.owner, &mut self.tape) };
+            if swap {
+                crate::signal::keep::swap_held(false, self.rt.asks.id);
+            }
         }
     }
 

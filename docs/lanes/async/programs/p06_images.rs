@@ -56,6 +56,6 @@ pub struct Gallery {
 
 impl View for Gallery {
     fn view(&self) -> impl Element<Self> + '_ {
-        list(sig!(self.photos)).virtualized(64.0)
+        list(sig!(self.photos)).viewport().estimate(64.0).h(400.0)
     }
 }

@@ -7,6 +7,7 @@ description = "bough: the public facade (Signal, View, typed builders, turns) ov
 
 [dependencies]
 bough-core = { path = "../bough-core" }
+bough-async = { path = "../bough-async" }
 bough-mem = { path = "../bough-mem" }
 bough-text = { path = "../bough-text" }
 bough-metal = { path = "../bough-metal" }

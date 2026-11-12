@@ -255,6 +255,10 @@ pub struct Engine {
     alone: Vec<u32>,
     /// Actions whose first run has something to land.
     acts_ready: Vec<u32>,
+    /// Flights in the air, live publications, questions with an interval: `quiet` is three compares.
+    nflights: u32,
+    npubs: u32,
+    nevery: u32,
     /// Cells newly held / released, and `about` cells whose loading status changed: the façade drains them.
     pub hold_out: Vec<usize>,
     pub release_out: Vec<usize>,
@@ -297,6 +301,9 @@ impl Engine {
             group: None,
             alone: Vec::new(),
             acts_ready: Vec::new(),
+            nflights: 0,
+            npubs: 0,
+            nevery: 0,
             hold_out: Vec::new(),
             release_out: Vec::new(),
             status_out: Vec::new(),
@@ -314,6 +321,9 @@ impl Engine {
     }
     /// The earliest moment something is due (a sleep or an `every`), for the host's timer.
     pub fn next_wake(&self) -> Option<Duration> {
+        if self.nevery == 0 {
+            return self.timers.next_deadline();
+        }
         let q = self.qs.iter().filter(|q| q.q.is_some()).filter_map(|q| q.due).min();
         match (self.timers.next_deadline(), q) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -322,7 +332,13 @@ impl Engine {
     }
     /// Anything in the air?
     pub fn busy(&self) -> bool {
-        self.flights.iter().any(|f| f.is_some())
+        self.nflights != 0
+    }
+    /// Nothing in the air, nothing staged, no publication, no interval and no sleep: a turn has nothing to ask
+    /// of the engine (the cost of async to an idle turn is this test).
+    #[inline]
+    pub fn quiet(&self) -> bool {
+        self.nflights == 0 && self.npubs == 0 && self.nevery == 0 && self.alone.is_empty() && self.acts_ready.is_empty()
     }
     /// Flights rung and not yet polled.
     pub fn woken(&self) -> bool {
@@ -361,12 +377,16 @@ impl Engine {
         self.fgen[id as usize] = self.fgen[id as usize].wrapping_add(1);
         let waker = Arc::new(FWaker { bell: self.bell.clone(), id, generation: self.fgen[id as usize], armed: AtomicBool::new(true) });
         self.flights[id as usize] = Some(Flight { work, waker, owner });
+        self.nflights += 1;
         id
     }
 
     /// Drop a flight (its cancellation).
     fn drop_flight(&mut self, id: u32) {
         let f = self.flights[id as usize].take();
+        if f.is_some() {
+            self.nflights -= 1;
+        }
         self.fgen[id as usize] = self.fgen[id as usize].wrapping_add(1);
         self.ffree.push(id);
         let timers: *const Timers = &*self.timers;
@@ -397,6 +417,7 @@ impl Engine {
         match r {
             Polled::Done(_) => {
                 let f = self.flights[id as usize].take();
+                self.nflights -= 1;
                 self.fgen[id as usize] = self.fgen[id as usize].wrapping_add(1);
                 self.ffree.push(id);
                 with_timers(unsafe { &*timers }, || drop(f));
@@ -494,6 +515,7 @@ impl Engine {
         };
         if let Some(e) = opts.every {
             self.qs[i as usize].due = Some(self.timers.now() + e);
+            self.nevery += 1;
         }
         for s in self.qs[i as usize].sources.clone() {
             *self.sourced.entry(s).or_default() += 1;
@@ -685,6 +707,7 @@ impl Engine {
     }
 
     fn new_pub(&mut self) -> u32 {
+        self.npubs += 1;
         let p = Pub { members: Vec::new(), later: Vec::new(), cells: Vec::new(), open: true };
         match self.pfree.pop() {
             Some(i) => {
@@ -705,6 +728,7 @@ impl Engine {
         }
         let Some(pa) = self.pubs[a as usize].take() else { return };
         self.pfree.push(a);
+        self.npubs -= 1;
         self.stats.merges += 1;
         for &m in &pa.members {
             self.qs[m as usize].pubn = Some(b);
@@ -740,12 +764,21 @@ impl Engine {
         let q = &mut self.qs[qi as usize];
         q.q = None;
         q.shown = None;
-        q.due = None;
+        if q.due.take().is_some() {
+            self.nevery -= 1;
+        }
         for s in std::mem::take(&mut q.sources) {
             if let Some(n) = self.sourced.get_mut(&s) {
                 *n -= 1;
                 if *n == 0 {
                     self.sourced.remove(&s);
+                    // no live question reads it: nothing on screen can wait on it any more
+                    if let Some(p) = self.held.remove(&s) {
+                        if let Some(pb) = self.pubs[p as usize].as_mut() {
+                            pb.cells.retain(|&c| c != s);
+                        }
+                        self.release_out.push(s);
+                    }
                 }
             }
         }
@@ -926,6 +959,7 @@ impl Engine {
         }
         let pb = self.pubs[p as usize].take().unwrap();
         self.pfree.push(p);
+        self.npubs -= 1;
         for c in pb.cells {
             self.held.remove(&c);
             self.release_out.push(c);

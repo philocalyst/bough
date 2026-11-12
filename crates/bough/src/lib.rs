@@ -1,9 +1,11 @@
-#![feature(type_info, ptr_metadata, rustc_attrs, const_trait_impl, const_cmp, arbitrary_self_types_pointers, f16, stdarch_neon_f16)]
+#![feature(type_info, ptr_metadata, rustc_attrs, const_trait_impl, const_cmp, arbitrary_self_types_pointers, f16, stdarch_neon_f16, async_iterator)]
 #![allow(internal_features)]
 //! bough: the public façade over bough-core (records, damage), bough-text (shaping into the glyph pool),
 //! cephal (layout) and bough-metal's fused presenter. One region holds everything the GPU reads
 //! (`rt.rs`); a frame's CPU work ends at the tile list (`app.rs`).
+pub mod action;
 pub mod app;
+pub mod ask;
 pub mod backend;
 pub mod boxops;
 pub mod changed;
@@ -30,6 +32,7 @@ pub mod rt;
 pub mod seal;
 pub mod select;
 pub mod signal;
+pub mod switch;
 pub mod template;
 pub mod text;
 pub mod transition;
@@ -47,7 +50,12 @@ pub mod prelude {
     pub use crate::entity::{Entities, Entity};
     pub use crate::list::{List, Slot};
     pub use crate::listview::list;
-    pub use crate::reader::{boundary, Reader, Request};
+    pub use crate::reader::{boundary, latest, Reader, Request};
+    pub use crate::action::Action;
+    pub use crate::ask::{ask, follow, pending, SourceMap};
+    pub use crate::describe::{Arm2, Arm3, Arm4};
+    pub use crate::switch::{crossfade, keyed, morph, slide, Tag};
+    pub use bough_async::{compute, compute_stream, race, sleep, timeout, yield_now, Cancel, Report};
     pub use crate::input::{text_field, tooltip, Interact, Key, Mods};
     pub use crate::layout::{block, column, para, row, Align, Justify, Styled};
     pub use crate::sig;
@@ -73,6 +81,9 @@ pub mod raw {
     pub use crate::list::{List, Slot};
     pub use crate::listview::{index_list, list, list_with};
     pub use crate::reader::{boundary, latest, produce, Reader, Request};
+    pub use crate::action::Action;
+    pub use crate::ask::{ask, follow, pending, SourceMap};
+    pub use bough_async::{compute, compute_stream, race, sleep, timeout, yield_now, Cancel, Report};
     pub use crate::rt::Caps;
     pub use crate::sig;
     pub use crate::signal::{Signal, Wired};

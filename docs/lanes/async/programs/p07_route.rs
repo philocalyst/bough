@@ -58,7 +58,7 @@ const OFF: Color = rgb(0x9aa5b1);
 fn tab(label: &'static str, r: Route, at: Route, asked: Route) -> impl Element<Mail> {
     // the published route is solid; the one asked for (still loading) is outlined
     let bg = if r == at { ON } else { OFF };
-    button(label).bg(bg).border(if r == asked && r != at { 2.0 } else { 0.0 }, ON).on_click(move |v: &mut Mail| v.go(r))
+    row(text(label)).px(12.0).py(6.0).rounded(6.0).bg(bg).border(if r == asked && r != at { 2.0 } else { 0.0 }, ON).on_click(move |v: &mut Mail| v.go(r))
 }
 
 impl View for Mail {

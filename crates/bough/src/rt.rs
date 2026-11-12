@@ -277,8 +277,10 @@ pub struct Wire {
     /// Next wire of the same signal (0 = end).
     pub next: u32,
     pub dead: bool,
-    /// Runs while its source is held by a pending cohort (`latest(..)` operands, reader pending wires).
-    pub latest: bool,
+    /// Where it runs in its head's chain: `G_QUESTION` (questions: they decide holds), `G_STATUS` (`latest`,
+    /// `pending`: they run while the cell is held), `G_PLAIN` (everything else, skipped while held). A chain is
+    /// kept in group order, so a hold decided by a question is seen by every wire after it.
+    pub group: u8,
     pub node: u32,
     /// Address of the head the wire was linked into. `settle` runs a wire only from that exact head: a
     /// head moved elsewhere (a `Signal` swapped between owners or apps, a list row taken out and put back)
@@ -292,6 +294,7 @@ pub struct Wire {
 
 impl Drop for Rt {
     fn drop(&mut self) {
+        crate::signal::keep::forget_runtime(self.asks.id);
         crate::signal::LOG.with(|l| {
             if l as *const _ as usize == self.log_home {
                 l.live.set(l.live.get() - 1);
@@ -307,8 +310,13 @@ pub type ChangedFn = unsafe fn(*mut u8, &crate::changed::Pubs, &[usize]);
 /// None needed: reads nothing (a patch for a wire whose cell has nothing to apply).
 unsafe fn nop(_: &mut Rt, _: &Wire, _: *const u8, _: *const u8) {}
 
-/// Index bits of a head (the rest are flags: `QUEUED`, `HELD`).
-pub const HEAD_IDX: u32 = (1 << 30) - 1;
+/// Index bits of a head (the rest are flags: `QUEUED`, `HELD`, `KEEP`, `LOADING`).
+pub const HEAD_IDX: u32 = (1 << 28) - 1;
+
+/// Wire groups (`Wire::group`).
+pub const G_QUESTION: u8 = 0;
+pub const G_STATUS: u8 = 1;
+pub const G_PLAIN: u8 = 2;
 
 /// Everything created while mounting one subtree that must be released when it unmounts.
 #[derive(Default)]
@@ -324,12 +332,15 @@ pub struct Scope {
     pub lregs: Vec<u32>,
     /// Async producers declared in this scope (`reader.rs`), revoked with it.
     pub prods: Vec<u32>,
+    /// Questions (`ask.rs`) and actions (`action.rs`) mounted in this scope, revoked with it.
+    pub asks: Vec<u32>,
+    pub acts: Vec<u32>,
 }
 
 impl Scope {
     /// Heap bytes of the scope's lists (memory ledger).
     pub fn heap_bytes(&self) -> usize {
-        (self.nodes.capacity() + self.wires.capacity() + self.runs.capacity() + self.lroots.capacity() + self.dyns.capacity() + self.lregs.capacity() + self.prods.capacity()) * 4
+        (self.nodes.capacity() + self.wires.capacity() + self.runs.capacity() + self.lroots.capacity() + self.dyns.capacity() + self.lregs.capacity() + self.prods.capacity() + self.asks.capacity() + self.acts.capacity()) * 4
     }
 }
 
@@ -495,6 +506,8 @@ pub struct Rt {
     /// publications for `View::changed` (`changed.rs`).
     pub(crate) eviews: Vec<crate::entity::EView>,
     pub asy: crate::reader::Async,
+    /// Questions, actions and their engine (`ask.rs`, `action.rs`, crate `bough-async`).
+    pub asks: crate::ask::Asks,
     pub(crate) pubs: crate::changed::Pubs,
     pub(crate) selects: crate::select::Selects,
     next_serial: u32,
@@ -601,7 +614,7 @@ impl Rt {
             run_free: Vec::new(),
             nodes: vec![Node::blank()],
             node_free: Vec::new(),
-            wires: vec![Wire { next: 0, dead: true, latest: false, node: 0, head: 0, cls: 0, patch: nop, recipe: [0; 16] }],
+            wires: vec![Wire { next: 0, dead: true, group: G_PLAIN, node: 0, head: 0, cls: 0, patch: nop, recipe: [0; 16] }],
             wire_free: Vec::new(),
             classes: vec![Vec::new()],
             class_rank: vec![Vec::new()],
@@ -635,6 +648,7 @@ impl Rt {
             dyns: Default::default(),
             eviews: Vec::new(),
             asy: Default::default(),
+            asks: Default::default(),
             pubs: Default::default(),
             selects: Default::default(),
             next_serial: 0,
@@ -1029,6 +1043,15 @@ impl Rt {
     /// `off` must be the `offset_of!`-proven offset of a headed cell field of the class's owner type, `head`
     /// that cell's head, and `patch` monomorphised for the cell's type (and `recipe` holding what it reads).
     pub(crate) unsafe fn add_wire(&mut self, head: &std::cell::Cell<u32>, off: u32, cls: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
+        // SAFETY: this fn's contract.
+        unsafe { self.add_wire_in(G_PLAIN, head, off, cls, patch, node, recipe) }
+    }
+
+    /// `add_wire` into group `group` of the head's chain (at the end of that group).
+    ///
+    /// # Safety
+    /// As `add_wire`.
+    pub(crate) unsafe fn add_wire_in(&mut self, group: u8, head: &std::cell::Cell<u32>, off: u32, cls: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
         let addr = head as *const _ as usize;
         let h = head.get();
         let mut first = h & HEAD_IDX;
@@ -1046,15 +1069,15 @@ impl Rt {
             c.push(off);
             r[k] = c.len() as u32;
         }
-        // `latest` wires (producers, `latest(..)` operands) stay at the front of the chain: they run before a
-        // held source's other wires are skipped (`run_head`), whatever the declaration order
+        // the chain is in group order (questions, status, plain), newest first within a group: a hold decided by a
+        // question is seen by every wire after it, whatever the declaration order
         let mut after = 0u32;
         let mut p = first;
-        while p != 0 && self.wires[p as usize].latest && self.wires[p as usize].head == addr {
+        while p != 0 && self.wires[p as usize].group < group && self.wires[p as usize].head == addr {
             after = p;
             p = self.wires[p as usize].next;
         }
-        let w = Wire { next: if after == 0 { first } else { p }, dead: false, latest: false, node, head: addr, cls, patch, recipe };
+        let w = Wire { next: if after == 0 { first } else { p }, dead: false, group, node, head: addr, cls, patch, recipe };
         let idx = if let Some(i) = self.wire_free.pop() {
             self.wires[i as usize] = w;
             i
@@ -1097,7 +1120,8 @@ impl Rt {
         if self.settle_audit {
             for &off in &self.classes[0] {
                 let h = unsafe { &*(owner.add(off as usize) as *const std::cell::Cell<u32>) }.get();
-                assert!(h & crate::signal::QUEUED == 0 || h & crate::signal::HELD != 0, "settle left a queued head at offset {off}");
+                // a held head is settled too (its status wires ran); none may be left queued
+                assert!(h & crate::signal::QUEUED == 0, "settle left a queued head at offset {off}");
             }
         }
         self.lists_end_turn();
@@ -1218,8 +1242,8 @@ impl Rt {
                 self.wires[i as usize].head = 0;
                 self.wire_free.push(i);
             } else {
-                // re-read: a producer running first may have just put this source on hold
-                if head.get() & crate::signal::HELD == 0 || w.latest {
+                // re-read: a question running first may have just put this source on hold
+                if head.get() & crate::signal::HELD == 0 || w.group < G_PLAIN {
                     self.ctr.wires_run += 1;
                     // SAFETY: the wire was installed for this cell's type and the owner's type.
                     unsafe { (w.patch)(self, &w, sig, owner) };
@@ -1368,6 +1392,12 @@ impl Rt {
         }
         for p in s.prods.drain(..) {
             self.revoke_producer(p);
+        }
+        for q in s.asks.drain(..) {
+            self.revoke_ask(q);
+        }
+        for a in s.acts.drain(..) {
+            self.revoke_action(a);
         }
         // dynamic items are cut now too (their wires may sit on live signals)
         for &d in &s.dyns {

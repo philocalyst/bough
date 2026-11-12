@@ -444,3 +444,79 @@ pub(crate) fn update_opaque<V>(m: &mut Mounter<'_, V>) {
     m.pos += nrec;
     m.kid += nkid;
 }
+
+/// One arm of a sum element as a dynamic item: its key is the arm, so a change of arm replaces the item and the
+/// same arm updates it.
+pub struct ArmItem<E>(pub E, pub u64);
+impl<V, E: Element<V>> Element<V> for ArmItem<E> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        self.0.mount(m)
+    }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        self.0.update(m)
+    }
+    fn dyn_key(&self) -> u64 {
+        self.1
+    }
+}
+
+macro_rules! arms {
+    ($name:ident, $inner:ident: $($v:ident),+) => {
+        /// A sum element (one of several element types, chosen by a `match`): a dynamic part of one item whose
+        /// identity is its arm.
+        pub enum $name<$($v),+> { $($v($v)),+ }
+        #[doc(hidden)]
+        pub enum $inner<$($v),+> { $($v($v)),+ }
+        impl<V, $($v: Element<V>),+> Element<V> for $inner<$($v),+> {
+            fn mount(self, m: &mut Mounter<'_, V>) {
+                match self { $($inner::$v(e) => e.mount(m)),+ }
+            }
+            fn update(self, m: &mut Mounter<'_, V>) {
+                match self { $($inner::$v(e) => e.update(m)),+ }
+            }
+        }
+        impl<V, $($v: Element<V>),+> Element<V> for $name<$($v),+> {
+            fn mount(self, m: &mut Mounter<'_, V>) {
+                let (k, e) = self.split();
+                mount_dyn(m, std::iter::once(ArmItem(e, k)));
+            }
+            fn update(self, m: &mut Mounter<'_, V>) {
+                let (k, e) = self.split();
+                update_dyn(m, std::iter::once(ArmItem(e, k)));
+            }
+        }
+        impl<$($v),+> $name<$($v),+> {
+            fn split(self) -> (u64, $inner<$($v),+>) {
+                let mut k = 0u64;
+                let mut key = 0u64;
+                $(
+                    k += 1;
+                    if matches!(self, $name::$v(_)) { key = k; }
+                )+
+                (key, match self { $($name::$v(e) => $inner::$v(e)),+ })
+            }
+        }
+    };
+}
+arms!(Arm2, Arm2Item: A, B);
+arms!(Arm3, Arm3Item: A, B, C);
+arms!(Arm4, Arm4Item: A, B, C, D);
+
+/// `Result<A, B>`: an error boundary is a `Result` of two elements (a dynamic part whose identity is `Ok` or
+/// `Err`).
+impl<V, A: Element<V>, B: Element<V>> Element<V> for Result<A, B> {
+    fn mount(self, m: &mut Mounter<'_, V>) {
+        let a: Arm2<A, B> = match self {
+            Ok(a) => Arm2::A(a),
+            Err(b) => Arm2::B(b),
+        };
+        a.mount(m)
+    }
+    fn update(self, m: &mut Mounter<'_, V>) {
+        let a: Arm2<A, B> = match self {
+            Ok(a) => Arm2::A(a),
+            Err(b) => Arm2::B(b),
+        };
+        a.update(m)
+    }
+}

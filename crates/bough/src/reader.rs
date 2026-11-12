@@ -226,22 +226,21 @@ impl<'a, T: 'static, V, F: Fn(&T) -> String + Copy + 'static> TextSrc<V> for Lat
         m.rt.make_latest(w);
         s
     }
+    /// Intent, also inside a description (where a held cell reads its shown value).
     fn value(self) -> String {
-        <crate::signal::WMap<'a, T, V, F> as TextSrc<V>>::value(self.0)
+        (self.0.f)(self.0.w.sig.latest())
     }
 }
-impl<'a, T: Clone + 'static, V, P: 'static> IntoProp<P, V> for Latest<Wired<'a, T, V>>
-where
-    Wired<'a, T, V>: IntoProp<P, V>,
-{
-    fn lower<K: Apply<P = P>>(self, m: &mut Mounter<'_, V>, node: u32) -> P {
+impl<'a, T: Clone + 'static, V> IntoProp<T, V> for Latest<Wired<'a, T, V>> {
+    fn lower<K: Apply<P = T>>(self, m: &mut Mounter<'_, V>, node: u32) -> T {
         let v = self.0.lower::<K>(m, node);
         let w = *m.scope.wires.last().unwrap();
         m.rt.make_latest(w);
         v
     }
-    fn value(self) -> P {
-        self.0.value()
+    /// Intent, also inside a description (where a held cell reads its shown value).
+    fn value(self) -> T {
+        self.0.sig.latest().clone()
     }
 }
 
@@ -350,9 +349,54 @@ unsafe fn commit<T: 'static>(addr: usize) {
 }
 
 impl Rt {
-    /// Mark wire `w` `latest` and move it to the front of its chain (latest wires run first, while held).
+    /// Move wire `w` into the status group of its chain (`latest` operands) or, `question`, the question group
+    /// (producers): it runs while its cell is held, before the wires a hold skips. Moving it (not only flagging it,
+    /// as before round 7) is what keeps a status wire declared before its producer from missing the hold.
     pub(crate) fn make_latest(&mut self, w: u32) {
-        self.wires[w as usize].latest = true;
+        self.regroup(w, G_STATUS);
+    }
+    pub(crate) fn make_question(&mut self, w: u32) {
+        self.regroup(w, G_QUESTION);
+    }
+    pub(crate) fn regroup(&mut self, w: u32, group: u8) {
+        let addr = self.wires[w as usize].head;
+        if self.wires[w as usize].group == group || addr == 0 {
+            self.wires[w as usize].group = group;
+            return;
+        }
+        // SAFETY: a live wire's `head` is the address of the head it was linked into (still live: the wire is being
+        // installed by a mount of its owner right now).
+        let head = unsafe { &*(addr as *const Cell<u32>) };
+        // unlink
+        let mut prev = 0u32;
+        let mut i = head.get() & HEAD_IDX;
+        while i != 0 && i != w {
+            prev = i;
+            i = self.wires[i as usize].next;
+        }
+        if i != w {
+            return;
+        }
+        let next = self.wires[w as usize].next;
+        if prev == 0 {
+            head.set(next | (head.get() & !HEAD_IDX));
+        } else {
+            self.wires[prev as usize].next = next;
+        }
+        // re-insert at the front of its new group (newest first within a group)
+        self.wires[w as usize].group = group;
+        let mut after = 0u32;
+        let mut p = head.get() & HEAD_IDX;
+        while p != 0 && self.wires[p as usize].group < group && self.wires[p as usize].head == addr {
+            after = p;
+            p = self.wires[p as usize].next;
+        }
+        self.wires[w as usize].next = p;
+        if after == 0 {
+            head.set(w | (head.get() & !HEAD_IDX));
+        } else {
+            self.wires[after as usize].next = w;
+        }
     }
 
     /// Admit completions (the start of a turn): stale tickets are dropped, accepted values staged; a cohort
@@ -393,8 +437,9 @@ impl Rt {
             for &h in &c.held {
                 // SAFETY: a held head is a signal head of the live owner.
                 let head = unsafe { &*(h as *const Cell<u32>) };
+                crate::signal::keep::release(h);
                 head.set(head.get() & !HELD);
-                crate::signal::queue(head);
+                crate::signal::queue_quiet(head);
             }
             self.asy.stats.commits += 1;
             for (o, cls) in std::mem::take(&mut self.asy.settle_owners) {
@@ -417,6 +462,7 @@ impl Rt {
                 for &h in &c.held {
                     // SAFETY: a held head is a signal head of a live owner (a dead row's heads were cleared).
                     let head = unsafe { &*(h as *const Cell<u32>) };
+                    crate::signal::keep::release(h);
                     head.set(head.get() & !HELD);
                 }
             }
@@ -496,7 +542,10 @@ unsafe fn patch_produce<S: PartialEq + Clone + 'static, T: Send + 'static>(rt: &
     if !c.held.contains(&h) {
         c.held.push(h);
     }
-    src.head().set(src.head().get() | HELD);
+    if src.head().get() & HELD == 0 {
+        src.head().set(src.head().get() | HELD);
+        crate::signal::keep::held(h);
+    }
     let job: Job = Box::new(move || Box::new(job()) as Box<dyn Any + Send>);
     match &mut rt.asy.exec {
         Exec::Manual(q) => q.push_back((addr, ticket, job)),
@@ -542,7 +591,11 @@ impl<'a, S: PartialEq + Clone + 'static, T: Send + 'static, V: 'static> crate::e
         // SAFETY: `src` is an `offset_of!`-proven `Signal<S>` of `V`; `patch_produce::<S, T>` reads one, and its
         // producer names an `offset_of!`-proven `Reader<T>` of `V`.
         let w = unsafe { m.wire_cell(self.src.sig.head(), self.src.off, patch_produce::<S, T>, pi, [0; 16]) };
-        m.rt.make_latest(w);
+        m.rt.make_question(w);
+        // the source keeps a pre-image of its first write of a turn: a description reads it while held (round 7)
+        let h = self.src.sig.head();
+        crate::signal::keep::register(h as *const _ as usize, crate::signal::keep::fns::<S>(), m.rt.asks.id);
+        h.set(h.get() | crate::signal::KEEP);
         // the first request: fetch high, at mount
         let owner = m.owner as *const u8;
         let wire = m.rt.wires[w as usize];

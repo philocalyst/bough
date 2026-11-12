@@ -31,10 +31,15 @@ impl Reader {
 
 const COL: Flex = Flex::column().gap(4.0);
 
+fn chip(label: String, on: bool) -> impl Element<Reader> + Interact {
+    row(text(label)).px(10.0).py(4.0).rounded(4.0).bg(if on { rgb(0x2f6bff) } else { rgb(0x9aa5b1) })
+}
+
 impl View for Reader {
     fn view(&self) -> impl Element<Self> + '_ {
         div().layout(COL).child((
-            each((1..=9u64).map(|id| button(format!("story {id}")).bg(if *self.sel == id { rgb(0x2f6bff) } else { rgb(0x9aa5b1) }).on_click(move |v: &mut Reader| v.open(id)))),
+            // the selection highlight reads the selection: held with the pane
+            each((1..=9u64).map(|id| chip(format!("story {id}"), *self.sel == id).on_click(move |v: &mut Reader| v.open(id)))),
             text(sig!(self.unread).map(|n| format!("{n} unread"))),
             self.story.as_ref().map(|s| text(s.title.clone())),
             self.author.as_ref().map(|a| text(format!("by {}", a.name))),
