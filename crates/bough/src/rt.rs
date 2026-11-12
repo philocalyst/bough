@@ -484,6 +484,8 @@ pub struct Rt {
     pub(crate) reclaim_q: Vec<Scope>,
     /// Dynamic parts of re-describing owners (`describe.rs`).
     pub dyns: crate::describe::Dyns,
+    /// The parts that mount by exposure (`dormant.rs`).
+    pub dorm: crate::dormant::Dorms,
     /// Entity views (`entity.rs`), async producers / cohort / executor (`reader.rs`), and this turn's
     /// publications for `View::changed` (`changed.rs`).
     pub(crate) eviews: Vec<crate::entity::EView>,
@@ -603,6 +605,7 @@ impl Rt {
             reclaim_q: Vec::new(),
             reflect: Default::default(),
             dyns: Default::default(),
+            dorm: crate::dormant::Dorms::new(scale),
             eviews: Vec::new(),
             asy: Default::default(),
             pubs: Default::default(),
@@ -1201,6 +1204,7 @@ impl Rt {
 
         // dynamic items are cut now too (their wires may sit on live signals)
         for &d in &s.dyns {
+            self.dorm_cut(d);
             let mut items = std::mem::take(&mut self.dyns.parts[d as usize]);
             for it in &mut items {
                 self.cut_scope(&mut it.scope);

@@ -50,11 +50,14 @@ pub struct Config {
     /// benchmarks set it to measure the wire path alone; `Application::run` never does, so every
     /// application view re-describes after its handlers (`designs/reactivity/final/01-state.md` §2).
     pub mount_once: bool,
+    /// A test option, never an application's: every dynamic part mounts every item (no dormant runs,
+    /// `dormant.rs`). The exposure gates compare against it: exposure must never change a pixel.
+    pub eager_parts: bool,
 }
 
 impl Config {
     pub fn new(width_pt: f32, height_pt: f32, scale: f32, font: Vec<u8>) -> Config {
-        Config { width_pt, height_pt, scale, font, ring: 0, caps: Caps::DEFAULT, faces: Vec::new(), mount_once: false }
+        Config { width_pt, height_pt, scale, font, ring: 0, caps: Caps::DEFAULT, faces: Vec::new(), mount_once: false, eager_parts: false }
     }
     /// Surfaces of the ring.
     pub fn surfaces(&self) -> usize {
@@ -316,6 +319,7 @@ impl<V: View> App<V> {
         let ptr = &*owner as *const V;
         rt.owner = ptr as *const u8;
         rt.describes = !once;
+        rt.dorm.off = cfg.eager_parts;
         rt.root_ty = std::any::TypeId::of::<V>();
         {
             let el = owner.view();
@@ -356,7 +360,7 @@ impl<V: View> App<V> {
             metal = Some(f);
         }
         let ty = rt.tiles_y;
-        App {
+        let mut app = App {
             owner,
             rt,
             #[cfg(target_os = "macos")]
@@ -380,7 +384,115 @@ impl<V: View> App<V> {
             last_full: true,
             tape,
             once,
+        };
+        // what the first layout exposes of the dormant parts is realised before the first frame
+        app.expose();
+        app
+    }
+
+    /// Realise what is exposed of the parts that mount by exposure, release what left, to a fixed point
+    /// (`dormant.rs`). Nothing when no such part exists, and one compare per part whose exposure is unchanged.
+    #[inline]
+    pub(crate) fn expose(&mut self) {
+        if !self.rt.dorm.live.is_empty() {
+            self.expose_parts();
         }
+    }
+
+    #[inline(never)]
+    fn expose_parts(&mut self) {
+        self.rt.dorm.tick = self.rt.dorm.tick.wrapping_add(1);
+        let mut pass = 0;
+        loop {
+            let walk = self.rt.dorm_scan();
+            if std::mem::take(&mut self.rt.dorm.blur) {
+                // a focused item left the ink domain: it is released by the next scan, unfocused
+                self.set_focus(None, false);
+                continue;
+            }
+            if walk {
+                self.rt.dorm.stats.walks += 1;
+                self.redescribe();
+            } else if self.rt.lay.pending.is_empty() {
+                break;
+            }
+            self.rt.lay_flush();
+            self.anchor();
+            pass += 1;
+            if pass == crate::dormant::MAX_PASSES {
+                self.rt.dorm.stats.unconverged += 1;
+                break;
+            }
+        }
+    }
+
+    /// Scroll the view of part `part` so that its item `i` sits `offset_pt` points below the port's top,
+    /// realising it (the entry point of scroll-to-item, find, and focus traversal into a dormant run: a
+    /// dormant item has no records, so it is reached through its part and index). `false`: no such
+    /// dormant-capable part, item or scroll view.
+    pub fn scroll_to_item(&mut self, part: u32, i: usize, offset_pt: f32) -> bool {
+        self.sync();
+        let v = self.rt.dorm_view(part);
+        if v == NONE || self.rt.input.views[v as usize].scroller == NONE || !self.rt.dorm_pin(part, i as u32) {
+            return false;
+        }
+        let o = &mut *self.owner as *mut V as *mut u8;
+        let s = self.rt.scale;
+        for _ in 0..8 {
+            self.expose();
+            let Some(y) = self.rt.dorm_item_y(part, i as u32) else { break };
+            let d = (y - (self.rt.input.views[v as usize].vy + offset_pt * s)).round();
+            if d == 0.0 {
+                break;
+            }
+            let sr = &mut self.rt.input.scrollers[self.rt.input.views[v as usize].scroller as usize];
+            sr.glide = None;
+            // SAFETY: `off` is the offset_of!-proven offset of a Signal<f32> field of the owner (Wired).
+            let sig = unsafe { &mut *(o.add(sr.off as usize) as *mut crate::signal::Signal<f32>) };
+            let to = (**sig + d / s).max(0.0);
+            if !sig.set(to) {
+                break;
+            }
+            // SAFETY: as in `turn`.
+            unsafe { self.rt.settle(o as *const u8) };
+            self.rt.lay_flush();
+        }
+        self.rt.dorm_unpin(part);
+        self.expose();
+        true
+    }
+
+    /// Scroll anchoring: a view whose part's anchor item moved on screen (sizes above it were corrected)
+    /// takes the difference into its offset, so the item stays and the correction is a scroll.
+    fn anchor(&mut self) {
+        let mut fix = std::mem::take(&mut self.rt.dorm.fix);
+        fix.clear();
+        self.rt.dorm_anchor(&mut fix);
+        if !fix.is_empty() {
+            let o = &mut *self.owner as *mut V as *mut u8;
+            let s = self.rt.scale;
+            for &(v, dy) in &fix {
+                let sc = self.rt.input.views[v as usize].scroller;
+                if sc == NONE {
+                    continue;
+                }
+                let sr = &mut self.rt.input.scrollers[sc as usize];
+                // SAFETY: `off` is the offset_of!-proven offset of a Signal<f32> field of the owner (Wired).
+                let sig = unsafe { &mut *(o.add(sr.off as usize) as *mut crate::signal::Signal<f32>) };
+                let d = dy as f32 / s;
+                let to = (**sig + d).max(0.0);
+                if let Some(g) = sr.glide.as_mut() {
+                    g.from += d;
+                    g.to += d;
+                }
+                sig.set(to);
+                self.rt.dorm.stats.anchored += 1;
+                self.rt.dorm.stats.anchored_px += dy as i64;
+            }
+            // SAFETY: as in `turn`.
+            unsafe { self.rt.settle(o as *const u8) };
+        }
+        self.rt.dorm.fix = fix;
     }
 
     /// Frames per pre-armed command buffer. Every frame goes through the pre-armed stream (bough-metal
@@ -439,6 +551,7 @@ impl<V: View> App<V> {
         self.redescribe();
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
+        self.expose();
         self.prof.mark(PH_TEXT);
     }
 
@@ -466,6 +579,7 @@ impl<V: View> App<V> {
         self.effects();
         self.redescribe();
         self.rt.lay_flush();
+        self.expose();
     }
 
     /// A turn with no handler: admit async completions (a committed cohort's wires run in this turn).

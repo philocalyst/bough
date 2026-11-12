@@ -79,6 +79,12 @@ impl<V> Mounter<'_, V> {
         self.ti += 1;
         x
     }
+    /// The next tape entry, not consumed.
+    #[inline(always)]
+    pub(crate) fn tape_peek(&self) -> u32 {
+        // SAFETY: as `tape_push`; `update` runs only with a tape.
+        unsafe { (&*self.tape)[self.ti] }
+    }
     /// A mounter for a sub-part (a dynamic item) of this one: same position state, its own scope, records
     /// buffer and tape.
     pub(crate) fn sub<'b>(&'b mut self, recs: &'b mut Vec<RecordInit>, scope: &'b mut Scope, tape: *mut Vec<u32>) -> Mounter<'b, V> {
@@ -184,11 +190,23 @@ impl<V, I: Iterator> Element<V> for Each<I>
 where
     I::Item: Element<V>,
 {
+    /// A source that gives item `i` without the others, in a container a run can stand in, mounts by
+    /// exposure (`dormant.rs`); any other mounts every item.
     fn mount(self, m: &mut Mounter<'_, V>) {
-        crate::describe::mount_dyn(m, self.0);
+        use crate::dormant::Source;
+        if I::indexed() && crate::dormant::qualifies(m) {
+            crate::dormant::mount_src(m, self.0)
+        } else {
+            crate::describe::mount_dyn(m, self.0);
+        }
     }
     fn update(self, m: &mut Mounter<'_, V>) {
-        crate::describe::update_dyn(m, self.0);
+        use crate::dormant::Source;
+        if I::indexed() && m.rt.dyns.dorm[m.tape_peek() as usize].is_some() {
+            crate::dormant::update_src(m, self.0)
+        } else {
+            crate::describe::update_dyn(m, self.0);
+        }
     }
 }
 

@@ -413,6 +413,14 @@ impl Input {
     pub fn focused_field(&self) -> bool {
         self.focus_act != 0 && self.acts[self.focus_act as usize].field != NONE
     }
+    /// Positions of the records that hold the pointer: the hover chain and the pressed element (`dormant.rs`:
+    /// an item holding one is not released).
+    pub(crate) fn held_positions(&self, b: &bough_core::Bough, out: &mut Vec<usize>) {
+        out.extend(self.hover.iter().filter_map(|&h| b.pos_of(h)));
+        if self.pressed != 0 {
+            out.extend(b.pos_of(self.acts[self.pressed as usize].handle));
+        }
+    }
     pub fn hovered(&self) -> &[Handle] {
         &self.hover
     }
@@ -1148,6 +1156,11 @@ impl<V: View> App<V> {
 
     /// Settle what routes queued and lay out what changed (the end of an input turn).
     fn settle_input(&mut self) {
+        // what earlier turns released returns to the free lists now, not only in idle frames: a stream of
+        // input turns that removes and adds (a scroll, a filter) would otherwise fill the columns
+        if self.reclaiming() {
+            self.rt.reclaim(crate::app::RECLAIM_BUDGET);
+        }
         let owner = &mut *self.owner as *mut V as *const u8;
         // SAFETY: the owner is the mounted view (uniquely borrowed: list patches write their cell); every
         // wire was installed from a `sig!` proof for it.
@@ -1156,6 +1169,7 @@ impl<V: View> App<V> {
         self.effects();
         self.redescribe();
         self.rt.lay_flush();
+        self.expose();
         self.sync_ring();
     }
 

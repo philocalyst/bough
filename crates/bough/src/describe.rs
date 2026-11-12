@@ -24,6 +24,22 @@ pub struct DynItem {
     pub tape: Vec<u32>,
     /// Its seal in the part's arena (`seal.rs`): offset and length; length 0 = none yet.
     pub seal: (u32, u32),
+    /// A dormant run (`dormant.rs`): the number of consecutive unrealised items this entry stands for
+    /// (one paint-less record, one layout leaf). 0: a realised item.
+    pub run: u32,
+    /// Handle index of the entry's first record (a dormant-capable part's entries only): a run's leaf, an
+    /// item's first box.
+    pub head: u32,
+    /// The exposure pass (`Dorms::tick`) that last found the item exposed.
+    pub seen: u32,
+    /// The item's layout was checked against what a run can stand for (`dormant.rs`, `item_ok`).
+    pub ok: bool,
+}
+
+impl DynItem {
+    pub(crate) fn empty(key: u64) -> DynItem {
+        DynItem { key, nrec: 0, nkid: 0, scope: Scope::default(), tape: Vec::new(), seal: (0, 0), run: 0, head: 0, seen: 0, ok: false }
+    }
 }
 
 /// The seals of one dynamic part's items, contiguous in item order as far as updates allow.
@@ -31,22 +47,24 @@ pub struct DynItem {
 pub struct Seals {
     pub(crate) bytes: Vec<u8>,
     /// Bytes of `bytes` no item points at any more (a rewritten or removed item's old seal).
-    dead: u32,
+    pub(crate) dead: u32,
     /// The part's item type refused to be sealed: never try again.
-    refused: bool,
+    pub(crate) refused: bool,
 }
 
 #[derive(Default)]
 pub struct Dyns {
     pub(crate) parts: Vec<Vec<DynItem>>,
     pub(crate) seals: Vec<Seals>,
+    /// Per part: its exposure state when it mounts by exposure (`dormant.rs`), else `None` (an eager part).
+    pub(crate) dorm: Vec<Option<Box<crate::dormant::Dorm>>>,
     free: Vec<u32>,
 }
 
 /// The mounting context an item inherits, as the head of its seal: a change of clip, space, depth or
 /// origin above the item reaches its records, so it must not be stepped over.
 #[inline(always)]
-fn seal_context<S: crate::seal::Sealer>(cx: (u16, u16, u16, f32, f32), s: &mut S) {
+pub(crate) fn seal_context<S: crate::seal::Sealer>(cx: (u16, u16, u16, f32, f32), s: &mut S) {
     let (clip, space, depth, ox, oy) = cx;
     s.word(clip as u32 | (space as u32) << 16);
     s.word(depth as u32);
@@ -55,12 +73,13 @@ fn seal_context<S: crate::seal::Sealer>(cx: (u16, u16, u16, f32, f32), s: &mut S
 }
 
 impl Dyns {
-    fn alloc(&mut self) -> u32 {
+    pub(crate) fn alloc(&mut self) -> u32 {
         match self.free.pop() {
             Some(i) => i,
             None => {
                 self.parts.push(Vec::new());
                 self.seals.push(Seals::default());
+                self.dorm.push(None);
                 (self.parts.len() - 1) as u32
             }
         }
@@ -72,13 +91,15 @@ impl Rt {
     pub(crate) fn release_dyn(&mut self, d: u32) {
         let items = std::mem::take(&mut self.dyns.parts[d as usize]);
         self.dyns.seals[d as usize] = Seals::default();
+        self.dorm_cut(d);
+        self.dyns.dorm[d as usize] = None;
         for it in items {
             self.release_scope(it.scope);
         }
         self.dyns.free.push(d);
     }
 
-    fn queue_container(&mut self, lid: u32) {
+    pub(crate) fn queue_container(&mut self, lid: u32) {
         if lid == NONE {
             return;
         }
@@ -132,7 +153,7 @@ pub(crate) fn mount_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl It
 
 /// Mount one item. `into`: a separate records buffer (an item added by a re-description, inserted at
 /// `m.pos` afterwards); `None`: the mounter's own buffer (a first mount).
-fn mount_item<V, E: Element<V>>(m: &mut Mounter<'_, V>, e: E, into: Option<&mut Vec<RecordInit>>) -> DynItem {
+pub(crate) fn mount_item<V, E: Element<V>>(m: &mut Mounter<'_, V>, e: E, into: Option<&mut Vec<RecordInit>>) -> DynItem {
     let mut scope = Scope::default();
     let mut tape = Vec::new();
     let lid = m.rt.lay.cur;
@@ -154,7 +175,7 @@ fn mount_item<V, E: Element<V>>(m: &mut Mounter<'_, V>, e: E, into: Option<&mut 
         }
     };
     let nkid = if lid == NONE { 0 } else { m.rt.lay.eng.kid_count(lid) - k0 };
-    DynItem { key: 0, nrec: nrec as u32, nkid: nkid as u32, scope, tape, seal: (0, 0) }
+    DynItem { nrec: nrec as u32, nkid: nkid as u32, scope, tape, ..DynItem::empty(0) }
 }
 
 /// Re-describe a dynamic part: item `k` updates retained item `k`, new items are mounted as one run at the
@@ -177,7 +198,7 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
         if k < old.len() && old[k].key != e.dyn_key() {
             // a keyed item that changed identity: replaced in place (its run out, the new one in)
             let key = e.dyn_key();
-            let gone = std::mem::replace(&mut old[k], DynItem { key, nrec: 0, nkid: 0, scope: Scope::default(), tape: Vec::new(), seal: (0, 0) });
+            let gone = std::mem::replace(&mut old[k], DynItem::empty(key));
             seals.dead += gone.seal.1;
             if lid != NONE && gone.nkid > 0 {
                 for i in 0..gone.nkid as usize {
@@ -251,44 +272,7 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
                     // written below must be `e`'s, so the look-ahead must not have been consumed by it.
                 }
             }
-            let it = &mut old[k];
-            if !seals.refused {
-                // the description about to be applied, sealed for the next turn
-                scratch.clear();
-                let mut w = crate::seal::SealWrite { out: &mut scratch, descs: &mut m.rt.lay.descs, ok: true };
-                seal_context(cx, &mut w);
-                e.seal(&mut w);
-                if !w.ok {
-                    seals.refused = true;
-                    scratch.clear();
-                }
-            }
-            let (p0, k0) = (m.pos, m.kid);
-            let recs: *mut Vec<RecordInit> = m.recs;
-            {
-                // SAFETY: reborrow of the mounter's buffer for the sub-walk only.
-                let mut sub = m.sub(unsafe { &mut *recs }, &mut it.scope, &mut it.tape as *mut Vec<u32>);
-                e.update(&mut sub);
-                let (p1, k1) = (sub.pos, sub.kid);
-                drop(sub);
-                m.pos = p1;
-                m.kid = k1;
-            }
-            it.nrec = (m.pos - p0) as u32;
-            it.nkid = (m.kid - k0) as u32;
-            if !seals.refused {
-                if scratch.len() <= it.seal.1 as usize {
-                    // fits where the old one was
-                    let o = it.seal.0 as usize;
-                    seals.bytes[o..o + scratch.len()].copy_from_slice(&scratch);
-                    seals.dead += it.seal.1 - scratch.len() as u32;
-                    it.seal.1 = scratch.len() as u32;
-                } else {
-                    seals.dead += it.seal.1;
-                    it.seal = (seals.bytes.len() as u32, scratch.len() as u32);
-                    seals.bytes.extend_from_slice(&scratch);
-                }
-            }
+            rewrite_item(m, &mut old[k], e, &mut seals, &mut scratch, cx);
         } else {
             if fresh_pos.get() == usize::MAX {
                 fresh_pos.set(m.pos);
@@ -331,8 +315,58 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
             m.rt.release_scope(it.scope);
         }
     }
+    repack_seals(&mut seals, &mut old);
+    m.rt.dyns.seals[d as usize] = seals;
+    m.rt.dyns.parts[d as usize] = old;
+}
+
+/// Apply description `e` to the retained item `it` at the walk's position (the ordinary update), and keep
+/// the seal of what was applied for the next turn.
+#[inline(always)]
+pub(crate) fn rewrite_item<V, E: Element<V>>(m: &mut Mounter<'_, V>, it: &mut DynItem, e: E, seals: &mut Seals, scratch: &mut Vec<u8>, cx: (u16, u16, u16, f32, f32)) {
+    if !seals.refused {
+        // the description about to be applied, sealed for the next turn
+        scratch.clear();
+        let mut w = crate::seal::SealWrite { out: scratch, descs: &mut m.rt.lay.descs, ok: true };
+        seal_context(cx, &mut w);
+        e.seal(&mut w);
+        if !w.ok {
+            seals.refused = true;
+            scratch.clear();
+        }
+    }
+    let (p0, k0) = (m.pos, m.kid);
+    let recs: *mut Vec<RecordInit> = m.recs;
+    {
+        // SAFETY: reborrow of the mounter's buffer for the sub-walk only.
+        let mut sub = m.sub(unsafe { &mut *recs }, &mut it.scope, &mut it.tape as *mut Vec<u32>);
+        e.update(&mut sub);
+        let (p1, k1) = (sub.pos, sub.kid);
+        drop(sub);
+        m.pos = p1;
+        m.kid = k1;
+    }
+    it.nrec = (m.pos - p0) as u32;
+    it.nkid = (m.kid - k0) as u32;
+    if !seals.refused {
+        if scratch.len() <= it.seal.1 as usize {
+            // fits where the old one was
+            let o = it.seal.0 as usize;
+            seals.bytes[o..o + scratch.len()].copy_from_slice(scratch);
+            seals.dead += it.seal.1 - scratch.len() as u32;
+            it.seal.1 = scratch.len() as u32;
+        } else {
+            seals.dead += it.seal.1;
+            it.seal = (seals.bytes.len() as u32, scratch.len() as u32);
+            seals.bytes.extend_from_slice(scratch);
+        }
+    }
+}
+
+/// More dead seal bytes than live ones: repack in item order (which is also the order a check streams in).
+#[inline]
+pub(crate) fn repack_seals(seals: &mut Seals, old: &mut [DynItem]) {
     if seals.dead as usize > seals.bytes.len() / 2 && seals.dead > 4096 {
-        // more dead than live: repack in item order (which is also the order a check streams in)
         let mut packed = Vec::with_capacity(seals.bytes.len() - seals.dead as usize);
         for it in old.iter_mut() {
             let (o, n) = (it.seal.0 as usize, it.seal.1 as usize);
@@ -342,13 +376,11 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
         seals.bytes = packed;
         seals.dead = 0;
     }
-    m.rt.dyns.seals[d as usize] = seals;
-    m.rt.dyns.parts[d as usize] = old;
 }
 
 /// Is `e`, described in context `cx`, what `it`'s seal says? (bit-identical, identical but for paint)
 #[inline(always)]
-fn sealed_as<V, E: Element<V>>(it: &DynItem, e: &E, seals: &Seals, descs: &crate::layout::SpecTable, cx: (u16, u16, u16, f32, f32)) -> (bool, bool) {
+pub(crate) fn sealed_as<V, E: Element<V>>(it: &DynItem, e: &E, seals: &Seals, descs: &crate::layout::SpecTable, cx: (u16, u16, u16, f32, f32)) -> (bool, bool) {
     if it.seal.1 == 0 {
         return (false, false);
     }
@@ -360,7 +392,7 @@ fn sealed_as<V, E: Element<V>>(it: &DynItem, e: &E, seals: &Seals, descs: &crate
 }
 
 /// Take `nrec` records and `nkid` layout children out at the walk's position (a removed item's run).
-fn remove_items<V>(m: &mut Mounter<'_, V>, lid: u32, nrec: usize, nkid: usize) {
+pub(crate) fn remove_items<V>(m: &mut Mounter<'_, V>, lid: u32, nrec: usize, nkid: usize) {
     if lid != NONE && nkid > 0 {
         for i in 0..nkid {
             let c = m.rt.lay.eng.kids(lid)[m.kid + i];
@@ -416,7 +448,10 @@ pub(crate) fn mount_opaque<V>(m: &mut Mounter<'_, V>, f: impl FnOnce(&mut Mounte
     let r0 = m.recs.len();
     let lid = m.rt.lay.cur;
     let k0 = if lid == NONE { 0 } else { m.rt.lay.eng.kid_count(lid) };
+    // no walk reaches inside (the count below is fixed): a part mounted here cannot mount by exposure
+    m.rt.dorm.opaque += 1;
     f(m);
+    m.rt.dorm.opaque -= 1;
     let nkid = if lid == NONE { 0 } else { m.rt.lay.eng.kid_count(lid) - k0 };
     let t1 = m.ti_len();
     m.tape_set(at, (m.recs.len() - r0) as u32);

@@ -44,13 +44,17 @@ struct DNode {
     cache: NodeCache,
     /// Index of its text state in `Deep::ctxs` (`NOCTX`: none).
     ctx: u32,
+    /// A dormant run's leaf (`dormant.rs`): the size it measures as (cross, main), device px. `NaN` main:
+    /// not one. A side value, not a style: a run's extent changes with every realisation and release, and
+    /// an interned style per extent would never be returned.
+    dorm: [f32; 2],
 }
 
 const NOCTX: u32 = u32::MAX;
 
 impl DNode {
     fn blank() -> DNode {
-        DNode { style: 0, flags: 0, live: false, root: false, hgen: 0, nkids: 0, kids: Vec::new(), touched: 0, layout: Layout::ZERO, cache: NodeCache::default(), ctx: NOCTX }
+        DNode { style: 0, flags: 0, live: false, root: false, hgen: 0, nkids: 0, kids: Vec::new(), touched: 0, layout: Layout::ZERO, cache: NodeCache::default(), ctx: NOCTX, dorm: [0.0, f32::NAN] }
     }
 }
 
@@ -140,9 +144,38 @@ impl Deep {
     pub fn style_of(&self, n: u32) -> u32 {
         self.n[n as usize].style
     }
+    /// Does node `n` answer its size through `measure` (a paragraph, a dormant run's leaf)?
+    #[inline]
+    fn measured(&self, n: u32) -> bool {
+        self.ctx_ref(n).is_some_and(|c| c.user.is_none()) || !self.n[n as usize].dorm[1].is_nan()
+    }
+
+    /// Make node `n` (just added, no text state) the leaf of a dormant run measuring `size` (cross, main).
+    pub fn set_dormant(&mut self, n: u32, size: [f32; 2]) {
+        let nd = &mut self.n[n as usize];
+        nd.dorm = size;
+        nd.flags = meta_bits(&self.styles, nd.style, true) | (nd.flags & !META_MASK);
+    }
+    /// The size a dormant run's leaf measures as (`NaN` main: `n` is not one).
+    #[inline]
+    pub fn dormant_size(&self, n: u32) -> [f32; 2] {
+        self.n[n as usize].dorm
+    }
+    /// A dormant run's extent changed: its leaf measures `size` from now on (invalidated when it differs).
+    pub fn resize_dormant(&mut self, b: &Bough, n: u32, size: [f32; 2]) -> bool {
+        let nd = &mut self.n[n as usize];
+        if nd.dorm == size {
+            return false;
+        }
+        nd.dorm = size;
+        nd.cache.clear();
+        self.invalidate(b, n);
+        true
+    }
+
     /// Set node `n`'s style before it was ever laid out (a mount's operand values): no invalidation.
     pub fn set_style_fresh(&mut self, n: u32, style: u32) {
-        let measured = self.ctx_ref(n).is_some_and(|c| c.user.is_none());
+        let measured = self.measured(n);
         let keep = self.n[n as usize].flags & !META_MASK;
         self.n[n as usize].style = style;
         self.n[n as usize].flags = meta_bits(&self.styles, style, measured) | keep;
@@ -150,7 +183,7 @@ impl Deep {
 
     /// Restyle node `n` (a re-description changed its spec) and invalidate it.
     pub fn set_style(&mut self, b: &Bough, n: u32, style: u32) {
-        let measured = self.ctx_ref(n).is_some_and(|c| c.user.is_none());
+        let measured = self.measured(n);
         let keep = self.n[n as usize].flags & !META_MASK;
         self.n[n as usize].style = style;
         self.n[n as usize].flags = meta_bits(&self.styles, style, measured) | keep;
@@ -192,6 +225,7 @@ impl Deep {
         nd.touched = 0;
         nd.layout = Layout::ZERO;
         nd.cache.clear();
+        nd.dorm = [0.0, f32::NAN];
         let old = std::mem::replace(&mut nd.ctx, ci);
         if old != NOCTX {
             self.orphans.push(old);
@@ -235,6 +269,7 @@ impl Deep {
         nd.touched = 0;
         nd.layout = Layout::ZERO;
         nd.cache.clear();
+        nd.dorm = [0.0, f32::NAN];
         let old = std::mem::replace(&mut nd.ctx, ci);
         if old != NOCTX {
             self.orphans.push(old);
@@ -378,6 +413,14 @@ impl Deep {
         (l.location.x, l.location.y, l.size.width, l.size.height)
     }
 
+    /// Node `n`'s outer extent along the block axis and its outer width: (top, bottom, width), margins
+    /// included, relative to its parent.
+    #[inline]
+    pub fn span(&self, n: u32) -> (f32, f32, f32) {
+        let l = &self.n[n as usize].layout;
+        (l.location.y - l.margin.top, l.location.y + l.size.height + l.margin.bottom, l.size.width + l.margin.left + l.margin.right)
+    }
+
     #[inline]
     pub fn changed_at(&self, i: usize) -> Option<u32> {
         self.changed.get(i).copied()
@@ -406,6 +449,7 @@ impl Deep {
                     layout: Layout::ZERO,
                     cache: NodeCache::default(),
                     ctx: x.ctx,
+                    dorm: x.dorm,
                 })
                 .collect(),
             styles: self.styles.clone(),
@@ -530,7 +574,7 @@ impl LayoutTree for DView<'_> {
     /// A paragraph is measured; a one-line label is a sized leaf (its style holds its size).
     #[inline]
     fn is_measured_leaf(&self, node: NodeId) -> bool {
-        self.d.ctx_ref(ix(node) as u32).is_some_and(|c| c.user.is_none())
+        self.d.measured(ix(node) as u32)
     }
     #[inline(always)]
     fn compute_leaf(&mut self, node: NodeId, inputs: LayoutInput, _: Option<&mut BlockContext<'_>>) -> LayoutOutput {
@@ -540,6 +584,11 @@ impl LayoutTree for DView<'_> {
         measured_leaf(self, node, inputs)
     }
     fn measure(&mut self, node: NodeId, input: MeasureInput) -> MeasureOutput {
+        let [dw, dh] = self.d.n[ix(node)].dorm;
+        if !dh.is_nan() {
+            // a dormant run: its remembered cross size and its extent, whatever the space offered
+            return MeasureOutput::from_size(Size { width: input.known_dimensions.width.unwrap_or(dw), height: input.known_dimensions.height.unwrap_or(dh) });
+        }
         match self.d.ctx_mut(ix(node) as u32) {
             Some(c) => c.measure(input),
             None => MeasureOutput::from_size(input.known_dimensions.unwrap_or(Size::ZERO)),
