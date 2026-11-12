@@ -117,3 +117,93 @@ build-time shader compiler is needed). `cargo test --release -p bough-kernel --t
   runtime-sized arrays even though no length is read.
 
 The reference hash of the 125 specification frames is `b06da2304ca40bf6` (for the x86 run on ilo-prod).
+
+### The gate caught a false identity (same day)
+
+When shadows got a core and flat rows, the gate failed on seed 3: one channel off by one at one pixel. Cause:
+"the blur saturates beyond 1.5 w" depended on `(1.5 w * inv) >> 16` reaching 384, which an odd `w` misses by
+one. `in_w` now returns exactly +-384 at and beyond 1.5 w, so saturation is a comparison, not a rounding.
+This is what the gate is for: an executor shortcut is only as good as the identity under it.
+
+### E7: shadows (kernel at `5c009dede7`; `cargo run --release -p bough-kernel --example shadowerr`)
+
+Error is coverage against the exact convolution of the rounded box with the spline kernel (floats, chord
+integrated over y at 1/32 px), in 1/255 units, maximum over every pixel of the shadow's window; boxes 80x60,
+24x18 and 200x9 at a 3/8, 5/8 px offset; radius 0-30; sigma 0.5-16. Raw tables: `runtime/.../shadowerr-*.tsv`.
+
+| formulation | radius 0 | rounded, worst | rounded, typical mean |
+|---|---:|---:|---:|
+| Wallace's construction with the spline, 4 midpoint rows (first version; what the float shader does with erf) | 0.02 | 21.6 (r 30, sigma 0.5) | 0.2-0.9 |
+| separable box minus corner slivers, 4 midpoint rows | 0.02 | 21.6 | 0.04-0.5 |
+| ... 4 Gauss-Legendre rows | 0.02 | 42.8 for narrow blurs; <= 1.5 for r <= 2.25 w | |
+| arc distance profile, uncorrected | | 26 at r = w | |
+| arc profile minus first-order curvature term `density(u) w / (8 r)`, weighted by arc-ness | | 3.7 at r = 4 w, 2.0 at 8 w, <= 1.9 beyond | 0.01-0.4 |
+| **kept: Gauss-Legendre slivers below r = 3 w, corrected arc profile from 3 w** | **0.02** | **6.3** (r 30, sigma 4), 5.1 on a pill | 0.01-0.36 |
+
+Prediction (radius 0: error <= 2/255) confirmed with room: the spline shadow of a square-cornered box is
+exact to the quantisation. The rounded case was not predicted; it is 3.4x better at worst than the
+construction the float shader uses, and its error is confined to a few pixels at each corner. What the form
+buys beyond accuracy: away from the corners a shadow is a product of two 1-D profiles, so its interior is a
+core (exactly ONE) and the rows along its straight sides are flat. Not done: the 1-D profiles as two
+32-entry vectors per tile on the CPU (the fast executor still calls the kernel per pixel there).
+
+### E3, E10: CPU cost per tile-command (`kbench micro`, dist profile, M3 Pro, load 33, one run)
+
+One kind stacked K times over 512x512 (256 tiles); slope between K = 2 and K = 10 per tile-command (a
+command covering a whole 32x32 tile), single core. "flat" = with flat-row replication.
+
+| kind | instr | instr, flat | ns, flat | rows copied | GPU kernel ns |
+|---|---:|---:|---:|---:|---:|
+| solid, opaque | 2,094 | 283 | 10 | 97 % | ~60-120 |
+| solid, translucent | 7,821 | 474 | 20 | 97 % | ~60-120 |
+| rounded box r 8 (mostly core) | 13,184 | 1,540 | 102 | 93 % | ~10-190 |
+| border r 8 | 13,705 | 1,727 | 90 | 93 % | ~100-170 |
+| gradient at 57 degrees | 24,522 | 24,411 | 3,007 | 1 % | ~35-140 |
+| shadow r 0, sigma 6 | 42,032 | 20,791 | 919 | 84 % | ~130-230 |
+| shadow r 12, sigma 6 | 62,804 | 37,299 | 1,910 | 80 % | ~140-200 |
+| user node (stripes) | 54,127 | 54,492 | 2,532 | 1 % | ~100-220 |
+| text, 8 glyph boxes per tile | 22,404 | 22,307 | 1,544 | 7 % | ~110-220 |
+
+Against the predictions: translucent solid without replication is 7.6 instr/px, not <= 3 (LLVM vectorises
+across the four channels of one pixel, not across pixels): FAILED as predicted, and made irrelevant by
+identity 4 (474 per tile). Glyph pixels ~13 instr (predicted <= 12). Per-pixel kinds (gradient, shadow, user)
+are 24-60 instr/px: scalar. The GPU column is the slope of minimum kernel times and is noisy (the two runs
+disagree by 2x); read it as "50-250 ns per tile-command whatever the kind".
+**The finding: executor choice is a function of content class, not only of tile count.** Flat GUI content
+(boxes, borders, backgrounds) costs a CPU core 10-100 ns per tile-command, less than the GPU's kernel time;
+per-pixel effects cost it 1-3 us, 10-50x the GPU's.
+
+### E5, E6, E10 on whole scenes (`kbench scene ... 2560 1600`, dist, M3 Pro, load 26-34, one run each)
+
+Raw: `runtime/lanes/compute/r/scene-*.tsv`. us are minimum of repetitions; "cadence" is one frame per 4 ms
+(median), which is what a display sees: parked workers, cold caches, a GPU that has clocked down.
+
+| scene | commands | entries/tile no cut -> cut | rows copied | full frame: 1 core | 11 threads | GPU wall (kernel) | at cadence: 1 core / 11 / GPU |
+|---|---:|---|---:|---:|---:|---:|---|
+| grid (hairlines, no text) | 95 | 2.68 -> 2.68 | 90 % | 0.80 ms, 14.2 M instr | 0.52-0.65 ms | 0.96 (0.74) ms | 3.4 / 1.16 / 1.98 ms |
+| gridtext (1,800 cells with numbers) | 7,322 | 5.91 -> 5.91 | 43 % | 3.72 ms, 68.6 M | 1.09 ms | 1.24 (0.99) ms | 3.8 / 1.80 / 1.95 ms |
+| canvas (5,000 layered cards: shadow, body, border, gradient header, text) | 234,292 | 297.9 -> 18.2 | 14 % | 238 ms, 2.86 G | 40 ms | 5.49 (5.25) ms | 239 / 54 / 5.9 ms |
+
+* **E6 confirmed far beyond the prediction** (-40 % commands): the cut removes 94 % of the canvas's tile
+  entries and 94 % of the CPU's instructions (47.2 G -> 2.86 G). The gpu lane's "0.00-0.01 layers per pixel"
+  on the existing scenes and this are both true: the cut is worth nothing on flat scenes and everything on
+  layered ones. It costs nothing where it does not apply.
+* **E10 mixed.** 90 % of rows on the plain grid (2.6x fewer instructions), 43 % with text in every cell, 14 %
+  on the canvas (under the 20 % kill line there: shadows, clipped gradients and text leave few flat rows).
+  Kept: it is a bitmask AND per command and it is the reason flat content beats the GPU.
+* **E5: the crossover moves by 50x with content.** Wall time, back to back / at cadence:
+  gridtext: one core beats the GPU up to ~256 tiles (229 vs 446 us) / ~256; all cores to ~1,000 / beyond
+  2,000 (1.8 vs 1.95 ms for the whole window); the plain grid: one core wins at every size back to back.
+  canvas: one core wins only to ~8 tiles, several cores to ~32, the GPU beyond (5.5 ms for a frame that
+  takes 11 threads 40 ms).
+  By instructions: a GPU frame costs this harness 185-195 K on the CPU whatever it draws (one command buffer
+  and encoder per frame; the presenter's pre-armed stream is 72-90 K); a gridtext tile costs 33 K, a grid
+  tile 2-8 K, a canvas tile 700 K. The CPU is cheaper in instructions below ~3-6 gridtext tiles, ~10-30 grid
+  tiles, and never on the canvas.
+* **Waking workers is not free**: a 4-tile repair is 2.3 us on the caller and 25-35 us (+180 K instructions)
+  when ten workers are woken for it. Workers are worth it above roughly 50-100 us of estimated work.
+* **Binning as written is O(commands)** (6.9 ms for the canvas's 234 K commands): it stands in for the
+  runtime's page cull, which is retained. It is outside every raster time above.
+
+Consequence for the design: the choice is `min` over three estimates that the binner can accumulate per
+frame from per-kind weights (the table above) and the tile count; no framework is needed for it.
