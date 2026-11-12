@@ -57,25 +57,43 @@ fn app(n: usize, once: bool) -> App<Rows> {
     a
 }
 
-fn slope(mut run: impl FnMut(u32) -> u64) -> u64 {
-    run(8);
-    let (lo, hi) = (run(64), run(192));
-    (hi - lo) / 128
+/// The measurement as it was (default) or stable (`SC_STABLE=1`, bench lane round 7). The default warms with 8
+/// turns and takes one slope between 64 and 192 turns, writing `k % 1000`: the first write to each row's label
+/// then lands inside the measured batches (at 64 rows `hi - lo` is negative; at 256 rows the first-touch work is
+/// the slope), and a label's digit count changes at different rates in the two batches. Stable: warm with
+/// `3 n + 8` turns (every row written), write `1000 + k % 9000` (always four digits), and report the median of
+/// five slopes. `SC_WARM=k` overrides the warm-up alone.
+fn stable() -> bool {
+    std::env::var("SC_STABLE").is_ok_and(|v| v == "1")
 }
 
-fn cells(n: usize, once: bool) -> [u64; 4] {
+fn slope(n: usize, mut run: impl FnMut(u32) -> u64) -> i64 {
+    let warm = if stable() { 3 * n as u32 + 8 } else { 8 };
+    run(std::env::var("SC_WARM").ok().and_then(|v| v.parse().ok()).unwrap_or(warm));
+    let mut v: Vec<i64> = (0..if stable() { 5 } else { 1 })
+        .map(|_| {
+            let (lo, hi) = (run(64), run(192));
+            (hi as i64 - lo as i64) / 128
+        })
+        .collect();
+    v.sort();
+    v[v.len() / 2]
+}
+
+fn cells(n: usize, once: bool) -> [i64; 4] {
     let mut a = app(n, once);
     let mut k = 0u32;
+    let val = |k: u32| if stable() { 1000 + k % 9000 } else { k % 1000 };
     let mut cell = |a: &mut App<Rows>, which: u8| {
-        slope(|reps| {
+        slope(n, |reps| {
             let t0 = tinstr();
             for _ in 0..reps {
                 k = k.wrapping_add(1);
                 let i = (k as usize * 7) % n;
                 match which {
                     0 => a.turn(|r| drop(r.tint[i].set(Color(0xff00_0000 | (k & 0xff_ffff))))),
-                    1 => a.turn(|r| drop(r.count[i].set(k % 1000))),
-                    2 => a.turn(|r| drop(r.name[i].set(k % 1000))),
+                    1 => a.turn(|r| drop(r.count[i].set(val(k)))),
+                    2 => a.turn(|r| drop(r.name[i].set(val(k)))),
                     _ => a.turn(|_| {}),
                 }
             }
