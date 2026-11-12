@@ -331,6 +331,10 @@ pub struct DamageRing {
 }
 
 impl DamageRing {
+    /// Heap bytes of the ring's planes (memory ledger).
+    pub fn heap_bytes(&self) -> usize {
+        size_of::<[Plane; RING]>()
+    }
     pub fn new(w: i32, h: i32) -> Self {
         assert!(w > 0 && h > 0 && w <= (MAX_TILES_X as i32) * TILE && h <= (MAX_TILES_Y as i32) * TILE, "window up to 4096x4096");
         let rows = ((h + TILE - 1) >> TILE_SHIFT) as u32;

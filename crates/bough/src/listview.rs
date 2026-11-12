@@ -283,6 +283,16 @@ pub struct Lists {
 }
 
 impl Lists {
+    /// List regions as memory-ledger lines.
+    pub fn ledger(&self, l: &mut bough_mem::Ledger) {
+        use bough_mem::Scales::Content;
+        let regs: usize = self.regs.capacity() * size_of::<LRegion>() + self.regs.iter().map(|r| r.hs.capacity() * 4 + r.rows.capacity() * size_of::<LRow>() + r.idx.heap_bytes()).sum::<usize>();
+        l.many("lists", format!("list regions ({})", self.regs.len()), Content, regs, regs);
+        let scopes: usize = self.scopes.capacity() * size_of::<Scope>() + self.scopes.iter().map(Scope::heap_bytes).sum::<usize>() + self.scope_free.capacity() * 4;
+        l.many("lists", "list row scopes", Content, scopes, scopes);
+        let misc = self.ends.capacity() * 16 + (self.root_reg.capacity() + self.root_h.capacity() + self.perm.capacity() + self.map.capacity()) * 4 + (self.stage.capacity() + self.stage2.capacity()) * size_of::<RecordInit>() + self.ops.capacity() * size_of::<Op>() + self.mounting.capacity() * 8;
+        l.many("lists", "list tables and scratch", Content, misc, misc);
+    }
     /// The regions, read-only.
     pub fn regs(&self) -> &[LRegion] {
         &self.regs

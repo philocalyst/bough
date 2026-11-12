@@ -327,6 +327,14 @@ impl Default for Input {
 }
 
 impl Input {
+    /// Interaction tables as memory-ledger lines.
+    pub fn ledger(&self, l: &mut bough_mem::Ledger) {
+        use bough_mem::Scales::Content;
+        l.vec("input", "acts", &self.acts, self.acts.capacity(), Content);
+        l.vec("input", "act by handle", &self.by_handle, self.by_handle.capacity(), Content);
+        let rest = self.scrollers.capacity() * size_of::<Scroller>() + self.fields.capacity() * size_of::<Field>() + self.tips.capacity() * size_of::<Tip>() + self.views.capacity() * size_of::<crate::template::ScrollView>() + self.hover.capacity() * 8 + self.wclips.capacity() * 6 + self.offsets.capacity() * size_of::<crate::template::OffsetState>();
+        l.many("input", "scrollers, fields, tips, views, hover chain", Content, rest, rest);
+    }
     #[inline]
     fn act_of(&self, h: Handle) -> u32 {
         match self.by_handle.get(h.idx as usize) {

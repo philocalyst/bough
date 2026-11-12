@@ -41,6 +41,10 @@ pub struct HeightIndex {
 }
 
 impl HeightIndex {
+    /// Heap bytes (memory ledger).
+    pub fn heap_bytes(&self) -> usize {
+        self.ip.capacity() * 4 + self.fen.capacity() * 8
+    }
     /// `n` rows of `est` each.
     pub fn new(n: usize, est: i32) -> HeightIndex {
         let mut x = HeightIndex { est, ip: Vec::new(), fen: vec![0], total: 0, top: 0, scratch: Vec::new() };

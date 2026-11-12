@@ -951,6 +951,25 @@ struct FBind {
     texture2d<float> img;      // premultiplied RGBA images and gradient ramps (the glyph atlas until one exists)
 };
 constant uint FBIND_OFF = 128;
+// The column table (header + FCOL_OFF, round 6, lane memory): every GPU-read column's GPU address. Each column
+// is either a range of the region buffer or its own no-copy view of the region's memory covering its used
+// prefix (bough-metal `Fused::new_views`): a column's capacity is then address space and only what the masks
+// can reach is wired. The kernels read every column through this table, never `region + offset`.
+struct FCols {
+    device const uchar* inst;
+    device const uchar* spaces;
+    device const uchar* clips;
+    device const uchar* dir_id;
+    device const uchar* dir_ink;
+    device const uchar* pages;
+    device const uchar* gx;
+    device const uchar* gent;
+    device const uchar* runs;
+    device const uchar* toks;
+    device const uchar* xforms;
+};
+constant uint FCOL_OFF = 256;
+static device const FCols& fcols(device const uchar* pool) { return *(device const FCols*)(pool + FCOL_OFF); }
 typedef Instance FInst;
 constant uint F_RUN = 0x80000000u;
 constant uint F_IRUN = 0x40000000u;
@@ -995,28 +1014,28 @@ static float f_margin(uint kind, uint flags) {
 }
 
 static float4 f_clip(device const uchar* pool, device const FHdr& h, uint c) {
-    short4 r = ((device const short4*)(pool + h.clips_off))[c & h.m_clip];
+    short4 r = ((device const short4*)(fcols(pool).clips))[c & h.m_clip];
     return float4(float(r.x), float(r.y), -float(r.z), -float(r.w));
 }
 static float2 f_space(device const uchar* pool, device const FHdr& h, uint s) {
-    return float2(((device const int2*)(pool + h.spaces_off))[s & h.m_space]);
+    return float2(((device const int2*)(fcols(pool).spaces))[s & h.m_space]);
 }
 // bough-text's pen formula, verified bit-exact there: px = floor(fma(float(x - x0), scale, origin.x + 0.5)) + geo.x
 static bool f_glyph_rh(device const uchar* pool, device const FHdr& h, device const RunHeader& rh, uint slot,
                     thread float2& p0, thread float2& size, thread uint& color, thread ushort2& uv);
 static bool f_glyph(device const uchar* pool, device const FHdr& h, uint run, uint slot,
                     thread float2& p0, thread float2& size, thread uint& color, thread ushort2& uv) {
-    device const RunHeader& rh = ((device const RunHeader*)(pool + h.runs_off))[run & h.m_run];
+    device const RunHeader& rh = ((device const RunHeader*)(fcols(pool).runs))[run & h.m_run];
     return f_glyph_rh(pool, h, rh, slot, p0, size, color, uv);
 }
 static uint f_run_space(device const uchar* pool, device const FHdr& h, uint run) {
-    return uint(((device const RunHeader*)(pool + h.runs_off))[run & h.m_run].space);
+    return uint(((device const RunHeader*)(fcols(pool).runs))[run & h.m_run].space);
 }
 static bool f_glyph_rh(device const uchar* pool, device const FHdr& h, device const RunHeader& rh, uint slot,
                     thread float2& p0, thread float2& size, thread uint& color, thread ushort2& uv) {
-    int x = ((device const int*)(pool + h.gx_off))[slot & h.m_glyph];
-    uint e = ((device const ushort*)(pool + h.gent_off))[slot & h.m_glyph] & 255u;
-    device const GEntry& en = *(device const GEntry*)(pool + h.toks_off + (uint(rh.strike) & h.m_strike) * h.tok_stride + e * 32u);
+    int x = ((device const int*)(fcols(pool).gx))[slot & h.m_glyph];
+    uint e = ((device const ushort*)(fcols(pool).gent))[slot & h.m_glyph] & 255u;
+    device const GEntry& en = *(device const GEntry*)(fcols(pool).toks + (uint(rh.strike) & h.m_strike) * h.tok_stride + e * 32u);
     if (en.uv.z == 0) return false;
     int dx = as_type<int>(as_type<uint>(x) - as_type<uint>(rh.x0));
     float px = floor(fma(float(dx), rh.scale, rh.origin.x + 0.5)) + en.geo.x;
@@ -1031,7 +1050,7 @@ static bool f_glyph_rh(device const uchar* pool, device const FHdr& h, device co
 // (space-local + T) is drawn at K + t + M (u - K), K = T + c.
 struct FXf { float4 dm; float2 c; float2 t; };
 static bool f_xf(device const uchar* pool, device const FHdr& h, uint s, thread float4& m, thread float2& k, thread float2& t) {
-    device const FXf& x = ((device const FXf*)(pool + h.xforms_off))[s & h.m_space];
+    device const FXf& x = ((device const FXf*)(fcols(pool).xforms))[s & h.m_space];
     m = x.dm + float4(1.0, 0.0, 0.0, 1.0);
     k = f_space(pool, h, s) + x.c;
     t = x.t;
@@ -1059,10 +1078,10 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
     device const FBind& fb = *(device const FBind*)(pool + FBIND_OFF);
     device uint4* bins = fb.bins;
     device const FRow* frows = (device const FRow*)(pool + slot.x + FSLOT_ROWS);
-    device const uint* dpage = (device const uint*)(pool + h.dir_id_off);
-    device const short4* dink = (device const short4*)(pool + h.dir_ink_off);
-    device const uchar* pages = pool + h.pages_off;
-    device const FInst* inst = (device const FInst*)(pool + h.inst_off);
+    device const uint* dpage = (device const uint*)(fcols(pool).dir_id);
+    device const short4* dink = (device const short4*)(fcols(pool).dir_ink);
+    device const uchar* pages = fcols(pool).pages;
+    device const FInst* inst = (device const FInst*)(fcols(pool).inst);
     FRow fr = frows[tgid2.x];
     uint ty = fr.ty, tx0 = fr.span & 0xffu, tx1 = (fr.span >> 8) & 0xffu;
     short4 th = short4(short(tx1 * 32u), short(ty * 32u + 32u), short(-int(tx0 * 32u)), short(-int(ty * 32u)));
@@ -1145,7 +1164,7 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
                             uint r0 = p & 0xFFFFFu, rn = ((p >> 20) & 0x7FFu) + 1u;
                             for (uint run0 = r0; run0 < r0 + rn; run0++) {
                                 uint run = run0 & h.m_run;
-                                device const RunHeader& rhd = ((device const RunHeader*)(pool + h.runs_off))[run];
+                                device const RunHeader& rhd = ((device const RunHeader*)(fcols(pool).runs))[run];
                                 uint rlen = min(rhd.len, h.m_glyph + 1u), rbase = rhd.base;
                                 for (uint g0 = 0; g0 < rlen; g0 += 256) {
                                     uint gk2 = g0 + li;
@@ -1246,7 +1265,12 @@ struct FRec {
 // Rounded-box SDF in edge form (== sd_rbox(c - centre, half, r) mathematically).
 static float f_sd(float2 c, float4 b, float r) {
     float2 q = max(c - b.zw, b.xy - c) + r;
-    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+    float2 m = max(q, 0.0);
+    // the length with every operation specified (round 6, lane memory), so the CPU repair backend can compute the
+    // same bits: `length` under fast math is x * rsqrt(x) with a hardware rsqrt that is not correctly rounded (4 % of
+    // inputs, examples/mathprobe.rs). A correctly rounded square root of the dot as one fma costs nothing measurable
+    // (kernel_bench, lab: 0.2784 vs 0.2787 ms full redraw); a branch around it (edges skipping the root) cost 4.6 %.
+    return precise::sqrt(fma(m.y, m.y, m.x * m.x)) + min(max(q.x, q.y), 0.0) - r;
 }
 
 static half4 f_shade(threadgroup const FRec& r, float2 c, texture2d<float> atlas) {
@@ -1261,7 +1285,7 @@ static half4 f_shade(threadgroup const FRec& r, float2 c, texture2d<float> atlas
         float d = f_sd(c, r.b, r.radius);
         float outer = clamp(0.5 - d, 0.0, 1.0);
         float inner = clamp(0.5 - (d + r.bw), 0.0, 1.0);
-        return r.pm * half(max(outer - inner, 0.0)) + r.pm2 * half(inner); }
+        return fma(r.pm, half4(half(max(outer - inner, 0.0))), r.pm2 * half(inner)); }   // the contraction the compiler chose, written out
     default: {
         float2 t = c - r.b.xy;
         half cov = 0.0h;
@@ -1480,7 +1504,7 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
     texture2d<float> img = fb.img;
     device const FSlot& fs = *(device const FSlot*)(pool + slot.x);
     device const FRow* frows = (device const FRow*)(pool + slot.x + FSLOT_ROWS);
-    device const FInst* inst = (device const FInst*)(pool + h.inst_off);
+    device const FInst* inst = (device const FInst*)(fcols(pool).inst);
     // this threadgroup's tile: the last row whose prefix <= i, then the k-th set bit of that row
     uint i = tgid2.x;
     uint lo = 0, hi = fs.nrows;
@@ -1542,12 +1566,12 @@ kernel void fs_tile(uint2 tgid2 [[threadgroup_position_in_grid]],
             if (rr.q.x > blk.z || rr.q.z <= blk.x || rr.q.y > blk.w || rr.q.w <= blk.y) continue;
             if (blk.x >= rr.core.x && blk.z < rr.core.z && blk.y >= rr.core.y && blk.w < rr.core.w) {
                 half4 cv = rr.cv;
-                for (uint j = 0; j < 4; j++) acc[j] = cv + acc[j] * (1.0h - cv.a);
+                for (uint j = 0; j < 4; j++) acc[j] = fma(acc[j], half4(1.0h - cv.a), cv);
                 continue;
             }
             for (uint j = 0; j < 4; j++) {
                 half4 sh = f_shade_x(rr, c00 + float2(float(j & 1u), float(j >> 1)), atlas, img);
-                acc[j] = sh + acc[j] * (1.0h - sh.a);
+                acc[j] = fma(acc[j], half4(1.0h - sh.a), sh);   // one rounding: the CPU repair backend relies on it
             }
         }
     }

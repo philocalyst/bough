@@ -37,6 +37,11 @@ dispatch2 = "0.3"
 wgpu = ["dep:bough-gpu"]
 # Gate sabotage (RESULTS §15): the scroll copy reads one pixel off; every scroll pixel gate must fail with it.
 sabotage_copy = []
+# Gate sabotage (lane memory, round 6): the GPU's column views never grow; tests/capacity.rs must fail with it.
+sabotage_views = ["bough-metal/sabotage_views"]
+# Gate sabotage (lane memory, round 6): the CPU backend blends with two roundings instead of one half FMA; every
+# pixel gate run with BOUGH_REPAIR=cpu must fail with it.
+sabotage_blend = []
 
 [dev-dependencies]
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }

@@ -322,6 +322,19 @@ unsafe fn load16(p: *const u8, n: usize) -> core::arch::aarch64::uint8x16_t {
 }
 
 impl GlyphPool {
+    /// The pool's columns and free lists as memory-ledger lines.
+    pub fn ledger(&self, l: &mut bough_mem::Ledger) {
+        use bough_mem::Scales::Content;
+        const G: &str = "text";
+        l.col(G, &self.x, Content);
+        l.col(G, &self.ent, Content);
+        l.col(G, &self.runs, Content);
+        l.col(G, &self.spaces, Content); // addressable whole (the runtime sets every space at start)
+        let fr: usize = self.free_runs.capacity() + self.free_ranges.iter().map(|v| v.capacity()).sum::<usize>() + self.free.iter().map(|v| v.capacity()).sum::<usize>();
+        l.many(G, "glyph pool free lists", Content, fr * 4, fr * 4);
+        let sc = self.sx.capacity() * 4 + self.se.capacity() * 2 + self.sc.capacity() * 4;
+        l.many(G, "glyph pool scratch", Content, sc, sc);
+    }
     pub fn new() -> Self {
         let mut p = GlyphPool::default();
         p.spaces.push([0, 0]);

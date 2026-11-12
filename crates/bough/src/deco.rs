@@ -195,6 +195,13 @@ fn hash(bytes: &[u8]) -> u64 {
 }
 
 impl Images {
+    /// The image atlas's CPU copy and its cache, as memory-ledger lines.
+    pub fn ledger(&self, l: &mut bough_mem::Ledger) {
+        use bough_mem::Scales::Content;
+        l.vec("images", "image atlas (CPU copy, RGBA8)", &self.px, self.px.capacity(), Content);
+        let c = self.cache.capacity() * (size_of::<((u64, u32, u32), [u16; 4])>() + 1);
+        l.many("images", "image cache map", Content, c, c);
+    }
     fn alloc(&mut self, w: u32, h: u32) -> (u32, u32) {
         if self.px.is_empty() {
             self.px = vec![0; (IMG_W * IMG_H * 4) as usize];

@@ -8,9 +8,13 @@
 //! offset and a fixed capacity. A column never moves, so the GPU reads the CPU's structures in place:
 //! there is no mirror pass, and the offsets the GPU needs are known when the region is laid out.
 //!
-//! "Widen to delete corrections": capacities are reserved up front. Untouched pages of a shared
-//! MTLBuffer or of `calloc`ed memory are not resident, so a generous reservation costs only what is
-//! written (measured: `bough-metal/examples/resprobe.rs buf`).
+//! "Widen to delete corrections": capacities are reserved up front, as **address space**. A heap region
+//! is an anonymous `mmap`: an untouched page is neither resident nor charged. (Round 6, lane memory,
+//! `bough-metal/examples/vmprobe.rs`: a storageModeShared MTLBuffer is wired and charged *whole* once it
+//! joins a residency set, so a region that is one GPU buffer costs its capacity; and `alloc_zeroed` with
+//! page alignment zero-fills every page. The fused presenter therefore wraps each GPU-read column's *used
+//! prefix* in its own no-copy buffer and grows that view, never the column: see bough-metal `fused.rs`.)
+//! GPU-read columns are carved on page boundaries ([`Region::carve_paged`]) so each can have its own view.
 //!
 //! A `Col` that is not carved from a region owns its own allocation and grows like a `Vec`
 //! ([`Col::owned`]): that is what the crates' standalone tests and benches use. A carved column cannot
@@ -21,6 +25,8 @@
 //! Columns carved from one region never overlap (the carve cursor only advances). A `Col<T>` is the
 //! unique owner of its elements: all access goes through `&self`/`&mut self`.
 #![allow(clippy::len_without_is_empty)]
+
+pub mod count;
 
 use std::alloc::{Layout, alloc_zeroed, dealloc, realloc};
 use std::marker::PhantomData;
@@ -33,20 +39,43 @@ pub const COL_ALIGN: usize = 64;
 /// Alignment of a heap region (one VM page on Apple silicon).
 pub const PAGE: usize = 16384;
 
+/// Who owns a region's memory.
+enum Mem {
+    /// An anonymous private mapping of `len` bytes (unmapped on drop).
+    #[cfg(unix)]
+    Map,
+    /// The global allocator (non-unix targets), with this layout.
+    #[cfg_attr(unix, allow(dead_code))]
+    Alloc(Layout),
+    /// Someone else's (`Region::external`), kept alive by `_keep`.
+    External,
+}
+
 struct RegionInner {
     base: NonNull<u8>,
     len: usize,
-    /// `Some` when the region allocated its memory itself (freed on drop).
-    heap: Option<Layout>,
+    mem: Mem,
     /// Keeps external memory alive (e.g. the MTLBuffer whose contents the region is).
     _keep: Option<Box<dyn std::any::Any>>,
 }
 
+#[cfg(unix)]
+unsafe extern "C" {
+    fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8;
+    fn munmap(addr: *mut u8, len: usize) -> i32;
+}
+
 impl Drop for RegionInner {
     fn drop(&mut self) {
-        if let Some(l) = self.heap {
+        match self.mem {
+            // SAFETY: mapped in `Region::heap` with exactly this length; no column outlives the region.
+            #[cfg(unix)]
+            Mem::Map => unsafe {
+                munmap(self.base.as_ptr(), self.len);
+            },
             // SAFETY: allocated in `Region::heap` with exactly this layout.
-            unsafe { dealloc(self.base.as_ptr(), l) };
+            Mem::Alloc(l) => unsafe { dealloc(self.base.as_ptr(), l) },
+            Mem::External => {}
         }
     }
 }
@@ -58,14 +87,32 @@ pub struct Region {
 }
 
 impl Region {
-    /// `len` bytes of zeroed heap memory (lazily backed by the OS).
+    /// `len` bytes of zeroed memory, backed lazily: an anonymous private `mmap` (a page costs nothing until
+    /// it is written), so a region can reserve its columns' largest capacities as address space.
     pub fn heap(len: usize) -> Region {
         let len = len.next_multiple_of(PAGE).max(PAGE);
-        let l = Layout::from_size_align(len, PAGE).expect("region layout");
-        // SAFETY: non-zero size.
-        let p = unsafe { alloc_zeroed(l) };
-        let base = NonNull::new(p).expect("region allocation");
-        Region { inner: Rc::new(RegionInner { base, len, heap: Some(l), _keep: None }), next: 0 }
+        #[cfg(unix)]
+        {
+            #[cfg(target_os = "macos")]
+            const MAP_ANON: i32 = 0x1000;
+            #[cfg(not(target_os = "macos"))]
+            const MAP_ANON: i32 = 0x20;
+            const PROT_RW: i32 = 0x1 | 0x2;
+            const MAP_PRIVATE: i32 = 0x2;
+            // SAFETY: a fresh anonymous private mapping; the kernel picks the (page-aligned) address.
+            let p = unsafe { mmap(std::ptr::null_mut(), len, PROT_RW, MAP_ANON | MAP_PRIVATE, -1, 0) };
+            assert!(p as isize != -1 && !p.is_null(), "bough-mem: mmap of a {len}-byte region failed");
+            let base = NonNull::new(p).expect("region mapping");
+            Region { inner: Rc::new(RegionInner { base, len, mem: Mem::Map, _keep: None }), next: 0 }
+        }
+        #[cfg(not(unix))]
+        {
+            let l = Layout::from_size_align(len, PAGE).expect("region layout");
+            // SAFETY: non-zero size.
+            let p = unsafe { alloc_zeroed(l) };
+            let base = NonNull::new(p).expect("region allocation");
+            Region { inner: Rc::new(RegionInner { base, len, mem: Mem::Alloc(l), _keep: None }), next: 0 }
+        }
     }
 
     /// The region is `len` bytes at `base`, kept alive by `keep` (dropped with the last column).
@@ -77,7 +124,7 @@ impl Region {
     pub unsafe fn external(base: *mut u8, len: usize, keep: Box<dyn std::any::Any>) -> Region {
         assert!(base as usize % COL_ALIGN == 0, "region base must be {COL_ALIGN}-aligned");
         let base = NonNull::new(base).expect("region base");
-        Region { inner: Rc::new(RegionInner { base, len, heap: None, _keep: Some(keep) }), next: 0 }
+        Region { inner: Rc::new(RegionInner { base, len, mem: Mem::External, _keep: Some(keep) }), next: 0 }
     }
 
     pub fn base(&self) -> *mut u8 {
@@ -95,6 +142,10 @@ impl Region {
     pub fn used(&self) -> usize {
         self.next
     }
+    /// Resident and dirty bytes of the whole region now (diagnostics, [`residency`]).
+    pub fn residency(&self) -> (usize, usize) {
+        residency(self.inner.base.as_ptr(), self.inner.len)
+    }
 
     /// Reserve `bytes` raw bytes (aligned to `align`, at least [`COL_ALIGN`]); returns their offset.
     pub fn reserve(&mut self, bytes: usize, align: usize) -> usize {
@@ -108,8 +159,18 @@ impl Region {
     /// A column of capacity `cap` at the next free offset. Its memory is the region's (zeroed if the
     /// region was); the column starts empty.
     pub fn carve<T>(&mut self, name: &'static str, cap: usize) -> Col<T> {
+        self.carve_aligned(name, cap, align_of::<T>())
+    }
+
+    /// [`Region::carve`] starting on a VM page boundary, so that a view of the column alone (a GPU buffer
+    /// over its used prefix) can be made.
+    pub fn carve_paged<T>(&mut self, name: &'static str, cap: usize) -> Col<T> {
+        self.carve_aligned(name, cap, vm_page().max(align_of::<T>()))
+    }
+
+    fn carve_aligned<T>(&mut self, name: &'static str, cap: usize, align: usize) -> Col<T> {
         let bytes = cap.checked_mul(size_of::<T>()).expect("column size");
-        let off = self.reserve(bytes, align_of::<T>());
+        let off = self.reserve(bytes, align);
         assert!(off <= u32::MAX as usize, "region offsets are u32");
         // SAFETY: off + bytes <= len (checked in `reserve`), base is valid for len bytes.
         let ptr = unsafe { NonNull::new_unchecked(self.inner.base.as_ptr().add(off) as *mut T) };
@@ -315,6 +376,175 @@ impl<T: Copy> Col<T> {
     }
 }
 
+impl<T> Col<T> {
+    /// This column's line in a memory ledger (diagnostics; never on a frame path): elements in use, the
+    /// capacity's bytes, and how many of the pages under the capacity are resident and dirty now.
+    pub fn mem(&self) -> ColMem {
+        let elem = size_of::<T>();
+        let reserved = if elem == 0 { 0 } else { self.cap * elem };
+        let (resident, dirty) = if reserved == 0 { (0, 0) } else { residency(self.ptr.as_ptr() as *const u8, reserved) };
+        ColMem { name: self.name, elem, len: self.len, cap: self.cap, carved: self.region.is_some(), resident, dirty }
+    }
+}
+
+/// One column's memory (see [`Col::mem`]). `resident` / `dirty` count whole VM pages overlapping the
+/// capacity, so neighbours sharing a page are counted by both (the ledger reports the region's pages once).
+#[derive(Clone, Copy, Debug)]
+pub struct ColMem {
+    pub name: &'static str,
+    pub elem: usize,
+    pub len: usize,
+    pub cap: usize,
+    pub carved: bool,
+    pub resident: usize,
+    pub dirty: usize,
+}
+
+impl ColMem {
+    pub fn used_bytes(&self) -> usize {
+        self.len * self.elem
+    }
+    pub fn cap_bytes(&self) -> usize {
+        self.cap * self.elem
+    }
+}
+
+/// The VM page size (16 KB on Apple silicon).
+pub fn vm_page() -> usize {
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn getpagesize() -> i32;
+        }
+        // SAFETY: no arguments, no preconditions.
+        (unsafe { getpagesize() }) as usize
+    }
+    #[cfg(not(unix))]
+    {
+        4096
+    }
+}
+
+/// Resident and dirty (modified) bytes of the VM pages overlapping `[ptr, ptr + len)`, by `mincore`
+/// (diagnostics: one system call and one byte per page). Pages are whole: a range sharing a page with
+/// something else is charged that page. `(0, 0)` where `mincore` is unavailable or fails.
+pub fn residency(ptr: *const u8, len: usize) -> (usize, usize) {
+    #[cfg(unix)]
+    {
+        if len == 0 {
+            return (0, 0);
+        }
+        unsafe extern "C" {
+            fn mincore(addr: *const u8, len: usize, vec: *mut u8) -> i32;
+        }
+        const INCORE: u8 = 0x1;
+        // MINCORE_MODIFIED and MINCORE_MODIFIED_OTHER (xnu `sys/mman.h`)
+        const MODIFIED: u8 = 0x4 | 0x10;
+        let pg = vm_page();
+        let start = ptr as usize & !(pg - 1);
+        let end = (ptr as usize + len).next_multiple_of(pg);
+        let n = (end - start) / pg;
+        let mut v = vec![0u8; n];
+        // SAFETY: `start` is page-aligned, `v` holds one byte per page of [start, end); mincore only reads
+        // the page tables (an unmapped page makes it fail, which we report as zero).
+        if unsafe { mincore(start as *const u8, end - start, v.as_mut_ptr()) } != 0 {
+            return (0, 0);
+        }
+        let res = v.iter().filter(|&&b| b & INCORE != 0).count() * pg;
+        let dirty = v.iter().filter(|&&b| b & INCORE != 0 && b & MODIFIED != 0).count() * pg;
+        (res, dirty)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (ptr, len);
+        (0, 0)
+    }
+}
+
+/// A memory ledger: one line per holder (diagnostics: built on demand, never on a frame path).
+#[derive(Clone, Debug, Default)]
+pub struct Ledger {
+    pub lines: Vec<Line>,
+}
+
+/// What a holder's size follows: the mounted content (rows, records, glyphs), the window (surfaces, tile
+/// rows), or neither (process constants: fonts, tables, pipelines).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scales {
+    Content,
+    Window,
+    Fixed,
+}
+
+/// Where a holder's bytes live.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Space {
+    /// A region column (inside the shared GPU buffer when windowed).
+    Region,
+    /// The Rust heap.
+    Heap,
+    /// A GPU object (texture, buffer, IOSurface) outside the region.
+    Gpu,
+}
+
+#[derive(Clone, Debug)]
+pub struct Line {
+    pub group: &'static str,
+    pub name: String,
+    pub space: Space,
+    pub scales: Scales,
+    /// Bytes holding live elements.
+    pub used: usize,
+    /// Bytes reserved (capacity).
+    pub reserved: usize,
+    /// Resident and dirty bytes when measured (`None`: not measurable here; then the reservation is
+    /// what it costs, e.g. small heap blocks that are fully written).
+    pub resident: Option<usize>,
+    pub dirty: Option<usize>,
+}
+
+/// Heap allocations at least this large are measured with `mincore` (malloc serves them from whole
+/// pages); smaller ones are charged their capacity.
+const MEASURE_HEAP: usize = 64 << 10;
+
+impl Ledger {
+    pub fn push(&mut self, group: &'static str, name: impl Into<String>, space: Space, scales: Scales, used: usize, reserved: usize, resident: Option<usize>, dirty: Option<usize>) {
+        self.lines.push(Line { group, name: name.into(), space, scales, used, reserved, resident, dirty });
+    }
+    /// A column (region-carved or owned).
+    pub fn col<T>(&mut self, group: &'static str, c: &Col<T>, scales: Scales) {
+        let m = c.mem();
+        let space = if m.carved { Space::Region } else { Space::Heap };
+        self.push(group, m.name, space, scales, m.used_bytes(), m.cap_bytes(), Some(m.resident), Some(m.dirty));
+    }
+    /// A heap vector (its own block only; nested heap blocks are the caller's to add).
+    pub fn vec<T>(&mut self, group: &'static str, name: impl Into<String>, v: &[T], cap: usize, scales: Scales) {
+        let e = size_of::<T>();
+        self.heap(group, name, scales, v.len() * e, cap * e, v.as_ptr() as *const u8);
+    }
+    /// A heap block of `reserved` bytes at `ptr` (`used` of them live).
+    pub fn heap(&mut self, group: &'static str, name: impl Into<String>, scales: Scales, used: usize, reserved: usize, ptr: *const u8) {
+        let (resident, dirty) = if reserved >= MEASURE_HEAP {
+            let (r, d) = residency(ptr, reserved);
+            (Some(r.min(reserved)), Some(d.min(reserved)))
+        } else {
+            (None, None)
+        };
+        self.push(group, name, Space::Heap, scales, used, reserved, resident, dirty);
+    }
+    /// Many small heap blocks summed (nested vectors, strings, boxes): `n` blocks, `used` / `reserved` bytes.
+    pub fn many(&mut self, group: &'static str, name: impl Into<String>, scales: Scales, used: usize, reserved: usize) {
+        self.push(group, name, Space::Heap, scales, used, reserved, None, None);
+    }
+    /// Lines whose resident bytes are known, else their reservation.
+    pub fn cost(l: &Line) -> usize {
+        l.resident.unwrap_or(l.reserved)
+    }
+    pub fn total(&self, space: Space) -> usize {
+        self.lines.iter().filter(|l| l.space == space).map(Ledger::cost).sum()
+    }
+}
+
 impl<T> Drop for Col<T> {
     fn drop(&mut self) {
         self.clear();
@@ -403,6 +633,24 @@ mod tests {
         assert!(b.iter().enumerate().all(|(i, &v)| v == i as u16 * 3));
         drop(r); // the columns keep the memory alive
         assert_eq!(a[99], 99);
+    }
+
+    /// A heap region is address space: reserving 256 MiB makes nothing resident, and writing one element of
+    /// a column far into it makes one page resident (the old `alloc_zeroed` with page alignment zero-filled every
+    /// page: this test fails with it).
+    #[cfg(unix)]
+    #[test]
+    fn heap_region_is_lazy() {
+        let mut r = Region::heap(256 << 20);
+        assert_eq!(r.residency().0, 0, "a fresh region has no resident pages");
+        let _a: Col<u64> = r.carve_paged("a", 1 << 20);
+        let mut b: Col<u64> = r.carve_paged("b", 1 << 20);
+        assert_eq!(b.region_offset().unwrap() % vm_page(), 0, "carve_paged starts on a page boundary");
+        // SAFETY: zero is a valid u64 and the region is zeroed.
+        unsafe { b.set_len(1 << 19) };
+        b[1 << 18] = 7;
+        assert_eq!(r.residency().0, vm_page(), "one written element, one resident page");
+        assert_eq!(b.mem().resident, vm_page());
     }
 
     #[test]

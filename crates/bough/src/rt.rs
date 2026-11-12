@@ -129,8 +129,31 @@ pub struct Caps {
 
 impl Caps {
     /// Sized for the comparison scenes with headroom (heavy: ~2.6 K records / 2.3 K glyphs; vlist: ~6 K
-    /// glyphs mounted). Untouched capacity costs no memory until written.
+    /// glyphs mounted). With the direct-Metal presenter these are only minimums: see [`Caps::reserve`].
     pub const DEFAULT: Caps = Caps { instances: 8192, pages: 512, glyphs: 1 << 16, runs: 8192, spaces: 2048, clips: 512, strikes: 16 };
+
+    /// The record format's own limits (round 6, lane memory): an instance run's first instance is 18 bits
+    /// (`pay_irun`), a text record's first run header 20 bits (`pay_runs`); 2^15 pages hold two million
+    /// records, 2^22 glyph slots four million glyphs, and a run header's strike is masked to 8 bits here. With
+    /// column views (the direct-Metal presenter) a column's capacity is address space, so the region reserves
+    /// these and a mount only ever reaches the format's limits, never a configuration's.
+    pub const RESERVE: Caps = Caps { instances: 1 << 18, pages: 1 << 15, glyphs: 1 << 22, runs: 1 << 20, spaces: 1 << 12, clips: 1 << 12, strikes: 1 << 8 };
+
+    /// The capacities a region with column views reserves: the larger of `self` and [`Caps::RESERVE`] for the
+    /// columns that grow with content (spaces and clips keep `self`'s: their ids are 16 bits, and the space
+    /// column is written whole at start).
+    pub fn reserve(&self) -> Caps {
+        let r = Caps::RESERVE;
+        Caps {
+            instances: self.instances.max(r.instances),
+            pages: self.pages.max(r.pages),
+            glyphs: self.glyphs.max(r.glyphs),
+            runs: self.runs.max(r.runs),
+            spaces: self.spaces,
+            clips: self.clips,
+            strikes: self.strikes.max(r.strikes),
+        }
+    }
 
     /// Every capacity rounded up to a power of two: the GPU masks indices with `capacity - 1`, and the
     /// rounding is the phantom padding that keeps a masked index inside its own column (zero-filled: an
@@ -144,7 +167,8 @@ impl Caps {
         let caps = self.pow2();
         // frame slots sized for the tallest window (resize never moves them; 4.3 KB each)
         let sb = Layout::slot_bytes(w, h.max(MAX_WINDOW));
-        let a = |n: usize| n.next_multiple_of(256) + 256;
+        // every column on a page boundary (`Region::carve_paged`: a column view is whole pages)
+        let a = |n: usize| n.next_multiple_of(256) + 256 + bough_mem::vm_page();
         HDR_BYTES
             + 3 * a(sb)
             + a(caps.instances * size_of::<Instance>())
@@ -300,6 +324,13 @@ pub struct Scope {
     pub lregs: Vec<u32>,
     /// Async producers declared in this scope (`reader.rs`), revoked with it.
     pub prods: Vec<u32>,
+}
+
+impl Scope {
+    /// Heap bytes of the scope's lists (memory ledger).
+    pub fn heap_bytes(&self) -> usize {
+        (self.nodes.capacity() + self.wires.capacity() + self.runs.capacity() + self.lroots.capacity() + self.dyns.capacity() + self.lregs.capacity() + self.prods.capacity()) * 4
+    }
 }
 
 pub struct RowInfo {
@@ -491,14 +522,16 @@ impl Rt {
         for s in &mut slot {
             *s = region.reserve(sb, 256) as u32;
         }
-        let mut inst: Col<Instance> = region.carve("instances", caps.instances);
-        // SAFETY: carved memory is zeroed (fresh buffer / alloc_zeroed) and all-zero is a valid Instance.
+        // every GPU-read column starts on a page boundary: a presenter with column views wraps each one's used
+        // prefix in its own buffer (bough-metal `Fused::new_views`)
+        let mut inst: Col<Instance> = region.carve_paged("instances", caps.instances);
+        // SAFETY: carved memory is zeroed (fresh mapping / buffer) and all-zero is a valid Instance.
         unsafe { inst.set_len(caps.instances) };
-        let cols = Columns { pages: region.carve("pages", caps.pages), dir_id: region.carve("dir_id", caps.pages), dir_ink: region.carve("dir_ink", caps.pages), clips: region.carve("clips", caps.clips) };
-        let pcols = PoolColumns { x: region.carve("glyph_x", caps.glyphs), ent: region.carve("glyph_ent", caps.glyphs), runs: region.carve("runs", caps.runs), spaces: region.carve("spaces", caps.spaces) };
-        let toks: Col<TokStrike> = region.carve("tok_strikes", caps.strikes);
+        let cols = Columns { pages: region.carve_paged("pages", caps.pages), dir_id: region.carve_paged("dir_id", caps.pages), dir_ink: region.carve_paged("dir_ink", caps.pages), clips: region.carve_paged("clips", caps.clips) };
+        let pcols = PoolColumns { x: region.carve_paged("glyph_x", caps.glyphs), ent: region.carve_paged("glyph_ent", caps.glyphs), runs: region.carve_paged("runs", caps.runs), spaces: region.carve_paged("spaces", caps.spaces) };
+        let toks: Col<TokStrike> = region.carve_paged("tok_strikes", caps.strikes);
         // per space: the affine of a transformed subtree (zeroed: the identity; `set_space_xform`)
-        let mut xforms: Col<[f32; 8]> = region.carve("xforms", caps.spaces);
+        let mut xforms: Col<[f32; 8]> = region.carve_paged("xforms", caps.spaces);
         // SAFETY: carved memory is zeroed and all-zero is the identity transform.
         unsafe { xforms.set_len(caps.spaces) };
         let bough = Bough::with_columns(win_w, win_h, cols);
@@ -531,7 +564,25 @@ impl Rt {
                 clip: caps.clips as u32 - 1,
                 strike: caps.strikes as u32 - 1,
             },
+            cols: Default::default(),
         };
+        let mut layout = layout;
+        {
+            use bough_metal::fused::*;
+            let d = |off: u32, elem: usize, cap: usize, group: usize| ColumnDesc { off, elem: elem as u32, reserve: (elem * cap) as u32, group: group as u8 };
+            let l = &mut layout;
+            l.cols[COL_INST] = d(l.inst_off, size_of::<Instance>(), caps.instances, G_INST);
+            l.cols[COL_SPACES] = d(l.spaces_off, 8, caps.spaces, G_SPACE);
+            l.cols[COL_CLIPS] = d(l.clips_off, 8, caps.clips, G_CLIP);
+            l.cols[COL_DIR_ID] = d(l.dir_id_off, 4, caps.pages, G_PAGE);
+            l.cols[COL_DIR_INK] = d(l.dir_ink_off, 8, caps.pages, G_PAGE);
+            l.cols[COL_PAGES] = d(l.pages_off, size_of::<Page>(), caps.pages, G_PAGE);
+            l.cols[COL_GX] = d(l.gx_off, 4, caps.glyphs, G_GLYPH);
+            l.cols[COL_GENT] = d(l.gent_off, 2, caps.glyphs, G_GLYPH);
+            l.cols[COL_RUNS] = d(l.runs_off, size_of::<RunHeader>(), caps.runs, G_RUN);
+            l.cols[COL_TOKS] = d(l.toks_off, size_of::<TokStrike>(), caps.strikes, G_STRIKE);
+            l.cols[COL_XFORMS] = d(l.xforms_off, 32, caps.spaces, G_SPACE);
+        }
         let (tx, ty) = (layout.tiles_x() as usize, layout.tiles_y() as usize);
         Rt {
             bough,
@@ -598,6 +649,86 @@ impl Rt {
     /// The region's first byte (header and frame slots are addressed from it).
     pub fn region_base(&self) -> *mut u8 {
         self._region.base()
+    }
+    /// The region's memory and a keep-alive share of it (a presenter wraps it, or views of it).
+    pub(crate) fn region_mem(&self) -> (*mut u8, usize, Box<dyn std::any::Any>) {
+        (self._region.base(), self._region.len(), self._region.keeper())
+    }
+
+    /// Per mask group (bough-metal `G_*`), the elements the GPU may be pointed at: each GPU-read column's
+    /// high-water mark. A presenter with column views must cover them before a frame
+    /// (`Fused::ensure_columns`); loads and compares only.
+    #[inline]
+    pub fn column_needs(&self) -> [usize; bough_metal::fused::NGROUPS] {
+        let (pages, clips) = self.bough.gpu_extent();
+        [
+            self.next_fresh as usize,
+            pages,
+            self.glyphs.x.len().max(self.glyphs.ent.len()),
+            self.glyphs.runs.len(),
+            self.next_space as usize + 1,
+            clips,
+            self.text.cache.strike_tables(),
+        ]
+    }
+
+    /// Every table the runtime holds, as memory-ledger lines (diagnostics: walks the tables; never on a
+    /// frame path). Region columns report their resident pages; heap blocks their capacities (mincore
+    /// for the large ones).
+    pub fn ledger(&self, l: &mut bough_mem::Ledger) {
+        use bough_mem::Scales::{Content, Window};
+        const G: &str = "runtime";
+        let (rr, rd) = self._region.residency();
+        l.push("region", "whole region (header, slots, every column)", bough_mem::Space::Region, Content, self._region.used(), self._region.len(), Some(rr), Some(rd));
+        let slots = 3 * Layout::slot_bytes(self.layout.w, self.layout.h.max(MAX_WINDOW));
+        l.push("region", "header + 3 frame slots", bough_mem::Space::Region, Window, HDR_BYTES + slots, HDR_BYTES + slots, None, None);
+        // the instance and transform columns are addressable whole (`set_len(cap)`): what is in use is the
+        // allocators' high-water marks
+        let m = self.inst.mem();
+        l.push(G, "instances", bough_mem::Space::Region, Content, self.next_fresh as usize * m.elem, m.cap_bytes(), Some(m.resident), Some(m.dirty));
+        let m = self.xforms.mem();
+        l.push(G, "xforms", bough_mem::Space::Region, Content, self.next_space as usize * m.elem, m.cap_bytes(), Some(m.resident), Some(m.dirty));
+        self.bough.ledger(l);
+        self.glyphs.ledger(l);
+        self.text.ledger(l);
+        let sb = Scope::heap_bytes;
+        l.vec(G, "nodes", &self.nodes, self.nodes.capacity(), Content);
+        let series: usize = self.nodes.iter().map(|n| n.series.capacity() * 4).sum();
+        l.many(G, "node series", Content, series, series);
+        l.vec(G, "node free list", &self.node_free, self.node_free.capacity(), Content);
+        l.vec(G, "wires", &self.wires, self.wires.capacity(), Content);
+        l.vec(G, "wire free list", &self.wire_free, self.wire_free.capacity(), Content);
+        let cl: usize = self.classes.iter().map(|c| c.capacity() * 4).sum::<usize>() + self.classes.capacity() * 24 + self.class_changed.capacity() * 8;
+        l.many(G, "owner classes", Content, cl, cl);
+        l.vec(G, "instance runs", &self.runs, self.runs.capacity(), Content);
+        let fb: usize = self.free_blocks.iter().map(|v| v.capacity() * 4).sum::<usize>() + self.free_bits.iter().map(|v| v.capacity() * 8).sum::<usize>() + self.run_free.capacity() * 4;
+        l.many(G, "instance free lists", Content, fb, fb);
+        l.vec(G, "text nodes", &self.texts, self.texts.capacity(), Content);
+        let (mut strings, mut shapes) = (0usize, 0usize);
+        for t in &self.texts {
+            strings += t.text.capacity();
+            shapes += match &t.shape {
+                crate::text::TShape::None | crate::text::TShape::Glyphs { .. } => 0,
+                crate::text::TShape::Label(_) => size_of::<bough_text::pool::Label>(),
+                crate::text::TShape::Set(s) => size_of::<bough_text::lines::LineSet>() + s.heap_bytes(),
+                crate::text::TShape::Lines { widths, spans, .. } => widths.capacity() * 4 + spans.capacity() * 8,
+            };
+        }
+        l.many(G, "text node strings", Content, strings, strings);
+        l.many(G, "text node shapes (labels, line sets, line tables)", Content, shapes, shapes);
+        let rg: usize = self.regions.iter().map(|r| r.rows.capacity() * size_of::<RowInfo>() + r.rows.iter().map(|x| sb(&x.scope)).sum::<usize>()).sum::<usize>() + self.regions.capacity() * size_of::<VRegion>();
+        l.many(G, "virtual-list regions (raw)", Content, rg, rg);
+        let sp: usize = (self.space_free.capacity() + self.space_parent.capacity()) * 2 + self.space_kids.iter().map(|k| k.capacity() * 2 + 24).sum::<usize>() + self.space_regs.iter().map(|k| k.capacity() * 4 + 24).sum::<usize>() + self.clip_dedupe.capacity() * 12;
+        l.many(G, "spaces and clip dedupe", Content, sp, sp);
+        l.many(G, "paint damage ring", Window, self.paint.heap_bytes(), self.paint.heap_bytes());
+        let rq: usize = self.reclaim_q.iter().map(sb).sum::<usize>() + self.reclaim_q.capacity() * size_of::<Scope>();
+        l.many(G, "reclaim queue", Content, rq, rq);
+        self.lay.ledger(l);
+        self.lists.ledger(l);
+        self.dyns.ledger(l);
+        l.vec(G, "reflection type names", &self.reflect.types, self.reflect.types.capacity(), Content);
+        self.images.ledger(l);
+        self.input.ledger(l);
     }
 
     // ------------------------------------------------------------------ instances

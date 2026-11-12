@@ -109,6 +109,8 @@ pub const FACE_MONO: u8 = 2;
 pub const FACE_OBLIQUE: u8 = 3;
 
 pub struct TextSys {
+    /// The regular face's bytes (kept for the process, shared with the shaper's face).
+    font: &'static [u8],
     /// The current face's shaping tables (face 0 between operations; [`TextSys::select`]): immutable, built
     /// once per font per process and shared by every window (`font_tables`), as a renderer's font system is.
     pub shaper: std::sync::Arc<Shaper>,
@@ -158,13 +160,53 @@ fn font_tables(font: &[u8]) -> (&'static [u8], std::sync::Arc<Shaper>) {
     (leaked, s)
 }
 
+/// Bytes of a shaper's tables (its struct, the class-pair matrix, the token steps and ligatures; the dense
+/// ASCII table is 128 x 128 u16 = 32 KiB, `Shaper::dense`).
+fn shaper_bytes(s: &Shaper) -> usize {
+    let sc = &s.script;
+    let tok = sc.tokens.as_ref().map_or(0, |t| t.step.len() * 2 + t.ligs.iter().map(|l| l.1.capacity() + 24).sum::<usize>());
+    size_of::<Shaper>() + sc.matrix.capacity() * 2 + tok + 128 * 128 * 2
+}
+
+/// Process-wide text memory (font bytes kept for the faces and the shaping tables), as ledger lines.
+pub fn fonts_ledger(l: &mut bough_mem::Ledger) {
+    use bough_mem::Scales::Fixed;
+    let fonts = FONTS.lock().unwrap();
+    let bytes: usize = fonts.iter().map(|f| f.1.len()).sum();
+    l.many("text", format!("font bytes kept for the faces ({} fonts, leaked)", fonts.len()), Fixed, bytes, bytes);
+    let tables: usize = fonts.iter().map(|f| shaper_bytes(&f.2)).sum();
+    l.many("text", "shaping tables (SimpleScript + Shaper, per font)", Fixed, tables, tables);
+}
+
 impl TextSys {
+    /// The regular face's bytes (process-lifetime).
+    pub fn font_bytes(&self) -> &'static [u8] {
+        self.font
+    }
+
+    /// This window's text memory (the glyph cache and the shaper's scratch), as ledger lines.
+    pub fn ledger(&self, l: &mut bough_mem::Ledger) {
+        use bough_mem::Scales::{Content, Fixed};
+        self.cache.ledger(l);
+        l.vec("text", "instance scratch", &self.scratch, self.scratch.capacity(), Content);
+        let ch = |c: &Vec<(String, Vec<u16>, Vec<i32>, i32)>| c.capacity() * 80 + c.iter().map(|x| x.0.capacity() + x.1.capacity() * 2 + x.2.capacity() * 4).sum::<usize>();
+        let run = |r: &GlyphRun| r.gid.capacity() * 2 + r.x.capacity() * 4 + r.cluster.capacity() * 4;
+        let mut b = ch(&self.chunks) + run(&self.run) + run(&self.seg) + self.bytes.capacity() + self.strikes.capacity() * 16;
+        for p in self.alt.iter().flatten() {
+            b += match p {
+                Parked::Pending(f) => f.capacity(),
+                Parked::Ready(fs) => ch(&fs.chunks),
+            };
+        }
+        l.many("text", "shaper scratch, chunk cache, parked faces", Fixed, b, b);
+    }
     /// `toks`: the (carved, GPU-visible) column of strike token tables.
     pub fn new(font: &[u8], toks: bough_mem::Col<TokStrike>) -> TextSys {
         let (leaked, shaper) = font_tables(font);
         let tf = ttf_parser::Face::parse(leaked, 0).expect("font");
         let (ascent, descent, upem) = (tf.ascender() as f32, -(tf.descender() as f32), tf.units_per_em() as f32);
         TextSys {
+            font: leaked,
             shaper,
             cache: GlyphCache::with_tok_column(font, toks),
             scratch: Vec::with_capacity(1024),

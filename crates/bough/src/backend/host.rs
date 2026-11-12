@@ -57,6 +57,41 @@ fn after_frame<V: View>(app: &Rc<RefCell<App<V>>>, st: &Rc<Trim>, a: &mut App<V>
     *st.timer.borrow_mut() = Some(t);
 }
 
+/// A main-run-loop timer calling `f` after `seconds` (and every `seconds` after that if `repeats`), for harnesses
+/// (the memory ledger's drive and trim timers); lives as long as the process.
+pub fn timer(seconds: f64, repeats: bool, f: impl Fn() + 'static) {
+    let blk = RcBlock::new(move |_t: NonNull<NSTimer>| f());
+    let t = unsafe { NSTimer::timerWithTimeInterval_repeats_block(seconds, repeats, &blk) };
+    t.setTolerance(0.0005);
+    unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&t, objc2_foundation::NSRunLoopCommonModes) };
+    std::mem::forget(t);
+}
+
+/// `BOUGH_LEDGER=<file>`: append the window's memory ledger (`ledger.rs`, one JSON line per sample) at each
+/// of `BOUGH_LEDGER_AT=<s>[,<s>...]` seconds after the first frame (default 5). Diagnostics: nothing is armed
+/// without the variable.
+fn arm_ledger<V: View>(app: &Rc<RefCell<App<V>>>) {
+    let Some(path) = std::env::var_os("BOUGH_LEDGER") else { return };
+    let at = std::env::var("BOUGH_LEDGER_AT").unwrap_or_else(|_| "5".into());
+    let t0 = std::time::Instant::now();
+    for t in at.split(',').filter_map(|x| x.trim().parse::<f64>().ok()) {
+        let (app, path) = (app.clone(), path.clone());
+        let blk = RcBlock::new(move |_t: NonNull<NSTimer>| {
+            let Ok(a) = app.try_borrow() else { return };
+            let (l, p) = a.ledger();
+            let json = crate::ledger::to_json(&l, &p);
+            let line = format!("{{\"t\":{:.3},\"pid\":{},\"ledger\":{json}}}\n", t0.elapsed().as_secs_f64(), std::process::id());
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let _ = f.write_all(line.as_bytes());
+            }
+        });
+        let timer = unsafe { NSTimer::timerWithTimeInterval_repeats_block(t, false, &blk) };
+        unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&timer, objc2_foundation::NSRunLoopCommonModes) };
+        std::mem::forget(timer);
+    }
+}
+
 fn new_app<V: View>(host: &bough_metal::app::Host, make_cfg: fn(f32) -> Config, view: V) -> App<V> {
     let scale = host.scale() as f32;
     let cfg = make_cfg(scale);
@@ -109,6 +144,7 @@ pub fn run_window<V: View>(
         let mut app = new_app(host, make_cfg, view);
         app.frame();
         let app = Rc::new(RefCell::new(app));
+        arm_ledger(&app);
         let tick = Rc::new(RefCell::new(tick));
         let trim = Rc::new(Trim::default());
         let mut timers = Vec::new();
@@ -175,6 +211,7 @@ pub fn run_window_linked<V: View>(
             let mut app = new_app(host, make_cfg, view);
             app.frame();
             let app = Rc::new(RefCell::new(app));
+            arm_ledger(&app);
             if seconds > 0.0 {
                 let host = host.clone();
                 let report = Rc::new(RefCell::new(Some(report)));
@@ -327,6 +364,7 @@ pub fn run_interactive<V: View>(
             let mut app = new_app(host, make_cfg, view);
             app.frame();
             let app = Rc::new(RefCell::new(app));
+            arm_ledger(&app);
             host.window.setAcceptsMouseMovedEvents(true);
             // the content height flips AppKit's coordinates; it follows the window (live resize)
             let content_h = Rc::new(Cell::new(h));

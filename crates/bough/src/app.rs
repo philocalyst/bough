@@ -131,6 +131,12 @@ pub struct SurfStats {
     pub purged: u64,
     /// Trim passes that made at least one surface volatile.
     pub trims: u64,
+    /// At each growth, why the drawn surfaces other than the one on screen were unavailable, by reason
+    /// (bough-metal `Fused::in_use_why` bits: committing, queued, the publisher's last, the calling thread's
+    /// last or paced, the compositor).
+    pub grew_why: [u64; 5],
+    /// Frames repaired by the CPU backend (no GPU work).
+    pub cpu: u64,
 }
 
 /// The presenter, chosen at compile time (never per frame): the vendored-wgpu-hal port (`bough_gpu::fused`,
@@ -139,6 +145,27 @@ pub struct SurfStats {
 pub use bough_gpu::fused as presenter;
 #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
 pub use bough_metal::fused as presenter;
+
+/// Which backend may repair a frame (`BOUGH_REPAIR`: `gpu`, the default for now; `auto`, the cost model; `cpu`,
+/// whenever the frame's records are all modelled, which tests use to hold the CPU path to the GPU's reference).
+/// Every backend writes the same pixels (cpu_raster.rs); `Auto` also requires the device's self-check
+/// (`repair::cpu_exact`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Repair {
+    Auto,
+    Gpu,
+    Cpu,
+}
+
+impl Repair {
+    pub fn from_env() -> Repair {
+        match std::env::var("BOUGH_REPAIR").as_deref() {
+            Ok("auto") => Repair::Auto,
+            Ok("cpu") => Repair::Cpu,
+            _ => Repair::Gpu,
+        }
+    }
+}
 
 enum Pick {
     /// The surface on screen already shows the state.
@@ -181,6 +208,9 @@ pub struct App<V: View> {
     tape: Vec<u32>,
     /// `Config::mount_once`: no tape, no re-description.
     once: bool,
+    /// The repair backends' choice and the CPU backend (cpu_raster.rs).
+    pub repair: Repair,
+    pub cpu: crate::cpu_raster::CpuRaster,
 }
 
 /// Per raster worker started by [`prepare`]: (strikes, glyphs, instructions, ns), for those finished.
@@ -243,6 +273,11 @@ pub fn prepare(cfg: &Config, strikes: &[(f32, &str, u8)], svgs: &[(&'static str,
 /// Bin capacity per tile row the presenter starts with.
 const BIN_CAP: u32 = 1024;
 
+/// Repair-backend limits (damaged tiles per frame below which the CPU backend repairs): provisional values until
+/// the per-tile costs of both backends are measured (card `2026-11-11-repair-backends`).
+const CPU_TILES_WARM: u32 = 16;
+const CPU_TILES_COLD: u32 = 4096;
+
 impl<V: View> App<V> {
     /// Mount `view`. `gpu`: create the fused presenter (its shared buffer is the region); otherwise the
     /// region is heap memory and `frame` stops after the tile list (the RENDER=0 shape).
@@ -252,7 +287,14 @@ impl<V: View> App<V> {
         let i_mount = bough_metal::fused::thread_instructions();
         let (win_w, win_h) = ((cfg.width_pt * cfg.scale).round() as i32, (cfg.height_pt * cfg.scale).round() as i32);
         let ring = cfg.surfaces();
-        let bytes = cfg.caps.region_bytes(win_w as u32, win_h as u32);
+        // direct Metal: the GPU sees each column through a view of its used prefix (bough-metal
+        // `Fused::new_views`), so the region reserves the record format's limits as address space; the wgpu-hal
+        // presenter wraps the whole region in one buffer and keeps the configured capacities
+        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+        let caps = if gpu { cfg.caps.reserve() } else { cfg.caps };
+        #[cfg(not(all(target_os = "macos", not(feature = "wgpu"))))]
+        let caps = cfg.caps;
+        let bytes = caps.region_bytes(win_w as u32, win_h as u32);
         // wgpu (`--features wgpu`): the device boots on another thread (the OS's driver load, ~22 ms cold) while this
         // thread mounts, lays out and shapes into region memory the presenter then adopts without a copy (bough-gpu
         // RESULTS)
@@ -269,8 +311,9 @@ impl<V: View> App<V> {
         // into heap memory first; the presenter is made afterwards, its shared buffer wrapping that memory (no copy)
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
         let overlapped = gpu && bough_metal::fused::prep_pending();
+        // the region is always this process's own lazily backed memory; the presenter is made over it below
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
-        let metal = (gpu && !overlapped).then(|| presenter::Fused::new(win_w as usize, win_h as usize, cfg.scale as f64, bytes, ring, BIN_CAP));
+        let metal: Option<presenter::Fused> = None;
         #[cfg(not(target_os = "macos"))]
         let _ = gpu;
         #[cfg(target_os = "macos")]
@@ -293,11 +336,25 @@ impl<V: View> App<V> {
         };
         #[cfg(not(target_os = "macos"))]
         let region = bough_mem::Region::heap(bytes);
-        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
-        let wrap = overlapped.then(|| (region.base(), region.len(), region.keeper()));
         #[cfg(all(target_os = "macos", feature = "wgpu"))]
         let _ = overlapped;
-        let mut rt = Rt::new(win_w, win_h, cfg.scale, &cfg.font, region, cfg.caps);
+        let mut rt = Rt::new(win_w, win_h, cfg.scale, &cfg.font, region, caps);
+        // the presenter over the region's views: made now (its device was built here), or after the mount when
+        // a preparation thread is building the device meanwhile (`prepare`)
+        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+        let views = |rt: &Rt| {
+            let (p, len, keep) = rt.region_mem();
+            let base = rt.layout.slot[2] as usize + bough_metal::fused::Layout::slot_bytes(rt.layout.w, rt.layout.h.max(MAX_WINDOW));
+            // SAFETY: the runtime's region: page-aligned (mmap), `len` bytes, alive while `keep` (a share of it)
+            // is, which the presenter holds as long as its buffers; every GPU-read column was carved on a page
+            // boundary (`Rt::new`) and `region_bytes` leaves a page after each.
+            unsafe { bough_metal::fused::Fused::new_views(p, len, keep, base, win_w as usize, win_h as usize, cfg.scale as f64, ring, BIN_CAP) }
+        };
+        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+        let metal = match metal {
+            None if gpu && !overlapped => Some(views(&rt).0),
+            m => m,
+        };
         for (logical, font) in &cfg.faces {
             rt.text.add_face(*logical, font);
         }
@@ -336,11 +393,9 @@ impl<V: View> App<V> {
             startup.mount_instr = bough_metal::fused::thread_instructions() - i_mount;
         }
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
-        if let Some((p, len, keep)) = wrap {
+        if overlapped {
             let t = std::time::Instant::now();
-            // SAFETY: a heap region: page-aligned, a whole number of pages, alive while `keep` (a share of it)
-            // is; the presenter holds `keep` as long as its buffer.
-            let (mut f, instr, ns) = unsafe { bough_metal::fused::Fused::new_on(p, len, keep, win_w as usize, win_h as usize, cfg.scale as f64, ring, BIN_CAP) };
+            let (mut f, instr, ns) = views(&rt);
             f.set_layout(rt.layout);
             startup = Startup { gpu_prep_instr: instr, gpu_prep_ns: ns, gpu_wait_ns: t.elapsed().as_nanos() as u64, ..startup };
             metal = Some(f);
@@ -378,7 +433,17 @@ impl<V: View> App<V> {
             last_full: true,
             tape,
             once,
+            repair: Repair::from_env(),
+            cpu: crate::cpu_raster::CpuRaster::new(),
         }
+    }
+
+    /// The cost model's limit: frames of at most this many damaged tiles are repaired on the CPU. While the
+    /// GPU's queue has not run work (or was released) a GPU frame costs a queue wake (~3 ms, ~11 M instructions,
+    /// drvprobe) and the driver's 69 MiB, so the CPU takes much larger frames.
+    #[inline]
+    fn repair_limit(&self, gpu_warm: bool) -> u32 {
+        if gpu_warm { CPU_TILES_WARM } else { CPU_TILES_COLD }
     }
 
     /// Frames per pre-armed command buffer. Every frame goes through the pre-armed stream (bough-metal
@@ -696,6 +761,15 @@ impl<V: View> App<V> {
             if let Some(c) = fresh {
                 if self.held.iter().any(|h| h.is_some()) {
                     self.surf_stats.grew += 1;
+                    #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+                    if let Some(g) = self.gpu.as_ref() {
+                        for d in (0..n).filter(|&d| Some(d) != self.shown && self.held[d].is_some()) {
+                            let w = g.in_use_why(d);
+                            for k in 0..5 {
+                                self.surf_stats.grew_why[k] += (w >> k & 1) as u64;
+                            }
+                        }
+                    }
                 }
                 return Pick::Draw(c);
             }
@@ -768,9 +842,28 @@ impl<V: View> App<V> {
 
     fn draw<const PACED: bool>(&mut self, i: usize, epoch: u32) {
         let mut purged = false;
+        // a CPU-repairable frame must not make the surface resident (a first residency drains the pre-armed
+        // frames: GPU work); its volatility is handled by `write_begin` / `prepare_target`, whichever runs
+        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+        if self.repair == Repair::Auto && !crate::repair::cpu_exact(self.rt.text.font_bytes()) {
+            // this device, OS build or shader draws differently from the CPU model: the GPU repairs everything
+            self.repair = Repair::Gpu;
+        }
+        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+        let cpu_able = self.repair != Repair::Gpu;
+        #[cfg(not(all(target_os = "macos", not(feature = "wgpu"))))]
+        let cpu_able = false;
         #[cfg(target_os = "macos")]
         if let Some(g) = self.gpu.as_mut() {
-            purged = g.prepare_target(i);
+            if !cpu_able {
+                purged = g.prepare_target(i);
+            }
+        }
+        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+        if cpu_able {
+            if let Some(g) = self.gpu.as_mut() {
+                purged = g.make_nonvolatile(i);
+            }
         }
         if purged {
             self.held[i] = None;
@@ -791,8 +884,33 @@ impl<V: View> App<V> {
         self.last_use[i] = self.frames;
         #[allow(unused_mut)]
         let mut drawn = false;
+        // the CPU backend (cpu_raster.rs): the damaged tiles written into the surface directly, no GPU work
+        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
+        if cpu_able && copy.is_none() {
+            let tiles = if full { self.rt.layout.tiles_x() * self.rt.layout.tiles_y() } else { self.rows.iter().map(|r| r.count_ones()).sum() };
+            let warm = self.gpu.as_ref().is_some_and(|g| g.gpu_used());
+            let limit = self.repair_limit(warm);
+            if let Some(g) = self.gpu.as_mut() {
+                if self.repair == Repair::Cpu || tiles <= limit {
+                    let (p, bpr, _) = g.write_begin(i);
+                    // SAFETY: the surface is locked for this thread's writes, `bpr` bytes per row for the window's
+                    // rows (`write_begin`); the GPU finished every frame.
+                    let r = unsafe { self.cpu.repair(&self.rt, &self.rows, full, p, bpr) };
+                    g.write_end(i);
+                    if let Some(nt) = r {
+                        self.repaired_tiles = nt;
+                        g.show_held::<PACED>(i);
+                        self.surf_stats.cpu += 1;
+                        drawn = true;
+                    }
+                }
+            }
+        }
         #[cfg(target_os = "macos")]
-        if let Some(g) = self.gpu.as_mut() {
+        if let Some(g) = self.gpu.as_mut().filter(|_| !drawn) {
+            if cpu_able {
+                g.prepare_target(i);
+            }
             self.prof.mark(PH_CULL);
             let a = &mut self.rt.text.cache.atlas;
             if g.sync_atlas(a.width, a.height, &a.pixels, a.dirty_bytes != 0) {
@@ -801,6 +919,9 @@ impl<V: View> App<V> {
             if let Some(rows) = self.rt.images.take_dirty() {
                 g.sync_images(self.rt.images.pixels(), rows);
             }
+            // the GPU's views of the region's columns cover what the CPU wrote (seven compares; a growth is cold)
+            #[cfg(not(feature = "wgpu"))]
+            g.ensure_columns(&self.rt.column_needs());
             self.repaired_tiles = g.draw::<PACED>(i, &self.rows, full, n_dir, &copy);
             drawn = true;
         }
@@ -842,9 +963,17 @@ impl<V: View> App<V> {
     pub fn needs_trim(&self) -> bool {
         #[cfg(target_os = "macos")]
         if let Some(g) = self.gpu.as_ref() {
-            return (0..self.held.len()).any(|i| Some(i) != self.shown && g.surfs[i].touched.get() && !g.surfs[i].volatile.get());
+            return (0..self.held.len()).any(|i| Some(i) != self.shown && (g.surfs[i].touched.get() || g.surfs[i].cpu_written.get()) && !g.surfs[i].volatile.get());
         }
         false
+    }
+
+    /// The App's own tables (re-description tape, tile-row buffers), as memory-ledger lines (`ledger.rs`).
+    pub(crate) fn ledger_app(&self, l: &mut bough_mem::Ledger) {
+        use bough_mem::Scales;
+        l.vec("app", "re-description tape", &self.tape, self.tape.capacity(), Scales::Content);
+        let rows = self.rows.capacity() * 16 + 2 * size_of::<Plane>() + self.held.capacity() * 8 + self.last_use.capacity() * 8;
+        l.many("app", "tile-row buffer and repair planes", Scales::Window, rows, rows);
     }
 
     /// Surfaces in the ring.
@@ -887,6 +1016,8 @@ impl<V: View> App<V> {
         if let Some(rows) = self.rt.images.take_dirty() {
             g.sync_images(self.rt.images.pixels(), rows);
         }
+        #[cfg(not(feature = "wgpu"))]
+        g.ensure_columns(&self.rt.column_needs());
         g.reference_pixels(n_dir)
     }
 
