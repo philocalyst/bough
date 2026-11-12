@@ -82,7 +82,6 @@ const DETENT_PT: f32 = 15.0;
 
 enum Kind {
     Clock,
-    Blink,
     Exit,
     /// An animation frame when no frame callback will come (the last tick drew nothing).
     Anim,
@@ -127,11 +126,8 @@ pub fn run<V: View>(title: &str, make_cfg: fn(f32) -> Config, view: V, run: Run<
         let d = Duration::from_secs_f64(*p);
         timers.push(Timer { at: t0 + d, period: Some(d), kind: Kind::Clock });
     }
-    let half = app.rt.input.blink_half;
-    if half > 0.0 {
-        let d = Duration::from_secs_f32(half);
-        timers.push(Timer { at: t0 + d, period: Some(d), kind: Kind::Blink });
-    }
+    // the caret's blink: armed only while a field is focused (an unfocused window has no timer to wake for)
+    let mut blink: Option<(Instant, f32)> = None;
     if seconds > 0.0 {
         timers.push(Timer { at: t0 + Duration::from_secs_f64(seconds), period: None, kind: Kind::Exit });
     }
@@ -199,11 +195,6 @@ pub fn run<V: View>(title: &str, make_cfg: fn(f32) -> Config, view: V, run: Run<
                         f(&mut app);
                     }
                 }
-                Kind::Blink => {
-                    if app.next_blink().is_some() {
-                        app.tick(half);
-                    }
-                }
                 Kind::Anim => {
                     let dt = last_tick.map_or(1.0 / 60.0, |l| now.duration_since(l).as_secs_f32().min(0.05));
                     last_tick = Some(now);
@@ -222,6 +213,15 @@ pub fn run<V: View>(title: &str, make_cfg: fn(f32) -> Config, view: V, run: Run<
             }
         }
         timers.retain(|t| !matches!(t.kind, Kind::Anim) || t.at > now);
+        if let Some((_, dt)) = blink.filter(|b| b.0 <= now) {
+            blink = None;
+            if app.next_blink().is_some() {
+                app.tick(dt);
+            }
+        }
+        if blink.is_none() {
+            blink = app.next_blink().map(|s| (now + Duration::from_secs_f32(s.max(0.0)), s.max(0.0)));
+        }
         // 3. draw when there is something to show and the compositor is ready for it
         let (pending, suspended) = {
             let s = shell.borrow();
@@ -236,7 +236,7 @@ pub fn run<V: View>(title: &str, make_cfg: fn(f32) -> Config, view: V, run: Run<
             }
         }
         // 4. wait for the compositor or the next timer
-        let next = timers.iter().map(|t| t.at).min();
+        let next = timers.iter().map(|t| t.at).chain(blink.map(|b| b.0)).min();
         let timeout = next.map(|at| at.saturating_duration_since(Instant::now()));
         if let Err(e) = shell.borrow_mut().dispatch(timeout) {
             eprintln!("bough: the compositor connection closed: {e}");

@@ -269,9 +269,8 @@ impl Shell {
     /// and decode what came. Returns once events were decoded or the timeout passed.
     pub fn dispatch(&mut self, timeout: Option<Duration>) -> Result<(), Error> {
         self.queue.dispatch_pending(&mut self.state).map_err(err)?;
-        if !self.state.events.is_empty() {
-            return self.flush();
-        }
+        // events already decoded (and not yet taken): read what else arrived, but do not wait
+        let timeout = if self.state.events.is_empty() { timeout } else { Some(Duration::ZERO) };
         self.flush()?;
         let Some(guard) = self.queue.prepare_read() else {
             // events were queued meanwhile: decode them
