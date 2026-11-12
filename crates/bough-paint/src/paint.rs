@@ -46,6 +46,8 @@ pub enum PCode {
         /// Its core covers when the colour operands `full` names (indices into `args`) all have full alpha.
         opaque: bool,
         full: &'static [usize],
+        /// Its last operand is a table handle (`Shadow`): the generated function reads the corner table.
+        tab: bool,
     },
     /// `a` then `b`; `cut`: `b`'s core is opaque, so `a` is skipped inside it.
     Over { a: &'static PCode, b: &'static PCode, cut: bool },
@@ -91,6 +93,11 @@ pub trait Paint: Words {
     fn pick_id(&self, _cx: &Cx) -> u32 {
         NO_HIT
     }
+    /// Called once when the record is mounted or rewritten, under a zero block: a layer whose coverage is a
+    /// pure function of record constants and the pixel's offset asks `m` for the table of its key and keeps
+    /// the handle in its own record word. `m(radius, blur)` returns a handle.
+    #[inline(always)]
+    fn memo(&mut self, _cx: &Cx, _m: &mut dyn FnMut(i32, i32) -> u32) {}
 }
 
 /// A primitive from its stager leaf and its shade leaf:
@@ -113,7 +120,7 @@ macro_rules! prim {
             const OPAQUE_CORE: bool = $cov $(&& $FT::MAY)*;
             const COST: Cost = $cost;
             const LAYERS: usize = 1;
-            const CODE: &'static PCode = &PCode::Prim { mk: stringify!($mk), p: stringify!($p), args: &[$($T::CODE),*], tys: &[$(<$ty as Val>::TY),*], glyph: $gl, opaque: Self::OPAQUE_CORE, full: &[$($fi),*] };
+            const CODE: &'static PCode = &PCode::Prim { mk: stringify!($mk), p: stringify!($p), args: &[$($T::CODE),*], tys: &[$(<$ty as Val>::TY),*], glyph: $gl, opaque: Self::OPAQUE_CORE, full: &[$($fi),*], tab: false };
             #[inline(always)]
             fn paint<Sk: Sink>(&self, cx: &Cx, clip: Vec4i, s: &mut Sk) {
                 s.$sink(x::$mk($(self.$f.eval(cx)),*, clip))
@@ -136,8 +143,102 @@ prim!(/// A rounded box.
     RRect: rrect = mk_rrect, p_rrect(b: B: Vec4i: true, r: R: i32: true, c: C: Vec4u: false); full = [c: C = 2]; cover = true; cost = Cost::Edge; glyph = false);
 prim!(/// A rounded box of colour `fill` with a border of width `w` in colour `c` inside its edge.
     Border: border = mk_border, p_border(b: B: Vec4i: true, r: R: i32: true, w: W: i32: true, c: C: Vec4u: false, fill: F: Vec4u: false); full = [fill: F = 4]; cover = true; cost = Cost::Edge; glyph = false);
-prim!(/// The shadow of a rounded box, blurred by a spline of width `blur` (Q8, two sigma).
-    Shadow: shadow = mk_shadow, p_shadow(b: B: Vec4i: true, r: R: i32: true, blur: S: i32: true, c: C: Vec4u: false); full = []; cover = false; cost = Cost::Wide; glyph = false);
+/// A table handle operand of a primitive that can memoise part of its coverage (`Shadow`'s corners).
+pub trait TabOp: Expr<Out = u32> {
+    /// The record owns a handle word.
+    const ON: bool;
+    fn put(&mut self, _handle: u32) {}
+}
+/// A handle word in the record: filled in when the record is mounted (`Paint::memo`).
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Tab(pub u32);
+impl Tab {
+    pub const NONE: Tab = Tab(x::T_MISS);
+}
+// SAFETY: one word.
+unsafe impl Words for Tab {}
+impl Expr for Tab {
+    type Out = u32;
+    type Stage = crate::expr::Mount;
+    const READS: u64 = 0;
+    const CODE: &'static Code = &Code::Rec;
+    #[inline(always)]
+    fn eval(&self, _: &Cx) -> u32 {
+        self.0
+    }
+}
+impl TabOp for Tab {
+    const ON: bool = true;
+    #[inline(always)]
+    fn put(&mut self, h: u32) {
+        self.0 = h;
+    }
+}
+/// No table: the closed form always (no record word).
+pub type NoTab = crate::expr::K<{ x::T_MISS }>;
+impl TabOp for NoTab {
+    const ON: bool = false;
+}
+
+/// The shadow of a rounded box, blurred by a spline of width `blur` (Q8, two sigma). `tab`: `Tab` to let the
+/// corner corrections be read from a table shared by every shadow of the same radius and blur, `NoTab`
+/// (as a value: `K`) for the closed form only.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Shadow<B, R, S, C, T = NoTab> {
+    pub b: B,
+    pub r: R,
+    pub blur: S,
+    pub c: C,
+    pub tab: T,
+}
+// SAFETY: `repr(C)` over `Words` operands.
+unsafe impl<B: Words, R: Words, S: Words, C: Words, T: Words> Words for Shadow<B, R, S, C, T> {}
+impl<B: Expr<Out = Vec4i>, R: Expr<Out = i32>, S: Expr<Out = i32>, C: Expr<Out = Vec4u>, T: TabOp> Paint for Shadow<B, R, S, C, T> {
+    const READS: u64 = B::READS | R::READS | S::READS | C::READS;
+    const GEOM_READS: u64 = B::READS | R::READS | S::READS;
+    const OPAQUE_CORE: bool = false;
+    const COST: Cost = Cost::Wide;
+    const LAYERS: usize = 1;
+    const CODE: &'static PCode = &PCode::Prim {
+        mk: "mk_shadow",
+        p: "p_shadow",
+        args: &[B::CODE, R::CODE, S::CODE, C::CODE, T::CODE],
+        tys: &[Ty::V4i, Ty::I32, Ty::I32, Ty::V4u, Ty::U32],
+        glyph: false,
+        opaque: false,
+        full: &[],
+        tab: T::ON,
+    };
+    #[inline(always)]
+    fn paint<Sk: Sink>(&self, cx: &Cx, clip: Vec4i, s: &mut Sk) {
+        s.shadow(x::mk_shadow(self.b.eval(cx), self.r.eval(cx), self.blur.eval(cx), self.c.eval(cx), self.tab.eval(cx), clip))
+    }
+    #[inline(always)]
+    fn changed(&self, old: &Cx, new: &Cx, mask: u64) -> bool {
+        (B::READS & mask != 0 && self.b.eval(old) != self.b.eval(new))
+            || (R::READS & mask != 0 && self.r.eval(old) != self.r.eval(new))
+            || (S::READS & mask != 0 && self.blur.eval(old) != self.blur.eval(new))
+            || (C::READS & mask != 0 && self.c.eval(old) != self.c.eval(new))
+    }
+    #[inline(always)]
+    fn cover(&self, _: &Cx, _: Vec4i) -> Vec4i {
+        EMPTY
+    }
+    fn memo(&mut self, cx: &Cx, m: &mut dyn FnMut(i32, i32) -> u32) {
+        // radius and blur fixed for the record's life: its corners are one table's. (A box whose size is
+        // animated can still change the clamped radius; the key in the table's header is checked while
+        // shading, so that only costs the closed form.)
+        if T::ON && R::READS == 0 && S::READS == 0 {
+            let z = Vec4 { x: 0, y: 0, z: 0, w: 0 };
+            let c = x::mk_shadow(self.b.eval(cx), self.r.eval(cx), self.blur.eval(cx), z, x::T_MISS, NO_CLIP);
+            if x::t_regime(c.rad.x, c.rad.y) {
+                self.tab.put(m(c.rad.x, c.rad.y));
+            }
+        }
+    }
+}
 prim!(/// A two-stop linear gradient in a rounded box.
     Grad: grad = mk_grad, p_grad(b: B: Vec4i: true, r: R: i32: true, dx: X: i32: false, dy: Y: i32: false, c: C: Vec4u: false, c2: D: Vec4u: false); full = [c: C = 4, c2: D = 5]; cover = true; cost = Cost::PerPixel; glyph = false);
 prim!(/// One glyph: `b` is its texels' box, `texel` its first texel in the atlas.
@@ -183,6 +284,11 @@ impl<A: Paint, B: Paint> Paint for Over<A, B> {
     fn pick_id(&self, cx: &Cx) -> u32 {
         if B::HIT { self.1.pick_id(cx) } else { self.0.pick_id(cx) }
     }
+    #[inline(always)]
+    fn memo(&mut self, cx: &Cx, m: &mut dyn FnMut(i32, i32) -> u32) {
+        self.0.memo(cx, m);
+        self.1.memo(cx, m);
+    }
 }
 
 /// `P` cut by a rect expression (Q8).
@@ -218,6 +324,10 @@ impl<P: Paint, K: Expr<Out = Vec4i>> Paint for Clip<P, K> {
     fn pick_id(&self, cx: &Cx) -> u32 {
         self.p.pick_id(cx)
     }
+    #[inline(always)]
+    fn memo(&mut self, cx: &Cx, m: &mut dyn FnMut(i32, i32) -> u32) {
+        self.p.memo(cx, m);
+    }
 }
 
 /// `P`, answering the pick with `id` wherever it inks.
@@ -252,6 +362,10 @@ impl<P: Paint, I: Expr<Out = u32>> Paint for Hit<P, I> {
     #[inline(always)]
     fn pick_id(&self, cx: &Cx) -> u32 {
         self.id.eval(cx)
+    }
+    #[inline(always)]
+    fn memo(&mut self, cx: &Cx, m: &mut dyn FnMut(i32, i32) -> u32) {
+        self.p.memo(cx, m);
     }
 }
 
@@ -298,8 +412,33 @@ pub struct SpecSink<'a> {
     pub acc: Vec4u,
     pub atlas: &'a [u8],
     pub aw: u32,
+    /// The corner tables.
+    pub tabs: &'a [u32],
     /// Some layer inked this pixel (the pick's test).
     pub ink: bool,
+}
+/// The four corner taps of a shadow at one pixel, read from `tabs`.
+#[inline(always)]
+pub fn corner_taps(c: Cmd, x: i32, y: i32, ok: bool, tabs: &[u32]) -> [u32; 4] {
+    let base = c.par.z as usize;
+    let mut v = [x::T_MISS; 4];
+    for (q, v) in v.iter_mut().enumerate() {
+        let i = x::x_ctap(c, x, y, ok, q as u32);
+        *v = if i == x::T_ZERO {
+            0
+        } else if i == x::T_MISS {
+            x::T_MISS
+        } else {
+            tabs[base + 2 + i as usize]
+        };
+    }
+    v
+}
+/// The table named by a shadow's handle is filled for its key.
+#[inline(always)]
+pub fn tab_ok(c: Cmd, tabs: &[u32]) -> bool {
+    let base = c.par.z as usize;
+    base.saturating_add(1) < tabs.len() && x::x_tabok(c, tabs[base], tabs[base + 1])
 }
 impl SpecSink<'_> {
     #[inline(always)]
@@ -323,7 +462,8 @@ impl Sink for SpecSink<'_> {
     }
     #[inline(always)]
     fn shadow(&mut self, c: Cmd) {
-        self.put(x::p_shadow(c, self.x, self.y))
+        let v = corner_taps(c, self.x, self.y, tab_ok(c, self.tabs), self.tabs);
+        self.put(x::p_shadowm(c, self.x, self.y, v[0], v[1], v[2], v[3]))
     }
     #[inline(always)]
     fn grad(&mut self, c: Cmd) {

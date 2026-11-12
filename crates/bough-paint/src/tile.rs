@@ -35,6 +35,8 @@ pub struct Tile<'a> {
     pub cur: usize,
     pub atlas: &'a [u8],
     pub aw: usize,
+    /// The corner tables (`paint::corner_taps`).
+    pub tabs: &'a [u32],
     pub st: Stats,
 }
 
@@ -48,6 +50,8 @@ pub struct Stats {
     /// kernel's per-pixel integral.
     pub px_shadow: u64,
     pub px_corner: u64,
+    /// Of those, the ones answered from a corner table.
+    pub px_table: u64,
 }
 impl Stats {
     pub fn add(&mut self, o: &Stats) {
@@ -57,6 +61,7 @@ impl Stats {
         self.rows_copied += o.rows_copied;
         self.px_shadow += o.px_shadow;
         self.px_corner += o.px_corner;
+        self.px_table += o.px_table;
     }
 }
 
@@ -102,8 +107,8 @@ fn over(row: &mut [[u16; 4]], sh: Vec4u) {
 }
 
 impl<'a> Tile<'a> {
-    pub fn new(atlas: &'a [u8], aw: u32) -> Tile<'a> {
-        Tile { acc: Box::new([[0; 4]; 1024]), ox: 0, oy: 0, cols: 0, all: 0, same: 0, need: 0, hide: EMPTY, masks: Vec::new(), cur: 0, atlas, aw: aw as usize, st: Stats::default() }
+    pub fn new(atlas: &'a [u8], aw: u32, tabs: &'a [u32]) -> Tile<'a> {
+        Tile { acc: Box::new([[0; 4]; 1024]), ox: 0, oy: 0, cols: 0, all: 0, same: 0, need: 0, hide: EMPTY, masks: Vec::new(), cur: 0, atlas, aw: aw as usize, tabs, st: Stats::default() }
     }
     /// Start a tile at (ox, oy) with `cols` x `nrows` pixels inside the frame.
     pub fn begin(&mut self, ox: i32, oy: i32, cols: usize, nrows: usize, flat: bool) {
@@ -373,6 +378,7 @@ impl Sink for Shade<'_, '_> {
         let (mut sx, mut cov) = ([0u16; 32], [0u16; 32]);
         let (mut zone_x, mut sx_ready) = (0u32, false);
         let (hx, hy, lim) = ((c.b.z - c.b.x) >> 1, (c.b.w - c.b.y) >> 1, c.rad.y + (c.rad.y >> 1));
+        let (tabs, ok) = (t.tabs, crate::paint::tab_ok(c, t.tabs));
         while m != 0 {
             let y = m.trailing_zeros() as i32;
             m &= m - 1;
@@ -411,7 +417,9 @@ impl Sink for Shade<'_, '_> {
                         while zm != 0 {
                             let i = zm.trailing_zeros() as usize;
                             zm &= zm - 1;
-                            cov[i] = k::shadow(c, (ox + ea + i as i32) * 256 + 128, cy) as u16;
+                            let (x, v) = (ox + ea + i as i32, crate::paint::corner_taps(c, ox + ea + i as i32, gy, ok, tabs));
+                            t.st.px_table += (ok && !v.contains(&crate::ops::ops::T_MISS)) as u64;
+                            cov[i] = crate::ops::ops::x_shadowm(c, x, gy, v[0], v[1], v[2], v[3]) as u16;
                         }
                     }
                     simd::blend_cov(&mut row[ea as usize..eb as usize], pm, &cov[..n]);

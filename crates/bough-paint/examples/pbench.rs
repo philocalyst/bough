@@ -190,7 +190,7 @@ fn main() {
     let (a1, model) = build(0);
     let mount_s = t.elapsed().as_secs_f64();
     let (ap, _) = build(1);
-    let (ag, _) = build(2);
+    let (mut ag, _) = build(2);
     // the plan: the scene's own constant, and the same function folded over the mounted columns
     match which {
         "canvas" => plan::print("canvas (const PLAN)", &canvas::PLAN.arch, &canvas::PLAN.whole, &canvas::PLAN.deps),
@@ -202,11 +202,14 @@ fn main() {
     let plan_s = t.elapsed().as_secs_f64();
     let lays: Vec<(usize, usize)> = a1.cols.iter().map(|c| (c.base, c.desc.words)).collect();
     let t = Instant::now();
-    let src = bough_paint::metal::source(&descs.iter().map(|d| *d as &Desc).collect::<Vec<_>>(), &lays);
+    let src = bough_paint::metal::source(&descs.iter().map(|d| *d as &Desc).collect::<Vec<_>>(), &lays, a1.tab_region().0);
     let gen_s = t.elapsed().as_secs_f64();
     let (fw, fh) = (a1.fw, a1.fh);
     let words = (fw * fh) as usize;
-    let gpu = Gpu::new(&ag, words, 192).expect("Metal");
+    let mut gpu = Gpu::new(&ag, words, 192).expect("Metal");
+    let (tab_keys, t) = (ag.tab_jobs().len(), Instant::now());
+    let (tab_gpu_s, tab_entries) = gpu.fill_tabs(&mut ag);
+    println!("# corner tables: {tab_keys} keys, {tab_entries} entries ({} KiB), filled on the GPU in {:.2} ms of GPU time, {:.2} ms wall", ag.tab_region().1 * 4 / 1024, tab_gpu_s * 1e3, t.elapsed().as_secs_f64() * 1e3);
     println!("# scene: {}x{} px, {} tiles, {} records in {} columns, {} column words ({} KiB); mount {:.1} ms", fw, fh, a1.tx * a1.ty, a1.records(), a1.cols.len(), a1.used_words(), a1.used_words() * 4 / 1024, mount_s * 1e3);
     println!("# start-up: whole-scene plan from the mounted columns {:.1} us (gpu {}), source assembly {:.2} ms ({} bytes, of which leaves {}), Metal compile + 5+{} pipelines {:.0} ms", plan_s * 1e6, whole.gpu, gen_s * 1e3, src.len(), bough_paint::emit::LEAVES_MSL.len(), descs.len(), gpu.compile_s * 1e3);
     let t = Instant::now();

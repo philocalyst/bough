@@ -46,10 +46,13 @@ pub struct Driver {
 impl Driver {
     /// `whole` is the plan's whole-scene half for this scene's archetypes. No Metal object is created
     /// unless it asks for one.
-    pub fn new(scene: Scene, whole: Whole, workers: usize) -> Driver {
+    pub fn new(mut scene: Scene, whole: Whole, workers: usize) -> Driver {
         let words = (scene.fw * scene.fh) as usize;
         let cap = 192;
-        let gpu = if whole.gpu { Gpu::new(&scene, words, cap) } else { None };
+        let mut gpu = if whole.gpu { Gpu::new(&scene, words, cap) } else { None };
+        if let Some(g) = gpu.as_mut() {
+            g.fill_tabs(&mut scene);
+        }
         let own = if gpu.is_some() { Vec::new() } else { vec![0; words] };
         // unknown damage is assumed large: the first write to a word goes to the GPU when there is one
         Driver { scene, gpu, whole, pool: Pool::new(workers), own, shown: U::default(), cpu_current: false, gpu_current: false, seen: [u32::MAX; 64], tiles: Vec::new(), cap, pending: false, seen_set: 0 }

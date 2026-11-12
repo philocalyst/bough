@@ -19,9 +19,9 @@ type ABorder = Clip<Border<Pan, I<Rec>, I<Rec>, Any, Any>, Off<RecRect, I<Uw<0>>
 type AGlyph = Glyph<Pan, Rec, Any>;
 type AGrad = Grad<Pan, I<Rec>, I<Rec>, I<Rec>, Pmo<Rec>, Any>;
 /// A card: shadow under an opaque themed body (static cut).
-type ACard = Hit<Over<Shadow<Off<Grow<Pan, I<Rec>>, Ki<0>, I<Rec>>, I<Rec>, I<Rec>, Any>, RRect<Pan, I<Rec>, Themed>>, Rec>;
+type ACard = Hit<Over<Shadow<Off<Grow<Pan, I<Rec>>, Ki<0>, I<Rec>>, I<Rec>, I<Rec>, Any, Tab>, RRect<Pan, I<Rec>, Themed>>, Rec>;
 /// Two shadows under a translucent bordered box whose fill fades with word 4 (no cut possible).
-type AGlass = Over<Over<Shadow<Pan, Ki<2048>, Ki<3072>, Any>, Shadow<Off<Pan, Ki<512>, Ki<1024>>, Ki<2048>, I<Rec>, Any>>, Border<Pan, Ki<2048>, Ki<384>, Any, Fade<Any, Uw<4>>>>;
+type AGlass = Over<Over<Shadow<Pan, Ki<2048>, Ki<3072>, Any>, Shadow<Off<Pan, Ki<512>, Ki<1024>>, Ki<2048>, I<Rec>, Any, Tab>>, Border<Pan, Ki<2048>, Ki<384>, Any, Fade<Any, Uw<4>>>>;
 /// A box breathing between two rects on its own phase of the clock (word 63), rounding and recolouring.
 type AAnim = RRect<MixR<Pan, Off<RecRect, I<Uw<0>>, I<Uw<1>>>, Smooth<Tri<Uw<63>, Rec, Rec>>>, MixI<I<Rec>, I<Rec>, Tri<Uw<63>, Rec, Rec>>, MixV<Any, Any, Tri<Uw<63>, Rec, Rec>>>;
 
@@ -106,7 +106,7 @@ fn build(seed: u64, fw: u32, fh: u32, n: usize) -> Scene {
                     rect,
                     Hit {
                         p: Over(
-                            Shadow { b: Off { b: Grow { b: pan(), d: ri(q(g.f(-2.0, 3.0))) }, dx: Ki, dy: ri(q(g.f(0.0, 12.0))) }, r: ri(q(rad)), blur: ri(blur), c: pm(g.color(false)) },
+                            Shadow { b: Off { b: Grow { b: pan(), d: ri(q(g.f(-2.0, 3.0))) }, dx: Ki, dy: ri(q(g.f(0.0, 12.0))) }, r: ri(q(rad)), blur: ri(blur), c: pm(g.color(false)), tab: Tab::NONE },
                             RRect { b: pan(), r: ri(q(rad)), c: themed(g.u(6), c1, c2) },
                         ),
                         id: r(g.u(6)),
@@ -114,7 +114,7 @@ fn build(seed: u64, fw: u32, fh: u32, n: usize) -> Scene {
                 );
             }
             7 => {
-                s.push(c_glass, rect, Over(Over(Shadow { b: pan(), r: Ki, blur: Ki, c: pm(g.color(false)) }, Shadow { b: Off { b: pan(), dx: Ki, dy: Ki }, r: Ki, blur: ri(q(g.f(1.0, 20.0))), c: pm(g.color(false)) }), Border { b: pan(), r: Ki, w: Ki, c: pm(c1), fill: Fade { a: pm(g.color(false)), k: Uw } }));
+                s.push(c_glass, rect, Over(Over(Shadow { b: pan(), r: Ki, blur: Ki, c: pm(g.color(false)), tab: K }, Shadow { b: Off { b: pan(), dx: Ki, dy: Ki }, r: Ki, blur: ri(q(g.f(1.0, 20.0))), c: pm(g.color(false)), tab: Tab::NONE }), Border { b: pan(), r: Ki, w: Ki, c: pm(c1), fill: Fade { a: pm(g.color(false)), k: Uw } }));
             }
             _ => {
                 let (x2, y2) = (g.pos(-20.0, w), g.pos(-20.0, h));
@@ -289,12 +289,12 @@ fn gpu_mutants_are_caught() {
     let s = build(3, fw, fh, 110);
     let descs: Vec<&bough_paint::scene::Desc> = s.cols.iter().map(|c| c.desc).collect();
     let lays: Vec<(usize, usize)> = s.cols.iter().map(|c| (c.base, c.desc.words)).collect();
-    let good = source(&descs, &lays);
+    let good = source(&descs, &lays, s.tab_region().0);
     let mutants = [
         ("rounding", good.replacen("constant uint HALF = 16384u;", "constant uint HALF = 16383u;", 1)),
         ("dropped layer", good.replacen("    a0 = x_over(a0, p_rrect(", "    // a0 = x_over(a0, p_rrect(", 1)),
         ("pixel cut one too wide", good.replacen("c.z >= x + 2 && c.w >= y + 2", "c.z >= x + 1 && c.w >= y + 2", 1)),
-        ("dropped damage", good.replace("} else if (a", "} else if (false && a")),
+        ("dropped damage", good.replace(") != 0u) || a", ") != 0u) || false && a")),
     ];
     for (name, src) in mutants {
         assert!(src != good, "{name}: the mutation did not apply");
@@ -312,4 +312,53 @@ fn gpu_mutants_are_caught() {
         eprintln!("gpu mutant {name}: {d} differing words over 8 retained frames");
         assert!(d > 0, "{name} was not caught");
     }
+}
+
+/// R12: the corner tables. The GPU's fill and the CPU's write the same entries; with every entry one too
+/// large (the CPU mutant feature, or the same edit to the GPU kernel's source) the frames differ from the
+/// oracle's, so the tables are read and the gate sees them.
+#[cfg(target_os = "macos")]
+#[test]
+fn corner_tables_are_the_closed_form() {
+    use bough_paint::metal::{Gpu, source};
+    let (fw, fh) = (320u32, 250u32);
+    let stride = fw as usize;
+    let words = stride * fh as usize;
+    let mut a = build(5, fw, fh, 110);
+    let mut b = build(5, fw, fh, 110);
+    let jobs = a.tab_jobs().len();
+    assert!(jobs > 0, "the scene has no shadow in the table regime");
+    let Some(mut g) = Gpu::new(&a, words, 256) else { return };
+    let (_, entries) = g.fill_tabs(&mut a);
+    b.fill_tabs();
+    let used = a.tab_region().1;
+    let d = a.tabs()[..used].iter().zip(&b.tabs()[..used]).filter(|(x, y)| x != y).count();
+    let max = a.tabs()[..used].iter().copied().filter(|&v| v != u32::MAX).max().unwrap();
+    eprintln!("corner tables: {jobs} keys, {entries} entries, {used} words; gpu fill against cpu fill: {d} differing words{}", if cfg!(feature = "mutant_tab") { " (mutant: expected)" } else { "" });
+    eprintln!("corner tables: largest word {max}");
+    if !cfg!(feature = "mutant_tab") {
+        assert_eq!(d, 0);
+    }
+    // the tables are in use: a pixel-aligned block makes aligned shadows read them
+    let pool = Pool::new(2);
+    let mut u = U::default();
+    u.w[3] = 20000;
+    let mut px = vec![0u32; words];
+    let fs = a.frame(&u, &mut px, stride, &pool, 0);
+    eprintln!("corner tables: cpu frame: {} corner pixels, {} from a table", fs.raster.px_corner, fs.raster.px_table);
+    assert!(fs.raster.px_table > 0, "no corner pixel was answered from a table");
+    // the GPU kernel's fill, mutated: the resident frame must differ from the good one
+    let descs: Vec<&bough_paint::scene::Desc> = a.cols.iter().map(|c| c.desc).collect();
+    let lays: Vec<(usize, usize)> = a.cols.iter().map(|c| (c.base, c.desc.words)).collect();
+    let good = source(&descs, &lays, a.tab_region().0);
+    let bad = good.replacen("= x_cfill(", "= 1u + x_cfill(", 1);
+    assert!(bad != good);
+    let mut c = build(5, fw, fh, 110);
+    let mut m = Gpu::with_source(&c, words, 256, &bad).unwrap();
+    m.fill_tabs(&mut c);
+    m.frame(&u, None, stride);
+    g.frame(&u, None, stride);
+    let dm = diff(m.out(words), g.out(words));
+    eprintln!("corner tables: gpu fill mutant: {dm} differing words");
+    assert!(dm > 0, "a wrong table entry was not seen");
 }

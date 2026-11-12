@@ -221,11 +221,24 @@ impl Fn<'_> {
     /// byte). A layer is staged once and shaded at every pixel: a GPU thread owns a 2 x 2 block.
     fn shade(&mut self, p: &PCode, base: usize, clip: &str, hide: Option<&str>, px: &[[&str; 4]]) {
         match p {
-            PCode::Prim { mk, p, args, glyph, .. } => {
+            PCode::Prim { mk, p, args, glyph, tab, .. } => {
                 let c = self.fresh("c");
                 self.decl(T::Cmd, &c, &staged(mk, args, base, clip, 'u'), false);
+                // a memoised layer: is the table its handle names filled for its key? (two header reads)
+                let ok = self.fresh("ok");
+                let tb = if self.lang == Lang::Msl { "TAB, " } else { "" };
+                if *tab {
+                    self.decl(T::Bool, &ok, &format!("x_tabok({c}, tab_h({tb}c_tab({c}), 0u), tab_h({tb}c_tab({c}), 1u))"), false);
+                }
                 for [a, x, y, cov] in px {
-                    let call = if *glyph { format!("{p}({c}, {x}, {y}, {cov})") } else { format!("{p}({c}, {x}, {y})") };
+                    let call = if *tab {
+                        let taps: Vec<String> = (0..4).map(|q| format!("tab_v({tb}c_tab({c}), x_ctap({c}, {x}, {y}, {ok}, {q}u))")).collect();
+                        format!("{p}m({c}, {x}, {y}, {})", taps.join(", "))
+                    } else if *glyph {
+                        format!("{p}({c}, {x}, {y}, {cov})")
+                    } else {
+                        format!("{p}({c}, {x}, {y})")
+                    };
                     match hide {
                         Some(h) => writeln!(self.out, "    if (!x_in({h}, {x}, {y})) {{ {a} = x_over({a}, {call}); }}"),
                         None => writeln!(self.out, "    {a} = x_over({a}, {call});"),
@@ -327,6 +340,13 @@ fn pick(p: &PCode, base: usize) -> Option<String> {
         PCode::Hit { p, id } => Some(expr(id, &mut (base + pwords(p)), 'u')),
     }
 }
+pub fn has_tab(p: &PCode) -> bool {
+    match p {
+        PCode::Prim { tab, .. } => *tab,
+        PCode::Over { a, b, .. } => has_tab(a) || has_tab(b),
+        PCode::Clip { p, .. } | PCode::Hit { p, .. } => has_tab(p),
+    }
+}
 pub fn has_glyph(p: &PCode) -> bool {
     match p {
         PCode::Prim { glyph, .. } => *glyph,
@@ -335,14 +355,17 @@ pub fn has_glyph(p: &PCode) -> bool {
     }
 }
 
-fn header(lang: Lang, out: &mut String, ret: T, name: &str, params: &[(T, String)]) {
+fn header(lang: Lang, out: &mut String, ret: T, name: &str, params: &[(T, String)], tab: bool) {
     match lang {
         Lang::Wgsl => {
             let p: Vec<String> = params.iter().map(|(t, n)| format!("{n}: {}", lang.ty(*t))).collect();
             writeln!(out, "fn {name}({}) -> {} {{", p.join(", "), lang.ty(ret))
         }
         Lang::Msl => {
-            let p: Vec<String> = params.iter().map(|(t, n)| format!("{} {n}", lang.ty(*t))).collect();
+            let mut p: Vec<String> = params.iter().map(|(t, n)| format!("{} {n}", lang.ty(*t))).collect();
+            if tab {
+                p.insert(0, "const device uint* TAB".into());
+            }
             writeln!(out, "static {} {name}({}) {{", lang.ty(ret), p.join(", "))
         }
     }
@@ -370,7 +393,8 @@ pub fn archetype(lang: Lang, k: usize, d: &Desc, out: &mut String) {
     ps.push((T::U32, "cov8".into()));
     ps.extend(ws.iter().cloned());
     ps.extend(us.iter().cloned());
-    header(lang, out, T::V4u, &format!("a{k}_shade"), &ps);
+    let tab = has_tab(p);
+    header(lang, out, T::V4u, &format!("a{k}_shade"), &ps, tab);
     let mut f = Fn { lang, out, n: 0 };
     f.decl(T::V4u, "a", "acc", true);
     f.shade(p, 0, NO_CLIP, None, &[["a", "x", "y", "cov8"]]);
@@ -378,6 +402,9 @@ pub fn archetype(lang: Lang, k: usize, d: &Desc, out: &mut String) {
     if lang == Lang::Msl {
         // the 2 x 2 block a GPU thread owns: every layer staged once, shaded four times
         let mut ps: Vec<String> = (0..4).map(|i| format!("thread metal::uint4& a{i}")).collect();
+        if tab {
+            ps.insert(0, "const device uint* TAB".into());
+        }
         ps.extend(["metal::int4 rect".to_string(), "int x".into(), "int y".into()]);
         ps.extend((0..4).map(|i| format!("uint cov{i}")));
         ps.extend(ws.iter().chain(us.iter()).map(|(_, n)| format!("uint {n}")));
@@ -392,30 +419,30 @@ pub fn archetype(lang: Lang, k: usize, d: &Desc, out: &mut String) {
     ps.push((T::U32, "aw".into()));
     ps.extend(ws.iter().cloned());
     ps.extend(us.iter().cloned());
-    header(lang, out, T::U32, &format!("a{k}_texel"), &ps);
+    header(lang, out, T::U32, &format!("a{k}_texel"), &ps, false);
     writeln!(out, "    return {};\n}}", texel(p, 0, NO_CLIP).unwrap_or("4294967295u".into())).unwrap();
 
     let mut ps = vec![rect.clone()];
     ps.extend(ws.iter().cloned());
     ps.extend(us.iter().cloned());
-    header(lang, out, T::V4i, &format!("a{k}_win"), &ps);
+    header(lang, out, T::V4i, &format!("a{k}_win"), &ps, false);
     let mut f = Fn { lang, out, n: 0 };
     f.decl(T::V4i, "w", EMPTY, true);
     f.win(p, 0, NO_CLIP);
     writeln!(out, "    return w;\n}}").unwrap();
 
-    header(lang, out, T::V4i, &format!("a{k}_cover"), &ps);
+    header(lang, out, T::V4i, &format!("a{k}_cover"), &ps, false);
     let cv = if cfg!(feature = "mutant_cut") && d.opaque_core { format!("a{k}_win({})", ps.iter().map(|p| p.1.clone()).collect::<Vec<_>>().join(", ")) } else { cover(p, 0, NO_CLIP) };
     writeln!(out, "    return {cv};\n}}").unwrap();
 
-    header(lang, out, T::U32, &format!("a{k}_pick"), &ps);
+    header(lang, out, T::U32, &format!("a{k}_pick"), &ps, false);
     writeln!(out, "    return {};\n}}", pick(p, 0).unwrap_or("4294967295u".into())).unwrap();
 
     let mut ps = vec![rect.clone()];
     ps.extend(ws.iter().cloned());
     ps.extend(os.iter().cloned());
     ps.extend(us.iter().cloned());
-    header(lang, out, T::Bool, &format!("a{k}_chg"), &ps);
+    header(lang, out, T::Bool, &format!("a{k}_chg"), &ps, false);
     let mut c = Vec::new();
     chg(p, 0, &mut c);
     writeln!(out, "    return {};\n}}", if c.is_empty() { "false".to_string() } else { c.join(" || ") }).unwrap();
@@ -425,7 +452,8 @@ pub fn archetype(lang: Lang, k: usize, d: &Desc, out: &mut String) {
 /// Metal is `metal::source`).
 pub fn wgsl(descs: &[&Desc]) -> String {
     let mut s = String::from(LEAVES_WGSL);
-    s.push('\n');
+    // the table reads, for validation only (the run-time path on Metal reads the arena: `metal::source`)
+    s.push_str("\nfn tab_h(b: u32, i: u32) -> u32 { return 4294967295u; }\nfn tab_v(b: u32, i: u32) -> u32 { return 4294967295u; }\n");
     for (k, d) in descs.iter().enumerate() {
         archetype(Lang::Wgsl, k, d, &mut s);
     }

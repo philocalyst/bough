@@ -38,3 +38,5 @@ mutant_flat = []
 mutant_hide = []
 # the pixel-grain occlusion mask of the tile rasteriser is one column too wide
 mutant_mask = []
+# every entry of a CPU-filled corner table is one too large
+mutant_tab = []

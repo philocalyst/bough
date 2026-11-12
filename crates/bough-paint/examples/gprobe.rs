@@ -8,12 +8,28 @@ use bough_paint::scenes::canvas;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let (s, _) = canvas::build(20);
+    let (mut s, _) = canvas::build(20);
     let descs: Vec<&Desc> = s.cols.iter().map(|c| c.desc).collect();
     let lays: Vec<(usize, usize)> = s.cols.iter().map(|c| (c.base, c.desc.words)).collect();
-    let good = source(&descs, &lays);
+    let good = source(&descs, &lays, s.tab_region().0);
     if args.get(1).map(|a| a.as_str()) == Some("dump") {
         std::fs::write(&args[2], &good).unwrap();
+        return;
+    }
+    if args.get(1).map(|a| a.as_str()) == Some("cpustats") {
+        // one CPU full frame: how many shadow pixels there are, how many are at corners, how many of those a table answers
+        let pool = bough_kernel::cpu::Pool::new(5);
+        let mut px = vec![0u32; (s.fw * s.fh) as usize];
+        let keys = s.tab_jobs().to_vec();
+        let fs = s.frame(&U::default(), &mut px, s.fw as usize, &pool, 5);
+        println!("tables: {} keys, {} words; frame: {:?}", keys.len(), s.tab_region().1, fs.raster);
+        let mut by: std::collections::BTreeMap<i32, (usize, u32)> = Default::default();
+        for k in &keys {
+            let e = by.entry(k.w / 256).or_default();
+            e.0 += 1;
+            e.1 = e.1.max(k.n);
+        }
+        println!("keys by blur width (px): (count, largest side) {by:?}");
         return;
     }
     let stride = s.fw as usize;
@@ -22,6 +38,9 @@ fn main() {
     for path in &args[2..] {
         let src = std::fs::read_to_string(path).unwrap();
         let mut g = Gpu::with_source(&s, words, 192, &src).expect("Metal");
+        if std::env::var("NO_TABS").is_err() {
+            g.fill_tabs(&mut s);
+        }
         let u = U::default();
         let mut t = Vec::new();
         for _ in 0..reps {

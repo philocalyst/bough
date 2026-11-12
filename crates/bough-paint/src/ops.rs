@@ -16,6 +16,11 @@ pub mod ops {
     use bough_kernel::km::*;
     use wgsl_rs::std::*;
 
+    /// A table tap that needs no read: the correction there is exactly zero.
+    pub const T_ZERO: u32 = 0xFFFFFFFEu32;
+    /// No table value: the closed form.
+    pub const T_MISS: u32 = 0xFFFFFFFFu32;
+
     // ---- values ----
 
     pub fn x_i(a: u32) -> i32 {
@@ -243,8 +248,9 @@ pub mod ops {
         let bw = max(bw0, 0i32);
         mk(K_BORDER, shift_of(r), win, core_of(b, max(r, 128i32 + bw) + 136i32, win), b, vec4i(r, bw, 0i32, 0i32), 0u32, pm, fill)
     }
-    /// The shadow of a rounded box blurred by a spline of width `blur` (Q8, two sigma).
-    pub fn mk_shadow(b: Vec4i, r0: i32, blur: i32, pm: Vec4u, clip: Vec4i) -> Cmd {
+    /// The shadow of a rounded box blurred by a spline of width `blur` (Q8, two sigma). `tab`: the handle
+    /// of its corner table (`T_MISS`: none), carried in the command's spare word.
+    pub fn mk_shadow(b: Vec4i, r0: i32, blur: i32, pm: Vec4u, tab: u32, clip: Vec4i) -> Cmd {
         let bw = min(max(blur, 16i32), 32768i32);
         let ext = bw + bw / 2i32 + 256i32;
         let win = window(b.x() - ext, b.y() - ext, b.z() + ext, b.w() + ext, clip);
@@ -254,7 +260,95 @@ pub mod ops {
         if r > 0i32 {
             curve = min((bw * 32768i32) / (8i32 * r), 32768i32);
         }
-        mk(K_SHADOW, shift_of(r), win, core_of(b, bw + bw / 2i32 + r + 2i32, win), b, vec4i(r, bw, inv, curve), 0u32, pm, splat(0u32))
+        mk(K_SHADOW, shift_of(r), win, core_of(b, bw + bw / 2i32 + r + 2i32, win), b, vec4i(r, bw, inv, curve), tab, pm, splat(0u32))
+    }
+
+    // ---- the corner table: a memo of `corner3`, which depends on the pixel's offset from the corner and on
+    // ---- (radius, blur width) only. One table per distinct (radius, blur), entries at whole-pixel steps
+    // ---- from a pixel centre, so it serves every box whose corner is on the pixel grid; anything else
+    // ---- (no table, a table for another key, a box off the grid) takes the closed form. A table holds two
+    // ---- header words (radius, blur width: the key it was filled for) and n x n entries.
+
+    pub fn c_tab(c: Cmd) -> u32 {
+        c.par.z()
+    }
+    /// The table's reach before the corner, Q8, a whole number of pixels: entries start at -t_d.
+    pub fn t_d(r: i32, w: i32) -> i32 {
+        ((r + w + (w >> 1u32) + 255i32) >> 8u32) << 8u32
+    }
+    /// Entries per side.
+    pub fn t_n(r: i32, w: i32) -> u32 {
+        ((t_d(r, w) >> 8u32) + ((w + (w >> 1u32) + 255i32) >> 8u32)) as u32
+    }
+    /// The shadow is one whose corners go through `corner3` (rounded, and not so wide a radius that the
+    /// arc's distance profile is used).
+    pub fn t_regime(r: i32, w: i32) -> bool {
+        r != 0i32 && r < w * SHADOW_ARC
+    }
+    /// The table whose header is (h0, h1) is this shadow's.
+    pub fn x_tabok(c: Cmd, h0: u32, h1: u32) -> bool {
+        t_regime(c.rad.x(), c.rad.y()) && h0 == (c.rad.x() as u32) && h1 == (c.rad.y() as u32)
+    }
+    /// The table entry holding corner `q`'s correction at pixel (x, y) (`q`: bit 0 mirrors x, bit 1
+    /// mirrors y, the order `km::shadow` sums them in); `T_ZERO` where the correction is exactly zero;
+    /// `T_MISS` where the closed form must be used.
+    pub fn x_ctap(c: Cmd, x: i32, y: i32, ok: bool, q: u32) -> u32 {
+        if !ok {
+            return T_MISS;
+        }
+        if !inside(c.win, x, y) || inside(c.core, x, y) {
+            return T_ZERO;
+        }
+        let hx = (c.b.z() - c.b.x()) >> 1u32;
+        let hy = (c.b.w() - c.b.y()) >> 1u32;
+        let px = x * 256i32 + 128i32 - (c.b.x() + hx);
+        let py = y * 256i32 + 128i32 - (c.b.y() + hy);
+        let dx = select(px, -px, (q & 1u32) == 1u32) - hx;
+        let dy = select(py, -py, q >= 2u32) - hy;
+        let r = c.rad.x();
+        let w = c.rad.y();
+        let lim = w + (w >> 1u32);
+        if dx <= -(r + lim) || dy <= -(r + lim) || dx >= lim || dy >= lim {
+            return T_ZERO;
+        }
+        let d = t_d(r, w);
+        if ((dx + d) & 255i32) != 128i32 || ((dy + d) & 255i32) != 128i32 {
+            return T_MISS;
+        }
+        (((dy + d) >> 8u32) as u32) * t_n(r, w) + (((dx + d) >> 8u32) as u32)
+    }
+    /// Entry (i, j) of the table for (r, w): `corner3` at that offset from the corner of any box.
+    pub fn x_cfill(r: i32, w: i32, i: u32, j: u32) -> u32 {
+        let d = t_d(r, w);
+        let dx = (i as i32) * 256i32 - d + 128i32;
+        let dy = (j as i32) * 256i32 - d + 128i32;
+        let h = 1048576i32;
+        let inv = (16777216i32 + w - 1i32) / w;
+        let z = vec4i(0i32, 0i32, 0i32, 0i32);
+        let c = mk(K_SHADOW, shift_of(r), z, z, z, vec4i(r, w, inv, 0i32), 0u32, splat(0u32), splat(0u32));
+        corner3(c, h + dx, h + dy, h, h)
+    }
+    /// One corner's correction: the table's value, or the closed form where there was none.
+    pub fn t_tap(c: Cmd, v: u32, qx: i32, qy: i32, hx: i32, hy: i32) -> u32 {
+        if v == T_MISS {
+            return corner3(c, qx, qy, hx, hy);
+        }
+        v
+    }
+    /// `km::shadow` with the four corner corrections given (each a table value or `T_MISS`).
+    pub fn x_shadowm(c: Cmd, x: i32, y: i32, v0: u32, v1: u32, v2: u32, v3: u32) -> u32 {
+        let cx = x * 256i32 + 128i32;
+        let cy = y * 256i32 + 128i32;
+        if v0 == T_MISS && v1 == T_MISS && v2 == T_MISS && v3 == T_MISS {
+            return shadow(c, cx, cy);
+        }
+        let hx = (c.b.z() - c.b.x()) >> 1u32;
+        let hy = (c.b.w() - c.b.y()) >> 1u32;
+        let px = cx - (c.b.x() + hx);
+        let py = cy - (c.b.y() + hy);
+        let sep = mul15(span3(px, hx, c.rad.y(), c.rad.z()), span3(py, hy, c.rad.y(), c.rad.z()));
+        let corr = t_tap(c, v0, px, py, hx, hy) + t_tap(c, v1, -px, py, hx, hy) + t_tap(c, v2, px, -py, hx, hy) + t_tap(c, v3, -px, -py, hx, hy);
+        sep - min(sep, corr)
     }
     /// A two-stop linear gradient in a rounded box; (dx, dy) is the direction scaled so the parameter
     /// reaches ONE across the box (computed where the box's size is known).
@@ -310,6 +404,16 @@ pub mod ops {
             return c.pm;
         }
         sh_shadow(c, x * 256i32 + 128i32, y * 256i32 + 128i32)
+    }
+    /// `p_shadow` with the corner corrections given.
+    pub fn p_shadowm(c: Cmd, x: i32, y: i32, v0: u32, v1: u32, v2: u32, v3: u32) -> Vec4u {
+        if !inside(c.win, x, y) {
+            return splat(0u32);
+        }
+        if inside(c.core, x, y) {
+            return c.pm;
+        }
+        scale(c.pm, x_shadowm(c, x, y, v0, v1, v2, v3))
     }
     pub fn p_grad(c: Cmd, x: i32, y: i32) -> Vec4u {
         if !inside(c.win, x, y) {

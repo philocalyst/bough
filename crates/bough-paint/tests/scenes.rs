@@ -86,6 +86,11 @@ fn canvas_is_exact() {
         (None, &[(0, 0), (1, 40 * 256), (2, 0)]),
     ];
     run("canvas", s, m, script);
+    // the same with nodes on half pixels: no corner table applies, every shadow takes the closed form
+    canvas::half_pixels(true);
+    let (s, m) = canvas::build(2);
+    canvas::half_pixels(false);
+    run("canvas on half pixels", s, m, &script[..6]);
 }
 
 #[test]

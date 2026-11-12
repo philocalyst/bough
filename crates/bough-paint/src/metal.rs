@@ -61,10 +61,21 @@ fn record(c: usize, l: &Lay) -> String {
 }
 
 /// The whole shader: naga's MSL of the leaves, the archetypes' functions, the five kernels.
-pub fn source(descs: &[&Desc], lays: &[(usize, usize)]) -> String {
+/// `tab`: the corner tables' first word in the arena.
+pub fn source(descs: &[&Desc], lays: &[(usize, usize)], tab: usize) -> String {
     let lays: Vec<Lay> = lays.iter().map(|&(base, words)| Lay { base, words }).collect();
     let mut s = String::from(emit::LEAVES_MSL);
     s.push_str("\n// ---- generated per application (bough-paint emit.rs / metal.rs) ----\n");
+    s.push_str(
+        r#"// the corner tables: two header words (the key a table is filled for), then its entries
+static inline uint tab_h(const device uint* T, uint base, uint i) { return base >= TABLIM ? 0xFFFFFFFFu : T[base + i]; }
+static inline uint tab_v(const device uint* T, uint base, uint idx) {
+    if (idx == 0xFFFFFFFEu) { return 0u; }
+    if (idx == 0xFFFFFFFFu) { return 0xFFFFFFFFu; }
+    return T[base + 2u + idx];
+}
+"#,
+    );
     for (k, d) in descs.iter().enumerate() {
         emit::archetype(emit::Lang::Msl, k, d, &mut s);
     }
@@ -107,6 +118,7 @@ kernel void k_shade(const device uint* COLS [[buffer(0)]], const device uint* ME
                     const device uint* TL [[buffer(6)]], device uint* OUT [[buffer(7)]], const device uint* ATLAS [[buffer(8)]],
                     metal::uint3 wg [[threadgroup_position_in_grid]], metal::uint3 lid [[thread_position_in_threadgroup]]) {
     uint fw = META[0], fh = META[1], stride = META[2], TX = META[3], aw = META[6], alim = META[7];
+    const device uint* TAB = COLS + TABBASE; (void)TAB;
 "#,
     );
     s.push_str(&load_u('u', M_UNEW));
@@ -135,7 +147,7 @@ kernel void k_shade(const device uint* COLS [[buffer(0)]], const device uint* ME
         write!(s, "        case {k}u: {{ {}", record(k, &lays[k])).unwrap();
         let (w, u) = (loads(d), unis(d, 'u'));
         let covs: Vec<String> = [(0, 0), (1, 0), (0, 1), (1, 1)].iter().map(|(dx, dy)| if emit::has_glyph(d.code) { format!("atlas_at(ATLAS, a{k}_texel(rect, x + {dx}, y + {dy}, aw{w}{u}), alim)") } else { "0u".into() }).collect();
-        writeln!(s, "            a{k}_shade4(a0, a1, a2, a3, rect, x, y, {}{w}{u});", covs.join(", ")).unwrap();
+        writeln!(s, "            a{k}_shade4({}a0, a1, a2, a3, rect, x, y, {}{w}{u});", if emit::has_tab(d.code) { "TAB, " } else { "" }, covs.join(", ")).unwrap();
         s.push_str("        } break;\n");
     }
     s.push_str(
@@ -157,6 +169,7 @@ kernel void k_pick(const device uint* COLS [[buffer(0)]], device uint* META [[bu
                    const device uint* WINS [[buffer(3)]], const device uint* TILES [[buffer(4)]], const device uint* LIST [[buffer(5)]],
                    const device uint* ATLAS [[buffer(8)]], device uint* PICK [[buffer(10)]]) {
     uint fw = META[0], fh = META[1], TX = META[3], aw = META[6], alim = META[7];
+    const device uint* TAB = COLS + TABBASE; (void)TAB;
 "#,
     );
     s.push_str(&load_u('u', M_UOLD));
@@ -179,7 +192,7 @@ kernel void k_pick(const device uint* COLS [[buffer(0)]], device uint* META [[bu
         write!(s, "            case {k}u: {{ {}", record(k, &lays[k])).unwrap();
         let (w, u) = (loads(d), unis(d, 'u'));
         let cov = if emit::has_glyph(d.code) { format!("atlas_at(ATLAS, a{k}_texel(rect, x, y, aw{w}{u}), alim)") } else { "0u".into() };
-        writeln!(s, "                if (a{k}_shade(metal::uint4(0u), rect, x, y, {cov}{w}{u}).w != 0u) {{ found = true; id = {}; }}", if d.hit { format!("a{k}_pick(rect{w}{u})") } else { "0xFFFFFFFFu".into() }).unwrap();
+        writeln!(s, "                if (a{k}_shade({}metal::uint4(0u), rect, x, y, {cov}{w}{u}).w != 0u) {{ found = true; id = {}; }}", if emit::has_tab(d.code) { "TAB, " } else { "" }, if d.hit { format!("a{k}_pick(rect{w}{u})") } else { "0xFFFFFFFFu".into() }).unwrap();
         s.push_str("            } break;\n");
     }
     write!(
@@ -277,7 +290,17 @@ kernel void k_compact(const device uint* META [[buffer(1)]], device uint* TL [[b
 }
 "#,
     );
-    s.replace("IDXMASK", &format!("{IDX_MASK}u")).replace("IDXBITS", &format!("{IDX_BITS}u"))
+    s.push_str(
+        r#"
+// fill one corner table: a thread per entry, the leaf that defines it
+kernel void k_tab(device uint* COLS [[buffer(0)]], const device uint* JOB [[buffer(12)]], metal::uint3 gid [[thread_position_in_grid]]) {
+    uint base = JOB[0], n = JOB[3];
+    if (gid.x >= n || gid.y >= n) { return; }
+    COLS[TABBASE + base + 2u + gid.y * n + gid.x] = x_cfill(int(JOB[1]), int(JOB[2]), gid.x, gid.y);
+}
+"#,
+    );
+    s.replace("IDXMASK", &format!("{IDX_MASK}u")).replace("IDXBITS", &format!("{IDX_BITS}u")).replace("TABBASE", &format!("{tab}u")).replace("TABLIM", &format!("{}u", crate::scene::TAB_WORDS - 2))
 }
 
 /// Times of one GPU frame, seconds.
@@ -296,10 +319,11 @@ pub struct Gpu {
     pick: Pso,
     bin: Pso,
     compact: Pso,
+    tab: Pso,
     win: Vec<Pso>,
     /// 0 columns (the arena, no copy), 1 meta, 2 order, 3 windows, 4 tile headers, 5 lists, 6 tile list,
     /// 7 output, 8 atlas, 9 damage, 10 pick, 11 rewritten records (a bit per key).
-    bufs: [Option<Buf>; 12],
+    bufs: [Option<Buf>; 13],
     /// Keys rewritten since the last frame, and the columns they are in.
     touched: Vec<u32>,
     touched_cols: u64,
@@ -325,7 +349,7 @@ impl Gpu {
     pub fn new(scene: &Scene, out_words: usize, cap: usize) -> Option<Gpu> {
         let descs: Vec<&Desc> = scene.cols.iter().map(|c| c.desc).collect();
         let lays: Vec<(usize, usize)> = scene.cols.iter().map(|c| (c.base, c.desc.words)).collect();
-        Gpu::with_source(scene, out_words, cap, &source(&descs, &lays))
+        Gpu::with_source(scene, out_words, cap, &source(&descs, &lays, scene.tab_region().0))
     }
     /// As `new` with the source given (the gates pass mutated or naga-translated text).
     pub fn with_source(scene: &Scene, out_words: usize, cap: usize, src: &str) -> Option<Gpu> {
@@ -337,7 +361,7 @@ impl Gpu {
             let f = lib.newFunctionWithName(&NSString::from_str(name)).unwrap_or_else(|| panic!("{name}"));
             device.newComputePipelineStateWithFunction_error(&f).unwrap_or_else(|e| panic!("{name}: {e}"))
         };
-        let (shade, pick, bin, compact) = (pso("k_shade"), pso("k_pick"), pso("k_bin"), pso("k_compact"));
+        let (shade, pick, bin, compact, tab) = (pso("k_shade"), pso("k_pick"), pso("k_bin"), pso("k_compact"), pso("k_tab"));
         let win: Vec<Pso> = (0..scene.cols.len()).map(|k| pso(&format!("k_win{k}"))).collect();
         let compile_s = t.elapsed().as_secs_f64();
         let nt = scene.tx * scene.ty;
@@ -348,6 +372,7 @@ impl Gpu {
             pick,
             bin,
             compact,
+            tab,
             win,
             bufs: Default::default(),
             nt,
@@ -427,11 +452,43 @@ impl Gpu {
         self.first = true;
     }
     fn bind(&self, enc: &ProtocolObject<dyn MTLComputeCommandEncoder>, out: Option<&Buf>) {
-        for i in 0..12 {
+        for i in 0..13 {
             let b = if i == 7 { out.or(self.bufs[7].as_ref()) } else { self.bufs[i].as_ref() };
             // SAFETY: each buffer is alive for the frame and bound at the index the source reads.
             unsafe { enc.setBuffer_offset_atIndex(b.map(|b| &**b), 0, i) };
         }
+    }
+
+    /// Fill the scene's pending corner tables on the GPU (one dispatch per table, waited for), then name
+    /// their keys in the headers. Returns seconds of GPU time and the entries written. Without this call
+    /// the CPU fills them at the scene's next `update`, and until either happens shadows take the closed
+    /// form: tables change time, never pixels.
+    pub fn fill_tabs(&mut self, scene: &mut Scene) -> (f64, usize) {
+        let jobs = scene.tab_jobs().to_vec();
+        if jobs.is_empty() {
+            return (0.0, 0);
+        }
+        self.buf(12, jobs.len() * 16);
+        let jw = self.words_mut(12);
+        for (k, j) in jobs.iter().enumerate() {
+            jw[4 * k..4 * k + 4].copy_from_slice(&[j.base, j.r as u32, j.w as u32, j.n]);
+        }
+        let cmd = self.queue.commandBuffer().expect("command buffer");
+        let enc = cmd.computeCommandEncoder().expect("encoder");
+        self.bind(&enc, None);
+        enc.setComputePipelineState(&self.tab);
+        let mut entries = 0;
+        for (k, j) in jobs.iter().enumerate() {
+            // SAFETY: buffer 12 holds four words per job; the offset is inside it.
+            unsafe { enc.setBuffer_offset_atIndex(self.bufs[12].as_deref(), 16 * k, 12) };
+            enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: (j.n as usize).div_ceil(8), height: (j.n as usize).div_ceil(8), depth: 1 }, MTLSize { width: 8, height: 8, depth: 1 });
+            entries += (j.n * j.n) as usize;
+        }
+        enc.endEncoding();
+        cmd.commit();
+        cmd.waitUntilCompleted();
+        scene.tabs_filled();
+        (cmd.GPUEndTime() - cmd.GPUStartTime(), entries)
     }
 
     /// Stage A: shade `tiles` from the bins and window lane the CPU scene holds (after `Scene::update`),

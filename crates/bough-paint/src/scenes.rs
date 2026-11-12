@@ -226,8 +226,8 @@ type Any = Pm<Rec>;
 type ThemeC = MixV<Opq, Opq, Un<Theme>>;
 type HoverC = SelV<Eq<Pick, Rec>, MixV<Pm<K<HI_L>>, Pm<K<HI_D>>, Un<Theme>>, ThemeC>;
 type TriT = Tri<Time, Rec, Rec>;
-/// A shadow of box `B`: spread, vertical offset, radius, blur, colour (five words).
-type ShP<B> = Shadow<Off<Grow<B, I<Rec>>, Ki<0>, I<Rec>>, I<Rec>, I<Rec>, Any>;
+/// A shadow of box `B`: spread, vertical offset, radius, blur, colour, corner-table handle (six words).
+type ShP<B> = Shadow<Off<Grow<B, I<Rec>>, Ki<0>, I<Rec>>, I<Rec>, I<Rec>, Any, Tab>;
 
 fn i(v: i32) -> I<Rec> {
     I { a: Rec(v as u32) }
@@ -251,7 +251,7 @@ fn tri_t(phase: u32, period: u32) -> TriT {
     Tri { now: Uw, phase: Rec(phase), period: Rec(period) }
 }
 fn sh<B>(b: B, s: Sh) -> ShP<B> {
-    Shadow { b: Off { b: Grow { b, d: i(s.spread) }, dx: Ki, dy: i(s.dy) }, r: i(s.radius), blur: i(s.blur), c: any(s.color) }
+    Shadow { b: Off { b: Grow { b, d: i(s.spread) }, dx: Ki, dy: i(s.dy) }, r: i(s.radius), blur: i(s.blur), c: any(s.color), tab: Tab::NONE }
 }
 /// A gradient's direction as the kernel's stager scales it (the same float operations).
 fn grad_dir(rect: [i32; 4], angle: f32) -> (i32, i32) {
@@ -370,6 +370,14 @@ pub mod canvas {
     const CHROME: (u32, u32) = (0xf4f5f7, 0x1f2229);
     const INK: (u32, u32) = (0x1d2129, 0xe6e9ef);
 
+    /// Positions step by this many half pixels: 2 (whole pixels: the façade workload's placement, which
+    /// floors to whole points) unless the scene is built with `half` set.
+    static HALF_PX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    /// Build later scenes with nodes on half pixels (adversarial for coverage and for the corner tables).
+    pub fn half_pixels(on: bool) {
+        HALF_PX.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
     fn shadow(k: usize, radius: i32) -> Sh {
         let (dy, blur, spread, color) = SHADOWS[k % SHADOWS.len()];
         Sh { spread: q(2 * spread), dy: q(2 * dy), radius, blur: q(2 * blur), color }
@@ -419,11 +427,13 @@ pub mod canvas {
             }
             self.m.nodes.push(n);
         }
-        /// A rect of a random size at a random half-pixel position inside (and a little outside) a frame.
+        /// A rect of a random size at a random position inside (and a little outside) a frame: on whole pixels
+        /// as the workload's are (it floors to whole points), or on half pixels with `BOUGH_CANVAS_HALF=1`.
         fn place(&mut self, fx: i32, fy: i32, w: (i32, i32), h: (i32, i32)) -> [i32; 4] {
             let (bw, bh) = (w.0 + self.g.u((w.1 - w.0) as u32) as i32, h.0 + self.g.u((h.1 - h.0) as u32) as i32);
-            let x = q(fx - 12) + self.g.u(((FW - bw / 2) * 2) as u32) as i32 * 128;
-            let y = q(fy - 12) + self.g.u(((FH - bh / 2) * 2) as u32) as i32 * 128;
+            let grid = if HALF_PX.load(std::sync::atomic::Ordering::Relaxed) { 1 } else { 2 };
+            let x = q(fx - 12) + self.g.u(((FW - bw / 2) * 2 / grid) as u32) as i32 * 128 * grid;
+            let y = q(fy - 12) + self.g.u(((FH - bh / 2) * 2 / grid) as u32) as i32 * 128 * grid;
             [x, y, x + q(bw), y + q(bh)]
         }
         fn frame(&mut self, fi: usize) {
@@ -638,7 +648,7 @@ pub mod anim {
     /// An opaque box moving, resizing, rounding and recolouring.
     pub type Mover = RRect<Breathe, MixI<I<Rec>, I<Rec>, TriT>, MixV<Opq, Opq, TriT>>;
     /// A translucent box fading over a blurred shadow that moves with it.
-    pub type Glow = Over<Shadow<Off<Breathe, Ki<0>, Ki<{ q(6) }>>, Ki<{ q(10) }>, I<Rec>, Any>, RRect<Breathe, Ki<{ q(10) }>, Fade<Any, TriT>>>;
+    pub type Glow = Over<Shadow<Off<Breathe, Ki<0>, Ki<{ q(6) }>>, Ki<{ q(10) }>, I<Rec>, Any, Tab>, RRect<Breathe, Ki<{ q(10) }>, Fade<Any, TriT>>>;
     pub type Back = Solid<Lane, ThemeC>;
     pub type Text = Glyph<Lane, Rec, ThemeC>;
 
@@ -682,7 +692,7 @@ pub mod anim {
                 nd.motion = motion;
                 nd.sh = [Some(Sh { spread: 0, dy: q(6), radius: q(10), blur, color: cs }), None];
                 m.nodes.push(nd);
-                s.push(glow, a, Over(Shadow { b: Off { b: breathe, dx: Ki, dy: Ki }, r: Ki, blur: i(blur), c: any(cs) }, RRect { b: breathe, r: Ki, c: Fade { a: any(cb), k: tri_t(phase, period) } }));
+                s.push(glow, a, Over(Shadow { b: Off { b: breathe, dx: Ki, dy: Ki }, r: Ki, blur: i(blur), c: any(cs), tab: Tab::NONE }, RRect { b: breathe, r: Ki, c: Fade { a: any(cb), k: tri_t(phase, period) } }));
             }
         }
         for j in 0..40 {

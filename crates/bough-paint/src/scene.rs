@@ -127,7 +127,7 @@ pub struct Desc {
     /// `first`: the index of `zs[0]` in the tile's list (its occlusion mask).
     pub shade: fn(ColView, zs: &[u32], first: usize, order: &[u32], u: &U, t: &mut Tile),
     /// The specification at one pixel: (blended accumulator, some layer inked the pixel).
-    pub spec: fn(ColView, i: u32, u: &U, x: i32, y: i32, acc: Vec4u, atlas: &[u8], aw: u32) -> (Vec4u, bool),
+    pub spec: fn(ColView, i: u32, u: &U, x: i32, y: i32, acc: Vec4u, atlas: &[u8], aw: u32, tabs: &[u32]) -> (Vec4u, bool),
     /// The record as the generic kernel's commands.
     pub stage: fn(ColView, i: u32, u: &U, out: &mut bough_kernel::stage::Scene),
     pub pick: fn(ColView, i: u32, u: &U) -> u32,
@@ -203,8 +203,8 @@ fn shade_run<P: Paint>(c: ColView, zs: &[u32], first: usize, order: &[u32], u: &
         unsafe { c.rec::<P>(i) }.paint(&Cx { u, rect: c.rect(i) }, NO_CLIP, &mut Shade(t));
     }
 }
-fn spec_one<P: Paint>(c: ColView, i: u32, u: &U, x: i32, y: i32, acc: Vec4u, atlas: &[u8], aw: u32) -> (Vec4u, bool) {
-    let mut s = SpecSink { x, y, acc, atlas, aw, ink: false };
+fn spec_one<P: Paint>(c: ColView, i: u32, u: &U, x: i32, y: i32, acc: Vec4u, atlas: &[u8], aw: u32, tabs: &[u32]) -> (Vec4u, bool) {
+    let mut s = SpecSink { x, y, acc, atlas, aw, tabs, ink: false };
     // SAFETY: as `window_pass`.
     unsafe { c.rec::<P>(i) }.paint(&Cx { u, rect: c.rect(i) }, NO_CLIP, &mut s);
     (s.acc, s.ink)
@@ -406,6 +406,23 @@ pub struct Scene {
     tiles: Vec<u32>,
     /// Keys of records rewritten since the last `update` (`set`).
     touched: Vec<u32>,
+    /// The corner tables: a region of the arena after the columns (so the GPU reads them from the buffer it
+    /// already has), handles by key, and the tables allocated but not yet filled.
+    tab_base: usize,
+    tab_used: usize,
+    tab_map: std::collections::HashMap<(i32, i32), u32>,
+    tab_jobs: Vec<TabJob>,
+}
+
+/// Words reserved for corner tables (4 MiB of address space; pages are touched only when a table is filled).
+pub const TAB_WORDS: usize = 1 << 24;
+/// A table to fill: its handle (word offset in the table region), key, and entries per side.
+#[derive(Clone, Copy, Debug)]
+pub struct TabJob {
+    pub base: u32,
+    pub r: i32,
+    pub w: i32,
+    pub n: u32,
 }
 
 /// `BOUGH_PAINT_PROF=1`: nanoseconds and tile entries per column, accumulated by `shade` (a measurement
@@ -425,7 +442,11 @@ impl Scene {
             fh,
             tx,
             ty,
-            arena: Arena::new(arena_words),
+            arena: Arena::new(arena_words + TAB_WORDS),
+            tab_base: arena_words,
+            tab_used: 0,
+            tab_map: Default::default(),
+            tab_jobs: Vec::new(),
             used: 0,
             cols: Vec::new(),
             order: Vec::new(),
@@ -448,7 +469,7 @@ impl Scene {
         let desc = Desc::of::<P>();
         let cap = cap.div_ceil(64).max(1) * 64;
         let words = cap * (LANES + desc.words);
-        assert!(self.used + words <= self.arena.words, "arena too small");
+        assert!(self.used + words <= self.tab_base, "arena too small");
         assert!(self.cols.len() < 1 << (32 - IDX_BITS) && cap <= 1 << IDX_BITS);
         self.cols.push(Col { desc, base: self.used, cap, len: 0 });
         self.used += words;
@@ -456,6 +477,7 @@ impl Scene {
     }
     /// Append a record: its rect lanes (Q8) and its value. Paint order is mount order. Returns its key.
     pub fn push<P: Paint>(&mut self, col: ColId<P>, rect: [i32; 4], p: P) -> u32 {
+        let p = self.memo(rect, p);
         let z = self.order.len() as u32;
         let c = &mut self.cols[col.0];
         assert!(std::ptr::eq(c.desc, Desc::of::<P>()) || c.desc.name == Desc::of::<P>().name);
@@ -482,6 +504,7 @@ impl Scene {
     /// stage expression re-evaluated, a transition retargeted). Returns its key. The next `update` damages
     /// where it was and where it is; nothing else about the frame changes.
     pub fn set<P: Paint>(&mut self, col: ColId<P>, i: usize, rect: [i32; 4], p: P) -> u32 {
+        let p = self.memo(rect, p);
         let c = &self.cols[col.0];
         assert!(std::ptr::eq(c.desc, Desc::of::<P>()) || c.desc.name == Desc::of::<P>().name);
         assert!(i < c.len);
@@ -499,6 +522,71 @@ impl Scene {
         self.touched.push(z);
         z
     }
+    /// Give the record's memoisable layers their table handles (`Paint::memo`), allocating a table for a
+    /// key not seen before. Cold: once per record mount or rewrite.
+    fn memo<P: Paint>(&mut self, rect: [i32; 4], mut p: P) -> P {
+        let zero = U::default();
+        let (map, jobs, used) = (&mut self.tab_map, &mut self.tab_jobs, &mut self.tab_used);
+        p.memo(&Cx { u: &zero, rect }, &mut |r, w| {
+            *map.entry((r, w)).or_insert_with(|| {
+                let n = crate::ops::ops::t_n(r, w);
+                let words = 2 + (n * n) as usize;
+                if *used + words > TAB_WORDS {
+                    return crate::ops::ops::T_MISS;
+                }
+                let base = *used as u32;
+                *used += words;
+                jobs.push(TabJob { base, r, w, n });
+                base
+            })
+        });
+        // a fresh table's header names no key until it is filled
+        let tb = self.tab_base;
+        let words = self.arena.words_mut();
+        for j in &self.tab_jobs {
+            if words[tb + j.base as usize] == 0 && words[tb + j.base as usize + 1] == 0 {
+                (words[tb + j.base as usize], words[tb + j.base as usize + 1]) = (u32::MAX, u32::MAX);
+            }
+        }
+        p
+    }
+    /// The corner tables' words (handles index it).
+    pub fn tabs(&self) -> &[u32] {
+        &self.arena.words()[self.tab_base..self.tab_base + TAB_WORDS]
+    }
+    /// The table region's first word in the arena, and its words in use.
+    pub fn tab_region(&self) -> (usize, usize) {
+        (self.tab_base, self.tab_used)
+    }
+    /// Tables allocated and not yet filled.
+    pub fn tab_jobs(&self) -> &[TabJob] {
+        &self.tab_jobs
+    }
+    /// The pending tables' entries have been written by someone else (the GPU, into this arena): name
+    /// their keys in the headers, which is what makes a shader use them.
+    pub fn tabs_filled(&mut self) {
+        let tb = self.tab_base;
+        let jobs = std::mem::take(&mut self.tab_jobs);
+        let words = self.arena.words_mut();
+        for j in &jobs {
+            (words[tb + j.base as usize], words[tb + j.base as usize + 1]) = (j.r as u32, j.w as u32);
+        }
+    }
+    /// Fill the pending tables on this thread (the CPU-only path; the same leaf the GPU kernel runs).
+    pub fn fill_tabs(&mut self) {
+        let tb = self.tab_base;
+        let jobs = self.tab_jobs.clone();
+        let words = self.arena.words_mut();
+        for j in &jobs {
+            for y in 0..j.n {
+                for x in 0..j.n {
+                    let v = crate::ops::ops::x_cfill(j.r, j.w, x, y);
+                    words[tb + j.base as usize + 2 + (y * j.n + x) as usize] = if cfg!(feature = "mutant_tab") { v + 1 } else { v };
+                }
+            }
+        }
+        self.tabs_filled();
+    }
     pub fn view(&self, col: usize) -> ColView {
         let c = &self.cols[col];
         // SAFETY: `base` is inside the arena (checked at `column`).
@@ -515,6 +603,9 @@ impl Scene {
     /// Steps 1 to 3 of a frame: the mask, the window passes, the bins. Leaves the damage in `self.damage`.
     pub fn update(&mut self, u: &U) -> FrameStats {
         let mut fs = FrameStats::default();
+        if !self.tab_jobs.is_empty() {
+            self.fill_tabs();
+        }
         let first = self.first;
         let mask = if first { u64::MAX } else { self.prev.diff(u, 64) };
         fs.mask = mask;
@@ -562,7 +653,7 @@ impl Scene {
         let total = std::sync::Mutex::new(Stats::default());
         let work = |_id: usize| {
             let optr = &optr;
-            let mut t = Tile::new(&self.atlas, self.aw);
+            let mut t = Tile::new(&self.atlas, self.aw, self.tabs());
             loop {
                 let a = next.fetch_add(CHUNK, Relaxed);
                 if a >= tiles.len() {
@@ -655,7 +746,7 @@ impl Scene {
                 let mut acc = Vec4 { x: 0, y: 0, z: 0, w: 0 };
                 for &o in &self.order {
                     let c = (o >> IDX_BITS) as usize;
-                    acc = (self.cols[c].desc.spec)(self.view(c), o & IDX_MASK, u, x, y, acc, &self.atlas, self.aw).0;
+                    acc = (self.cols[c].desc.spec)(self.view(c), o & IDX_MASK, u, x, y, acc, &self.atlas, self.aw, self.tabs()).0;
                 }
                 out[y as usize * stride + x as usize] = crate::ops::ops::x_store(acc);
             }
@@ -672,7 +763,7 @@ impl Scene {
             let o = self.order[z as usize];
             let c = (o >> IDX_BITS) as usize;
             let d = self.cols[c].desc;
-            let (_, ink) = (d.spec)(self.view(c), o & IDX_MASK, u, x, y, Vec4 { x: 0, y: 0, z: 0, w: 0 }, &self.atlas, self.aw);
+            let (_, ink) = (d.spec)(self.view(c), o & IDX_MASK, u, x, y, Vec4 { x: 0, y: 0, z: 0, w: 0 }, &self.atlas, self.aw, self.tabs());
             if ink {
                 return if d.hit { (d.pick)(self.view(c), o & IDX_MASK, u) } else { NO_HIT };
             }
