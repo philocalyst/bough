@@ -70,6 +70,14 @@ fn oracle(rs: &[RecordInit]) -> Oracle {
     o
 }
 
+/// Read every page header once, outside the interval. `ri_instructions` includes kernel work, and
+/// on a loaded machine the kernel ages pages within milliseconds: an edit that then walks 15,000
+/// page headers takes a soft fault on each 16 KiB page it re-touches (a front insert at 1e6 read
+/// 563 k / 658 k / 828 k instructions with 1 / 2 / 4 such trees alive). Those are not core costs.
+fn settle(b: &Bough) {
+    black_box(b.page_versions());
+}
+
 fn want(name: &str) -> bool {
     std::env::var("R6_FILTER")
         .ok()
@@ -136,6 +144,7 @@ fn edit_cell(rs: &[RecordInit], name: &str, edit: Edit, k: usize, ov: u64) {
         pages = b.num_pages();
         let starts = b.page_starts();
         let mut o = oracle(rs);
+        settle(&b);
         values.push(timed(
             || apply(black_box(&mut b), edit, black_box(&new)),
             1,
@@ -209,6 +218,8 @@ fn freezes(rs: &[RecordInit], ov: u64) {
             if name == "freeze-all" {
                 b.translate_run(1, b.len() - 1, 1, 1);
             }
+            settle(&b);
+            settle(&dst);
             values.push(timed(
                 || {
                     copied = black_box(&b).freeze_into(black_box(&mut dst));
@@ -499,6 +510,7 @@ fn handles(rs: &[RecordInit], ov: u64) {
             let (mut b, at, hs) = fresh(every);
             nh = hs.len();
             let mut got = vec![None; nh];
+            settle(&b);
             values.push(timed(
                 || {
                     b.insert_run(black_box(1), black_box(&new));
