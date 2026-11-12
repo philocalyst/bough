@@ -30,10 +30,7 @@ use crate::store::{Arch, HitFn, Site, hit_fn};
 use core::any::TypeId;
 use core::marker::PhantomData;
 
-pub const U_FOCUS: usize = 56;
-pub const U_PRESS: usize = 57;
-pub const U_ENV: usize = 58;
-pub const U_PRESS_AT: usize = 59;
+pub use crate::expr::{U_ENV, U_FOCUS, U_PRESS, U_PRESS_AT};
 /// No place.
 pub const NONE: u32 = u32::MAX;
 /// The record bits of a place (the raster's order word).
