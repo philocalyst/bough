@@ -135,16 +135,20 @@ fn scroll_run_copy_damage_covers_every_wrong_pixel() {
 
 /// Round 7: an epoch holds a list of rigid moves. Two moves over disjoint clips are both copies: after
 /// copying each clip from the previous frame, every wrong pixel is in a marked tile. Two that meet poison
-/// the epoch: no copy is offered and both clips are marked whole.
+/// the epoch: no copy is offered and both clips are marked whole. As for any move, a run is visible only
+/// inside its own clip (a scroll container's content is clipped to its port; a splice's clip contains the
+/// run before and after), which is what makes disjoint clips independent.
 #[test]
 fn several_moves_in_one_epoch_are_independent_copies() {
     let (w, h) = (1440, 1600);
     let mut rng = Rng(0x30_7e5);
-    let paint = |recs: &[(NRect, u8, u32)], x: i32, y: i32| -> u64 {
+    // (ink, kind, id, clip rect)
+    let paint = |recs: &[(NRect, u8, u32, NRect)], x: i32, y: i32| -> u64 {
         let mut v = 0u64;
-        for &(r, kind, id) in recs {
+        for &(r, kind, id, c) in recs {
             let [x0, y0, x1, y1] = r.to_xyxy();
-            if x >= x0 && x < x1 && y >= y0 && y < y1 {
+            let [c0, c1, c2, c3] = c.to_xyxy();
+            if x >= x0 && x < x1 && y >= y0 && y < y1 && x >= c0 && x < c2 && y >= c1 && y < c3 {
                 v = if kind == 0 { id as u64 + 1 } else { ((id as u64 + 1) << 32) ^ ((x - x0) as u64 * 7919 + (y - y0) as u64) };
             }
         }
@@ -154,23 +158,30 @@ fn several_moves_in_one_epoch_are_independent_copies() {
     for case in 0..160 {
         let mut b = Bough::new(w, h);
         let n = 60 + rng.below(60) as usize;
-        b.insert_run(0, &scene(&mut rng, n));
-        b.next_epoch();
         // two runs of records, two clips: side by side (disjoint) or overlapping
         let overlap = case % 4 == 3;
         let ca = NRect::new(0, rng.range(0, 300), 600, rng.range(700, 1500));
         let cb = if overlap { NRect::new(500, rng.range(0, 300), 1200, rng.range(700, 1500)) } else { NRect::new(640, rng.range(0, 300), 1400, rng.range(700, 1500)) };
         let (sa, la) = (rng.below(n as u64 / 4) as usize, 1 + rng.below(n as u64 / 4) as usize);
         let (sb, lb) = (n / 2 + rng.below(n as u64 / 4) as usize, 1 + rng.below(n as u64 / 4 - 1) as usize);
+        let (ia, ib) = (b.new_clip(ca), b.new_clip(cb));
+        let mut recs = scene(&mut rng, n);
+        let clip_of = |i: usize| if i >= sa && i < sa + la { (ia, ca) } else if i >= sb && i < sb + lb { (ib, cb) } else { (0, NRect::new(-30000, -30000, 30000, 30000)) };
+        for (i, r) in recs.iter_mut().enumerate() {
+            r.clip = clip_of(i).0;
+        }
+        b.insert_run(0, &recs);
+        b.next_epoch();
         let (da, db) = (rng.range(-120, 120), rng.range(-120, 120));
         if da == 0 || db == 0 {
             continue;
         }
-        let before: Vec<(NRect, u8, u32)> = (0..n).map(|i| (b.ink_at(i), b.kind_at(i), b.payload_at(i))).collect();
+        let snap = |b: &Bough| -> Vec<(NRect, u8, u32, NRect)> { (0..n).map(|i| (b.ink_at(i), b.kind_at(i), b.payload_at(i), clip_of(i).1)).collect() };
+        let before = snap(&b);
         let band = |kind: u8, _: u32| if kind == 0 { 2 } else { -1 };
         b.scroll_run_copy(sa, la, 0, da, ca, band);
         b.scroll_run_copy(sb, lb, 0, db, cb, band);
-        let after: Vec<(NRect, u8, u32)> = (0..n).map(|i| (b.ink_at(i), b.kind_at(i), b.payload_at(i))).collect();
+        let after = snap(&b);
         let marks = b.repair(1);
         let moves = b.moves(0).to_vec();
         if overlap {
