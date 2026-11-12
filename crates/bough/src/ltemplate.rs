@@ -403,6 +403,7 @@ fn mount_element<V: 'static>(m: &mut Mounter<'_, V>, n: &LNode, ids: &mut [u32],
             shape: TShape::None,
             per_glyph: false,
             num: None,
+            base_off: 0.0,
         });
         {
             let nd = &mut m.rt.nodes[node as usize];

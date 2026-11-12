@@ -1416,7 +1416,7 @@ impl Rt {
         let text_heap = |t: &crate::text::TextNode| {
             t.text.capacity()
                 + match &t.shape {
-                    crate::text::TShape::Label(_) => size_of::<bough_text::pool::Label>(),
+                    crate::text::TShape::Label(lb) => size_of::<bough_text::pool::Label>() + lb.text().len().next_power_of_two().max(16) + 16,
                     crate::text::TShape::Set(_) => size_of::<bough_text::lines::LineSet>(),
                     crate::text::TShape::Lines { widths, spans, .. } => widths.capacity() * 4 + spans.capacity() * 8,
                     _ => 0,

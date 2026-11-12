@@ -893,6 +893,7 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
             shape: TShape::None,
             per_glyph: G::PER_GLYPH,
             num,
+            base_off: 0.0,
         });
         let payload = m.rt.text_build(ti);
         m.scope.texts.push(ti);

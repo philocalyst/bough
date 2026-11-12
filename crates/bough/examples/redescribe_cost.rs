@@ -201,7 +201,49 @@ fn heap(n: usize) {
     println!("  bytes per row, allocator live + carved columns touched: {:.0}", (f.0[1] - z.0[1]) as f64 / k + cols);
 }
 
+/// The appliers a wire calls, alone (`APPLIERS=1`): instructions per call of a colour write on a painted
+/// box and of a digit tick on a laid-out label, with nothing of the turn around them (no settle, no
+/// re-description, no layout flush). The node is found by its kind; the two values alternate so every call
+/// writes.
+fn appliers() {
+    use bough::elem::{Apply, ApplyBg};
+    let font = std::fs::read(std::env::var("ZGX_FONT_FILE").unwrap_or_else(|_| "/System/Library/Fonts/Supplemental/Arial.ttf".into())).unwrap();
+    let cfg = Config::new(1280.0, 800.0, 1.0, font);
+    let rows = (0..8u32).map(|i| (i, format!("Row label {i}"))).collect();
+    let mut a = App::new(Table::<0> { rows, selected: u32::MAX }, cfg, false);
+    a.turn(|_| {});
+    let rt = &mut a.rt;
+    let n = rt.nodes.len() as u32;
+    let quad = (1..n).rev().find(|&i| rt.node_live(i) && rt.nodes[i as usize].kind == bough::rt::NK_QUAD).expect("a painted box");
+    let label = (1..n).rev().find(|&i| rt.node_live(i) && rt.nodes[i as usize].kind == bough::rt::NK_LTEXT).expect("a label");
+    let slope = |run: &mut dyn FnMut(u32) -> u64| {
+        run(64);
+        let (lo, hi) = (run(1000), run(3000));
+        (hi - lo) / 2000
+    };
+    let colour = slope(&mut |reps| {
+        let t0 = tinstr();
+        for k in 0..reps {
+            ApplyBg::apply(rt, quad, &Color(0xff00_0000 | (k & 1) * 0x0101_01));
+        }
+        tinstr() - t0
+    });
+    let number = slope(&mut |reps| {
+        let t0 = tinstr();
+        for k in 0..reps {
+            rt.lay_text_changed(label, if k & 1 == 0 { "Row label 3" } else { "Row label 8" });
+        }
+        tinstr() - t0
+    });
+    println!("applier,instructions_per_call");
+    println!("colour (ApplyBg on a painted box),{colour}");
+    println!("digit tick (lay_text_changed on a label),{number}");
+}
+
 fn main() {
+    if std::env::var_os("APPLIERS").is_some() {
+        return appliers();
+    }
     if std::env::var_os("HEAP").is_some() {
         for n in std::env::args().skip(1).filter_map(|s| s.parse::<usize>().ok()) {
             heap(n);

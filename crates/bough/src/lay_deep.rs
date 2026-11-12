@@ -344,6 +344,28 @@ impl Deep {
         KidIds { n: &self.n, c: self.n[n as usize].first }
     }
 
+    /// Give node `n` a text state after the fact (a label whose text left the label kernel's coverage
+    /// becomes a shaped leaf); its meta bits follow.
+    pub fn set_ctx(&mut self, n: u32, ctx: LeafCtx) {
+        let measured = ctx.user.is_none();
+        let ci = match self.ctx_free.pop() {
+            Some(ci) => {
+                self.ctxs[ci as usize] = ctx;
+                ci
+            }
+            None => {
+                self.ctxs.push(ctx);
+                (self.ctxs.len() - 1) as u32
+            }
+        };
+        let nd = &mut self.n[n as usize];
+        let old = std::mem::replace(&mut nd.ctx, ci);
+        nd.flags = meta_bits(&self.styles, nd.style, measured) | (nd.flags & !META_MASK);
+        if old != NOCTX {
+            self.orphans.push(old);
+        }
+    }
+
     pub fn ctx_mut(&mut self, n: u32) -> Option<&mut LeafCtx> {
         let c = self.n[n as usize].ctx;
         if c == NOCTX { None } else { Some(&mut self.ctxs[c as usize]) }

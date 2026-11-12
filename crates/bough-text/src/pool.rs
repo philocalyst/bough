@@ -430,13 +430,7 @@ impl GlyphPool {
         let bounds = cache.line_bounds(strike, tt, sh.script.upem);
         assert!(bounds.bottom - bounds.top <= 3 * 32 + 1, "line taller than 4 tile rows");
         assert_eq!(origin[1], origin[1].floor(), "baseline must be integral");
-        cache.prepare_tokens(strike, &tt.gid, 0x20..0x7F);
-        let ib = &cache.tok(strike).ibox;
-        let mut dcell = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
-        for d in b'0'..=b'9' {
-            let b = ib[d as usize];
-            dcell = [dcell[0].min(b[0]), dcell[1].min(b[1]), dcell[2].max(-b[2]), dcell[3].max(-b[3])];
-        }
+        let dcell = cache.label_strike(strike, &tt.gid);
         if self.spaces.len() <= space as usize {
             self.spaces.resize(space as usize + 1, [0, 0]);
         }
