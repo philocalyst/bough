@@ -48,3 +48,17 @@ Branch `r7/bench` in `wt/r7-bench`, from `round6` `3b0b00c698`. Brief: `bough/ru
 * hotpath on the sheet (scale 0.2): resize 37 %, lay_flush 29 %, frame 26 %, mount 17 % of the run.
 * Dashboard (merged `lane/research/round6` for its files): zortax quick-1 section, labelled rough baseline;
   workloads section waits for the baselines.
+* Scenes landed (all five, each reviewed; agents' reports summarised in SCENES.md and each module doc):
+  ide (30,166 records), dash (8,188), canvas (10,856), chat (23,593), sheet (240,055). All mount at scale 1. The
+  pixel gate `tests/pixels.rs` (retained == full redraw through every phase; rings 1-4, windowed, re-describing)
+  passes for all five at scale 0.05.
+* Defects found by the scenes: nested `clip_by` stale after a write (repro in tests/defects.rs, fails: retained !=
+  fresh after the third pan); a list row's transition outliving the row (panic in resize, chat agent's report;
+  repro written, run pending); `clip_by` inside `anchor` mounts without the anchor's origin (canvas agent, not
+  reproduced); scroll offset not re-clamped when content height shrinks (chat; behaviour, blank view); image atlas
+  one 1024x1024 texture, panics at the 9th distinct ~200x130 pt image (chat; media lane input).
+* hotpath per scene (instrumented, scale 1, RENDER=1, REPS=16; share of the run's wall): ide lay_flush 52 %,
+  resize 38 %; dash frame 22 %, resize 20 %; canvas frame 10 %, resize 10 % (the rest is GPU waits); sheet
+  lay_flush 67 %, resize 66 %. Layout dominates the text-heavy scenes, the GPU the canvas.
+* Running `workload all` in one process grows the footprint scene after scene (124 -> 386 MiB): an `App` drop
+  does not return its memory (shutdown is the memory lane's item). The baseline runs each scene in its own process.

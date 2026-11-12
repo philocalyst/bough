@@ -5,7 +5,7 @@
 //!     cargo test --profile dist -p bough-workloads --no-default-features --test defects -- --ignored   (macOS)
 #![cfg(target_os = "macos")]
 use bough::prelude::*;
-use bough::raw::{clip_by, offset, quad, App, Config};
+use bough::raw::{clip_by, offset, quad, App, Config, Curve};
 
 fn first_diff(a: &[u8], b: &[u8], w: usize) -> Option<(usize, usize, u8, u8)> {
     a.iter().zip(b).position(|(x, y)| x != y).map(|i| ((i / 4) % w, (i / 4) / w, a[i], b[i]))
@@ -59,5 +59,55 @@ fn nested_clip_by_retained_equals_fresh() {
         let w = a.rt.win_w as usize;
         assert!(px == full, "step {k}: presented != full redraw at {:?}", first_diff(&px, &full, w));
         assert!(px == fresh, "step {k} pan {p:?}: retained != fresh mount at {:?}", first_diff(&px, &fresh, w));
+    }
+}
+
+/// A list row with a running layout transition, in a scroll box whose rows unmount by exposure (the chat scene's
+/// arrivals). Reported by the chat agent: a resize in the same step as the row's transition panicked with
+/// `layout node is in the Bough` (lay_deep.rs) from `lay_compute_pending` in `App::resize`; its reading of the
+/// code is that `Rt::cut_scope` kills a released scope's wires but not its transitions, which keep restyling a
+/// dead layout node.
+struct Row {
+    h: Signal<f32>,
+}
+impl View for Row {
+    fn view(&self) -> impl Element<Self> + '_ {
+        row((block(200.0, 0.0).bg(rgb(0x2f6bff)).h_op(sig!(self.h).transition(Curve::out(0.3))), text("arrival")))
+    }
+}
+struct Feed {
+    scroll: Signal<f32>,
+    rows: List<Row>,
+}
+impl View for Feed {
+    fn view(&self) -> impl Element<Self> + '_ {
+        column((
+            column(each((0..400).map(|i| text(format!("history line {i}")).font(12.0, 18.0)))),
+            list(sig!(self.rows)).w_pct(1.0),
+        ))
+        .w_pct(1.0)
+        .h_pct(1.0)
+        .scroll(sig!(self.scroll))
+    }
+}
+
+#[test]
+#[ignore = "defect (reported by the chat scene): a list row's transition outlives the row; resize panics (round6 3b0b00c698)"]
+fn list_row_transition_survives_resize() {
+    let mut a = App::new(Feed { scroll: Signal::new(0.0), rows: List::new() }, Config::new(400.0, 300.0, 1.0, bough_workloads::font()).once(), true);
+    a.frame();
+    for k in 0..6 {
+        a.turn(|v| {
+            v.rows.push(Row { h: Signal::new(0.0) });
+            let n = v.rows.len();
+            v.rows.edit(n - 1).h.set(40.0);
+            v.scroll.set(400.0 * 18.0 + 60.0 * n as f32);
+        });
+        a.tick(1.0 / 60.0);
+        a.resize(if k % 2 == 0 { 600.0 } else { 300.0 }, if k % 2 == 0 { 500.0 } else { 260.0 });
+        a.frame();
+        let px = a.presented_pixels();
+        let full = a.reference_pixels();
+        assert!(px == full, "step {k}: presented != full redraw");
     }
 }

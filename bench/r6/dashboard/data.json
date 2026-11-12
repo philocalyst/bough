@@ -1418,5 +1418,512 @@
     ]
    }
   ]
+ },
+ "workloads": {
+  "note": "The five standing workloads (docs/lanes/bench/SCENES.md): instructions per step on the calling thread (p50) by phase, and wall time per step (p50), from one run. Bars share one log scale across scenes. Instructions are the stable column; wall time on the shared Mac moves with its load.",
+  "identity": "host=mileswirht os=Darwin 24.6.0 arch=arm64 · cpu=Apple M3 Pro cores=11 mem=36GiB · load=18.48 24.77 27.10 · commit=6deab7e4e7 date=2026-11-12T10:04:56Z rustc=1.101.0-nightly_5d8fec066_2026-10-16 · binary=workload profile=dist sha256=01e6f3cc7d0cdb9d bytes=6255760 · env MODE=once RENDER=1 REPS=32 SCENE_SCALE=1",
+  "source": "bench/results/r7/workloads/mac-6deab7e4e7/once-render.tsv",
+  "scenes": [
+   {
+    "scene": "sheet",
+    "model": "10000 rows x 10 columns = 100000 cells",
+    "fanout": 10000,
+    "phases": [
+     {
+      "phase": "mount",
+      "steps": 1,
+      "instr_p50": 3674149958,
+      "instr_p95": 3674149958,
+      "wall_us_p50": 389099.9,
+      "wall_us_p95": 389099.9,
+      "footprint_mib": 380.1,
+      "peak_mib": 350.0
+     },
+     {
+      "phase": "first_frame",
+      "steps": 1,
+      "instr_p50": 10678904,
+      "instr_p95": 10678904,
+      "wall_us_p50": 10687.2,
+      "wall_us_p95": 10687.2,
+      "footprint_mib": 380.1,
+      "peak_mib": 350.0
+     },
+     {
+      "phase": "steady",
+      "steps": 32,
+      "instr_p50": 27029,
+      "instr_p95": 2921730,
+      "wall_us_p50": 329.7,
+      "wall_us_p95": 4437.1,
+      "footprint_mib": 427.8,
+      "peak_mib": 350.6
+     },
+     {
+      "phase": "hover",
+      "steps": 32,
+      "instr_p50": 15732183,
+      "instr_p95": 16146395,
+      "wall_us_p50": 8176.1,
+      "wall_us_p95": 9789.8,
+      "footprint_mib": 440.0,
+      "peak_mib": 362.5
+     },
+     {
+      "phase": "theme",
+      "steps": 32,
+      "instr_p50": 57478464,
+      "instr_p95": 57725593,
+      "wall_us_p50": 6029.1,
+      "wall_us_p95": 9984.2,
+      "footprint_mib": 440.0,
+      "peak_mib": 362.5
+     },
+     {
+      "phase": "resize",
+      "steps": 32,
+      "instr_p50": 125703923,
+      "instr_p95": 2119075055,
+      "wall_us_p50": 29992.8,
+      "wall_us_p95": 115826.0,
+      "footprint_mib": 399.1,
+      "peak_mib": 368.5
+     },
+     {
+      "phase": "resize_anim",
+      "steps": 32,
+      "instr_p50": 78629345,
+      "instr_p95": 2122900699,
+      "wall_us_p50": 26648.8,
+      "wall_us_p95": 139673.0,
+      "footprint_mib": 398.5,
+      "peak_mib": 368.7
+     },
+     {
+      "phase": "anim",
+      "steps": 32,
+      "instr_p50": 277,
+      "instr_p95": 277,
+      "wall_us_p50": 0.5,
+      "wall_us_p95": 2.4,
+      "footprint_mib": 429.8,
+      "peak_mib": 368.7
+     },
+     {
+      "phase": "idle",
+      "steps": 32,
+      "instr_p50": 534,
+      "instr_p95": 534,
+      "wall_us_p50": 0.6,
+      "wall_us_p95": 0.6,
+      "footprint_mib": 429.8,
+      "peak_mib": 368.7
+     }
+    ],
+    "settings": "scene=sheet model=\"10000 rows x 10 columns = 100000 cells\" fanout=10000 scene_scale=1 mode=once render=1 device_scale=2 window=1280x800 reps=32",
+    "records": "records=240055 since_exec_ms=415.6 build_ms=0.4",
+    "note": "records=240055 since_exec_ms=415.6 build_ms=0.4; fan-out 10,000"
+   },
+   {
+    "scene": "ide",
+    "model": "12 tabs, 2000 tree entries, 3000 editor lines (14585 token spans, 4312 identifier spans, 2189 occurrences of `value`), minimap 3000 blocks, terminal 400+128 lines; ~114901 glyphs, ~20133 text nodes",
+    "fanout": 4312,
+    "phases": [
+     {
+      "phase": "mount",
+      "steps": 1,
+      "instr_p50": 409719352,
+      "instr_p95": 409719352,
+      "wall_us_p50": 83176.1,
+      "wall_us_p95": 83176.1,
+      "footprint_mib": 142.0,
+      "peak_mib": 71.8
+     },
+     {
+      "phase": "first_frame",
+      "steps": 1,
+      "instr_p50": 6632142,
+      "instr_p95": 6632142,
+      "wall_us_p50": 9463.7,
+      "wall_us_p95": 9463.7,
+      "footprint_mib": 142.0,
+      "peak_mib": 71.8
+     },
+     {
+      "phase": "steady",
+      "steps": 32,
+      "instr_p50": 404671,
+      "instr_p95": 2951792,
+      "wall_us_p50": 607.7,
+      "wall_us_p95": 4541.3,
+      "footprint_mib": 189.8,
+      "peak_mib": 72.1
+     },
+     {
+      "phase": "hover",
+      "steps": 32,
+      "instr_p50": 804335,
+      "instr_p95": 863580,
+      "wall_us_p50": 942.3,
+      "wall_us_p95": 1386.7,
+      "footprint_mib": 189.9,
+      "peak_mib": 72.2
+     },
+     {
+      "phase": "theme",
+      "steps": 32,
+      "instr_p50": 6645702,
+      "instr_p95": 6746269,
+      "wall_us_p50": 3502.0,
+      "wall_us_p95": 4370.2,
+      "footprint_mib": 189.9,
+      "peak_mib": 72.2
+     },
+     {
+      "phase": "resize",
+      "steps": 32,
+      "instr_p50": 63055644,
+      "instr_p95": 87611197,
+      "wall_us_p50": 21543.9,
+      "wall_us_p95": 28263.2,
+      "footprint_mib": 146.6,
+      "peak_mib": 75.7
+     },
+     {
+      "phase": "resize_anim",
+      "steps": 32,
+      "instr_p50": 105433995,
+      "instr_p95": 477609444,
+      "wall_us_p50": 23549.5,
+      "wall_us_p95": 63164.8,
+      "footprint_mib": 147.3,
+      "peak_mib": 76.4
+     },
+     {
+      "phase": "anim",
+      "steps": 32,
+      "instr_p50": 42090308,
+      "instr_p95": 44858836,
+      "wall_us_p50": 6285.1,
+      "wall_us_p95": 14159.5,
+      "footprint_mib": 194.2,
+      "peak_mib": 76.5
+     },
+     {
+      "phase": "idle",
+      "steps": 32,
+      "instr_p50": 535,
+      "instr_p95": 535,
+      "wall_us_p50": 0.6,
+      "wall_us_p95": 0.7,
+      "footprint_mib": 194.2,
+      "peak_mib": 76.5
+     }
+    ],
+    "settings": "scene=ide model=\"12 tabs, 2000 tree entries, 3000 editor lines (14585 token spans, 4312 identifier spans, 2189 occurrences of `value`), minimap 3000 blocks, terminal 400+128 lines; ~114901 glyphs, ~20133 text nodes\" fanout=4312 scene_scale=1 mode=once render=1 device_scale=2 window=1280x800 reps=32",
+    "records": "records=30166 since_exec_ms=109.8 build_ms=0.8",
+    "note": "records=30166 since_exec_ms=109.8 build_ms=0.8; fan-out 4,312"
+   },
+   {
+    "scene": "dash",
+    "model": "200 cards in 40 rows of 5: 40 bars, 40 sparklines (40 quads), 40 trends (2 x 18 dots), 40 gauges, 40 stacked bars; 3484 series marks on the highlight",
+    "fanout": 3484,
+    "phases": [
+     {
+      "phase": "mount",
+      "steps": 1,
+      "instr_p50": 132930860,
+      "instr_p95": 132930860,
+      "wall_us_p50": 62884.1,
+      "wall_us_p95": 62884.1,
+      "footprint_mib": 116.0,
+      "peak_mib": 30.6
+     },
+     {
+      "phase": "first_frame",
+      "steps": 1,
+      "instr_p50": 5554330,
+      "instr_p95": 5554330,
+      "wall_us_p50": 13022.0,
+      "wall_us_p95": 13022.0,
+      "footprint_mib": 116.0,
+      "peak_mib": 30.6
+     },
+     {
+      "phase": "steady",
+      "steps": 32,
+      "instr_p50": 1561756,
+      "instr_p95": 5405353,
+      "wall_us_p50": 1363.0,
+      "wall_us_p95": 8420.2,
+      "footprint_mib": 165.4,
+      "peak_mib": 32.6
+     },
+     {
+      "phase": "hover",
+      "steps": 32,
+      "instr_p50": 733928,
+      "instr_p95": 755954,
+      "wall_us_p50": 986.3,
+      "wall_us_p95": 1798.2,
+      "footprint_mib": 165.5,
+      "peak_mib": 32.6
+     },
+     {
+      "phase": "theme",
+      "steps": 32,
+      "instr_p50": 1322266,
+      "instr_p95": 1360525,
+      "wall_us_p50": 2710.0,
+      "wall_us_p95": 5292.1,
+      "footprint_mib": 165.5,
+      "peak_mib": 32.6
+     },
+     {
+      "phase": "resize",
+      "steps": 32,
+      "instr_p50": 15251990,
+      "instr_p95": 18801187,
+      "wall_us_p50": 7097.3,
+      "wall_us_p95": 9302.5,
+      "footprint_mib": 119.2,
+      "peak_mib": 33.3
+     },
+     {
+      "phase": "resize_anim",
+      "steps": 32,
+      "instr_p50": 15934542,
+      "instr_p95": 17533601,
+      "wall_us_p50": 7484.6,
+      "wall_us_p95": 9642.8,
+      "footprint_mib": 121.0,
+      "peak_mib": 35.2
+     },
+     {
+      "phase": "anim",
+      "steps": 32,
+      "instr_p50": 876376,
+      "instr_p95": 3728673,
+      "wall_us_p50": 2140.7,
+      "wall_us_p95": 4940.2,
+      "footprint_mib": 168.2,
+      "peak_mib": 35.6
+     },
+     {
+      "phase": "idle",
+      "steps": 32,
+      "instr_p50": 543,
+      "instr_p95": 543,
+      "wall_us_p50": 0.6,
+      "wall_us_p95": 0.6,
+      "footprint_mib": 168.2,
+      "peak_mib": 35.6
+     }
+    ],
+    "settings": "scene=dash model=\"200 cards in 40 rows of 5: 40 bars, 40 sparklines (40 quads), 40 trends (2 x 18 dots), 40 gauges, 40 stacked bars; 3484 series marks on the highlight\" fanout=3484 scene_scale=1 mode=once render=1 device_scale=2 window=1280x800 reps=32",
+    "records": "records=8188 since_exec_ms=93.2 build_ms=0.0",
+    "note": "records=8188 since_exec_ms=93.2 build_ms=0.0; fan-out 3,484"
+   },
+   {
+    "scene": "canvas",
+    "model": "20 frames, 5000 nodes (1000 component instances, 60 movable, 50 animated, 60 cross-fading), 505 layer rows, ~8137 instances",
+    "fanout": 1000,
+    "phases": [
+     {
+      "phase": "mount",
+      "steps": 1,
+      "instr_p50": 127285662,
+      "instr_p95": 127285662,
+      "wall_us_p50": 62602.5,
+      "wall_us_p95": 62602.5,
+      "footprint_mib": 126.7,
+      "peak_mib": 37.1
+     },
+     {
+      "phase": "first_frame",
+      "steps": 1,
+      "instr_p50": 9362376,
+      "instr_p95": 9362376,
+      "wall_us_p50": 48329.2,
+      "wall_us_p95": 48329.2,
+      "footprint_mib": 126.7,
+      "peak_mib": 37.1
+     },
+     {
+      "phase": "steady",
+      "steps": 32,
+      "instr_p50": 45606,
+      "instr_p95": 2937643,
+      "wall_us_p50": 846.1,
+      "wall_us_p95": 14821.1,
+      "footprint_mib": 174.3,
+      "peak_mib": 37.5
+     },
+     {
+      "phase": "hover",
+      "steps": 32,
+      "instr_p50": 225650,
+      "instr_p95": 277841,
+      "wall_us_p50": 7717.4,
+      "wall_us_p95": 7802.1,
+      "footprint_mib": 174.3,
+      "peak_mib": 37.5
+     },
+     {
+      "phase": "theme",
+      "steps": 32,
+      "instr_p50": 578780,
+      "instr_p95": 639691,
+      "wall_us_p50": 12533.1,
+      "wall_us_p95": 12672.9,
+      "footprint_mib": 174.4,
+      "peak_mib": 37.6
+     },
+     {
+      "phase": "resize",
+      "steps": 32,
+      "instr_p50": 8948161,
+      "instr_p95": 10316304,
+      "wall_us_p50": 16309.5,
+      "wall_us_p95": 18694.0,
+      "footprint_mib": 128.4,
+      "peak_mib": 38.4
+     },
+     {
+      "phase": "resize_anim",
+      "steps": 32,
+      "instr_p50": 8807006,
+      "instr_p95": 9567813,
+      "wall_us_p50": 16425.3,
+      "wall_us_p95": 19199.2,
+      "footprint_mib": 128.6,
+      "peak_mib": 38.7
+     },
+     {
+      "phase": "anim",
+      "steps": 32,
+      "instr_p50": 108696,
+      "instr_p95": 2928687,
+      "wall_us_p50": 3783.9,
+      "wall_us_p95": 13926.5,
+      "footprint_mib": 175.5,
+      "peak_mib": 38.7
+     },
+     {
+      "phase": "idle",
+      "steps": 32,
+      "instr_p50": 541,
+      "instr_p95": 541,
+      "wall_us_p50": 0.3,
+      "wall_us_p95": 0.4,
+      "footprint_mib": 175.5,
+      "peak_mib": 38.7
+     }
+    ],
+    "settings": "scene=canvas model=\"20 frames, 5000 nodes (1000 component instances, 60 movable, 50 animated, 60 cross-fading), 505 layer rows, ~8137 instances\" fanout=1000 scene_scale=1 mode=once render=1 device_scale=2 window=1280x800 reps=32",
+    "records": "records=10856 since_exec_ms=127.0 build_ms=0.3",
+    "note": "records=10856 since_exec_ms=127.0 build_ms=0.3; fan-out 1,000"
+   },
+   {
+    "scene": "chat",
+    "model": "2000 messages from 12 participants (200 images over 8 distinct PNGs, 274 quotes, 840 reaction pills, 436280 chars), 200 conversations, arrivals in a List",
+    "fanout": 830,
+    "phases": [
+     {
+      "phase": "mount",
+      "steps": 1,
+      "instr_p50": 964418342,
+      "instr_p95": 964418342,
+      "wall_us_p50": 139687.9,
+      "wall_us_p95": 139687.9,
+      "footprint_mib": 161.6,
+      "peak_mib": 88.2
+     },
+     {
+      "phase": "first_frame",
+      "steps": 1,
+      "instr_p50": 11738487,
+      "instr_p95": 11738487,
+      "wall_us_p50": 12168.8,
+      "wall_us_p95": 12168.8,
+      "footprint_mib": 161.6,
+      "peak_mib": 88.2
+     },
+     {
+      "phase": "steady",
+      "steps": 32,
+      "instr_p50": 779840,
+      "instr_p95": 2888284,
+      "wall_us_p50": 1592.0,
+      "wall_us_p95": 4016.9,
+      "footprint_mib": 209.9,
+      "peak_mib": 89.0
+     },
+     {
+      "phase": "hover",
+      "steps": 32,
+      "instr_p50": 144921,
+      "instr_p95": 164839,
+      "wall_us_p50": 276.4,
+      "wall_us_p95": 905.7,
+      "footprint_mib": 209.9,
+      "peak_mib": 89.0
+     },
+     {
+      "phase": "theme",
+      "steps": 32,
+      "instr_p50": 3144019,
+      "instr_p95": 3260245,
+      "wall_us_p50": 2883.8,
+      "wall_us_p95": 3731.0,
+      "footprint_mib": 210.0,
+      "peak_mib": 89.0
+     },
+     {
+      "phase": "resize",
+      "steps": 32,
+      "instr_p50": 186806394,
+      "instr_p95": 213112892,
+      "wall_us_p50": 27029.1,
+      "wall_us_p95": 31746.5,
+      "footprint_mib": 165.2,
+      "peak_mib": 91.4
+     },
+     {
+      "phase": "resize_anim",
+      "steps": 32,
+      "instr_p50": 170061533,
+      "instr_p95": 215003634,
+      "wall_us_p50": 23883.7,
+      "wall_us_p95": 32155.0,
+      "footprint_mib": 165.5,
+      "peak_mib": 91.7
+     },
+     {
+      "phase": "anim",
+      "steps": 32,
+      "instr_p50": 787371,
+      "instr_p95": 3641220,
+      "wall_us_p50": 1544.6,
+      "wall_us_p95": 3797.9,
+      "footprint_mib": 212.4,
+      "peak_mib": 91.7
+     },
+     {
+      "phase": "idle",
+      "steps": 32,
+      "instr_p50": 538,
+      "instr_p95": 538,
+      "wall_us_p50": 0.6,
+      "wall_us_p95": 0.7,
+      "footprint_mib": 212.4,
+      "peak_mib": 91.7
+     }
+    ],
+    "settings": "scene=chat model=\"2000 messages from 12 participants (200 images over 8 distinct PNGs, 274 quotes, 840 reaction pills, 436280 chars), 200 conversations, arrivals in a List\" fanout=830 scene_scale=1 mode=once render=1 device_scale=2 window=1280x800 reps=32",
+    "records": "records=23593 since_exec_ms=181.8 build_ms=15.7",
+    "note": "records=23593 since_exec_ms=181.8 build_ms=15.7; fan-out 830"
+   }
+  ]
  }
 }
