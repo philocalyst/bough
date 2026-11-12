@@ -100,23 +100,32 @@ def git(*a):
 
 
 # ------------------------------------------------------------------------------------------------ build
-def build(paths):
+PROFILE = os.environ.get("QUICK_PROFILE", "release")
+
+
+def pflag():
+    return ["--release"] if PROFILE == "release" else ["--profile", PROFILE]
+
+
+def build(paths, sabotage=False):
     """Two cargo invocations: the drivers, then the smoke's test binaries (a package's integration tests make cargo
     build every binary of that package, so the tests' packages are named alone)."""
-    drivers = ["cargo", "build", "--release", "--message-format=json-render-diagnostics"]
+    drivers = ["cargo", "build", *pflag(), "--message-format=json-render-diagnostics"]
     for p in PKGS:
         drivers += ["-p", p]
     for b in BINS:
         drivers += ["--bin", b]
     for x in EXAMPLES:
         drivers += ["--example", x]
-    tests = ["cargo", "build", "--release", "--message-format=json-render-diagnostics"]
+    tests = ["cargo", "build", *pflag(), "--message-format=json-render-diagnostics"]
+    if sabotage:
+        tests += ["--features", "bough/sabotage_copy"]
     for p in sorted({p for p, _, _ in SMOKE}):
         tests += ["-p", p]
     for t in SMOKE_TESTS:
         tests += ["--test", t]
     t0 = time.time()
-    for cmd in (drivers, tests):
+    for cmd in ((tests,) if sabotage else (drivers, tests)):
         p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, text=True)
         for line in p.stdout:
             try:
@@ -135,7 +144,7 @@ def build(paths):
 
 def find_paths(paths):
     """--no-build: the executables of the last build (tests by their newest hash-suffixed file)."""
-    rel = os.path.join(TARGET, "release")
+    rel = os.path.join(TARGET, PROFILE)
     for b in BINS:
         paths[("bin", b, "")] = (os.path.join(rel, b), ROOT)
     for x in EXAMPLES:
@@ -403,6 +412,8 @@ def table(cur, rows, base):
         print(f"INJECTED: {cur['inject']}")
     if base:
         print(f"base: {base['commit'][:10]} ({base.get('date', '?')}), load {base['load']['start']}")
+        if base.get("profile") != cur["profile"]:
+            print(f"WARNING: base profile {base.get('profile')} != this run's {cur['profile']}: instruction cells are not comparable")
     print(f"{'cell':34s} {'value':>14s} {'unit':11s} {'noise min..max':>25s}" + (f" {'base':>14s} {'ratio':>7s}  flag" if base else ""))
     for name, c, b, ratio, flag in rows:
         n = c["noise"]
@@ -421,6 +432,7 @@ def table(cur, rows, base):
 
 # ------------------------------------------------------------------------------------------------ main
 def main():
+    global PROFILE
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out")
     ap.add_argument("--base")
@@ -429,8 +441,13 @@ def main():
     ap.add_argument("--self-test", nargs="?", const="large", choices=["large", "small"])
     ap.add_argument("--lock-wait", type=int, default=int(os.environ.get("QUICK_LOCK_WAIT", "60")))
     ap.add_argument("--lane", default=os.environ.get("BOUGH_LANE", "iteration"))
+    ap.add_argument("--profile", default=PROFILE, help="cargo profile of the drivers (release; gate: no LTO, a faster loop, its own baseline)")
+    ap.add_argument("--sabotage", action="store_true", help="the smoke's negative control: build it with bough/sabotage_copy, expect it to fail")
     a = ap.parse_args()
+    PROFILE = a.profile
     groups = set(a.only.split(","))
+    if a.sabotage:
+        groups = {"smoke"}
     inject = {}
     if a.self_test:
         # large: every injected cell must flag. small: ~3-4 K instructions per tick/turn/mount, near the 2 % floor of
@@ -449,7 +466,7 @@ def main():
            "date": datetime.datetime.now().isoformat(timespec="seconds"),
            "host": f"{platform.node().split('.')[0]} {platform.machine()} {subprocess.run(['sysctl', '-n', 'machdep.cpu.brand_string'], capture_output=True, text=True).stdout.strip()} macOS {platform.mac_ver()[0]}",
            "toolchain": subprocess.run(["rustc", "-V"], capture_output=True, text=True, cwd=ROOT).stdout.strip(),
-           "profile": "release", "load": {"start": loadavg()}, "inject": inject, "cells": {}, "details": {}}
+           "profile": PROFILE, "load": {"start": loadavg()}, "inject": inject, "cells": {}, "details": {}}
     # which source the numbers describe: the merge base with the round's base ref and the measured code changed since
     ref = os.environ.get("QUICK_BASE_REF", "lead/round6-base")
     mb = git("merge-base", "HEAD", ref)
@@ -461,7 +478,7 @@ def main():
         find_paths(paths)
         cur["build_s"] = 0
     else:
-        cur["build_s"] = build(paths)
+        cur["build_s"] = build(paths, a.sabotage)
     timing = {}
 
     def group(name, f):
@@ -498,6 +515,13 @@ def main():
         cur["cells"].update(c)
         d and cur["details"].update(size=d)
     r = group("smoke", lambda: smoke(paths))
+    if r and a.sabotage:
+        c = r.pop("smoke.pixels")
+        caught = [x["test"] + " " + " ".join(x["names"]) for x in c["runs"] if not x["ok"]]
+        r["smoke.sabotage"] = dict(kind="gate", unit="", value=1 if caught else 0, noise=noise([1 if caught else 0]),
+                                   method="the smoke built with --features bough/sabotage_copy (the scroll copy one pixel off) "
+                                          "must fail; value 1 = it failed. Failing: " + ("; ".join(caught) or "none"),
+                                   runs=c["runs"])
     r and cur["cells"].update(r)
     cur["load"]["end"] = loadavg()
     cur["group_s"] = timing

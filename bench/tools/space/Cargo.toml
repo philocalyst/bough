@@ -1,0 +1,12 @@
+[package]
+name = "bough-space"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Keep a benchmark's window from disturbing the user: never active, never key, no mouse, in a private Space"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3" }
+objc2-app-kit = { version = "0.3" }
+libc = "0.2"

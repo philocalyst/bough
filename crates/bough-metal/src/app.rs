@@ -94,17 +94,31 @@ pub fn run(title: &str, f: impl FnMut(&Host, &CADisplayLink) + 'static) -> ! {
     run_sized(title, 960.0, 720.0, f)
 }
 
+/// Windows opened from here are benchmark windows unless the application facade says otherwise
+/// (`bough::ui::Application::run` clears it): they go to a private Space (bench/tools/space, `BOUGH_BENCH_SPACE`).
+pub static BENCH_WINDOWS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static PLACED: std::sync::OnceLock<bough_space::Placed> = std::sync::OnceLock::new();
+
+/// Where the window went (`None` before `run_sized` ordered it in).
+pub fn placement() -> Option<&'static bough_space::Placed> {
+    PLACED.get()
+}
+
 /// `run` with an explicit content size in points (the façade's windows are not 960x720).
 pub fn run_sized(title: &str, w: f64, h: f64, f: impl FnMut(&Host, &CADisplayLink) + 'static) -> ! {
     let mtm = MainThreadMarker::new().expect("main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory); // no Dock icon, no focus steal
     let rect = NSRect::new(NSPoint::new(120.0, 120.0), NSSize::new(w, h));
+    let bench = BENCH_WINDOWS.load(std::sync::atomic::Ordering::Relaxed);
+    let space = bough_space::mode_from_env(if bench { bough_space::Mode::Other } else { bough_space::Mode::Active });
+    // a window kept off the user's Space is borderless too (ROUND6: windows must not disturb the user)
+    let borderless = std::env::var_os("BOUGH_BORDERLESS").is_some() || space != bough_space::Mode::Active;
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
             rect,
-            if std::env::var_os("BOUGH_BORDERLESS").is_some() { NSWindowStyleMask::Borderless } else { NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable },
+            if borderless { NSWindowStyleMask::Borderless } else { NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable },
             NSBackingStoreType::Buffered,
             false,
         )
@@ -117,7 +131,11 @@ pub fn run_sized(title: &str, w: f64, h: f64, f: impl FnMut(&Host, &CADisplayLin
     view.setLayer(Some(&root)); // layer-hosting view
     view.setWantsLayer(true);
     app.finishLaunching();
-    window.orderFrontRegardless();
+    let placed = bough_space::show(&window, space);
+    if std::env::var_os("BOUGH_SPACE_REPORT").is_some() {
+        eprintln!("bough-space: {placed:?}");
+    }
+    let _ = PLACED.set(placed);
 
     let target: Retained<TickTarget> = unsafe { msg_send![TickTarget::alloc(mtm), init] };
     let link = unsafe { view.displayLinkWithTarget_selector(&target, sel!(tick:)) };

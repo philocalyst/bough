@@ -16,6 +16,8 @@ objc2-core-foundation = { version = "0.3" }
 block2 = "0.6"
 libc = "0.2"
 dispatch2 = "0.3"
+# Benchmark windows go to a private Space, never active, never key (bench/tools/space).
+bough-space = { path = "../../bench/tools/space" }
 
 [[example]]
 # not "bench": bough-text has an example of that name (cargo output collision in one target dir)

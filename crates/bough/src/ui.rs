@@ -125,6 +125,8 @@ impl Application {
         let w = root.into_window();
         let title = if w.title.is_empty() { "bough".to_string() } else { w.title };
         let _ = WINDOW.set((w.size.0, w.size.1, default_font()));
+        // an application's window is the user's: on their Space, titled (benchmark windows go to a private Space)
+        bough_metal::app::BENCH_WINDOWS.store(false, std::sync::atomic::Ordering::Relaxed);
         crate::backend::host::run_interactive(&title, window_config, w.view, 0.0, |_, _| {}, |_| {})
     }
 }
