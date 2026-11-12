@@ -160,3 +160,64 @@ Found on the way: the façade's spinner is driven by a 16 ms application clock (
 62.5 turns of the crank a second), which is why it stays at 62.5 fps at 120 and 240 Hz in the lead's sweep. It
 is not a property of the host. Here the turn is an expression over `Time`, and time advances on frame
 callbacks only.
+
+## 5. Startup, first measurement in the harness's own analyzer (2026-11-12, `130e5a9a56`)
+
+`fakeland bench startup` (the preset the runner's `startup.json` comes from: spawn, connect, first buffer,
+first present), 15 measured iterations after 2 warm-ups, **warm** (binaries and libraries in the page cache),
+ilo-prod with load 11 from other tenants, compositor and app on CPUs 8-15 at nice 19, fixed 60 Hz, pixman.
+Medians (minimum in brackets), milliseconds from spawn:
+
+| binary | connected | first buffer | first present |
+|---|---|---|---|
+| floor (`bough-host/examples/floor.rs`: one solid buffer) | 1.37 (1.16) | 4.17 (3.70) | 15.19 |
+| new core, rows 100 | 1.45 | 4.51 (4.17) | 15.15 |
+| new core, rows 3,000 | 1.36 | 4.27 (4.15) | 15.24 |
+| new core, virtual 100,000 | 1.37 | 4.32 (4.05) | 15.27 |
+| new core, table 1,000 | 1.54 | 4.55 | 15.28 |
+| new core, search 1,000 | 1.55 | 4.62 | 15.18 |
+| façade (`74e665786c`), rows 3,000 | 11.52 | 64.67 (55.45) | 78.62 |
+| façade, virtual 100,000 | 11.34 | 35.91 (27.38) | 47.70 |
+
+So spawn to first buffer went from 64.7 ms to 4.3 ms at rows 3,000 (15x) and is the same at 100,000 rows
+(prediction F: at most floor + 1.5 ms and within 10 % across sizes: holds; the app is 0.1 to 0.45 ms above the
+floor). `first present` is the same 15.2 ms for every binary that commits before the first latch: the preset
+spawns at a fixed phase, so it measures the compositor's grid, not the app.
+
+**But the floor itself is 4.2 ms, not the 2 to 3 predicted (F0 missed), and the app's stages are not where
+predicted.** The host's own timestamps (`BOUGH_HOST_STATS`, nanoseconds from entering the loop; three runs each,
+a build running beside them):
+
+| stage | rows 3,000 | virtual 100,000 | search 1,000 |
+|---|---|---|---|
+| `connect` returns | 49 to 57 µs | 51 to 75 µs | 49 to 59 µs |
+| write 1 (registry, sync) | +4 µs | +4 µs | +4 µs |
+| **mount, and the memfd for one buffer** | **+27 µs** | **+27 µs** | **+41 µs** |
+| globals arrived (round trip 1) | +7 µs | +8 µs | +7 µs |
+| write 2 (binds, surface, toplevel, commit) | +4 µs | +4 µs | +4 µs |
+| **first raster into the first buffer** | **+2.63 ms** | **+2.75 ms** | **+2.86 ms** |
+| configure (already waiting) | +3 µs | +3 µs | +4 µs |
+| write 3 (ack, pool, buffer, attach, damage, commit) | +6 µs | +6 µs | +6 µs |
+
+* F2 (two round trips, under 0.5 ms of client time): holds; the handshake is 20 µs of client time.
+* F3 (no font file): holds; no `openat` of a font exists in the binary's path.
+* F4 (mount under 0.2 ms, same at any size): holds, 27 µs including `memfd_create`, `ftruncate` and `mmap`.
+* F6 (the first commit in the write that acknowledges): holds.
+* **F5 (first raster under 0.7 ms) is killed: 2.6 to 2.9 ms.** The floor's solid fill costs the same, so it is
+  not the raster: it is the kernel's first touch of the buffer. 1280 x 800 x 4 bytes is 1,000 pages of shared
+  memory, each a fault that allocates and zeroes a page: about 2.6 µs a page here. That is 60 % of everything
+  between spawn and first buffer, for the floor and for the app alike.
+* The 1.4 ms before `connect` is before `main`: fakeland's `setpriv` exec, the app's exec, the dynamic loader.
+  Table and search connect 0.18 ms later than rows because their model (1,000 rows of strings) is built before
+  the connection opens: to be moved after write 1.
+
+So the chain as reformulated has one stage left that matters, and it is neither mount nor raster nor text: it
+is where the first frame's memory comes from. Experiments, predictions written now:
+
+| # | change | prediction | kill |
+|---|---|---|---|
+| M1 | `fallocate` the first buffer's pages (one call: no faults for allocation), then map with `MAP_POPULATE` | first raster 2.6 ms to at most 1.0 ms | under 20 % gain |
+| M2 | transparent huge pages for the memfd (`MADV_HUGEPAGE`, if the host's shmem policy allows) | 2 faults instead of 1,000: at most 0.5 ms | policy is `never`, or no gain |
+| M3 | touch the pages from several threads while the main thread connects and mounts | at most 2.6 / cores + 0.1 ms | worse than M1 under load |
+| M4 | the model built after write 1 | table and search connect as early as rows | no change |
+| M5 | static linking (no loader) | connect 0.3 ms earlier | under 0.1 ms |
