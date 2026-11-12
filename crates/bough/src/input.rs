@@ -110,7 +110,7 @@ impl Route {
     }
 }
 
-fn recipe<F: Copy>(f: F) -> [u8; 16] {
+pub(crate) fn recipe<F: Copy>(f: F) -> [u8; 16] {
     const { assert!(size_of::<F>() <= 16, "route closure: at most 16 bytes of captures") };
     let mut r = [0u8; 16];
     // SAFETY: size_of::<F>() <= 16 (checked at compile time); unaligned write into a byte array.
@@ -139,6 +139,18 @@ fn route_plain<V, F: Fn(&mut V) + Copy + 'static>(f: F) -> Route {
 }
 fn route_ev<V, F: Fn(&mut V, &Ev) + Copy + 'static>(f: F) -> Route {
     Route { f: call_ev::<V, F>, r: recipe(f) }
+}
+
+/// A guard on a part's click route (`part.rs`): a trampoline monomorphised for (owner type, closure type), the
+/// closure's bytes, and the part's index. `before` guards decide whether the route runs.
+pub(crate) type GuardFn = unsafe fn(*mut u8, &[u8; 16], &crate::part::PartEv) -> crate::part::Flow;
+#[derive(Clone, Copy)]
+pub(crate) struct Guard {
+    pub act: u32,
+    pub f: GuardFn,
+    pub r: [u8; 16],
+    pub after: bool,
+    pub index: u32,
 }
 
 // =============================================================================== the act table
@@ -247,6 +259,8 @@ pub struct Input {
     pub(crate) scrollers: Vec<Scroller>,
     pub(crate) fields: Vec<Field>,
     pub(crate) tips: Vec<Tip>,
+    /// Guards on parts' click routes (`part.rs`), in installation order (innermost wrapper first per act).
+    pub(crate) guards: Vec<Guard>,
     /// Scroll views (`template::scroll_y`) and the one whose content is being mounted.
     pub(crate) views: Vec<crate::template::ScrollView>,
     pub(crate) mounting_view: Option<u32>,
@@ -295,6 +309,7 @@ impl Default for Input {
             scrollers: Vec::new(),
             fields: Vec::new(),
             tips: Vec::new(),
+            guards: Vec::new(),
             views: Vec::new(),
             mounting_view: None,
             lhooks: Vec::new(),
@@ -981,6 +996,27 @@ impl<V: View> App<V> {
         self.sync_ring();
     }
 
+    /// Run the `before` (or `after`) guards of act `a`, the last installed (outermost wrapper) first; false
+    /// when a `before` guard stopped the route.
+    fn run_guards(&mut self, a: u32, after: bool, e: &Ev) -> bool {
+        let o = self.owner_mut();
+        let mut k = self.rt.input.guards.len();
+        while k > 0 {
+            k -= 1;
+            let g = self.rt.input.guards[k];
+            if g.act != a || g.after != after {
+                continue;
+            }
+            // SAFETY: the guard was lowered by a `With` mounted by the root owner's description (`With::mount`
+            // refuses any other owner), for this owner type.
+            let flow = unsafe { (g.f)(o, &g.r, &crate::part::PartEv { ev: *e, index: g.index }) };
+            if flow == crate::part::Flow::Stop && !after {
+                return false;
+            }
+        }
+        true
+    }
+
     #[inline]
     fn dev(&self, x: f32, y: f32) -> (i32, i32) {
         let s = self.rt.scale;
@@ -1206,9 +1242,16 @@ impl<V: View> App<V> {
                     let a = self.rt.input.act_of(h);
                     if let Some(r) = self.rt.input.acts[a as usize].click {
                         let o = self.owner_mut();
-                        self.rt.input.stats.routes += 1;
-                        // SAFETY: the route was lowered for this owner type.
-                        unsafe { r.call(o, &Ev::at(x, y)) };
+                        let e = Ev::at(x, y);
+                        // a part's guards (part.rs): the outermost wrapper's first; one may stop the route
+                        if self.rt.input.guards.is_empty() || self.run_guards(a, false, &e) {
+                            self.rt.input.stats.routes += 1;
+                            // SAFETY: the route was lowered for this owner type.
+                            unsafe { r.call(o, &e) };
+                            if !self.rt.input.guards.is_empty() {
+                                self.run_guards(a, true, &e);
+                            }
+                        }
                         break;
                     }
                 }

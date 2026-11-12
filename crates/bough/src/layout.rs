@@ -1619,6 +1619,26 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
     }
 }
 
+// =============================================================================== restyling (part.rs)
+
+impl<Bg, Ch, X> crate::part::Restyle for LBox<Bg, Ch, X> {
+    type Style = crate::part::BoxStyle;
+    type Out = LBox<crate::part::Ov<Bg>, Ch, X>;
+    fn restyled(self, index: u32, f: &dyn Fn(Self::Style) -> Self::Style) -> Self::Out {
+        let st = f(crate::part::BoxStyle { spec: self.spec, bg: None, radius: self.radius, border: self.border, draw: self.draw, index });
+        LBox { spec: st.spec, draw: st.draw, bg: crate::part::Ov(st.bg, self.bg), radius: st.radius, border: st.border, ch: self.ch, x: self.x }
+    }
+}
+
+impl<S, C> crate::part::Restyle for Para<S, C> {
+    type Style = crate::part::TextStyle;
+    type Out = Para<S, crate::part::Ov<C>>;
+    fn restyled(self, index: u32, f: &dyn Fn(Self::Style) -> Self::Style) -> Self::Out {
+        let st = f(crate::part::TextStyle { spec: self.spec, color: None, size: self.size, lh: self.lh, index });
+        Para { s: self.s, spec: st.spec, size: st.size, lh: st.lh, color: crate::part::Ov(st.color, self.color), wrap: self.wrap }
+    }
+}
+
 pub mod prelude {
     pub use super::{block, column, label, para, row, Align, Justify, Styled};
 }

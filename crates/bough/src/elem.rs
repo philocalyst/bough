@@ -40,6 +40,9 @@ pub struct Mounter<'a, V> {
     pub(crate) kid: usize,
     /// An operand asked to keep the element's node addressable (`select`: an outside table names it).
     pub(crate) keep: bool,
+    /// The override chain in force (`part.rs`): frames on the stack of the `With` elements being mounted
+    /// around this point; null when there is none.
+    pub(crate) ov: *const crate::part::OvFrame,
 }
 
 impl<V> Mounter<'_, V> {
@@ -80,7 +83,7 @@ impl<V> Mounter<'_, V> {
     /// A mounter for a sub-part (a dynamic item) of this one: same position state, its own scope, records
     /// buffer and tape.
     pub(crate) fn sub<'b>(&'b mut self, recs: &'b mut Vec<RecordInit>, scope: &'b mut Scope, tape: *mut Vec<u32>) -> Mounter<'b, V> {
-        Mounter { rt: &mut *self.rt, owner: self.owner, recs, scope, depth: self.depth, ox: self.ox, oy: self.oy, space: self.space, clip: self.clip, pending_num: None, cls: self.cls, tape, ti: 0, pos: self.pos, kid: self.kid, keep: false }
+        Mounter { rt: &mut *self.rt, owner: self.owner, recs, scope, depth: self.depth, ox: self.ox, oy: self.oy, space: self.space, clip: self.clip, pending_num: None, cls: self.cls, tape, ti: 0, pos: self.pos, kid: self.kid, keep: false, ov: self.ov }
     }
     pub fn mount(&mut self, e: impl Element<V>) {
         e.mount(self)
@@ -970,7 +973,7 @@ pub(crate) unsafe fn mount_row<V: 'static>(rt: &mut Rt, owner: *const u8, reg: u
     let mut scope = Scope::default();
     let before = recs.len();
     {
-        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls: 0, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false };
+        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls: 0, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false, ov: std::ptr::null() };
         // SAFETY: see the function contract.
         f(unsafe { &*(owner as *const V) }, row, &mut m);
     }

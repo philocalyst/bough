@@ -22,6 +22,7 @@ pub mod list;
 pub mod listview;
 pub mod ltemplate;
 pub mod mlist;
+pub mod part;
 pub mod reader;
 pub mod reflect;
 pub mod rt;
@@ -45,11 +46,12 @@ pub mod prelude {
     pub use crate::foreign::{foreign, ForeignHost, ForeignSignal, Hit, Mode, Placement, Plane, Pointer};
     pub use crate::list::{List, Slot};
     pub use crate::listview::list;
+    pub use crate::part::{BoxStyle, Compose, Flow, Lens, Part, PartEv, TextStyle};
     pub use crate::reader::{boundary, Reader, Request};
     pub use crate::input::{text_field, tooltip, Interact, Key, Mods};
     pub use crate::layout::{block, column, para, row, Align, Justify, Styled};
     pub use crate::sig;
-    pub use crate::signal::Signal;
+    pub use crate::signal::{Signal, Wired};
     pub use crate::transition::{Curve, Ease};
     pub use crate::ui::{button, div, image, text, text_input, Application, Flex, Window};
 }

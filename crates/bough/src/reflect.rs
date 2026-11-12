@@ -748,8 +748,21 @@ pub(crate) unsafe fn set_raw(s: &'static Schema, root: *mut u8, path: &str, text
 #[derive(Default)]
 pub struct Reflect {
     pub(crate) types: Vec<&'static str>,
+    /// Parts (`part.rs`) by record handle index: sparse, only part sites pay.
+    pub(crate) parts: std::collections::HashMap<u32, PartInfo>,
+}
+/// A part site's reflection: its key's name, index, where it was marked, and the generation of the handle it
+/// was recorded for (a reused handle index is another record).
+pub(crate) struct PartInfo {
+    pub name: &'static str,
+    pub index: u32,
+    pub generation: u32,
+    pub at: &'static std::panic::Location<'static>,
 }
 impl Reflect {
+    pub(crate) fn add_part(&mut self, h: bough_core::Handle, name: &'static str, index: u32, at: &'static std::panic::Location<'static>) {
+        self.parts.insert(h.idx, PartInfo { name, index, generation: h.generation, at });
+    }
     #[inline]
     pub(crate) fn elem(&mut self, handle: u32, ty: &'static str) {
         let i = handle as usize;
