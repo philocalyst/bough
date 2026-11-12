@@ -36,8 +36,12 @@ pub struct Columns {
 pub const MIN_FILL: usize = 8;
 /// After an end-biased split the side that keeps receiving inserts holds `min(2*MIN_FILL, CAP/2)`.
 pub const RECEIVER_KEEPS: usize = if 2 * MIN_FILL < CAP / 2 { 2 * MIN_FILL } else { CAP / 2 };
-/// Directory pages per chunk summary.
+/// The most directory pages one chunk summary covers. A chunk is a run of consecutive directory entries
+/// (`c_first`), not a position: a page split or removal changes the membership of one chunk, and the
+/// later chunks only move (round 6, fix b; they were `d / 64`, so every later chunk had to be recomputed).
 pub const CHUNK: usize = 64;
+/// Chunks below this many pages are merged into a neighbour when both fit in one.
+pub const CHUNK_MIN: usize = CHUNK / 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Handle {
@@ -64,7 +68,10 @@ pub struct Bough {
     d_ink: Col<NRect>,
     d_min_depth: Vec<u16>,
     d_len: Vec<u32>,
-    /// Union of `d_ink` per chunk of 64 directory entries.
+    /// Chunk `c` covers the directory entries `c_first[c] .. c_first[c + 1]` (1..=CHUNK of them);
+    /// `c_first` has one more entry than there are chunks, the last being the directory length.
+    c_first: Vec<u32>,
+    /// Union of `d_ink` over each chunk's entries.
     c_ink: Vec<NRect>,
     prefix: Prefix,
     htab: Vec<HEntry>,
@@ -186,6 +193,7 @@ impl Bough {
             d_ink,
             d_min_depth: Vec::new(),
             d_len: Vec::new(),
+            c_first: vec![0],
             c_ink: Vec::new(),
             prefix: Prefix::new(),
             htab: vec![HEntry { page: core::ptr::null_mut(), slot: 0, generation: 0, live: false }],
@@ -539,21 +547,123 @@ impl Bough {
 
     // ------------------------------------------------------------------ directory plumbing
 
-    /// Recompute the chunk summaries covering directory entries `[lo, hi)` (and resize the column).
+    /// The chunk holding directory entry `d` (`d < n`): the last `c` with `c_first[c] <= d`, by a
+    /// branchless binary search over the chunk starts (no iteration while there is one chunk).
+    #[inline(always)]
+    fn chunk_of(&self, d: usize) -> usize {
+        let nc = self.c_ink.len();
+        debug_assert!(nc >= 1 && d < self.d_ink.len());
+        let (mut lo, mut size) = (0usize, nc);
+        while size > 1 {
+            let half = size / 2;
+            let mid = lo + half;
+            // SAFETY: mid < nc < c_first.len().
+            let m = unsafe { *self.c_first.get_unchecked(mid) } as usize;
+            lo = if m <= d { mid } else { lo };
+            size -= half;
+        }
+        lo
+    }
+    /// The directory entries of chunk `c`.
+    #[inline(always)]
+    fn chunk_range(&self, c: usize) -> (usize, usize) {
+        debug_assert!(c < self.c_ink.len());
+        // SAFETY: c + 1 < c_first.len() = c_ink.len() + 1.
+        unsafe { (*self.c_first.get_unchecked(c) as usize, *self.c_first.get_unchecked(c + 1) as usize) }
+    }
+    #[inline]
+    fn chunk_recompute(&mut self, c: usize) {
+        let (b, e) = self.chunk_range(c);
+        self.c_ink[c] = union_all(&self.d_ink[b..e]);
+    }
+    /// Recompute the chunk summaries covering directory entries `[lo, hi)` (clamped to the directory).
     #[inline]
     fn fix_chunks(&mut self, lo: usize, hi: usize) {
         let n = self.d_ink.len();
-        let nc = n.div_ceil(CHUNK);
-        self.c_ink.resize(nc, NRect::EMPTY);
         if n == 0 {
             return;
         }
-        // Pages may have been removed at the tail: the chunk that held them still needs a refresh.
         let lo = lo.min(n - 1);
         let hi = hi.min(n).max(lo + 1);
-        for c in lo / CHUNK..hi.div_ceil(CHUNK) {
-            let e = ((c + 1) * CHUNK).min(n);
-            self.c_ink[c] = union_all(&self.d_ink[c * CHUNK..e]);
+        for c in self.chunk_of(lo)..=self.chunk_of(hi - 1) {
+            self.chunk_recompute(c);
+        }
+    }
+    /// `count` directory entries were inserted at `at` (blank: their inks are EMPTY until the caller
+    /// fills them and calls `fix_chunks` over them). They join the chunk of the entry before them; later
+    /// chunks keep their members and only start `count` later. A chunk that outgrows `CHUNK` is cut: at
+    /// the end of the directory into full chunks and a rest (appends keep filling the last one), anywhere
+    /// else into equal parts.
+    fn chunks_insert(&mut self, at: usize, count: usize) {
+        if self.c_ink.is_empty() {
+            self.c_ink.push(NRect::EMPTY);
+            self.c_first.push(0);
+        }
+        let c = if at == 0 { 0 } else { self.chunk_of(at - 1) };
+        let nc = self.c_ink.len();
+        let at_end = c == nc - 1 && at == self.c_first[nc] as usize;
+        crate::prefix::add_suffix(&mut self.c_first[c + 1..], count as i32);
+        let (b, e) = self.chunk_range(c);
+        let size = e - b;
+        if size <= CHUNK {
+            return;
+        }
+        let q = size.div_ceil(CHUNK);
+        let cut = |i: usize| if at_end { (i * CHUNK).min(size) } else { i * (size / q) + i.min(size % q) };
+        self.c_first.splice(c + 1..c + 1, (1..q).map(|i| (b + cut(i)) as u32));
+        self.c_ink.splice(c + 1..c + 1, core::iter::repeat_n(NRect::EMPTY, q - 1));
+        for j in c..c + q {
+            self.chunk_recompute(j);
+        }
+    }
+    /// The directory entries `[d, d + k)` were removed (the columns already shifted). Chunks wholly
+    /// inside the range go; the chunks at its ends keep their other members and are recomputed; later
+    /// chunks only start `k` earlier. Small chunks left at the cut are merged into a neighbour.
+    fn chunks_remove(&mut self, d: usize, k: usize) {
+        let nc = self.c_ink.len();
+        // on the old numbering (c_first is still the old one)
+        let (c0, c1) = {
+            let find = |x: usize| {
+                let (mut lo, mut size) = (0usize, nc);
+                while size > 1 {
+                    let half = size / 2;
+                    let mid = lo + half;
+                    lo = if self.c_first[mid] as usize <= x { mid } else { lo };
+                    size -= half;
+                }
+                lo
+            };
+            (find(d), find(d + k - 1))
+        };
+        for j in c0 + 1..=c1 {
+            self.c_first[j] = d as u32;
+        }
+        crate::prefix::add_suffix(&mut self.c_first[c1 + 1..], -(k as i32));
+        // the emptied chunks are contiguous: c0 if the range took all of it, everything between, c1 likewise
+        let lo = if self.c_first[c0] == self.c_first[c0 + 1] { c0 } else { c0 + 1 };
+        let hi = if self.c_first[c1] == self.c_first[c1 + 1] { c1 + 1 } else { c1 };
+        if lo < hi {
+            self.c_first.drain(lo..hi);
+            self.c_ink.drain(lo..hi);
+        }
+        let nc = self.c_ink.len();
+        for j in lo.saturating_sub(1)..(lo + 1).min(nc) {
+            self.chunk_recompute(j);
+        }
+        // underflow: merge small neighbours around the cut (as pages do)
+        let mut j = (lo + 1).min(nc.saturating_sub(1)) as isize;
+        let stop = lo.saturating_sub(2) as isize;
+        while j >= stop {
+            let i = j as usize;
+            if i + 1 < self.c_ink.len() {
+                let (a, b) = ((self.c_first[i + 1] - self.c_first[i]) as usize, (self.c_first[i + 2] - self.c_first[i + 1]) as usize);
+                if a + b <= CHUNK && (a < CHUNK_MIN || b < CHUNK_MIN) {
+                    self.c_ink[i] = self.c_ink[i].union(self.c_ink[i + 1]);
+                    self.c_ink.remove(i + 1);
+                    self.c_first.remove(i + 1);
+                }
+            }
+            j -= 1;
         }
     }
     /// Page `d`'s summary changed from `old` to `self.d_ink[d]`: keep its chunk exact.
@@ -563,14 +673,14 @@ impl Bough {
         if new == old {
             return;
         }
-        let c = d / CHUNK;
+        let c = self.chunk_of(d);
         // SAFETY: c < c_ink.len() because d < n.
         let cs = unsafe { self.c_ink.get_unchecked_mut(c) };
         if new.union(old) == new {
             // grew (or stayed): monotone
             *cs = cs.union(new);
         } else {
-            self.fix_chunks(d, d + 1);
+            self.chunk_recompute(c);
         }
     }
 
@@ -611,6 +721,7 @@ impl Bough {
         attr!(6, for _ in 0..count {
             self.prefix.grow();
         });
+        attr!(9, self.chunks_insert(at, count));
         attr!(7, self.reindex_pages(at));
     }
 
@@ -644,6 +755,7 @@ impl Bough {
         attr!(6, for _ in 0..k {
             self.prefix.shrink();
         });
+        attr!(9, self.chunks_remove(d, k));
         attr!(7, self.reindex_pages(d));
     }
 
@@ -657,6 +769,7 @@ impl Bough {
         attr!(5, self.d_len.remove(d));
         attr!(6, self.prefix.shrink());
         attr!(0, self.pool.free(id));
+        attr!(9, self.chunks_remove(d, 1));
         attr!(7, self.reindex_pages(d));
     }
 
@@ -858,7 +971,7 @@ impl Bough {
             self.refresh(d + i);
         }
         attr!(8, self.prefix.invalidate_from(d, &self.d_len));
-        attr!(9, self.fix_chunks(d, self.d_ptr.len()));
+        attr!(9, self.fix_chunks(d, d + m));
     }
 
     // ------------------------------------------------------------------ remove
@@ -950,7 +1063,8 @@ impl Bough {
             }
         } else {
             attr!(8, self.prefix.invalidate_from(d0.min(self.d_len.len()), &self.d_len));
-            attr!(9, self.fix_chunks(d0, self.d_ptr.len()));
+            // the trimmed pages: the first of the walk, and the one after the removed pages (now next to it)
+            attr!(9, self.fix_chunks(d0, d0 + 2));
         }
         // Underflow: merge small neighbours around the cut.
         let mut j = (d0 + 1).min(self.d_ptr.len().saturating_sub(1)) as isize;
@@ -966,9 +1080,6 @@ impl Bough {
                 }
             }
             j -= 1;
-        }
-        if self.d_ptr.is_empty() {
-            self.c_ink.clear();
         }
     }
 
@@ -991,7 +1102,7 @@ impl Bough {
         self.d_min_depth[d] = self.d_min_depth[d].min(self.d_min_depth[d + 1]);
         self.dir_remove(d + 1);
         attr!(8, self.prefix.invalidate_from(d, &self.d_len));
-        attr!(9, self.fix_chunks(d, self.d_ptr.len()));
+        attr!(9, self.fix_chunks(d, d + 1));
     }
 
     // ------------------------------------------------------------------ move
@@ -1426,12 +1537,12 @@ impl Bough {
             // scattered over a big tree: only the chunks that hold a dirty page
             let mut seen = [0u64; 64];
             for &d in dirty.iter() {
-                let c = d as usize / CHUNK;
+                let c = self.chunk_of(d as usize);
                 if c < 4096 && seen[c / 64] & (1 << (c % 64)) == 0 {
                     seen[c / 64] |= 1 << (c % 64);
-                    self.fix_chunks(c * CHUNK, c * CHUNK + 1);
+                    self.chunk_recompute(c);
                 } else if c >= 4096 {
-                    self.fix_chunks(c * CHUNK, c * CHUNK + 1);
+                    self.chunk_recompute(c);
                 }
             }
         }
@@ -1556,7 +1667,7 @@ impl Bough {
         self.refresh(d);
         self.refresh(d + 1);
         self.prefix.invalidate_from(d, &self.d_len);
-        self.fix_chunks(d, self.d_ptr.len());
+        self.fix_chunks(d, d + 2);
     }
 
     /// Transform the run `[start, start+len)` (a subtree): its records' inks are taken as untransformed and
@@ -1725,7 +1836,6 @@ impl Bough {
     /// page tests the inverse of the point against its records' untransformed inks.
     pub fn hit(&self, x: i32, y: i32) -> Option<usize> {
         let t = Thresh::of_point(x, y)?;
-        let n = self.d_ptr.len();
         let nc = self.c_ink.len();
         let mut chi = nc;
         while chi > 0 {
@@ -1735,10 +1845,9 @@ impl Bough {
             while cm != 0 {
                 let c = cb + 63 - cm.leading_zeros() as usize;
                 cm &= !(1u64 << (c - cb));
-                let b = c * CHUNK;
-                let cnt = (n - b).min(CHUNK);
-                // SAFETY: b + cnt <= n = d_ink.len(); cnt <= 64.
-                let mut pm = unsafe { lt_mask(self.d_ink.as_ptr().add(b), cnt, t) };
+                let (b, e) = self.chunk_range(c);
+                // SAFETY: b..e are directory entries, at most 64.
+                let mut pm = unsafe { lt_mask(self.d_ink.as_ptr().add(b), e - b, t) };
                 while pm != 0 {
                     let bit = 63 - pm.leading_zeros() as usize;
                     pm &= !(1u64 << bit);
@@ -1824,7 +1933,6 @@ impl Bough {
         }
         let t = Thresh::of_rect(bbox);
         let tclip = if GENERAL { Thresh::of_rect(clip) } else { t };
-        let n = self.d_ptr.len();
         let nc = self.c_ink.len();
         let mut cb = 0;
         let mut iota = [0u32; CAP];
@@ -1835,10 +1943,9 @@ impl Bough {
             while cm != 0 {
                 let c = cb + cm.trailing_zeros() as usize;
                 cm &= cm - 1;
-                let b = c * CHUNK;
-                let cnt = (n - b).min(CHUNK);
-                // SAFETY: b + cnt <= n = d_ink.len(); cnt <= 64.
-                let mut pm = unsafe { lt_mask(self.d_ink.as_ptr().add(b), cnt, t) };
+                let (b, e) = self.chunk_range(c);
+                // SAFETY: b..e are directory entries, at most 64.
+                let mut pm = unsafe { lt_mask(self.d_ink.as_ptr().add(b), e - b, t) };
                 // One reservation per chunk: every surviving page emits <= 64 + 8 (overstore).
                 out.reserve(pm.count_ones() as usize * CAP + GROUP);
                 while pm != 0 {
@@ -1968,6 +2075,7 @@ impl Bough {
         dst.d_ink.clone_from_slice_of(&self.d_ink);
         dst.d_min_depth.clone_from(&self.d_min_depth);
         dst.d_len.clone_from(&self.d_len);
+        dst.c_first.clone_from(&self.c_first);
         dst.c_ink.clone_from(&self.c_ink);
         dst.prefix.copy_from(&self.prefix);
         dst.clips.clone_from_slice_of(&self.clips);
@@ -1985,6 +2093,7 @@ impl Bough {
         self.pool.heap_bytes()
             + n * (8 + 8 + 2 + 4)
             + self.c_ink.capacity() * 8
+            + self.c_first.capacity() * 4
             + self.prefix.heap_bytes()
             + self.htab.capacity() * core::mem::size_of::<HEntry>()
             + core::mem::size_of::<Plane>() * RING
@@ -1997,7 +2106,8 @@ impl Bough {
         assert_eq!(self.d_id.len(), n);
         assert_eq!(self.d_min_depth.len(), n);
         assert_eq!(self.d_len.len(), n);
-        assert_eq!(self.c_ink.len(), n.div_ceil(CHUNK));
+        assert_eq!(self.c_first.len(), self.c_ink.len() + 1);
+        assert_eq!((self.c_first[0], *self.c_first.last().unwrap() as usize), (0, n), "chunks cover the directory");
         let mut sum = 0usize;
         let mut live_handles = 0usize;
         let mut prev_depth: Option<u16> = None;
@@ -2047,8 +2157,9 @@ impl Bough {
             sum += l;
         }
         for c in 0..self.c_ink.len() {
-            let e = ((c + 1) * CHUNK).min(n);
-            assert_eq!(self.c_ink[c], union_all(&self.d_ink[c * CHUNK..e]), "chunk {c} summary");
+            let (b, e) = self.chunk_range(c);
+            assert!(b < e && e - b <= CHUNK, "chunk {c} holds {b}..{e}");
+            assert_eq!(self.c_ink[c], union_all(&self.d_ink[b..e]), "chunk {c} summary");
         }
         assert_eq!(starts[n] as usize, sum);
         assert_eq!(sum, self.total);

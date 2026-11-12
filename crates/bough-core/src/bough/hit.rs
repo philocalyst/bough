@@ -108,7 +108,6 @@ impl Bough {
     /// eight NOHIT bits, gathered from the kind column by one multiply.
     pub fn hit_top(&self, x: i32, y: i32) -> Option<usize> {
         let t = Thresh::of_point(x, y)?;
-        let n = self.d_ptr.len();
         let nc = self.c_ink.len();
         let mut chi = nc;
         while chi > 0 {
@@ -118,10 +117,9 @@ impl Bough {
             while cm != 0 {
                 let c = cb + 63 - cm.leading_zeros() as usize;
                 cm &= !(1u64 << (c - cb));
-                let b = c * CHUNK;
-                let cnt = (n - b).min(CHUNK);
-                // SAFETY: b + cnt <= n = d_ink.len(); cnt <= 64.
-                let mut pm = unsafe { lt_mask(self.d_ink.as_ptr().add(b), cnt, t) };
+                let (b, e) = self.chunk_range(c);
+                // SAFETY: b..e are directory entries, at most 64.
+                let mut pm = unsafe { lt_mask(self.d_ink.as_ptr().add(b), e - b, t) };
                 while pm != 0 {
                     let bit = 63 - pm.leading_zeros() as usize;
                     pm &= !(1u64 << bit);
