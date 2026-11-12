@@ -1,0 +1,25 @@
+[package]
+name = "bough-guibench-scenes"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "bough's editions of the heavy scenes in gui-bench (comparisons/gui-bench-scenes): the sheet and the canvas through bough's window host, for the gui-bench app `bough-bench`"
+
+# Built only as a dependency of gui-bench's `apps/bough` (on a host where bough's window host runs: Linux/Wayland
+# with the platform lane's host), not as a member of bough's workspace.
+[workspace]
+
+[dependencies]
+bough = { path = "../../crates/bough" }
+bough-workloads = { path = "../bough-workloads", default-features = false, features = ["sheet"] }
+
+[patch.crates-io]
+wgpu-hal = { path = "../../vendor/wgpu-hal" }
+wgpu-types = { path = "../../vendor/wgpu-types" }
+naga = { path = "../../vendor/naga" }
+
+[patch."https://github.com/schell/wgsl-rs"]
+wgsl-rs = { path = "../../vendor/wgsl-rs/crates/wgsl-rs" }
+wgsl-rs-macros = { path = "../../vendor/wgsl-rs/crates/wgsl-rs-macros" }
+wgsl-rs-ir = { path = "../../vendor/wgsl-rs/crates/wgsl-rs-ir" }

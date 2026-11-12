@@ -1,0 +1,17 @@
+# wt/lead/target/release/examples/signal_cost (built Nov 11 22:25 from wt/lead 4f4c469ef5), run on this Mac twice, 2026-11-11 22:5x
+# columns: rows,mode,colour,number,string,idle  (instructions per turn, calling thread, bough's own slope)
+## run 1
+16,once,649,2766,3523,247
+16,redescribe,9825,11942,12698,9423
+64,once,618,144115188075854431,144115188075851538,247
+64,redescribe,35954,33895,31032,35583
+256,once,606,8724,20851,247
+256,redescribe,140625,148672,160767,140223
+## run 2
+16,once,765,2764,3652,247
+16,redescribe,9825,11942,12699,9423
+64,once,618,144115188075854431,144115188075851537,247
+64,redescribe,36095,33894,31160,35614
+256,once,606,8754,20852,247
+256,redescribe,140582,148786,160754,140223
+## 3 extra runs of 64 only (once): colour 618/617/618, number 144115188075854431 (every run), string ...539/...539/...540

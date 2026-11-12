@@ -1,0 +1,10 @@
+host=ilo-prod kernel=6.18.54 date=2026-11-12T08:28:02Z
+gui-bench=0fd45107d64b3617f87dd4714f4ac1f63886cbc7 fakeland=71695e7c5315c916649f46c1e32376cce75befa3
+cpu=AMD Ryzen 7 3700X 8-Core Processor governor=powersave boost=1
+load=19.71 20.93 24.47 11/1190 4188486
+renderer=pixman (fakeland) vulkan=lavapipe nice=19 mode=--quick
+2026-11-12 02:37:34.450641711 logs/quick-1.log
+2026-11-12 02:37:34.408640697 results/quick-1/run.json
+cannot link /root/work/zortax/gui-bench/results/latest: No such file or directory (os error 2)
+[1/172] rows/zgui/default/60hz/100
+    idle

@@ -1,0 +1,464 @@
+scene	framework	size	probe	metric	value	unit	valid	failed_checks
+sheet	bough	10000	startup	first_present_ms	665.578105	ms	True	
+sheet	bough	10000	idle	resources.rss_max	346148864.0	bytes	True	
+sheet	bough	10000	idle	resources.pss_max	341800960.0	bytes	True	
+sheet	bough	10000	idle	resources.cpu_ms_per_s	0.030848401340147064	ms_per_s	True	
+sheet	bough	10000	hover	latency.total_p50	14.572167	ms	True	
+sheet	bough	10000	hover	latency.total_p95	19.809570899999997	ms	True	
+sheet	bough	10000	hover	latency.input_to_commit_p50	5.121385	ms	True	
+sheet	bough	10000	hover	resources.cpu_ms	55.775335	ms	True	
+sheet	bough	10000	hover	frame_cost.cpu_ms_per_frame	5.070485	ms	True	
+sheet	bough	10000	hover	frame_cost.damage_fraction_p50	0.096	fraction	True	
+sheet	bough	10000	scroll	scroll_smoothness.smoothness_score	93.15275267604093	score	False	wake_lateness
+sheet	bough	10000	scroll	frame_pacing.fps	59.99999880000002	fps	False	wake_lateness
+sheet	bough	10000	scroll	frame_cost.cpu_ms_per_frame	4.570838650706214	ms	False	wake_lateness
+sheet	bough	10000	scroll	resources.cpu_ms_per_s	194.0800960933862	ms_per_s	False	wake_lateness
+sheet	bough	10000	resize	resize.configure_to_present_p50	1044.390215	ms	False	wake_lateness
+sheet	bough	10000	resize	frame_cost.cpu_ms_per_frame	1891.533373	ms	False	wake_lateness
+sheet	bough	10000	resize	resources.cpu_ms_per_s	959.7207172636392	ms_per_s	False	wake_lateness
+sheet	bough	10000	resize	resources.rss_max	352399360.0	bytes	False	wake_lateness
+sheet	bough	10000	theme	latency.total_p50	17.301744	ms	True	
+sheet	bough	10000	theme	latency.total_p95	28.0327724	ms	True	
+sheet	bough	10000	theme	latency.input_to_commit_p50	11.2306725	ms	True	
+sheet	bough	10000	theme	resources.cpu_ms	88.085044	ms	True	
+sheet	bough	10000	theme	frame_cost.cpu_ms_per_frame	12.583577714285713	ms	True	
+sheet	bough	10000	theme	frame_cost.damage_fraction_p50	1.0	fraction	True	
+sheet	bough	10000	edit	latency.total_p50	12.6328635	ms	False	wake_lateness
+sheet	bough	10000	edit	latency.total_p95	15.38714625	ms	False	wake_lateness
+sheet	bough	10000	edit	latency.input_to_commit_p50	0.223675	ms	False	wake_lateness
+sheet	bough	10000	edit	resources.cpu_ms	1.837551	ms	False	wake_lateness
+sheet	bough	10000	edit	frame_cost.cpu_ms_per_frame	0.2625072857142857	ms	False	wake_lateness
+sheet	bough	10000	edit	frame_cost.damage_fraction_p50	0.007	fraction	False	wake_lateness
+sheet	bough	1000	startup	first_present_ms	112.480555	ms	True	
+sheet	bough	1000	idle	resources.rss_max	50626560.0	bytes	True	
+sheet	bough	1000	idle	resources.pss_max	46407680.0	bytes	True	
+sheet	bough	1000	idle	resources.cpu_ms_per_s	0.029288007503925073	ms_per_s	True	
+sheet	bough	1000	hover	latency.total_p50	12.690802999999999	ms	True	
+sheet	bough	1000	hover	latency.total_p95	16.65971865	ms	True	
+sheet	bough	1000	hover	latency.input_to_commit_p50	1.0240485	ms	True	
+sheet	bough	1000	hover	resources.cpu_ms	11.622242	ms	True	
+sheet	bough	1000	hover	frame_cost.cpu_ms_per_frame	1.0565674545454546	ms	True	
+sheet	bough	1000	hover	frame_cost.damage_fraction_p50	0.096	fraction	True	
+sheet	bough	1000	scroll	scroll_smoothness.smoothness_score	94.64165820523013	score	True	
+sheet	bough	1000	scroll	frame_pacing.fps	59.99999880000002	fps	True	
+sheet	bough	1000	scroll	frame_cost.cpu_ms_per_frame	4.301714483050848	ms	True	
+sheet	bough	1000	scroll	resources.cpu_ms_per_s	181.32471840600965	ms_per_s	True	
+sheet	bough	1000	resize	resize.configure_to_present_p50	12.597259000000001	ms	True	
+sheet	bough	1000	resize	frame_pacing.fps	40.66666585333335	fps	True	
+sheet	bough	1000	resize	frame_cost.cpu_ms_per_frame	6.793417426229508	ms	True	
+sheet	bough	1000	resize	resources.cpu_ms_per_s	212.54559369292738	ms_per_s	True	
+sheet	bough	1000	resize	resources.rss_max	54480896.0	bytes	True	
+sheet	bough	1000	theme	latency.total_p50	13.201527	ms	True	
+sheet	bough	1000	theme	latency.total_p95	19.8791953	ms	True	
+sheet	bough	1000	theme	latency.input_to_commit_p50	4.917191000000001	ms	True	
+sheet	bough	1000	theme	resources.cpu_ms	35.487568	ms	True	
+sheet	bough	1000	theme	frame_cost.cpu_ms_per_frame	5.069652571428572	ms	True	
+sheet	bough	1000	theme	frame_cost.damage_fraction_p50	1.0	fraction	True	
+sheet	bough	1000	edit	latency.total_p50	12.677938000000001	ms	False	wake_lateness
+sheet	bough	1000	edit	latency.total_p95	15.4450901	ms	False	wake_lateness
+sheet	bough	1000	edit	latency.input_to_commit_p50	0.179754	ms	False	wake_lateness
+sheet	bough	1000	edit	resources.cpu_ms	1.34564	ms	False	wake_lateness
+sheet	bough	1000	edit	frame_cost.cpu_ms_per_frame	0.19223428571428572	ms	False	wake_lateness
+sheet	bough	1000	edit	frame_cost.damage_fraction_p50	0.006	fraction	False	wake_lateness
+sheet	egui	10000	startup	first_present_ms	132.334573	ms	True	
+sheet	egui	10000	idle	resources.rss_max	156737536.0	bytes	True	
+sheet	egui	10000	idle	resources.pss_max	113529856.0	bytes	True	
+sheet	egui	10000	idle	resources.cpu_ms_per_s	37.691184329537855	ms_per_s	True	
+sheet	egui	10000	hover	latency.total_p50	15.4582065	ms	False	wake_lateness
+sheet	egui	10000	hover	latency.total_p95	22.805816749999998	ms	False	wake_lateness
+sheet	egui	10000	hover	latency.input_to_commit_p50	7.4992435	ms	False	wake_lateness
+sheet	egui	10000	hover	resources.cpu_ms	2043.391566	ms	False	wake_lateness
+sheet	egui	10000	hover	frame_cost.cpu_ms_per_frame	61.920956545454544	ms	False	wake_lateness
+sheet	egui	10000	hover	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+sheet	egui	10000	scroll	scroll_smoothness.smoothness_score	94.27818426616601	score	False	wake_lateness
+sheet	egui	10000	scroll	frame_pacing.fps	59.99999880000002	fps	False	wake_lateness
+sheet	egui	10000	scroll	frame_cost.cpu_ms_per_frame	54.946125729508196	ms	False	wake_lateness
+sheet	egui	10000	scroll	resources.cpu_ms_per_s	2396.4034476151246	ms_per_s	False	wake_lateness
+sheet	egui	10000	resize	resize.configure_to_present_p50	25.195456999999998	ms	False	wake_lateness
+sheet	egui	10000	resize	frame_pacing.fps	40.21977941538463	fps	False	wake_lateness
+sheet	egui	10000	resize	frame_cost.cpu_ms_per_frame	50.63090047540984	ms	False	wake_lateness
+sheet	egui	10000	resize	resources.cpu_ms_per_s	1583.6085241516312	ms_per_s	False	wake_lateness
+sheet	egui	10000	resize	resources.rss_max	152879104.0	bytes	False	wake_lateness
+sheet	egui	10000	theme	latency.total_p50	14.937591	ms	False	wake_lateness
+sheet	egui	10000	theme	latency.total_p95	19.86249605	ms	False	wake_lateness
+sheet	egui	10000	theme	latency.input_to_commit_p50	8.7318615	ms	False	wake_lateness
+sheet	egui	10000	theme	resources.cpu_ms	2243.880727	ms	False	wake_lateness
+sheet	egui	10000	theme	frame_cost.cpu_ms_per_frame	58.849879224999995	ms	False	wake_lateness
+sheet	egui	10000	theme	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+sheet	egui	10000	edit	latency.total_p50	13.216884	ms	False	wake_lateness
+sheet	egui	10000	edit	latency.total_p95	19.8692642	ms	False	wake_lateness
+sheet	egui	10000	edit	latency.input_to_commit_p50	6.984462000000001	ms	False	wake_lateness
+sheet	egui	10000	edit	resources.cpu_ms	2316.710151	ms	False	wake_lateness
+sheet	egui	10000	edit	frame_cost.cpu_ms_per_frame	60.96605660526316	ms	False	wake_lateness
+sheet	egui	10000	edit	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+sheet	egui	1000	startup	first_present_ms	132.081797	ms	True	
+sheet	egui	1000	idle	resources.rss_max	156209152.0	bytes	True	
+sheet	egui	1000	idle	resources.pss_max	147489792.0	bytes	True	
+sheet	egui	1000	idle	resources.cpu_ms_per_s	34.863798713916424	ms_per_s	True	
+sheet	egui	1000	hover	latency.total_p50	14.574091	ms	True	
+sheet	egui	1000	hover	latency.total_p95	21.015168499999998	ms	True	
+sheet	egui	1000	hover	latency.input_to_commit_p50	6.913005500000001	ms	True	
+sheet	egui	1000	hover	resources.cpu_ms	1929.848536	ms	True	
+sheet	egui	1000	hover	frame_cost.cpu_ms_per_frame	58.480258666666664	ms	True	
+sheet	egui	1000	hover	frame_cost.damage_fraction_p50	1.0	fraction	True	
+sheet	egui	1000	scroll	scroll_smoothness.smoothness_score	95.0429587521676	score	True	
+sheet	egui	1000	scroll	frame_pacing.fps	59.99999880000002	fps	True	
+sheet	egui	1000	scroll	frame_cost.cpu_ms_per_frame	54.793024	ms	True	
+sheet	egui	1000	scroll	resources.cpu_ms_per_s	2425.9980547394453	ms_per_s	True	
+sheet	egui	1000	resize	resize.configure_to_present_p50	18.489530000000002	ms	True	
+sheet	egui	1000	resize	frame_pacing.fps	40.66666585333335	fps	True	
+sheet	egui	1000	resize	frame_cost.cpu_ms_per_frame	50.315100967741934	ms	True	
+sheet	egui	1000	resize	resources.cpu_ms_per_s	1602.377837994352	ms_per_s	True	
+sheet	egui	1000	resize	resources.rss_max	152772608.0	bytes	True	
+sheet	egui	1000	theme	latency.total_p50	15.203864	ms	False	wake_lateness
+sheet	egui	1000	theme	latency.total_p95	19.873704150000002	ms	False	wake_lateness
+sheet	egui	1000	theme	latency.input_to_commit_p50	8.788388000000001	ms	False	wake_lateness
+sheet	egui	1000	theme	resources.cpu_ms	2214.265214	ms	False	wake_lateness
+sheet	egui	1000	theme	frame_cost.cpu_ms_per_frame	59.84500578378378	ms	False	wake_lateness
+sheet	egui	1000	theme	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+sheet	egui	1000	edit	latency.total_p50	13.221949	ms	False	wake_lateness
+sheet	egui	1000	edit	latency.total_p95	19.8729548	ms	False	wake_lateness
+sheet	egui	1000	edit	latency.input_to_commit_p50	7.0232085	ms	False	wake_lateness
+sheet	egui	1000	edit	resources.cpu_ms	2298.257938	ms	False	wake_lateness
+sheet	egui	1000	edit	frame_cost.cpu_ms_per_frame	58.92969071794872	ms	False	wake_lateness
+sheet	egui	1000	edit	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+sheet	gpui-kit	10000	startup	first_present_ms	249.015073	ms	True	
+sheet	gpui-kit	10000	idle	resources.rss_max	197623808.0	bytes	True	
+sheet	gpui-kit	10000	idle	resources.pss_max	192950272.0	bytes	True	
+sheet	gpui-kit	10000	idle	resources.cpu_ms_per_s	135.18273874667608	ms_per_s	True	
+sheet	gpui-kit	10000	hover	latency.total_p50	29.355775	ms	False	wake_lateness
+sheet	gpui-kit	10000	hover	latency.total_p95	35.55572305	ms	False	wake_lateness
+sheet	gpui-kit	10000	hover	latency.input_to_commit_p50	17.789695000000002	ms	False	wake_lateness
+sheet	gpui-kit	10000	hover	resources.cpu_ms	1683.64733	ms	False	wake_lateness
+sheet	gpui-kit	10000	hover	frame_cost.cpu_ms_per_frame	153.05884818181818	ms	False	wake_lateness
+sheet	gpui-kit	10000	hover	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+sheet	gpui-kit	10000	scroll	scroll_smoothness.smoothness_score	0.0	score	False	wake_lateness
+sheet	gpui-kit	10000	scroll	frame_pacing.fps	29.745762116949166	fps	False	wake_lateness
+sheet	gpui-kit	10000	scroll	frame_cost.cpu_ms_per_frame	147.19201782744565	ms	False	wake_lateness
+sheet	gpui-kit	10000	scroll	resources.cpu_ms_per_s	5023.710735642157	ms_per_s	False	wake_lateness
+sheet	gpui-kit	10000	resize	resize.configure_to_present_p50	37.6727355	ms	False	wake_lateness
+sheet	gpui-kit	10000	resize	frame_pacing.fps	26.292134305617985	fps	False	wake_lateness
+sheet	gpui-kit	10000	resize	frame_cost.cpu_ms_per_frame	176.4181802	ms	False	wake_lateness
+sheet	gpui-kit	10000	resize	resources.cpu_ms_per_s	3667.5288228674194	ms_per_s	False	wake_lateness
+sheet	gpui-kit	10000	resize	resources.rss_max	186884096.0	bytes	False	wake_lateness
+sheet	gpui-kit	10000	theme	latency.total_p50	29.3138765	ms	False	wake_lateness
+sheet	gpui-kit	10000	theme	latency.total_p95	34.550469549999995	ms	False	wake_lateness
+sheet	gpui-kit	10000	theme	latency.input_to_commit_p50	17.420547	ms	False	wake_lateness
+sheet	gpui-kit	10000	theme	resources.cpu_ms	1016.227318	ms	False	wake_lateness
+sheet	gpui-kit	10000	theme	frame_cost.cpu_ms_per_frame	145.17533114285715	ms	False	wake_lateness
+sheet	gpui-kit	10000	theme	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+sheet	gpui-kit	10000	edit	latency.total_p50	29.3067075	ms	False	wake_lateness
+sheet	gpui-kit	10000	edit	latency.total_p95	32.1595351	ms	False	wake_lateness
+sheet	gpui-kit	10000	edit	latency.input_to_commit_p50	17.085634499999998	ms	False	wake_lateness
+sheet	gpui-kit	10000	edit	resources.cpu_ms	1038.742117	ms	False	wake_lateness
+sheet	gpui-kit	10000	edit	frame_cost.cpu_ms_per_frame	148.391731	ms	False	wake_lateness
+sheet	gpui-kit	10000	edit	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+sheet	gpui-kit	1000	startup	first_present_ms	265.634899	ms	True	
+sheet	gpui-kit	1000	idle	resources.rss_max	196845568.0	bytes	True	
+sheet	gpui-kit	1000	idle	resources.pss_max	151787520.0	bytes	True	
+sheet	gpui-kit	1000	idle	resources.cpu_ms_per_s	110.15088188774504	ms_per_s	True	
+sheet	gpui-kit	1000	hover	latency.total_p50	29.355112	ms	False	wake_lateness
+sheet	gpui-kit	1000	hover	latency.total_p95	36.3329632	ms	False	wake_lateness
+sheet	gpui-kit	1000	hover	latency.input_to_commit_p50	16.926851	ms	False	wake_lateness
+sheet	gpui-kit	1000	hover	resources.cpu_ms	1588.540079	ms	False	wake_lateness
+sheet	gpui-kit	1000	hover	frame_cost.cpu_ms_per_frame	144.41273445454547	ms	False	wake_lateness
+sheet	gpui-kit	1000	hover	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+sheet	gpui-kit	1000	scroll	scroll_smoothness.smoothness_score	0.0	score	False	wake_lateness
+sheet	gpui-kit	1000	scroll	frame_pacing.fps	30.25423668305086	fps	False	wake_lateness
+sheet	gpui-kit	1000	scroll	frame_cost.cpu_ms_per_frame	147.8809788355573	ms	False	wake_lateness
+sheet	gpui-kit	1000	scroll	resources.cpu_ms_per_s	5202.5487149590645	ms_per_s	False	wake_lateness
+sheet	gpui-kit	1000	resize	resize.configure_to_present_p50	47.8207095	ms	False	wake_lateness
+sheet	gpui-kit	1000	resize	frame_pacing.fps	27.333332786666677	fps	False	wake_lateness
+sheet	gpui-kit	1000	resize	frame_cost.cpu_ms_per_frame	168.28101785365854	ms	False	wake_lateness
+sheet	gpui-kit	1000	resize	resources.cpu_ms_per_s	3544.3194345732727	ms_per_s	False	wake_lateness
+sheet	gpui-kit	1000	resize	resources.rss_max	185765888.0	bytes	False	wake_lateness
+sheet	gpui-kit	1000	theme	latency.total_p50	27.6915305	ms	False	wake_lateness
+sheet	gpui-kit	1000	theme	latency.total_p95	31.872275950000002	ms	False	wake_lateness
+sheet	gpui-kit	1000	theme	latency.input_to_commit_p50	16.3967585	ms	False	wake_lateness
+sheet	gpui-kit	1000	theme	resources.cpu_ms	1022.716151	ms	False	wake_lateness
+sheet	gpui-kit	1000	theme	frame_cost.cpu_ms_per_frame	146.1023072857143	ms	False	wake_lateness
+sheet	gpui-kit	1000	theme	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+sheet	gpui-kit	1000	edit	latency.total_p50	29.313007499999998	ms	False	wake_lateness
+sheet	gpui-kit	1000	edit	latency.total_p95	32.162005799999996	ms	False	wake_lateness
+sheet	gpui-kit	1000	edit	latency.input_to_commit_p50	16.891544500000002	ms	False	wake_lateness
+sheet	gpui-kit	1000	edit	resources.cpu_ms	967.427007	ms	False	wake_lateness
+sheet	gpui-kit	1000	edit	frame_cost.cpu_ms_per_frame	138.20385814285714	ms	False	wake_lateness
+sheet	gpui-kit	1000	edit	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+sheet	iced	10000	startup	first_present_ms	915.616461	ms	True	
+sheet	iced	10000	idle	resources.rss_max	578105344.0	bytes	True	
+sheet	iced	10000	idle	resources.pss_max	536642560.0	bytes	True	
+sheet	iced	10000	idle	resources.cpu_ms_per_s	44.85016726103355	ms_per_s	True	
+sheet	iced	10000	hover	latency.total_p50	174.149928	ms	True	
+sheet	iced	10000	hover	latency.total_p95	188.43666125	ms	True	
+sheet	iced	10000	hover	latency.input_to_commit_p50	162.44456250000002	ms	True	
+sheet	iced	10000	hover	resources.cpu_ms	2153.216907	ms	True	
+sheet	iced	10000	hover	frame_cost.cpu_ms_per_frame	195.74699154545453	ms	True	
+sheet	iced	10000	hover	frame_cost.damage_fraction_p50	1.0	fraction	True	
+sheet	iced	10000	scroll	scroll_smoothness.smoothness_score	0.0	score	False	wake_lateness
+sheet	iced	10000	scroll	frame_pacing.fps	22.70454500045455	fps	False	wake_lateness
+sheet	iced	10000	scroll	frame_cost.cpu_ms_per_frame	67.40508507155798	ms	False	wake_lateness
+sheet	iced	10000	scroll	resources.cpu_ms_per_s	1132.185210071636	ms_per_s	False	wake_lateness
+sheet	iced	10000	resize	resize.configure_to_present_p50	150.886755	ms	True	
+sheet	iced	10000	resize	frame_pacing.fps	6.818181681818184	fps	True	
+sheet	iced	10000	resize	frame_cost.cpu_ms_per_frame	136.8132408181818	ms	True	
+sheet	iced	10000	resize	resources.cpu_ms_per_s	772.4476221011081	ms_per_s	True	
+sheet	iced	10000	resize	resources.rss_max	572723200.0	bytes	True	
+sheet	iced	10000	theme	latency.total_p50	180.493475	ms	True	
+sheet	iced	10000	theme	latency.total_p95	196.44644215	ms	True	
+sheet	iced	10000	theme	latency.input_to_commit_p50	175.0106945	ms	True	
+sheet	iced	10000	theme	resources.cpu_ms	1693.897749	ms	True	
+sheet	iced	10000	theme	frame_cost.cpu_ms_per_frame	241.98539271428572	ms	True	
+sheet	iced	10000	theme	frame_cost.damage_fraction_p50	1.0	fraction	True	
+sheet	iced	10000	edit	latency.total_p50	179.88117549999998	ms	True	
+sheet	iced	10000	edit	latency.total_p95	198.01427665	ms	True	
+sheet	iced	10000	edit	latency.input_to_commit_p50	172.698214	ms	True	
+sheet	iced	10000	edit	resources.cpu_ms	1671.746638	ms	True	
+sheet	iced	10000	edit	frame_cost.cpu_ms_per_frame	238.8209482857143	ms	True	
+sheet	iced	10000	edit	frame_cost.damage_fraction_p50	1.0	fraction	True	
+sheet	iced	1000	startup	first_present_ms	198.95731	ms	True	
+sheet	iced	1000	idle	resources.rss_max	196042752.0	bytes	True	
+sheet	iced	1000	idle	resources.pss_max	149608448.0	bytes	True	
+sheet	iced	1000	idle	resources.cpu_ms_per_s	41.52836719751788	ms_per_s	True	
+sheet	iced	1000	hover	latency.total_p50	29.8210695	ms	False	wake_lateness
+sheet	iced	1000	hover	latency.total_p95	36.29777215	ms	False	wake_lateness
+sheet	iced	1000	hover	latency.input_to_commit_p50	18.0246945	ms	False	wake_lateness
+sheet	iced	1000	hover	resources.cpu_ms	551.670997	ms	False	wake_lateness
+sheet	iced	1000	hover	frame_cost.cpu_ms_per_frame	50.15190881818182	ms	False	wake_lateness
+sheet	iced	1000	hover	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+sheet	iced	1000	scroll	scroll_smoothness.smoothness_score	94.70161801790337	score	True	
+sheet	iced	1000	scroll	frame_pacing.fps	59.99999880000002	fps	True	
+sheet	iced	1000	scroll	frame_cost.cpu_ms_per_frame	41.579600825	ms	True	
+sheet	iced	1000	scroll	resources.cpu_ms_per_s	1782.458080458303	ms_per_s	True	
+sheet	iced	1000	resize	resize.configure_to_present_p50	18.714905	ms	True	
+sheet	iced	1000	resize	frame_pacing.fps	37.999999240000015	fps	True	
+sheet	iced	1000	resize	frame_cost.cpu_ms_per_frame	45.82387940983607	ms	True	
+sheet	iced	1000	resize	resources.cpu_ms_per_s	1337.912328991377	ms_per_s	True	
+sheet	iced	1000	resize	resources.rss_max	190009344.0	bytes	True	
+sheet	iced	1000	theme	latency.total_p50	29.3142755	ms	True	
+sheet	iced	1000	theme	latency.total_p95	32.06251005	ms	True	
+sheet	iced	1000	theme	latency.input_to_commit_p50	15.776839500000001	ms	True	
+sheet	iced	1000	theme	resources.cpu_ms	356.797881	ms	True	
+sheet	iced	1000	theme	frame_cost.cpu_ms_per_frame	50.97112585714286	ms	True	
+sheet	iced	1000	theme	frame_cost.damage_fraction_p50	1.0	fraction	True	
+sheet	iced	1000	edit	latency.total_p50	29.3219925	ms	False	wake_lateness
+sheet	iced	1000	edit	latency.total_p95	32.05420955	ms	False	wake_lateness
+sheet	iced	1000	edit	latency.input_to_commit_p50	16.124952	ms	False	wake_lateness
+sheet	iced	1000	edit	resources.cpu_ms	397.450052	ms	False	wake_lateness
+sheet	iced	1000	edit	frame_cost.cpu_ms_per_frame	56.77857885714286	ms	False	wake_lateness
+sheet	iced	1000	edit	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	bough	5000	startup	first_present_ms	1065.629905	ms	True	
+canvas	bough	5000	idle	resources.rss_max	25710592.0	bytes	True	
+canvas	bough	5000	idle	resources.pss_max	21386240.0	bytes	True	
+canvas	bough	5000	idle	resources.cpu_ms_per_s	0.03445912739166626	ms_per_s	True	
+canvas	bough	5000	hover	latency.total_p50	888.9625535	ms	False	wake_lateness
+canvas	bough	5000	hover	latency.total_p95	939.28500975	ms	False	wake_lateness
+canvas	bough	5000	hover	latency.input_to_commit_p50	880.789925	ms	False	wake_lateness
+canvas	bough	5000	hover	resources.cpu_ms	10510.001627	ms	False	wake_lateness
+canvas	bough	5000	hover	frame_cost.cpu_ms_per_frame	955.4546933636364	ms	False	wake_lateness
+canvas	bough	5000	hover	frame_cost.damage_fraction_p50	0.425	fraction	False	wake_lateness
+canvas	bough	5000	resize	resize.configure_to_present_p50	386.232414	ms	False	wake_lateness
+canvas	bough	5000	resize	frame_pacing.fps	2.117647016470589	fps	False	wake_lateness
+canvas	bough	5000	resize	frame_cost.cpu_ms_per_frame	484.14465475	ms	False	wake_lateness
+canvas	bough	5000	resize	resources.cpu_ms_per_s	992.6934502931996	ms_per_s	False	wake_lateness
+canvas	bough	5000	resize	resources.rss_max	28995584.0	bytes	False	wake_lateness
+canvas	bough	5000	theme	latency.total_p50	1056.305911	ms	False	wake_lateness
+canvas	bough	5000	theme	latency.total_p95	1117.76685445	ms	False	wake_lateness
+canvas	bough	5000	theme	latency.input_to_commit_p50	1047.7819085	ms	False	wake_lateness
+canvas	bough	5000	theme	resources.cpu_ms	8385.614809	ms	False	wake_lateness
+canvas	bough	5000	theme	frame_cost.cpu_ms_per_frame	1197.9449727142858	ms	False	wake_lateness
+canvas	bough	5000	theme	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	bough	5000	edit	latency.total_p50	29.8883025	ms	False	wake_lateness
+canvas	bough	5000	edit	latency.total_p95	35.56679885	ms	False	wake_lateness
+canvas	bough	5000	edit	latency.input_to_commit_p50	20.3518385	ms	False	wake_lateness
+canvas	bough	5000	edit	resources.cpu_ms	140.942349	ms	False	wake_lateness
+canvas	bough	5000	edit	frame_cost.cpu_ms_per_frame	20.134621285714285	ms	False	wake_lateness
+canvas	bough	5000	edit	frame_cost.damage_fraction_p50	0.012	fraction	False	wake_lateness
+canvas	bough	1000	startup	first_present_ms	382.338248	ms	True	
+canvas	bough	1000	idle	resources.rss_max	18636800.0	bytes	True	
+canvas	bough	1000	idle	resources.pss_max	14416896.0	bytes	True	
+canvas	bough	1000	idle	resources.cpu_ms_per_s	0.032474057640273654	ms_per_s	True	
+canvas	bough	1000	hover	latency.total_p50	94.1639355	ms	False	wake_lateness
+canvas	bough	1000	hover	latency.total_p95	103.02331625000001	ms	False	wake_lateness
+canvas	bough	1000	hover	latency.input_to_commit_p50	80.6543005	ms	False	wake_lateness
+canvas	bough	1000	hover	resources.cpu_ms	945.550253	ms	False	wake_lateness
+canvas	bough	1000	hover	frame_cost.cpu_ms_per_frame	85.9591139090909	ms	False	wake_lateness
+canvas	bough	1000	hover	frame_cost.damage_fraction_p50	0.162	fraction	False	wake_lateness
+canvas	bough	1000	resize	resize.configure_to_present_p50	91.5237615	ms	False	wake_lateness
+canvas	bough	1000	resize	frame_pacing.fps	7.499999850000003	fps	False	wake_lateness
+canvas	bough	1000	resize	frame_cost.cpu_ms_per_frame	114.04979721428572	ms	False	wake_lateness
+canvas	bough	1000	resize	resources.cpu_ms_per_s	819.3304960439615	ms_per_s	False	wake_lateness
+canvas	bough	1000	resize	resources.rss_max	22265856.0	bytes	False	wake_lateness
+canvas	bough	1000	theme	latency.total_p50	266.009241	ms	False	wake_lateness
+canvas	bough	1000	theme	latency.total_p95	321.98205635	ms	False	wake_lateness
+canvas	bough	1000	theme	latency.input_to_commit_p50	255.9147505	ms	False	wake_lateness
+canvas	bough	1000	theme	resources.cpu_ms	2115.520287	ms	False	wake_lateness
+canvas	bough	1000	theme	frame_cost.cpu_ms_per_frame	302.21718385714286	ms	False	wake_lateness
+canvas	bough	1000	theme	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	bough	1000	edit	latency.total_p50	13.2195065	ms	False	wake_lateness
+canvas	bough	1000	edit	latency.total_p95	19.859356499999997	ms	False	wake_lateness
+canvas	bough	1000	edit	latency.input_to_commit_p50	4.4704605	ms	False	wake_lateness
+canvas	bough	1000	edit	resources.cpu_ms	33.63885	ms	False	wake_lateness
+canvas	bough	1000	edit	frame_cost.cpu_ms_per_frame	4.805549999999999	ms	False	wake_lateness
+canvas	bough	1000	edit	frame_cost.damage_fraction_p50	0.012	fraction	False	wake_lateness
+canvas	egui	5000	startup	first_present_ms	265.638816	ms	True	
+canvas	egui	5000	idle	resources.rss_max	293003264.0	bytes	True	
+canvas	egui	5000	idle	resources.pss_max	253935616.0	bytes	True	
+canvas	egui	5000	idle	resources.cpu_ms_per_s	337.4647871630487	ms_per_s	True	
+canvas	egui	5000	hover	latency.total_p50	106.406537	ms	False	wake_lateness
+canvas	egui	5000	hover	latency.total_p95	206.47595919999998	ms	False	wake_lateness
+canvas	egui	5000	hover	latency.input_to_commit_p50	100.24706850000001	ms	False	wake_lateness
+canvas	egui	5000	hover	resources.cpu_ms	15256.762446	ms	False	wake_lateness
+canvas	egui	5000	hover	frame_cost.cpu_ms_per_frame	462.32613472727274	ms	False	wake_lateness
+canvas	egui	5000	hover	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	egui	5000	resize	resize.configure_to_present_p50	119.1566425	ms	False	wake_lateness
+canvas	egui	5000	resize	frame_pacing.fps	9.574467893617026	fps	False	wake_lateness
+canvas	egui	5000	resize	frame_cost.cpu_ms_per_frame	303.6855635	ms	False	wake_lateness
+canvas	egui	5000	resize	resources.cpu_ms_per_s	2493.7635925256623	ms_per_s	False	wake_lateness
+canvas	egui	5000	resize	resources.rss_max	296230912.0	bytes	False	wake_lateness
+canvas	egui	5000	theme	latency.total_p50	211.6445955	ms	False	wake_lateness
+canvas	egui	5000	theme	latency.total_p95	226.9410552	ms	False	wake_lateness
+canvas	egui	5000	theme	latency.input_to_commit_p50	203.2666955	ms	False	wake_lateness
+canvas	egui	5000	theme	resources.cpu_ms	9844.078132	ms	False	wake_lateness
+canvas	egui	5000	theme	frame_cost.cpu_ms_per_frame	452.91391054545454	ms	False	wake_lateness
+canvas	egui	5000	theme	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	egui	5000	edit	latency.total_p50	226.603277	ms	False	wake_lateness
+canvas	egui	5000	edit	latency.total_p95	241.03024255	ms	False	wake_lateness
+canvas	egui	5000	edit	latency.input_to_commit_p50	216.3223765	ms	False	wake_lateness
+canvas	egui	5000	edit	resources.cpu_ms	10387.9646	ms	False	wake_lateness
+canvas	egui	5000	edit	frame_cost.cpu_ms_per_frame	472.18020909090905	ms	False	wake_lateness
+canvas	egui	5000	edit	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	egui	1000	startup	first_present_ms	148.985238	ms	True	
+canvas	egui	1000	idle	resources.rss_max	182042624.0	bytes	True	
+canvas	egui	1000	idle	resources.pss_max	143170560.0	bytes	True	
+canvas	egui	1000	idle	resources.cpu_ms_per_s	83.03661471857464	ms_per_s	True	
+canvas	egui	1000	hover	latency.total_p50	29.4610025	ms	False	wake_lateness
+canvas	egui	1000	hover	latency.total_p95	35.73522655	ms	False	wake_lateness
+canvas	egui	1000	hover	latency.input_to_commit_p50	18.7765485	ms	False	wake_lateness
+canvas	egui	1000	hover	resources.cpu_ms	4061.797578	ms	False	wake_lateness
+canvas	egui	1000	hover	frame_cost.cpu_ms_per_frame	123.08477509090909	ms	False	wake_lateness
+canvas	egui	1000	hover	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	egui	1000	resize	resize.configure_to_present_p50	24.1238675	ms	False	wake_lateness
+canvas	egui	1000	resize	frame_pacing.fps	31.99999936000001	fps	False	wake_lateness
+canvas	egui	1000	resize	frame_cost.cpu_ms_per_frame	90.49081020833334	ms	False	wake_lateness
+canvas	egui	1000	resize	resources.cpu_ms_per_s	2227.384237067316	ms_per_s	False	wake_lateness
+canvas	egui	1000	resize	resources.rss_max	176705536.0	bytes	False	wake_lateness
+canvas	egui	1000	theme	latency.total_p50	29.8772735	ms	False	wake_lateness
+canvas	egui	1000	theme	latency.total_p95	35.092966999999994	ms	False	wake_lateness
+canvas	egui	1000	theme	latency.input_to_commit_p50	20.026339	ms	False	wake_lateness
+canvas	egui	1000	theme	resources.cpu_ms	4013.46991	ms	False	wake_lateness
+canvas	egui	1000	theme	frame_cost.cpu_ms_per_frame	124.02286581818181	ms	False	wake_lateness
+canvas	egui	1000	theme	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	egui	1000	edit	latency.total_p50	29.5887335	ms	False	wake_lateness
+canvas	egui	1000	edit	latency.total_p95	34.5481249	ms	False	wake_lateness
+canvas	egui	1000	edit	latency.input_to_commit_p50	18.610234	ms	False	wake_lateness
+canvas	egui	1000	edit	resources.cpu_ms	3938.863226	ms	False	wake_lateness
+canvas	egui	1000	edit	frame_cost.cpu_ms_per_frame	123.0894758125	ms	False	wake_lateness
+canvas	egui	1000	edit	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	gpui-kit	5000	startup	first_present_ms	631.811139	ms	True	
+canvas	gpui-kit	5000	idle	resources.rss_max	277221376.0	bytes	True	
+canvas	gpui-kit	5000	idle	resources.pss_max	238935040.0	bytes	True	
+canvas	gpui-kit	5000	idle	resources.cpu_ms_per_s	643.4847247843846	ms_per_s	True	
+canvas	gpui-kit	5000	hover	latency.total_p50	188.52783	ms	False	wake_lateness
+canvas	gpui-kit	5000	hover	latency.total_p95	201.20999675	ms	False	wake_lateness
+canvas	gpui-kit	5000	hover	latency.input_to_commit_p50	177.9794	ms	False	wake_lateness
+canvas	gpui-kit	5000	hover	resources.cpu_ms	11320.971576	ms	False	wake_lateness
+canvas	gpui-kit	5000	hover	frame_cost.cpu_ms_per_frame	1029.1792341818182	ms	False	wake_lateness
+canvas	gpui-kit	5000	hover	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	gpui-kit	5000	resize	resize.configure_to_present_p50	180.16133	ms	False	wake_lateness
+canvas	gpui-kit	5000	resize	frame_pacing.fps	6.666666533333336	fps	False	wake_lateness
+canvas	gpui-kit	5000	resize	frame_cost.cpu_ms_per_frame	665.8532991818182	ms	False	wake_lateness
+canvas	gpui-kit	5000	resize	resources.cpu_ms_per_s	3755.7890344963	ms_per_s	False	wake_lateness
+canvas	gpui-kit	5000	resize	resources.rss_max	279613440.0	bytes	False	wake_lateness
+canvas	gpui-kit	5000	theme	latency.total_p50	181.5642775	ms	False	wake_lateness
+canvas	gpui-kit	5000	theme	latency.total_p95	196.23137690000001	ms	False	wake_lateness
+canvas	gpui-kit	5000	theme	latency.input_to_commit_p50	174.388137	ms	False	wake_lateness
+canvas	gpui-kit	5000	theme	resources.cpu_ms	7252.425572	ms	False	wake_lateness
+canvas	gpui-kit	5000	theme	frame_cost.cpu_ms_per_frame	1036.060796	ms	False	wake_lateness
+canvas	gpui-kit	5000	theme	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	gpui-kit	5000	edit	latency.total_p50	192.91537399999999	ms	False	wake_lateness
+canvas	gpui-kit	5000	edit	latency.total_p95	200.72559295	ms	False	wake_lateness
+canvas	gpui-kit	5000	edit	latency.input_to_commit_p50	182.5975965	ms	False	wake_lateness
+canvas	gpui-kit	5000	edit	resources.cpu_ms	7629.175508	ms	False	wake_lateness
+canvas	gpui-kit	5000	edit	frame_cost.cpu_ms_per_frame	1089.8822154285715	ms	False	wake_lateness
+canvas	gpui-kit	5000	edit	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	gpui-kit	1000	startup	first_present_ms	348.267035	ms	True	
+canvas	gpui-kit	1000	idle	resources.rss_max	206045184.0	bytes	True	
+canvas	gpui-kit	1000	idle	resources.pss_max	165699584.0	bytes	True	
+canvas	gpui-kit	1000	idle	resources.cpu_ms_per_s	184.85260150162938	ms_per_s	True	
+canvas	gpui-kit	1000	hover	latency.total_p50	47.884699	ms	False	wake_lateness
+canvas	gpui-kit	1000	hover	latency.total_p95	56.104300949999995	ms	False	wake_lateness
+canvas	gpui-kit	1000	hover	latency.input_to_commit_p50	39.526955	ms	False	wake_lateness
+canvas	gpui-kit	1000	hover	resources.cpu_ms	3049.483363	ms	False	wake_lateness
+canvas	gpui-kit	1000	hover	frame_cost.cpu_ms_per_frame	277.22576027272726	ms	False	wake_lateness
+canvas	gpui-kit	1000	hover	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	gpui-kit	1000	resize	resize.configure_to_present_p50	56.459647000000004	ms	False	wake_lateness
+canvas	gpui-kit	1000	resize	frame_pacing.fps	18.2022468269663	fps	False	wake_lateness
+canvas	gpui-kit	1000	resize	frame_cost.cpu_ms_per_frame	206.61079764285714	ms	False	wake_lateness
+canvas	gpui-kit	1000	resize	resources.cpu_ms_per_s	3029.527202742827	ms_per_s	False	wake_lateness
+canvas	gpui-kit	1000	resize	resources.rss_max	194428928.0	bytes	False	wake_lateness
+canvas	gpui-kit	1000	theme	latency.total_p50	46.02340100000001	ms	False	wake_lateness
+canvas	gpui-kit	1000	theme	latency.total_p95	53.16143605	ms	False	wake_lateness
+canvas	gpui-kit	1000	theme	latency.input_to_commit_p50	36.798389	ms	False	wake_lateness
+canvas	gpui-kit	1000	theme	resources.cpu_ms	2000.88182	ms	False	wake_lateness
+canvas	gpui-kit	1000	theme	frame_cost.cpu_ms_per_frame	285.84026	ms	False	wake_lateness
+canvas	gpui-kit	1000	theme	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	gpui-kit	1000	edit	latency.total_p50	45.9093455	ms	False	wake_lateness
+canvas	gpui-kit	1000	edit	latency.total_p95	51.14188874999999	ms	False	wake_lateness
+canvas	gpui-kit	1000	edit	latency.input_to_commit_p50	39.050792	ms	False	wake_lateness
+canvas	gpui-kit	1000	edit	resources.cpu_ms	2185.514214	ms	False	wake_lateness
+canvas	gpui-kit	1000	edit	frame_cost.cpu_ms_per_frame	312.21631628571424	ms	False	wake_lateness
+canvas	gpui-kit	1000	edit	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	iced	5000	startup	first_present_ms	1382.300338	ms	True	
+canvas	iced	5000	idle	resources.rss_max	1451356160.0	bytes	True	
+canvas	iced	5000	idle	resources.pss_max	1401690112.0	bytes	True	
+canvas	iced	5000	idle	resources.cpu_ms_per_s	249.8931011902927	ms_per_s	True	
+canvas	iced	5000	hover	latency.total_p50	77.471516	ms	False	wake_lateness
+canvas	iced	5000	hover	latency.total_p95	84.0498544	ms	False	wake_lateness
+canvas	iced	5000	hover	latency.input_to_commit_p50	67.481269	ms	False	wake_lateness
+canvas	iced	5000	hover	resources.cpu_ms	3513.576206	ms	False	wake_lateness
+canvas	iced	5000	hover	frame_cost.cpu_ms_per_frame	319.41601872727273	ms	False	wake_lateness
+canvas	iced	5000	hover	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	iced	5000	resize	resize.configure_to_present_p50	89.732668	ms	False	wake_lateness
+canvas	iced	5000	resize	frame_pacing.fps	12.499999750000004	fps	False	wake_lateness
+canvas	iced	5000	resize	frame_cost.cpu_ms_per_frame	160.4268870952381	ms	False	wake_lateness
+canvas	iced	5000	resize	resources.cpu_ms_per_s	1727.382606908159	ms_per_s	False	wake_lateness
+canvas	iced	5000	resize	resources.rss_max	2141048832.0	bytes	False	wake_lateness
+canvas	iced	5000	theme	latency.total_p50	78.6994615	ms	False	wake_lateness
+canvas	iced	5000	theme	latency.total_p95	80.69491070000001	ms	False	wake_lateness
+canvas	iced	5000	theme	latency.input_to_commit_p50	65.62015199999999	ms	False	wake_lateness
+canvas	iced	5000	theme	resources.cpu_ms	2270.751323	ms	False	wake_lateness
+canvas	iced	5000	theme	frame_cost.cpu_ms_per_frame	320.4142661428572	ms	False	wake_lateness
+canvas	iced	5000	theme	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	iced	5000	edit	latency.total_p50	79.249226	ms	False	wake_lateness
+canvas	iced	5000	edit	latency.total_p95	82.14072565	ms	False	wake_lateness
+canvas	iced	5000	edit	latency.input_to_commit_p50	66.581999	ms	False	wake_lateness
+canvas	iced	5000	edit	resources.cpu_ms	2222.216198	ms	False	wake_lateness
+canvas	iced	5000	edit	frame_cost.cpu_ms_per_frame	317.45945685714287	ms	False	wake_lateness
+canvas	iced	5000	edit	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	iced	1000	startup	first_present_ms	365.670672	ms	True	
+canvas	iced	1000	idle	resources.rss_max	442322944.0	bytes	True	
+canvas	iced	1000	idle	resources.pss_max	397147136.0	bytes	True	
+canvas	iced	1000	idle	resources.cpu_ms_per_s	118.98612401594707	ms_per_s	True	
+canvas	iced	1000	hover	latency.total_p50	29.9124025	ms	False	wake_lateness
+canvas	iced	1000	hover	latency.total_p95	36.29650305	ms	False	wake_lateness
+canvas	iced	1000	hover	latency.input_to_commit_p50	19.267119	ms	False	wake_lateness
+canvas	iced	1000	hover	resources.cpu_ms	1279.076036	ms	False	wake_lateness
+canvas	iced	1000	hover	frame_cost.cpu_ms_per_frame	116.27963963636363	ms	False	wake_lateness
+canvas	iced	1000	hover	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	iced	1000	resize	resize.configure_to_present_p50	25.034129	ms	False	wake_lateness
+canvas	iced	1000	resize	frame_pacing.fps	31.648351015384627	fps	False	wake_lateness
+canvas	iced	1000	resize	frame_cost.cpu_ms_per_frame	68.68729427659575	ms	False	wake_lateness
+canvas	iced	1000	resize	resources.cpu_ms_per_s	1653.0564960413644	ms_per_s	False	wake_lateness
+canvas	iced	1000	resize	resources.rss_max	586514432.0	bytes	False	wake_lateness
+canvas	iced	1000	theme	latency.total_p50	29.873915500000003	ms	False	wake_lateness
+canvas	iced	1000	theme	latency.total_p95	36.51996855	ms	False	wake_lateness
+canvas	iced	1000	theme	latency.input_to_commit_p50	18.8528495	ms	False	wake_lateness
+canvas	iced	1000	theme	resources.cpu_ms	785.226928	ms	False	wake_lateness
+canvas	iced	1000	theme	frame_cost.cpu_ms_per_frame	112.17527542857144	ms	False	wake_lateness
+canvas	iced	1000	theme	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness
+canvas	iced	1000	edit	latency.total_p50	30.528655999999998	ms	False	wake_lateness
+canvas	iced	1000	edit	latency.total_p95	36.537264549999996	ms	False	wake_lateness
+canvas	iced	1000	edit	latency.input_to_commit_p50	19.172602	ms	False	wake_lateness
+canvas	iced	1000	edit	resources.cpu_ms	774.56515	ms	False	wake_lateness
+canvas	iced	1000	edit	frame_cost.cpu_ms_per_frame	110.65216428571429	ms	False	wake_lateness
+canvas	iced	1000	edit	frame_cost.damage_fraction_p50	1.0	fraction	False	wake_lateness

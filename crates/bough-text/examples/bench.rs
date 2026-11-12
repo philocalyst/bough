@@ -1,5 +1,5 @@
-//! Retired-instruction and time benchmarks. macOS only for instruction counts
-//! (`proc_pid_rusage` -> `ri_instructions`).
+//! Retired-instruction and time benchmarks. Instruction counts: macOS `proc_pid_rusage` -> `ri_instructions`;
+//! elsewhere the calling thread's counters (`bough_mem::pmu`, user mode).
 //!
 //!   cargo run --release --example bench            (or --profile dist)
 //!   cargo run --release --example bench -- quick
@@ -13,10 +13,12 @@ use bough_text::{GlyphRun, Shaper, SimpleScript};
 use std::hint::black_box;
 use std::time::Instant;
 
+#[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut core::ffi::c_void) -> i32;
 }
 
+#[cfg(target_os = "macos")]
 fn instructions() -> u64 {
     // SAFETY: plain syscall wrapper writing a rusage_info_v4 (RUSAGE_INFO_V4 = 4).
     unsafe {
@@ -25,6 +27,10 @@ fn instructions() -> u64 {
         assert_eq!(r, 0, "proc_pid_rusage failed");
         info.ri_instructions
     }
+}
+#[cfg(not(target_os = "macos"))]
+fn instructions() -> u64 {
+    bough_mem::pmu::instructions_cycles().0
 }
 
 /// Instructions consumed by the counter read itself (subtracted from every measurement).

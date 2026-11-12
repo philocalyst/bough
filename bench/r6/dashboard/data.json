@@ -1,0 +1,1999 @@
+{
+ "updated": "2026-11-12",
+ "series": [
+  {
+   "id": "redescribe_app_row",
+   "group": "Re-description",
+   "title": "Re-describing one plain row (box + integer label + string label)",
+   "unit": "instructions / row / turn",
+   "lower_is_better": true,
+   "note": "crates/bough/examples/redescribe_cost.rs, 1,000 rows, one plain field changed, calling-thread instruction counter",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 2742,
+     "kind": "measured"
+    },
+    {
+     "label": "seals + byte specs (lead/core-r6)",
+     "value": 574,
+     "kind": "measured"
+    },
+    {
+     "label": "with insert/remove detection (lead/core-r6)",
+     "value": 645,
+     "kind": "measured",
+     "note": "The look-ahead for shift detection cost about 70 instructions per row back."
+    }
+   ]
+  },
+  {
+   "id": "redescribe_two_static_labels",
+   "group": "Re-description",
+   "title": "Re-describing one row with two static labels",
+   "unit": "instructions / row / turn",
+   "lower_is_better": true,
+   "note": "Same method as the app-row series: crates/bough/examples/redescribe_cost.rs, 1,000 rows, calling-thread instruction counter",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 2313,
+     "kind": "measured"
+    },
+    {
+     "label": "seals + byte specs (lead/core-r6)",
+     "value": 522,
+     "kind": "measured"
+    }
+   ]
+  },
+  {
+   "id": "redescribe_box_alone",
+   "group": "Re-description",
+   "title": "Re-describing one box alone",
+   "unit": "instructions / row / turn",
+   "lower_is_better": true,
+   "note": "Same method as the app-row series: crates/bough/examples/redescribe_cost.rs, 1,000 rows, calling-thread instruction counter",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 465,
+     "kind": "measured"
+    },
+    {
+     "label": "seals + byte specs (lead/core-r6)",
+     "value": 148,
+     "kind": "measured"
+    }
+   ]
+  },
+  {
+   "id": "table_select",
+   "group": "gui-bench table, coarse (plain Vec)",
+   "title": "Select",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "Lane generalization on the base. Points are labelled by N (rows). Reported, not yet replayed.",
+   "points": [
+    {
+     "label": "N=1000",
+     "value": 6567603,
+     "kind": "reported"
+    },
+    {
+     "label": "N=5000",
+     "value": 32874375,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "table_update_every_10th",
+   "group": "gui-bench table, coarse (plain Vec)",
+   "title": "Update every 10th row",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "Lane generalization on the base. Points are labelled by N (rows). Reported, not yet replayed.",
+   "points": [
+    {
+     "label": "N=1000",
+     "value": 4662665,
+     "kind": "reported"
+    },
+    {
+     "label": "N=5000",
+     "value": 23336384,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "table_swap",
+   "group": "gui-bench table, coarse (plain Vec)",
+   "title": "Swap",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "Lane generalization on the base. Points are labelled by N (rows). Reported, not yet replayed.",
+   "points": [
+    {
+     "label": "N=1000",
+     "value": 3311480,
+     "kind": "reported"
+    },
+    {
+     "label": "N=5000",
+     "value": 16465534,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "table_remove",
+   "group": "gui-bench table, coarse (plain Vec)",
+   "title": "Remove",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "Lane generalization on the base. Only N=5000 was reported. Reported, not yet replayed.",
+   "points": [
+    {
+     "label": "N=5000",
+     "value": 116538216,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "memory_footprint",
+   "group": "Memory (base)",
+   "title": "Footprint, active at t=3 s",
+   "unit": "MiB",
+   "lower_is_better": false,
+   "note": "Lane memory, base, M3 Pro 2x. Points are labelled by scene. Reported, not yet replayed.",
+   "points": [
+    {
+     "label": "counter",
+     "value": 122.5,
+     "kind": "reported"
+    },
+    {
+     "label": "dashboard",
+     "value": 166.2,
+     "kind": "reported"
+    },
+    {
+     "label": "scroll 100 rows",
+     "value": 151.4,
+     "kind": "reported"
+    },
+    {
+     "label": "scroll 1K",
+     "value": 153.6,
+     "kind": "reported"
+    },
+    {
+     "label": "scroll 7K",
+     "value": 164.6,
+     "kind": "reported"
+    },
+    {
+     "label": "heavy",
+     "value": 145.9,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "memory_resident",
+   "group": "Memory (base)",
+   "title": "Resident, active at t=3 s",
+   "unit": "MiB",
+   "lower_is_better": false,
+   "note": "Lane memory, base, M3 Pro 2x. Points are labelled by scene. Reported, not yet replayed.",
+   "points": [
+    {
+     "label": "counter",
+     "value": 39.8,
+     "kind": "reported"
+    },
+    {
+     "label": "dashboard",
+     "value": 54.2,
+     "kind": "reported"
+    },
+    {
+     "label": "scroll 100 rows",
+     "value": 40.2,
+     "kind": "reported"
+    },
+    {
+     "label": "scroll 1K",
+     "value": 42.7,
+     "kind": "reported"
+    },
+    {
+     "label": "scroll 7K",
+     "value": 60.8,
+     "kind": "reported"
+    },
+    {
+     "label": "heavy",
+     "value": 38.2,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "memory_holders_counter",
+   "group": "Memory (base)",
+   "title": "Where the counter example's footprint is",
+   "unit": "MiB",
+   "lower_is_better": false,
+   "note": "Counter example on the base. These are holders of the footprint, not a sequence of versions. Reported, not yet replayed.",
+   "points": [
+    {
+     "label": "GPU driver unmapped",
+     "value": 68.0,
+     "kind": "reported"
+    },
+    {
+     "label": "IOAccelerator+IOKit unmapped",
+     "value": 8.0,
+     "kind": "reported"
+    },
+    {
+     "label": "region buffer",
+     "value": 20.0,
+     "kind": "reported"
+    },
+    {
+     "label": "IOSurfaces drawn",
+     "value": 4.7,
+     "kind": "reported"
+    },
+    {
+     "label": "malloc dirty",
+     "value": 12.4,
+     "kind": "reported"
+    },
+    {
+     "label": "other GPU objects",
+     "value": 0.8,
+     "kind": "reported"
+    },
+    {
+     "label": "rest",
+     "value": 5.8,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "tests_failing",
+   "group": "Correctness",
+   "title": "Workspace tests failing (bough-suite only; workspace not rerun)",
+   "unit": "tests failing",
+   "lower_is_better": true,
+   "note": "main bd9978c: 5 failing of 225, and the tree did not build with all targets. lane/verification fixes: 0 for bough-suite's 32 tests only; the whole workspace has not been rerun on the fixed tree.",
+   "points": [
+    {
+     "label": "main bd9978c",
+     "value": 5,
+     "kind": "measured"
+    },
+    {
+     "label": "lane/verification fixes",
+     "value": 0,
+     "kind": "measured"
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-select-n1000",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain select N=1000",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 6567603,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 4258832,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.648 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-select-n100",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain select N=100",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 667431,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 433899,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.650 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-swap-n1000",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain swap N=1000",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 3311480,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 2165518,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.654 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-select-n10",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain select N=10",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 76597,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 51531,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.673 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-swap-n100",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain swap N=100",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 366536,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 249504,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.681 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-update10-n100",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain update10 N=100",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 471495,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 354273,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.751 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-update10-n1000",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain update10 N=1000",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 4662665,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 3510245,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.753 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-update10-n10",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain update10 N=10",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 53095,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 40944,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.771 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-coarse-plain-swap-n10",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "coarse / plain swap N=10",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 70664,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 58057,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.822 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-table-fine-plain-select-n10",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "fine / plain select N=10",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 12132,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 10475,
+     "kind": "measured",
+     "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.863 (improved). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-rows-fine-hover-n10",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "fine hover N=10",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 4240,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 4384,
+     "kind": "measured",
+     "note": "sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.034 (regression). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-rows-fine-hover-n100",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "fine hover N=100",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 4326,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 4470,
+     "kind": "measured",
+     "note": "sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.033 (regression). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "gb6-rows-fine-hover-n1000",
+   "group": "gui-bench on the integration branch (gates pass)",
+   "title": "fine hover N=1000",
+   "unit": "instructions / operation",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 4781,
+     "kind": "reported",
+     "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+    },
+    {
+     "label": "round6 42c514cc",
+     "value": 4925,
+     "kind": "measured",
+     "note": "sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.030 (regression). Tree integ @ 42c514ccbe."
+    }
+   ]
+  },
+  {
+   "id": "size_counter",
+   "group": "Binary size",
+   "title": "Counter example, production profile, stripped",
+   "unit": "bytes",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 2887488,
+     "kind": "reported"
+    },
+    {
+     "label": "lane developer-loop, size build",
+     "value": 1547216,
+     "kind": "reported",
+     "note": "std rebuilt for size, fill-only glyph rasteriser, cold crates at opt-level z. Every pixel gate passes on binaries built this way; hot instruction cells within 1.012x. Reported, not replayed."
+    }
+   ]
+  },
+  {
+   "id": "startup_empty",
+   "group": "Startup",
+   "title": "An empty headless app: construction plus first turn",
+   "unit": "instructions",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 17092386,
+     "kind": "measured"
+    },
+    {
+     "label": "font found by bytes, not hashed (lead/core-r6)",
+     "value": 13212385,
+     "kind": "measured",
+     "note": "crates/bough/examples/redescribe_cost.rs MOUNT=1, calling-thread instruction counter."
+    }
+   ]
+  },
+  {
+   "id": "core_append_1e6",
+   "group": "Record tree",
+   "title": "Append one record at 1,000,000 records",
+   "unit": "instructions",
+   "lower_is_better": true,
+   "note": "The second point is a different operation (prefix rebuild), not the same append measured after a change. Not drawn as a before/after pair.",
+   "points": [
+    {
+     "label": "base aa9943e",
+     "value": 300808,
+     "kind": "reported"
+    },
+    {
+     "label": "prefix rebuild honours its start index",
+     "value": 2473,
+     "kind": "reported",
+     "note": "Lane core's cost matrix, warm columns. Reported, not replayed."
+    }
+   ],
+   "paired": false
+  },
+  {
+   "id": "pace_presents",
+   "group": "Pacing",
+   "title": "Presents per second while typing, 120 Hz display",
+   "unit": "presents / s",
+   "lower_is_better": true,
+   "note": "Fewer presents for the same content is the goal (redundant presents halved).",
+   "points": [
+    {
+     "label": "frame per input event (base)",
+     "value": 242,
+     "kind": "reported"
+    },
+    {
+     "label": "deadline commit (lane pacing)",
+     "value": 121.5,
+     "kind": "reported",
+     "note": "In-process probe, machine load 78-103. Input-to-vsync latency unchanged within noise. Not merged: its mutant and instruction gates have not been run."
+    }
+   ]
+  },
+  {
+   "id": "pace_scroll_p95",
+   "group": "Pacing",
+   "title": "Scroll commit interval p95, 1,000 rows",
+   "unit": "ms",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "frame per input event (base)",
+     "value": 12.35,
+     "kind": "reported"
+    },
+    {
+     "label": "deadline commit (lane pacing)",
+     "value": 8.34,
+     "kind": "reported"
+    }
+   ]
+  },
+  {
+   "id": "sig_idle_256",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "Idle turn, 256 rows",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 10925,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    },
+    {
+     "label": "after",
+     "value": 247,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    }
+   ]
+  },
+  {
+   "id": "sig_colour_write_256",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "Colour signal write, 256 rows",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 11097,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    },
+    {
+     "label": "after",
+     "value": 606,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    }
+   ]
+  },
+  {
+   "id": "sig_colour_write_16",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "Colour signal write, 16 rows",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 1088,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    },
+    {
+     "label": "after",
+     "value": 746,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    }
+   ]
+  },
+  {
+   "id": "sig_numeric_label_256",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "Numeric label write, 256 rows",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "note": "Bench lane, round 7: this cell was mismeasured. signal_cost warms 8 turns and takes one slope between 64 and 192 turns, so the first write to each row's label lands inside the measured batches (at 256 rows it is the slope; at 64 rows the slope is negative). See the stable-method series.",
+   "points": [
+    {
+     "label": "before",
+     "value": 19236,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    },
+    {
+     "label": "after",
+     "value": 8725,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    }
+   ]
+  },
+  {
+   "id": "sig_string_label_256",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "String label write, 256 rows",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "note": "Bench lane, round 7: this cell was mismeasured. signal_cost warms 8 turns and takes one slope between 64 and 192 turns, so the first write to each row's label lands inside the measured batches (at 256 rows it is the slope; at 64 rows the slope is negative). See the stable-method series.",
+   "points": [
+    {
+     "label": "before",
+     "value": 31399,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    },
+    {
+     "label": "after",
+     "value": 20853,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    }
+   ]
+  },
+  {
+   "id": "sig_redescribe_owner_idle_256",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "Re-describing owner, idle turn, 256 rows",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 511585,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    },
+    {
+     "label": "after",
+     "value": 140223,
+     "kind": "measured",
+     "source": "lead/core-r6 signal_cost, instructions per turn, once mode"
+    }
+   ]
+  },
+  {
+   "id": "store_numeric_label_1row",
+   "group": "Store (lane/store/round6)",
+   "title": "Numeric label write, 1 row",
+   "unit": "instructions / turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 3269,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    },
+    {
+     "label": "after",
+     "value": 664,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    }
+   ]
+  },
+  {
+   "id": "store_redescribe_owned_per_row",
+   "group": "Store (lane/store/round6)",
+   "title": "Re-description per row owned",
+   "unit": "instructions / row / turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 655,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    },
+    {
+     "label": "after",
+     "value": 298,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    }
+   ]
+  },
+  {
+   "id": "store_redescribe_static_per_row",
+   "group": "Store (lane/store/round6)",
+   "title": "Re-description per row, static",
+   "unit": "instructions / row / turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 631,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    },
+    {
+     "label": "after",
+     "value": 301,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    }
+   ]
+  },
+  {
+   "id": "store_redescribe_bare_per_row",
+   "group": "Store (lane/store/round6)",
+   "title": "Re-description per row, bare",
+   "unit": "instructions / row / turn",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 224,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    },
+    {
+     "label": "after",
+     "value": 126,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    }
+   ]
+  },
+  {
+   "id": "store_churn_per_row",
+   "group": "Store (lane/store/round6)",
+   "title": "Churn per row",
+   "unit": "instructions / row",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 16037,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    },
+    {
+     "label": "after",
+     "value": 11959,
+     "kind": "measured",
+     "source": "lane/store/round6"
+    }
+   ]
+  },
+  {
+   "id": "core_page_translate",
+   "group": "Core (lane/core/round6)",
+   "title": "Whole-page translate",
+   "unit": "instructions per page",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 109,
+     "kind": "measured",
+     "source": "lane/core/round6"
+    },
+    {
+     "label": "after",
+     "value": 32,
+     "kind": "measured",
+     "source": "lane/core/round6"
+    }
+   ]
+  },
+  {
+   "id": "core_translate_half_1e6",
+   "group": "Core (lane/core/round6)",
+   "title": "Translate half, 1,000,000 records",
+   "unit": "instructions",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "before",
+     "value": 849000,
+     "kind": "measured",
+     "source": "lane/core/round6"
+    },
+    {
+     "label": "after",
+     "value": 271000,
+     "kind": "measured",
+     "source": "lane/core/round6"
+    }
+   ]
+  },
+  {
+   "id": "core_flag_flip_handle",
+   "group": "Core (lane/core/round6)",
+   "title": "State-plane flag flip through a handle",
+   "unit": "instructions",
+   "lower_is_better": true,
+   "note": "",
+   "points": [
+    {
+     "label": "through a handle",
+     "value": 95,
+     "kind": "measured",
+     "source": "lane/core/round6"
+    }
+   ]
+  },
+  {
+   "id": "sig_numeric_label_stable",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "Numeric label write, mount-once, stable method (SC_STABLE=1)",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "paired": false,
+   "note": "Every row written before measuring (3n+8 warm turns), values 1000 + k % 9000 (always four digits), median of five slopes 64 vs 192 turns. One of three runs; the three agree within 2 %.",
+   "points": [
+    {
+     "label": "1 rows",
+     "value": 6077,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
+    },
+    {
+     "label": "16 rows",
+     "value": 6033,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
+    },
+    {
+     "label": "64 rows",
+     "value": 6005,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
+    },
+    {
+     "label": "256 rows",
+     "value": 6015,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
+    }
+   ]
+  },
+  {
+   "id": "sig_string_label_stable",
+   "group": "Signal cost (lead/core-r6)",
+   "title": "String label write, mount-once, stable method (SC_STABLE=1)",
+   "unit": "instructions per turn",
+   "lower_is_better": true,
+   "paired": false,
+   "note": "Every row written before measuring (3n+8 warm turns), values 1000 + k % 9000 (always four digits), median of five slopes 64 vs 192 turns. One of three runs; the three agree within 2 %.",
+   "points": [
+    {
+     "label": "1 rows",
+     "value": 6648,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
+    },
+    {
+     "label": "16 rows",
+     "value": 6883,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
+    },
+    {
+     "label": "64 rows",
+     "value": 6732,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
+    },
+    {
+     "label": "256 rows",
+     "value": 9957,
+     "kind": "measured",
+     "source": "bench lane r7, signal_cost SC_STABLE=1, M3 Pro, dist, r7/bench 2169ab5e34"
+    }
+   ]
+  }
+ ],
+ "not_measured": [],
+ "zortax_quick1": {
+  "title": "zortax gui-bench quick run 1",
+  "label": "Rough baseline only",
+  "caveats": [
+   "Busy host: other processes used about 70 % of 16 CPUs (load average 20-30); 280 of 535 reports fail the harness's own validity checks (wake_lateness); values marked † come from an invalid report.",
+   "Software rendering: fakeland's pixman compositor and lavapipe software Vulkan (ilo-prod has no GPU), --quick mode, nice 19.",
+   "172 cells: 154 completed, 18 stopped after startup (floem: a 1 px border drawn across a pixel boundary fails the layout check in 16 of 17 cells; vizia: typing and search paint nothing).",
+   "bough is not in this matrix: it has no Linux backend yet (the platform lane is bringing one up). Nothing here compares with bough's macOS numbers: other host, other ISA, whole-process CPU time under software rendering versus instructions on the calling thread.",
+   "Ripple and Solid are not comparison targets."
+  ],
+  "identity": "ilo-prod (AMD Ryzen 7 3700X, governor powersave, boost on), kernel 6.18.54, gui-bench 0fd45107, fakeland 71695e7c, 2026-11-12, flattened by the research lane (RESULTS.md, metrics.tsv, validity.tsv on branch lane/research/round6 efdc4e5bc7)",
+  "scenario_note": "rows scenario at 3,000 rows unless the metric names another; lower is better for every metric",
+  "metrics": [
+   {
+    "name": "hover p50",
+    "unit": "ms",
+    "lower_is_better": true
+   },
+   {
+    "name": "hover input to commit",
+    "unit": "ms",
+    "lower_is_better": true
+   },
+   {
+    "name": "idle RSS",
+    "unit": "MiB",
+    "lower_is_better": true
+   },
+   {
+    "name": "idle CPU",
+    "unit": "ms/s",
+    "lower_is_better": true
+   },
+   {
+    "name": "scroll CPU per frame",
+    "unit": "ms",
+    "lower_is_better": true
+   },
+   {
+    "name": "typing p50",
+    "unit": "ms",
+    "lower_is_better": true
+   },
+   {
+    "name": "resize configure to present",
+    "unit": "ms",
+    "lower_is_better": true
+   },
+   {
+    "name": "spinner 10k CPU per frame",
+    "unit": "ms",
+    "lower_is_better": true
+   }
+  ],
+  "frameworks": [
+   {
+    "framework": "zgui",
+    "values": [
+     {
+      "value": 16.16,
+      "invalid": true
+     },
+     {
+      "value": 7.73,
+      "invalid": true
+     },
+     {
+      "value": 317.16,
+      "invalid": false
+     },
+     {
+      "value": 144.42,
+      "invalid": false
+     },
+     {
+      "value": 32.15,
+      "invalid": true
+     },
+     {
+      "value": 22.7,
+      "invalid": true
+     },
+     {
+      "value": 73.47,
+      "invalid": true
+     },
+     {
+      "value": 20.12,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "gpui-kit",
+    "values": [
+     {
+      "value": 111.06,
+      "invalid": true
+     },
+     {
+      "value": 98.47,
+      "invalid": true
+     },
+     {
+      "value": 251.64,
+      "invalid": false
+     },
+     {
+      "value": 154.07,
+      "invalid": false
+     },
+     {
+      "value": 194.04,
+      "invalid": true
+     },
+     {
+      "value": 80.05,
+      "invalid": true
+     },
+     {
+      "value": 120.02,
+      "invalid": true
+     },
+     {
+      "value": 473.7,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "gpui-kit-fast",
+    "values": [
+     {
+      "value": 61.96,
+      "invalid": true
+     },
+     {
+      "value": 49.48,
+      "invalid": true
+     },
+     {
+      "value": 269.82,
+      "invalid": false
+     },
+     {
+      "value": 174.91,
+      "invalid": false
+     },
+     {
+      "value": 207.83,
+      "invalid": true
+     },
+     {
+      "value": 78.39,
+      "invalid": true
+     },
+     {
+      "value": 134.81,
+      "invalid": true
+     },
+     {
+      "value": 323.81,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "freya",
+    "values": [
+     {
+      "value": 15.11,
+      "invalid": true
+     },
+     {
+      "value": 5.94,
+      "invalid": true
+     },
+     {
+      "value": 250.74,
+      "invalid": false
+     },
+     {
+      "value": 14.89,
+      "invalid": false
+     },
+     {
+      "value": 32.25,
+      "invalid": true
+     },
+     {
+      "value": 21.15,
+      "invalid": true
+     },
+     {
+      "value": 59.97,
+      "invalid": true
+     },
+     {
+      "value": 26.36,
+      "invalid": false
+     }
+    ]
+   },
+   {
+    "framework": "freya-056a5b4",
+    "values": [
+     {
+      "value": 15.11,
+      "invalid": true
+     },
+     {
+      "value": 5.39,
+      "invalid": true
+     },
+     {
+      "value": 250.55,
+      "invalid": false
+     },
+     {
+      "value": 14.75,
+      "invalid": false
+     },
+     {
+      "value": 29.06,
+      "invalid": true
+     },
+     {
+      "value": 24.31,
+      "invalid": true
+     },
+     {
+      "value": 72.96,
+      "invalid": true
+     },
+     {
+      "value": 26.61,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "vizia",
+    "values": [
+     {
+      "value": 113.16,
+      "invalid": true
+     },
+     {
+      "value": 104.15,
+      "invalid": true
+     },
+     {
+      "value": 273.66,
+      "invalid": false
+     },
+     {
+      "value": 30.11,
+      "invalid": false
+     },
+     {
+      "value": 168.21,
+      "invalid": false
+     },
+     null,
+     {
+      "value": 91.66,
+      "invalid": true
+     },
+     {
+      "value": 28.24,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "floem",
+    "values": [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null
+    ]
+   },
+   {
+    "framework": "iced",
+    "values": [
+     {
+      "value": 15.1,
+      "invalid": false
+     },
+     {
+      "value": 5.49,
+      "invalid": false
+     },
+     {
+      "value": 169.94,
+      "invalid": false
+     },
+     {
+      "value": 22.38,
+      "invalid": false
+     },
+     {
+      "value": 25.88,
+      "invalid": true
+     },
+     {
+      "value": 23.15,
+      "invalid": true
+     },
+     {
+      "value": 14.69,
+      "invalid": false
+     },
+     {
+      "value": 145.56,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "egui",
+    "values": [
+     {
+      "value": 29.04,
+      "invalid": true
+     },
+     {
+      "value": 17.03,
+      "invalid": true
+     },
+     {
+      "value": 169.77,
+      "invalid": false
+     },
+     {
+      "value": 31.82,
+      "invalid": false
+     },
+     {
+      "value": 45.51,
+      "invalid": true
+     },
+     {
+      "value": 21.96,
+      "invalid": true
+     },
+     {
+      "value": 27.35,
+      "invalid": true
+     },
+     {
+      "value": 99.26,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "dioxus",
+    "values": [
+     {
+      "value": 28.19,
+      "invalid": true
+     },
+     {
+      "value": 15.11,
+      "invalid": true
+     },
+     {
+      "value": 220.82,
+      "invalid": false
+     },
+     {
+      "value": 74.94,
+      "invalid": false
+     },
+     {
+      "value": 101.31,
+      "invalid": true
+     },
+     {
+      "value": 37.02,
+      "invalid": true
+     },
+     {
+      "value": 65.01,
+      "invalid": true
+     },
+     {
+      "value": 115.5,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "dioxus-skia",
+    "values": [
+     {
+      "value": 15.12,
+      "invalid": false
+     },
+     {
+      "value": 6.5,
+      "invalid": false
+     },
+     {
+      "value": 192.2,
+      "invalid": false
+     },
+     {
+      "value": 14.29,
+      "invalid": false
+     },
+     {
+      "value": 27.76,
+      "invalid": false
+     },
+     {
+      "value": 19.95,
+      "invalid": true
+     },
+     {
+      "value": 26.8,
+      "invalid": true
+     },
+     {
+      "value": 44.77,
+      "invalid": true
+     }
+    ]
+   }
+  ]
+ },
+ "workloads": {
+  "note": "The five standing workloads (docs/lanes/bench/SCENES.md): instructions per step on the calling thread (p50) by phase, and wall time per step (p50), from one run. Bars share one log scale across scenes. Instructions are the stable column; wall time on the shared Mac moves with its load.",
+  "identity": "host=mileswirht os=Darwin 24.6.0 arch=arm64 · cpu=Apple M3 Pro cores=11 mem=36GiB · load=18.48 24.77 27.10 · commit=6deab7e4e7 date=2026-11-12T10:04:56Z rustc=1.101.0-nightly_5d8fec066_2026-10-16 · binary=workload profile=dist sha256=01e6f3cc7d0cdb9d bytes=6255760 · env MODE=once RENDER=1 REPS=32 SCENE_SCALE=1",
+  "source": "bench/results/r7/workloads/mac-6deab7e4e7/once-render.tsv",
+  "scenes": [
+   {
+    "scene": "sheet",
+    "model": "10000 rows x 10 columns = 100000 cells",
+    "fanout": 10000,
+    "phases": [
+     {
+      "phase": "mount",
+      "steps": 1,
+      "instr_p50": 3674149958,
+      "instr_p95": 3674149958,
+      "wall_us_p50": 389099.9,
+      "wall_us_p95": 389099.9,
+      "footprint_mib": 380.1,
+      "peak_mib": 350.0
+     },
+     {
+      "phase": "first_frame",
+      "steps": 1,
+      "instr_p50": 10678904,
+      "instr_p95": 10678904,
+      "wall_us_p50": 10687.2,
+      "wall_us_p95": 10687.2,
+      "footprint_mib": 380.1,
+      "peak_mib": 350.0
+     },
+     {
+      "phase": "steady",
+      "steps": 32,
+      "instr_p50": 27029,
+      "instr_p95": 2921730,
+      "wall_us_p50": 329.7,
+      "wall_us_p95": 4437.1,
+      "footprint_mib": 427.8,
+      "peak_mib": 350.6
+     },
+     {
+      "phase": "hover",
+      "steps": 32,
+      "instr_p50": 15732183,
+      "instr_p95": 16146395,
+      "wall_us_p50": 8176.1,
+      "wall_us_p95": 9789.8,
+      "footprint_mib": 440.0,
+      "peak_mib": 362.5
+     },
+     {
+      "phase": "theme",
+      "steps": 32,
+      "instr_p50": 57478464,
+      "instr_p95": 57725593,
+      "wall_us_p50": 6029.1,
+      "wall_us_p95": 9984.2,
+      "footprint_mib": 440.0,
+      "peak_mib": 362.5
+     },
+     {
+      "phase": "resize",
+      "steps": 32,
+      "instr_p50": 125703923,
+      "instr_p95": 2119075055,
+      "wall_us_p50": 29992.8,
+      "wall_us_p95": 115826.0,
+      "footprint_mib": 399.1,
+      "peak_mib": 368.5
+     },
+     {
+      "phase": "resize_anim",
+      "steps": 32,
+      "instr_p50": 78629345,
+      "instr_p95": 2122900699,
+      "wall_us_p50": 26648.8,
+      "wall_us_p95": 139673.0,
+      "footprint_mib": 398.5,
+      "peak_mib": 368.7
+     },
+     {
+      "phase": "anim",
+      "steps": 32,
+      "instr_p50": 277,
+      "instr_p95": 277,
+      "wall_us_p50": 0.5,
+      "wall_us_p95": 2.4,
+      "footprint_mib": 429.8,
+      "peak_mib": 368.7
+     },
+     {
+      "phase": "idle",
+      "steps": 32,
+      "instr_p50": 534,
+      "instr_p95": 534,
+      "wall_us_p50": 0.6,
+      "wall_us_p95": 0.6,
+      "footprint_mib": 429.8,
+      "peak_mib": 368.7
+     }
+    ],
+    "settings": "scene=sheet model=\"10000 rows x 10 columns = 100000 cells\" fanout=10000 scene_scale=1 mode=once render=1 device_scale=2 window=1280x800 reps=32",
+    "records": "records=240055 since_exec_ms=415.6 build_ms=0.4",
+    "note": "records=240055 since_exec_ms=415.6 build_ms=0.4; fan-out 10,000"
+   },
+   {
+    "scene": "ide",
+    "model": "12 tabs, 2000 tree entries, 3000 editor lines (14585 token spans, 4312 identifier spans, 2189 occurrences of `value`), minimap 3000 blocks, terminal 400+128 lines; ~114901 glyphs, ~20133 text nodes",
+    "fanout": 4312,
+    "phases": [
+     {
+      "phase": "mount",
+      "steps": 1,
+      "instr_p50": 409719352,
+      "instr_p95": 409719352,
+      "wall_us_p50": 83176.1,
+      "wall_us_p95": 83176.1,
+      "footprint_mib": 142.0,
+      "peak_mib": 71.8
+     },
+     {
+      "phase": "first_frame",
+      "steps": 1,
+      "instr_p50": 6632142,
+      "instr_p95": 6632142,
+      "wall_us_p50": 9463.7,
+      "wall_us_p95": 9463.7,
+      "footprint_mib": 142.0,
+      "peak_mib": 71.8
+     },
+     {
+      "phase": "steady",
+      "steps": 32,
+      "instr_p50": 404671,
+      "instr_p95": 2951792,
+      "wall_us_p50": 607.7,
+      "wall_us_p95": 4541.3,
+      "footprint_mib": 189.8,
+      "peak_mib": 72.1
+     },
+     {
+      "phase": "hover",
+      "steps": 32,
+      "instr_p50": 804335,
+      "instr_p95": 863580,
+      "wall_us_p50": 942.3,
+      "wall_us_p95": 1386.7,
+      "footprint_mib": 189.9,
+      "peak_mib": 72.2
+     },
+     {
+      "phase": "theme",
+      "steps": 32,
+      "instr_p50": 6645702,
+      "instr_p95": 6746269,
+      "wall_us_p50": 3502.0,
+      "wall_us_p95": 4370.2,
+      "footprint_mib": 189.9,
+      "peak_mib": 72.2
+     },
+     {
+      "phase": "resize",
+      "steps": 32,
+      "instr_p50": 63055644,
+      "instr_p95": 87611197,
+      "wall_us_p50": 21543.9,
+      "wall_us_p95": 28263.2,
+      "footprint_mib": 146.6,
+      "peak_mib": 75.7
+     },
+     {
+      "phase": "resize_anim",
+      "steps": 32,
+      "instr_p50": 105433995,
+      "instr_p95": 477609444,
+      "wall_us_p50": 23549.5,
+      "wall_us_p95": 63164.8,
+      "footprint_mib": 147.3,
+      "peak_mib": 76.4
+     },
+     {
+      "phase": "anim",
+      "steps": 32,
+      "instr_p50": 42090308,
+      "instr_p95": 44858836,
+      "wall_us_p50": 6285.1,
+      "wall_us_p95": 14159.5,
+      "footprint_mib": 194.2,
+      "peak_mib": 76.5
+     },
+     {
+      "phase": "idle",
+      "steps": 32,
+      "instr_p50": 535,
+      "instr_p95": 535,
+      "wall_us_p50": 0.6,
+      "wall_us_p95": 0.7,
+      "footprint_mib": 194.2,
+      "peak_mib": 76.5
+     }
+    ],
+    "settings": "scene=ide model=\"12 tabs, 2000 tree entries, 3000 editor lines (14585 token spans, 4312 identifier spans, 2189 occurrences of `value`), minimap 3000 blocks, terminal 400+128 lines; ~114901 glyphs, ~20133 text nodes\" fanout=4312 scene_scale=1 mode=once render=1 device_scale=2 window=1280x800 reps=32",
+    "records": "records=30166 since_exec_ms=109.8 build_ms=0.8",
+    "note": "records=30166 since_exec_ms=109.8 build_ms=0.8; fan-out 4,312"
+   },
+   {
+    "scene": "dash",
+    "model": "200 cards in 40 rows of 5: 40 bars, 40 sparklines (40 quads), 40 trends (2 x 18 dots), 40 gauges, 40 stacked bars; 3484 series marks on the highlight",
+    "fanout": 3484,
+    "phases": [
+     {
+      "phase": "mount",
+      "steps": 1,
+      "instr_p50": 132930860,
+      "instr_p95": 132930860,
+      "wall_us_p50": 62884.1,
+      "wall_us_p95": 62884.1,
+      "footprint_mib": 116.0,
+      "peak_mib": 30.6
+     },
+     {
+      "phase": "first_frame",
+      "steps": 1,
+      "instr_p50": 5554330,
+      "instr_p95": 5554330,
+      "wall_us_p50": 13022.0,
+      "wall_us_p95": 13022.0,
+      "footprint_mib": 116.0,
+      "peak_mib": 30.6
+     },
+     {
+      "phase": "steady",
+      "steps": 32,
+      "instr_p50": 1561756,
+      "instr_p95": 5405353,
+      "wall_us_p50": 1363.0,
+      "wall_us_p95": 8420.2,
+      "footprint_mib": 165.4,
+      "peak_mib": 32.6
+     },
+     {
+      "phase": "hover",
+      "steps": 32,
+      "instr_p50": 733928,
+      "instr_p95": 755954,
+      "wall_us_p50": 986.3,
+      "wall_us_p95": 1798.2,
+      "footprint_mib": 165.5,
+      "peak_mib": 32.6
+     },
+     {
+      "phase": "theme",
+      "steps": 32,
+      "instr_p50": 1322266,
+      "instr_p95": 1360525,
+      "wall_us_p50": 2710.0,
+      "wall_us_p95": 5292.1,
+      "footprint_mib": 165.5,
+      "peak_mib": 32.6
+     },
+     {
+      "phase": "resize",
+      "steps": 32,
+      "instr_p50": 15251990,
+      "instr_p95": 18801187,
+      "wall_us_p50": 7097.3,
+      "wall_us_p95": 9302.5,
+      "footprint_mib": 119.2,
+      "peak_mib": 33.3
+     },
+     {
+      "phase": "resize_anim",
+      "steps": 32,
+      "instr_p50": 15934542,
+      "instr_p95": 17533601,
+      "wall_us_p50": 7484.6,
+      "wall_us_p95": 9642.8,
+      "footprint_mib": 121.0,
+      "peak_mib": 35.2
+     },
+     {
+      "phase": "anim",
+      "steps": 32,
+      "instr_p50": 876376,
+      "instr_p95": 3728673,
+      "wall_us_p50": 2140.7,
+      "wall_us_p95": 4940.2,
+      "footprint_mib": 168.2,
+      "peak_mib": 35.6
+     },
+     {
+      "phase": "idle",
+      "steps": 32,
+      "instr_p50": 543,
+      "instr_p95": 543,
+      "wall_us_p50": 0.6,
+      "wall_us_p95": 0.6,
+      "footprint_mib": 168.2,
+      "peak_mib": 35.6
+     }
+    ],
+    "settings": "scene=dash model=\"200 cards in 40 rows of 5: 40 bars, 40 sparklines (40 quads), 40 trends (2 x 18 dots), 40 gauges, 40 stacked bars; 3484 series marks on the highlight\" fanout=3484 scene_scale=1 mode=once render=1 device_scale=2 window=1280x800 reps=32",
+    "records": "records=8188 since_exec_ms=93.2 build_ms=0.0",
+    "note": "records=8188 since_exec_ms=93.2 build_ms=0.0; fan-out 3,484"
+   },
+   {
+    "scene": "canvas",
+    "model": "20 frames, 5000 nodes (1000 component instances, 60 movable, 50 animated, 60 cross-fading), 505 layer rows, ~8137 instances",
+    "fanout": 1000,
+    "phases": [
+     {
+      "phase": "mount",
+      "steps": 1,
+      "instr_p50": 127285662,
+      "instr_p95": 127285662,
+      "wall_us_p50": 62602.5,
+      "wall_us_p95": 62602.5,
+      "footprint_mib": 126.7,
+      "peak_mib": 37.1
+     },
+     {
+      "phase": "first_frame",
+      "steps": 1,
+      "instr_p50": 9362376,
+      "instr_p95": 9362376,
+      "wall_us_p50": 48329.2,
+      "wall_us_p95": 48329.2,
+      "footprint_mib": 126.7,
+      "peak_mib": 37.1
+     },
+     {
+      "phase": "steady",
+      "steps": 32,
+      "instr_p50": 45606,
+      "instr_p95": 2937643,
+      "wall_us_p50": 846.1,
+      "wall_us_p95": 14821.1,
+      "footprint_mib": 174.3,
+      "peak_mib": 37.5
+     },
+     {
+      "phase": "hover",
+      "steps": 32,
+      "instr_p50": 225650,
+      "instr_p95": 277841,
+      "wall_us_p50": 7717.4,
+      "wall_us_p95": 7802.1,
+      "footprint_mib": 174.3,
+      "peak_mib": 37.5
+     },
+     {
+      "phase": "theme",
+      "steps": 32,
+      "instr_p50": 578780,
+      "instr_p95": 639691,
+      "wall_us_p50": 12533.1,
+      "wall_us_p95": 12672.9,
+      "footprint_mib": 174.4,
+      "peak_mib": 37.6
+     },
+     {
+      "phase": "resize",
+      "steps": 32,
+      "instr_p50": 8948161,
+      "instr_p95": 10316304,
+      "wall_us_p50": 16309.5,
+      "wall_us_p95": 18694.0,
+      "footprint_mib": 128.4,
+      "peak_mib": 38.4
+     },
+     {
+      "phase": "resize_anim",
+      "steps": 32,
+      "instr_p50": 8807006,
+      "instr_p95": 9567813,
+      "wall_us_p50": 16425.3,
+      "wall_us_p95": 19199.2,
+      "footprint_mib": 128.6,
+      "peak_mib": 38.7
+     },
+     {
+      "phase": "anim",
+      "steps": 32,
+      "instr_p50": 108696,
+      "instr_p95": 2928687,
+      "wall_us_p50": 3783.9,
+      "wall_us_p95": 13926.5,
+      "footprint_mib": 175.5,
+      "peak_mib": 38.7
+     },
+     {
+      "phase": "idle",
+      "steps": 32,
+      "instr_p50": 541,
+      "instr_p95": 541,
+      "wall_us_p50": 0.3,
+      "wall_us_p95": 0.4,
+      "footprint_mib": 175.5,
+      "peak_mib": 38.7
+     }
+    ],
+    "settings": "scene=canvas model=\"20 frames, 5000 nodes (1000 component instances, 60 movable, 50 animated, 60 cross-fading), 505 layer rows, ~8137 instances\" fanout=1000 scene_scale=1 mode=once render=1 device_scale=2 window=1280x800 reps=32",
+    "records": "records=10856 since_exec_ms=127.0 build_ms=0.3",
+    "note": "records=10856 since_exec_ms=127.0 build_ms=0.3; fan-out 1,000"
+   },
+   {
+    "scene": "chat",
+    "model": "2000 messages from 12 participants (200 images over 8 distinct PNGs, 274 quotes, 840 reaction pills, 436280 chars), 200 conversations, arrivals in a List",
+    "fanout": 830,
+    "phases": [
+     {
+      "phase": "mount",
+      "steps": 1,
+      "instr_p50": 964418342,
+      "instr_p95": 964418342,
+      "wall_us_p50": 139687.9,
+      "wall_us_p95": 139687.9,
+      "footprint_mib": 161.6,
+      "peak_mib": 88.2
+     },
+     {
+      "phase": "first_frame",
+      "steps": 1,
+      "instr_p50": 11738487,
+      "instr_p95": 11738487,
+      "wall_us_p50": 12168.8,
+      "wall_us_p95": 12168.8,
+      "footprint_mib": 161.6,
+      "peak_mib": 88.2
+     },
+     {
+      "phase": "steady",
+      "steps": 32,
+      "instr_p50": 779840,
+      "instr_p95": 2888284,
+      "wall_us_p50": 1592.0,
+      "wall_us_p95": 4016.9,
+      "footprint_mib": 209.9,
+      "peak_mib": 89.0
+     },
+     {
+      "phase": "hover",
+      "steps": 32,
+      "instr_p50": 144921,
+      "instr_p95": 164839,
+      "wall_us_p50": 276.4,
+      "wall_us_p95": 905.7,
+      "footprint_mib": 209.9,
+      "peak_mib": 89.0
+     },
+     {
+      "phase": "theme",
+      "steps": 32,
+      "instr_p50": 3144019,
+      "instr_p95": 3260245,
+      "wall_us_p50": 2883.8,
+      "wall_us_p95": 3731.0,
+      "footprint_mib": 210.0,
+      "peak_mib": 89.0
+     },
+     {
+      "phase": "resize",
+      "steps": 32,
+      "instr_p50": 186806394,
+      "instr_p95": 213112892,
+      "wall_us_p50": 27029.1,
+      "wall_us_p95": 31746.5,
+      "footprint_mib": 165.2,
+      "peak_mib": 91.4
+     },
+     {
+      "phase": "resize_anim",
+      "steps": 32,
+      "instr_p50": 170061533,
+      "instr_p95": 215003634,
+      "wall_us_p50": 23883.7,
+      "wall_us_p95": 32155.0,
+      "footprint_mib": 165.5,
+      "peak_mib": 91.7
+     },
+     {
+      "phase": "anim",
+      "steps": 32,
+      "instr_p50": 787371,
+      "instr_p95": 3641220,
+      "wall_us_p50": 1544.6,
+      "wall_us_p95": 3797.9,
+      "footprint_mib": 212.4,
+      "peak_mib": 91.7
+     },
+     {
+      "phase": "idle",
+      "steps": 32,
+      "instr_p50": 538,
+      "instr_p95": 538,
+      "wall_us_p50": 0.6,
+      "wall_us_p95": 0.7,
+      "footprint_mib": 212.4,
+      "peak_mib": 91.7
+     }
+    ],
+    "settings": "scene=chat model=\"2000 messages from 12 participants (200 images over 8 distinct PNGs, 274 quotes, 840 reaction pills, 436280 chars), 200 conversations, arrivals in a List\" fanout=830 scene_scale=1 mode=once render=1 device_scale=2 window=1280x800 reps=32",
+    "records": "records=23593 since_exec_ms=181.8 build_ms=15.7",
+    "note": "records=23593 since_exec_ms=181.8 build_ms=15.7; fan-out 830"
+   }
+  ]
+ }
+}

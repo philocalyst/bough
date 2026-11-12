@@ -1,0 +1,44 @@
+[package]
+name = "bough-workloads"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "The standing workloads (round 7, bench lane): an IDE, a dashboard of 200 charts, a design canvas, a chat with media, a spreadsheet of 100,000 cells; cold start, steady interaction, resize sweeps, fan-out hover, theme switches and transitions"
+
+[dependencies]
+bough = { path = "../../crates/bough" }
+bough-mem = { path = "../../crates/bough-mem" }
+# the font every scene draws with (embedded; the same bytes on every host)
+zgx-workload = { git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }
+# synthetic images for the chat's media (encoded once at build of the model)
+png = "0.17"
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# phys_footprint (process counters); the only macOS-only call in the crate is in src/sys.rs
+bough-metal = { path = "../../crates/bough-metal" }
+
+[features]
+default = ["sheet", "ide", "dash", "canvas", "chat", "gbcanvas"]
+# One feature per scene, so a scene can be built alone (`--no-default-features --features ide`) while another
+# is being edited.
+sheet = []
+ide = []
+dash = []
+canvas = []
+chat = []
+# the gui-bench edition of the canvas (comparisons/bough-guibench-scenes), the Mac reference of the cross-framework cells
+gbcanvas = []
+# hotpath's phase profile of the turn (bough's own measure sites) printed at exit: instrumented, never a
+# release number (docs/lanes/bench/MEASUREMENT.md).
+hotpath = ["bough/hotpath"]
+hotpath-alloc = ["bough/hotpath-alloc"]
+
+[[bin]]
+name = "workload"
+path = "src/bin/workload.rs"
+
+[[bin]]
+# the same driver with bough_mem::count::Counting as the global allocator: allocation counts per step
+name = "workload_alloc"
+path = "src/bin/workload_alloc.rs"
