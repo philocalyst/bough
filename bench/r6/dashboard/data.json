@@ -981,12 +981,442 @@
    ]
   }
  ],
- "not_measured": [
-  {
-   "id": "zortax_guibench_fakeland",
-   "group": "zortax gui-bench under fakeland",
-   "status": "not measured yet",
-   "note": "No zortax gui-bench numbers exist in data.json. The radial and beeswarm comparisons against other frameworks will draw here once zortax points are added."
-  }
- ]
+ "not_measured": [],
+ "zortax_quick1": {
+  "title": "zortax gui-bench quick run 1",
+  "label": "Rough baseline only",
+  "caveats": [
+   "Busy host: other processes used about 70 % of 16 CPUs (load average 20-30); 280 of 535 reports fail the harness's own validity checks (wake_lateness); values marked † come from an invalid report.",
+   "Software rendering: fakeland's pixman compositor and lavapipe software Vulkan (ilo-prod has no GPU), --quick mode, nice 19.",
+   "172 cells: 154 completed, 18 stopped after startup (floem: a 1 px border drawn across a pixel boundary fails the layout check in 16 of 17 cells; vizia: typing and search paint nothing).",
+   "bough is not in this matrix: it has no Linux backend yet (the platform lane is bringing one up). Nothing here compares with bough's macOS numbers: other host, other ISA, whole-process CPU time under software rendering versus instructions on the calling thread.",
+   "Ripple and Solid are not comparison targets."
+  ],
+  "identity": "ilo-prod (AMD Ryzen 7 3700X, governor powersave, boost on), kernel 6.18.54, gui-bench 0fd45107, fakeland 71695e7c, 2026-11-12, flattened by the research lane (RESULTS.md, metrics.tsv, validity.tsv on branch lane/research/round6 efdc4e5bc7)",
+  "scenario_note": "rows scenario at 3,000 rows unless the metric names another; lower is better for every metric",
+  "metrics": [
+   {
+    "name": "hover p50",
+    "unit": "ms",
+    "lower_is_better": true
+   },
+   {
+    "name": "hover input to commit",
+    "unit": "ms",
+    "lower_is_better": true
+   },
+   {
+    "name": "idle RSS",
+    "unit": "MiB",
+    "lower_is_better": true
+   },
+   {
+    "name": "idle CPU",
+    "unit": "ms/s",
+    "lower_is_better": true
+   },
+   {
+    "name": "scroll CPU per frame",
+    "unit": "ms",
+    "lower_is_better": true
+   },
+   {
+    "name": "typing p50",
+    "unit": "ms",
+    "lower_is_better": true
+   },
+   {
+    "name": "resize configure to present",
+    "unit": "ms",
+    "lower_is_better": true
+   },
+   {
+    "name": "spinner 10k CPU per frame",
+    "unit": "ms",
+    "lower_is_better": true
+   }
+  ],
+  "frameworks": [
+   {
+    "framework": "zgui",
+    "values": [
+     {
+      "value": 16.16,
+      "invalid": true
+     },
+     {
+      "value": 7.73,
+      "invalid": true
+     },
+     {
+      "value": 317.16,
+      "invalid": false
+     },
+     {
+      "value": 144.42,
+      "invalid": false
+     },
+     {
+      "value": 32.15,
+      "invalid": true
+     },
+     {
+      "value": 22.7,
+      "invalid": true
+     },
+     {
+      "value": 73.47,
+      "invalid": true
+     },
+     {
+      "value": 20.12,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "gpui-kit",
+    "values": [
+     {
+      "value": 111.06,
+      "invalid": true
+     },
+     {
+      "value": 98.47,
+      "invalid": true
+     },
+     {
+      "value": 251.64,
+      "invalid": false
+     },
+     {
+      "value": 154.07,
+      "invalid": false
+     },
+     {
+      "value": 194.04,
+      "invalid": true
+     },
+     {
+      "value": 80.05,
+      "invalid": true
+     },
+     {
+      "value": 120.02,
+      "invalid": true
+     },
+     {
+      "value": 473.7,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "gpui-kit-fast",
+    "values": [
+     {
+      "value": 61.96,
+      "invalid": true
+     },
+     {
+      "value": 49.48,
+      "invalid": true
+     },
+     {
+      "value": 269.82,
+      "invalid": false
+     },
+     {
+      "value": 174.91,
+      "invalid": false
+     },
+     {
+      "value": 207.83,
+      "invalid": true
+     },
+     {
+      "value": 78.39,
+      "invalid": true
+     },
+     {
+      "value": 134.81,
+      "invalid": true
+     },
+     {
+      "value": 323.81,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "freya",
+    "values": [
+     {
+      "value": 15.11,
+      "invalid": true
+     },
+     {
+      "value": 5.94,
+      "invalid": true
+     },
+     {
+      "value": 250.74,
+      "invalid": false
+     },
+     {
+      "value": 14.89,
+      "invalid": false
+     },
+     {
+      "value": 32.25,
+      "invalid": true
+     },
+     {
+      "value": 21.15,
+      "invalid": true
+     },
+     {
+      "value": 59.97,
+      "invalid": true
+     },
+     {
+      "value": 26.36,
+      "invalid": false
+     }
+    ]
+   },
+   {
+    "framework": "freya-056a5b4",
+    "values": [
+     {
+      "value": 15.11,
+      "invalid": true
+     },
+     {
+      "value": 5.39,
+      "invalid": true
+     },
+     {
+      "value": 250.55,
+      "invalid": false
+     },
+     {
+      "value": 14.75,
+      "invalid": false
+     },
+     {
+      "value": 29.06,
+      "invalid": true
+     },
+     {
+      "value": 24.31,
+      "invalid": true
+     },
+     {
+      "value": 72.96,
+      "invalid": true
+     },
+     {
+      "value": 26.61,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "vizia",
+    "values": [
+     {
+      "value": 113.16,
+      "invalid": true
+     },
+     {
+      "value": 104.15,
+      "invalid": true
+     },
+     {
+      "value": 273.66,
+      "invalid": false
+     },
+     {
+      "value": 30.11,
+      "invalid": false
+     },
+     {
+      "value": 168.21,
+      "invalid": false
+     },
+     null,
+     {
+      "value": 91.66,
+      "invalid": true
+     },
+     {
+      "value": 28.24,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "floem",
+    "values": [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null
+    ]
+   },
+   {
+    "framework": "iced",
+    "values": [
+     {
+      "value": 15.1,
+      "invalid": false
+     },
+     {
+      "value": 5.49,
+      "invalid": false
+     },
+     {
+      "value": 169.94,
+      "invalid": false
+     },
+     {
+      "value": 22.38,
+      "invalid": false
+     },
+     {
+      "value": 25.88,
+      "invalid": true
+     },
+     {
+      "value": 23.15,
+      "invalid": true
+     },
+     {
+      "value": 14.69,
+      "invalid": false
+     },
+     {
+      "value": 145.56,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "egui",
+    "values": [
+     {
+      "value": 29.04,
+      "invalid": true
+     },
+     {
+      "value": 17.03,
+      "invalid": true
+     },
+     {
+      "value": 169.77,
+      "invalid": false
+     },
+     {
+      "value": 31.82,
+      "invalid": false
+     },
+     {
+      "value": 45.51,
+      "invalid": true
+     },
+     {
+      "value": 21.96,
+      "invalid": true
+     },
+     {
+      "value": 27.35,
+      "invalid": true
+     },
+     {
+      "value": 99.26,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "dioxus",
+    "values": [
+     {
+      "value": 28.19,
+      "invalid": true
+     },
+     {
+      "value": 15.11,
+      "invalid": true
+     },
+     {
+      "value": 220.82,
+      "invalid": false
+     },
+     {
+      "value": 74.94,
+      "invalid": false
+     },
+     {
+      "value": 101.31,
+      "invalid": true
+     },
+     {
+      "value": 37.02,
+      "invalid": true
+     },
+     {
+      "value": 65.01,
+      "invalid": true
+     },
+     {
+      "value": 115.5,
+      "invalid": true
+     }
+    ]
+   },
+   {
+    "framework": "dioxus-skia",
+    "values": [
+     {
+      "value": 15.12,
+      "invalid": false
+     },
+     {
+      "value": 6.5,
+      "invalid": false
+     },
+     {
+      "value": 192.2,
+      "invalid": false
+     },
+     {
+      "value": 14.29,
+      "invalid": false
+     },
+     {
+      "value": 27.76,
+      "invalid": false
+     },
+     {
+      "value": 19.95,
+      "invalid": true
+     },
+     {
+      "value": 26.8,
+      "invalid": true
+     },
+     {
+      "value": 44.77,
+      "invalid": true
+     }
+    ]
+   }
+  ]
+ }
 }

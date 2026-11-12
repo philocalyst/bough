@@ -141,6 +141,15 @@ svg .guide { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharr
   font-size: 13px; line-height: 1.4; white-space: pre-line; overflow-wrap: anywhere;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18); }
 footer { margin-top: 2.4rem; color: var(--muted); font-size: 0.85rem; }
+.k-x { fill: var(--panel); stroke: var(--measured); stroke-width: 1.5; stroke-dasharray: 2 2; }
+.warnbox { border: 2px solid var(--reported); border-radius: 10px; padding: 10px 14px; margin: 0.6rem 0; background: var(--panel); }
+.warnbox .warnhead { font-weight: 700; font-size: 1.05rem; margin: 0 0 0.3em; color: var(--fg); }
+.warnbox ul { margin: 0.2em 0 0.4em; padding-left: 1.2em; font-size: 0.9rem; }
+.tbl { margin: 0.6rem 0; font-size: 0.85rem; }
+.tbl summary { cursor: pointer; color: var(--muted); }
+.tbl table { border-collapse: collapse; margin-top: 0.4rem; font-variant-numeric: tabular-nums; }
+.tbl th, .tbl td { border-bottom: 1px solid var(--rule); padding: 3px 8px; text-align: right; white-space: nowrap; }
+.tbl th[scope="row"], .tbl thead th:first-child { text-align: left; }
 """
 
 
@@ -575,6 +584,142 @@ def zortax_section(data):
     return "\n".join(out)
 
 
+def nice_ticks(scale, n=4):
+    """Tick values for a make_scale result: decades on a log scale, round steps from zero on a linear one."""
+    if scale["mode"] == "log":
+        return [10 ** e for e in range(scale["a"], scale["b"] + 1)]
+    top = scale["b"]
+    raw = top / n
+    mag = 10 ** math.floor(math.log10(raw)) if raw > 0 else 1
+    step = next(m * mag for m in (1, 2, 2.5, 5, 10) if m * mag >= raw)
+    out, v = [], 0.0
+    while v <= top * 1.0001:
+        out.append(v)
+        v += step
+    return out
+
+
+def dot_strip(title, unit, rows, note=""):
+    """One metric across frameworks: a row per framework, a dot at its value (hollow and dashed when the report
+    was invalid), a dash when there is no value. Single hue: identity is the row label, not a colour."""
+    vals = [r[1]["value"] for r in rows if r[1]]
+    if not vals:
+        return ""
+    sc = make_scale(vals)
+    left, right, top, rh = 112, 22, 14, 22
+    w = 420
+    plot = w - left - right
+    h = top + rh * len(rows) + 30
+    order = sorted(rows, key=lambda r: (r[1] is None, r[1]["value"] if r[1] else 0))
+    best = order[0][1]["value"] if order and order[0][1] else None
+    out = [f'<svg class="fit" viewBox="0 0 {w} {h}" role="img" aria-label="{esc(title)} by framework, {esc(unit)}">']
+    for t in nice_ticks(sc):
+        x = left + plot * sc["fn"](t) if (sc["mode"] == "linear" or t > 0) else left
+        out.append(f'<line class="grid" x1="{x:.1f}" x2="{x:.1f}" y1="{top - 6}" y2="{top + rh * len(rows)}"/>')
+        out.append(f'<text class="lbl small mid" x="{x:.1f}" y="{top + rh * len(rows) + 16}">{esc(tick_text(t))}</text>')
+    for i, (fw, v) in enumerate(order):
+        y = top + rh * i + rh / 2
+        out.append(f'<text class="lbl small end" x="{left - 10}" y="{y + 4:.1f}">{esc(fw)}</text>')
+        if v is None:
+            out.append(f'<text class="lbl small" x="{left + 4}" y="{y + 4:.1f}">no value</text>')
+            continue
+        x = left + plot * sc["fn"](v["value"])
+        cls = "k-x" if v["invalid"] else "k-m"
+        lab = f'{fw}: {v["value"]:,.2f} {unit}' + (" (from a report the harness marked invalid)" if v["invalid"] else "")
+        out.append(f'<line class="grid" x1="{left}" x2="{x:.1f}" y1="{y:.1f}" y2="{y:.1f}"/>')
+        out.append(f'<circle class="{cls} anim-fade" style="--d:{0.03 * i:.2f}s" cx="{x:.1f}" cy="{y:.1f}" r="5"/>')
+        if v["value"] == best:
+            out.append(f'<text class="small" x="{min(x + 9, w - 4):.1f}" y="{y + 4:.1f}">{v["value"]:,.1f}{"†" if v["invalid"] else ""}</text>')
+        out.append(f'<rect class="hit" x="{left - 100}" y="{y - rh / 2:.1f}" width="{w - left + 100 - right + 20}" height="{rh}" tabindex="0" data-tip="{esc(lab)}"/>')
+    out.append(f'<text class="lbl small" x="{left}" y="{h - 1}">{esc(unit)}{", log scale" if sc["mode"] == "log" else ""}, lower is better</text>')
+    out.append("</svg>")
+    return f'<article class="card"><h4>{esc(title)}</h4>{"<p class=cap>" + esc(note) + "</p>" if note else ""}' + "".join(out) + "</article>"
+
+
+def zortax_quick1_section(data):
+    z = data.get("zortax_quick1")
+    if not z:
+        return ""
+    out = [f'<div class="warnbox"><p class="warnhead">{esc(z["label"])}</p><ul>']
+    out += [f"<li>{esc(c)}</li>" for c in z["caveats"]]
+    out.append(f'</ul><p class="small-note">Provenance: {esc(z["identity"])}. {esc(z["scenario_note"])}.</p></div>')
+    out.append('<p class="cap">Filled dot: a valid report. Hollow dashed dot (†): the value comes from a report that failed the harness\'s validity checks on this busy host. The best value of each metric is labelled.</p>')
+    out.append('<div class="cards" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">')
+    for mi, m in enumerate(z["metrics"]):
+        rows = [(f["framework"], f["values"][mi]) for f in z["frameworks"]]
+        out.append(dot_strip(m["name"], m["unit"], rows))
+    out.append("</div>")
+    # table view
+    th = "".join(f'<th>{esc(m["name"])} ({esc(m["unit"])})</th>' for m in z["metrics"])
+    trs = []
+    for f in z["frameworks"]:
+        tds = "".join("<td>" + ("no value" if v is None else f'{v["value"]:,.2f}{" †" if v["invalid"] else ""}') + "</td>" for v in f["values"])
+        trs.append(f'<tr><th scope="row">{esc(f["framework"])}</th>{tds}</tr>')
+    out.append(f'<details class="tbl"><summary>Table view</summary><div class="scroll"><table><thead><tr><th>framework</th>{th}</tr></thead><tbody>{"".join(trs)}</tbody></table></div></details>')
+    return "\n".join(out)
+
+
+def workloads_section(data):
+    """The standing workloads: per scene, instructions per step (p50) by phase as bars on a shared log scale, the
+    wall time per step beside them, and the model and identity of the run."""
+    wl = data.get("workloads")
+    if not wl:
+        return ""
+    out = [f'<p class="cap">{esc(wl["note"])}</p>', f'<p class="small-note">Provenance: {esc(wl["identity"])}</p>']
+    allv = [r["instr_p50"] for sc in wl["scenes"] for r in sc["phases"] if r.get("instr_p50", 0) > 0]
+    sc_ = make_scale(allv) if allv else None
+    for sc in wl["scenes"]:
+        rows = sc["phases"]
+        left, right, top, rh = 104, 150, 8, 24
+        w = 640
+        plot = w - left - right
+        h = top + rh * len(rows) + 28
+        svg = [f'<svg class="fit" viewBox="0 0 {w} {h}" role="img" aria-label="{esc(sc["scene"])}: instructions per step by phase">']
+        if sc.get("failed"):
+            out.append(f'<h3>{esc(sc["scene"])} <span class="tag n">{esc(sc["failed"])}</span></h3>')
+        if sc_:
+            for t in nice_ticks(sc_):
+                x = left + plot * sc_["fn"](t)
+                svg.append(f'<line class="grid" x1="{x:.1f}" x2="{x:.1f}" y1="{top - 4}" y2="{top + rh * len(rows)}"/>')
+                svg.append(f'<text class="lbl small mid" x="{x:.1f}" y="{top + rh * len(rows) + 16}">{esc(short_num(t))}</text>')
+        for i, r in enumerate(rows):
+            y = top + rh * i
+            v = r.get("instr_p50", 0)
+            svg.append(f'<text class="lbl small end" x="{left - 8}" y="{y + 16}">{esc(r["phase"])}</text>')
+            if v > 0 and sc_:
+                bw = max(plot * sc_["fn"](v), 2)
+                tipt = tip(f'{sc["scene"]}, {r["phase"]} ({r["steps"]} steps)', f'instructions per step: p50 {v:,}, p95 {r.get("instr_p95", 0):,}',
+                           f'wall per step: p50 {r.get("wall_us_p50", 0):,.1f} µs, p95 {r.get("wall_us_p95", 0):,.1f} µs', f'footprint {r.get("footprint_mib", 0):,.1f} MiB')
+                svg.append(f'<rect class="b-m anim-grow" style="--d:{0.04 * i:.2f}s" x="{left}" y="{y + 5}" width="{bw:.1f}" height="{rh - 10}" rx="3"/>')
+                svg.append(f'<rect class="hit" x="0" y="{y}" width="{w}" height="{rh}" tabindex="0" data-tip="{esc(tipt)}"/>')
+            svg.append(f'<text class="small" x="{w - right + 8}" y="{y + 16}">{esc(short_num(v))} · {esc(ms_text(r.get("wall_us_p50", 0)))}</text>')
+        svg.append(f'<text class="lbl small" x="{left}" y="{h - 1}">instructions per step (p50, log scale) · right: p50 instructions · p50 wall</text>')
+        svg.append("</svg>")
+        out.append(f'<article class="panel"><h4>{esc(sc["scene"])}: {esc(sc["model"])}</h4><p class="cap">{esc(sc.get("note", ""))}</p>' + "".join(svg) + "</article>")
+    th = "<th>scene</th><th>phase</th><th>steps</th><th>instr p50</th><th>instr p95</th><th>wall p50 µs</th><th>wall p95 µs</th><th>footprint MiB</th>"
+    trs = []
+    for sc in wl["scenes"]:
+        for r in sc["phases"]:
+            trs.append(f'<tr><th scope="row">{esc(sc["scene"])}</th><td>{esc(r["phase"])}</td><td>{r["steps"]}</td><td>{r.get("instr_p50", 0):,}</td><td>{r.get("instr_p95", 0):,}</td>'
+                       f'<td>{r.get("wall_us_p50", 0):,.1f}</td><td>{r.get("wall_us_p95", 0):,.1f}</td><td>{r.get("footprint_mib", 0):,.1f}</td></tr>')
+    out.append(f'<details class="tbl"><summary>Table view</summary><div class="scroll"><table><thead><tr>{th}</tr></thead><tbody>{"".join(trs)}</tbody></table></div></details>')
+    return "\n".join(out)
+
+
+def short_num(v):
+    v = float(v)
+    for div, suf in ((1e9, " G"), (1e6, " M"), (1e3, " K")):
+        if abs(v) >= div:
+            return f"{v / div:.3g}{suf}"
+    return f"{v:.3g}"
+
+
+def ms_text(us):
+    us = float(us)
+    return f"{us / 1000:.3g} ms" if us >= 1000 else f"{us:.3g} µs"
+
+
+
 SCRIPT = """
 (function () {
   "use strict";
@@ -686,6 +831,8 @@ def build_body(data):
     wf = waterfall(data)
     sing = singles(data)
     zortax = zortax_section(data)
+    zq1 = zortax_quick1_section(data)
+    workloads = workloads_section(data)
 
     body = f"""<main>
 <h1>bough round 6</h1>
@@ -713,7 +860,11 @@ def build_body(data):
 <p class="cap">One card per series, grouped as in data.json. Connected lines are before/after or commit sequences; dots are scenes or values with no order. Scale is log when the range exceeds 50x, otherwise linear from zero.</p>
 {"".join(card_groups)}
 
-<h2>zortax gui-bench under fakeland</h2>
+<h2>Standing workloads (round 7) <span class="tag m">measured</span></h2>
+{workloads}
+
+<h2>zortax gui-bench under fakeland <span class="tag n">rough baseline only</span></h2>
+{zq1}
 {zortax}
 
 <footer>Generated by build.py from data.json · {len(data["series"])} series · {n_points} points · no external sources or scripts beyond this page.</footer>
