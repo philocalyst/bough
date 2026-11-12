@@ -32,6 +32,14 @@ mod p12;
 mod p13;
 #[path = "../../../docs/lanes/async/programs/p14_interrupt.rs"]
 mod p14;
+#[path = "../../../docs/lanes/async/programs/p01b_search_field.rs"]
+mod p01b;
+#[path = "../../../docs/lanes/async/programs/p03b_optimistic_overlay.rs"]
+mod p03b;
+#[path = "../../../docs/lanes/async/programs/p04b_dependent_fields.rs"]
+mod p04b;
+#[path = "../../../docs/lanes/async/programs/p09b_errors_catch.rs"]
+mod p09b;
 
 use api::server;
 use bough::raw::{App, Config, View};
@@ -696,4 +704,91 @@ fn p12_long_work_yields_and_stops_when_dropped() {
     a.frame();
     assert!(has(&a, "5133 primes"), "{:?}", texts(&a));
     assert!(!has(&a, "17984 primes"));
+}
+
+// =============================================================================== the alternatives (b)
+
+#[test]
+fn p01b_field_question_behaves_as_p01() {
+    let mut a = start(p01b::Search::new());
+    for (i, q) in ["r", "re", "rec"].iter().enumerate() {
+        act(&mut a, |v| *v.query = q.to_string());
+        assert!(has(&a, "Results for \u{201c}\u{201d}") && has(&a, "searching\u{2026}"), "held: {:?}", texts(&a));
+        if i < 2 {
+            a.advance(ms(50));
+        }
+    }
+    a.advance(ms(200));
+    a.frame();
+    assert_eq!(calls("search"), vec![("rec".to_string(), false)]);
+    assert!(a.owner.hits.pending());
+    server::answer("search", "rec", hits("rec", 2));
+    settle(&mut a);
+    assert!(has(&a, "Results for \u{201c}rec\u{201d}") && has(&a, "rec#2") && !a.owner.hits.pending());
+    // refresh is a method of the field
+    act(&mut a, |v| v.hits.refresh());
+    assert!(a.owner.hits.pending(), "a refresh is pending at once");
+    a.advance(ms(200));
+    assert!(server::is_pending("search", "rec"), "and asks after the debounce");
+}
+
+#[test]
+fn p04b_field_waterfall_publishes_whole() {
+    let mut a = start(p04b::Reader::new(1));
+    server::answer("story", "1", story(1));
+    server::answer("comments", "1", comments(1));
+    settle(&mut a);
+    server::answer("user", "10", api::User { id: 10, name: "User 10".into() });
+    settle(&mut a);
+    assert!(has(&a, "Story 1") && has(&a, "by User 10") && has(&a, "1: c0"), "{:?}", texts(&a));
+    act(&mut a, |v| v.open(7));
+    server::answer("comments", "7", comments(7));
+    server::answer("story", "7", story(7));
+    settle(&mut a);
+    assert!(has(&a, "Story 1") && has(&a, "1: c0") && server::is_pending("user", "70"), "{:?}", texts(&a));
+    server::answer("user", "70", api::User { id: 70, name: "User 70".into() });
+    settle(&mut a);
+    assert!(has(&a, "Story 7") && has(&a, "by User 70") && has(&a, "7: c1") && !has(&a, "1: c0"));
+}
+
+#[test]
+fn p03b_overlays_cancel_and_roll_back() {
+    let mut a = start(p03b::Todos::new(vec![todo(1, "milk", false), todo(2, "eggs", false)]));
+    act(&mut a, |v| v.flip(1));
+    assert!(has(&a, "[x] milk"), "the overlay shows at once: {:?}", texts(&a));
+    act(&mut a, |v| v.flip(1));
+    assert!(has(&a, "[ ] milk"), "two toggles cancel on screen");
+    assert!(!a.owner.items[0].done, "handlers see the truth");
+    // the first fails, the second lands: the server toggled once
+    server::answer("toggle_done", "1", Err::<api::Todo, _>(api::Error::Refused("locked".into())));
+    settle(&mut a);
+    assert!(has(&a, "[x] milk") && has(&a, "Could not save: refused: locked"), "{:?}", texts(&a));
+    server::answer("toggle_done", "1", Ok::<_, api::Error>(todo(1, "milk", true)));
+    settle(&mut a);
+    assert!(has(&a, "[x] milk") && a.owner.items[0].done);
+    // an add shows as a row of the list, then is the server's row, in one frame
+    act(&mut a, |v| *v.draft = "bread".into());
+    act(&mut a, p03b::Todos::submit);
+    assert_eq!(texts(&a).iter().filter(|s| s.contains("bread")).count(), 1);
+    server::answer("add_todo", "bread", Ok::<_, api::Error>(todo(3, "bread", false)));
+    settle(&mut a);
+    assert_eq!(texts(&a).iter().filter(|s| s.contains("bread")).count(), 1, "{:?}", texts(&a));
+    assert_eq!(a.owner.items.len(), 3);
+}
+
+#[test]
+fn p09b_errors_reach_the_boundary_and_retry_remounts() {
+    let mut a = start(p09b::Profile::new(1));
+    assert!(has(&a, "Loading\u{2026}"));
+    server::answer("try_user", "1", Err::<api::User, _>(api::Error::Refused("private".into())));
+    settle(&mut a);
+    assert!(has(&a, "Could not load the profile: refused: private") && has(&a, "Retry") && !has(&a, "Loading\u{2026}"), "{:?}", texts(&a));
+    act(&mut a, p09b::Profile::click);
+    assert!(has(&a, "clicked 1"));
+    // the Retry route: the content mounts again and asks again
+    act(&mut a, |v| (bough::catch::Retry::<p09b::Profile>::for_test(0))(v));
+    assert!(has(&a, "Loading\u{2026}") && server::is_pending("try_user", "1"), "{:?}", texts(&a));
+    server::answer("try_user", "1", Ok::<_, api::Error>(api::User { id: 1, name: "Ada".into() }));
+    settle(&mut a);
+    assert!(has(&a, "Ada (#1)") && !has(&a, "Retry"), "{:?}", texts(&a));
 }

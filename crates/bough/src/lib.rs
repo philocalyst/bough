@@ -1,11 +1,13 @@
-#![feature(type_info, ptr_metadata, rustc_attrs, const_trait_impl, const_cmp, arbitrary_self_types_pointers, f16, stdarch_neon_f16, async_iterator)]
+#![feature(type_info, ptr_metadata, rustc_attrs, const_trait_impl, const_cmp, arbitrary_self_types_pointers, f16, stdarch_neon_f16, async_iterator, unboxed_closures, fn_traits)]
 #![allow(internal_features)]
 //! bough: the public façade over bough-core (records, damage), bough-text (shaping into the glyph pool),
 //! cephal (layout) and bough-metal's fused presenter. One region holds everything the GPU reads
 //! (`rt.rs`); a frame's CPU work ends at the tile list (`app.rs`).
 pub mod action;
+pub mod answer;
 pub mod app;
 pub mod ask;
+pub mod catch;
 pub mod backend;
 pub mod boxops;
 pub mod changed;
@@ -53,6 +55,9 @@ pub mod prelude {
     pub use crate::reader::{boundary, latest, Reader, Request};
     pub use crate::action::Action;
     pub use crate::ask::{ask, follow, pending, SourceMap};
+    pub use crate::answer::Answer;
+    pub use crate::catch::{catch, Retry};
+    pub use crate::field;
     pub use crate::describe::{Arm2, Arm3, Arm4};
     pub use crate::switch::{crossfade, keyed, morph, slide, Tag};
     pub use bough_async::{compute, compute_stream, race, sleep, timeout, yield_now, Cancel, Report};
@@ -83,6 +88,9 @@ pub mod raw {
     pub use crate::reader::{boundary, latest, produce, Reader, Request};
     pub use crate::action::Action;
     pub use crate::ask::{ask, follow, pending, SourceMap};
+    pub use crate::answer::Answer;
+    pub use crate::catch::{catch, Retry};
+    pub use crate::field;
     pub use bough_async::{compute, compute_stream, race, sleep, timeout, yield_now, Cancel, Report};
     pub use crate::rt::Caps;
     pub use crate::sig;

@@ -133,6 +133,9 @@ pub async fn add_todo(title: String) -> Result<Todo, Error> {
 pub async fn set_done(id: u64, done: bool) -> Result<Todo, Error> {
     call("set_done", format!("{id}={done}")).await
 }
+pub async fn toggle_done(id: u64) -> Result<Todo, Error> {
+    call("toggle_done", id.to_string()).await
+}
 pub async fn stats() -> Result<Stats, Error> {
     call("stats", String::new()).await
 }

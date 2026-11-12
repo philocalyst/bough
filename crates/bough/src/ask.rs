@@ -12,8 +12,7 @@
 use crate::elem::{Element, IntoProp, Mounter, TextSrc};
 use crate::rt::*;
 use crate::signal::{keep, Signal, WMap, Wired, HELD, KEEP, LOADING};
-use bough_async::{Engine, Out, QId, QOpts, Question, Step, Work};
-use std::any::Any;
+use bough_async::{Asking, Engine, Flight, QId, QOpts, Step};
 use std::async_iter::AsyncIterator;
 use std::cell::{Cell, RefCell};
 use bough_async::addr::AddrMap as HashMap;
@@ -43,6 +42,12 @@ pub struct Asks {
     pub(crate) kept_turn: bool,
     /// Scratch for the engine's decisions (kept across turns: applying them allocates nothing).
     scratch: [Vec<usize>; 3],
+    /// `catch` boundaries (`catch.rs`), the ones open while mounting, and per question the boundary it raises to.
+    pub(crate) catches: Vec<crate::catch::Catch>,
+    pub(crate) catching: Vec<u32>,
+    pub(crate) q_catch: Vec<u32>,
+    /// Actions' truths while their overlays are swapped in for a description (one slot per action).
+    pub(crate) overlaid: Vec<Option<Box<dyn std::any::Any>>>,
 }
 
 fn next_id() -> u64 {
@@ -52,7 +57,7 @@ fn next_id() -> u64 {
 
 impl Default for Asks {
     fn default() -> Self {
-        Asks { engine: Engine::new(), q_cells: Vec::new(), cells: HashMap::default(), acts: Vec::new(), fake: None, start: Instant::now(), inert: false, id: next_id(), kept_turn: false, scratch: Default::default() }
+        Asks { engine: Engine::new(), q_cells: Vec::new(), cells: HashMap::default(), acts: Vec::new(), fake: None, start: Instant::now(), inert: false, id: next_id(), kept_turn: false, scratch: Default::default(), catches: Vec::new(), catching: Vec::new(), q_catch: Vec::new(), overlaid: Vec::new() }
     }
 }
 
@@ -174,14 +179,17 @@ impl Rt {
                 Step::Idle => return any,
                 Step::Landed => {
                     any = true;
+                    self.take_raised();
                     self.apply_async();
                     unsafe { self.settle_async(root) };
                 }
                 Step::Committing(p) => {
                     any = true;
+                    self.take_raised();
                     self.apply_async();
                     unsafe { self.settle_async(root) };
                     while self.asks.engine.end_commit(p) {
+                        self.take_raised();
                         self.apply_async();
                         unsafe { self.settle_async(root) };
                     }
@@ -404,39 +412,47 @@ where
 
 // =============================================================================== what a question runs
 
-/// A question's work for one input: one answer (`ask`) or many (`follow`).
+/// A question's work for one input: one answer (`ask`) or many (`follow`). The flight is the author's future or
+/// stream itself, held inline by the question (no allocation per ask).
 pub trait Starts<In>: 'static {
-    type O: 'static;
-    const STREAM: bool;
-    fn start(&self, i: In) -> Work;
+    type Fl: Flight;
+    fn start(&self, i: In) -> Self::Fl;
 }
 
-pub struct Once<F>(F);
-pub struct Many<F>(F);
+pub struct OnceFn<F>(F);
+pub struct ManyFn<F>(F);
+impl<F> OnceFn<F> {
+    pub(crate) fn new(f: F) -> Self {
+        OnceFn(f)
+    }
+}
+impl<F> ManyFn<F> {
+    pub(crate) fn new(f: F) -> Self {
+        ManyFn(f)
+    }
+}
 
-impl<In, F, Fut> Starts<In> for Once<F>
+impl<In, F, Fut> Starts<In> for OnceFn<F>
 where
     F: Fn(In) -> Fut + 'static,
     Fut: Future + 'static,
     Fut::Output: 'static,
 {
-    type O = Fut::Output;
-    const STREAM: bool = false;
-    fn start(&self, i: In) -> Work {
-        Work::once((self.0)(i))
+    type Fl = bough_async::Once<Fut>;
+    fn start(&self, i: In) -> Self::Fl {
+        bough_async::Once((self.0)(i))
     }
 }
 
-impl<In, F, St> Starts<In> for Many<F>
+impl<In, F, St> Starts<In> for ManyFn<F>
 where
     F: Fn(In) -> St + 'static,
     St: AsyncIterator + 'static,
     St::Item: 'static,
 {
-    type O = St::Item;
-    const STREAM: bool = true;
-    fn start(&self, i: In) -> Work {
-        Work::many((self.0)(i))
+    type Fl = bough_async::Many<St>;
+    fn start(&self, i: In) -> Self::Fl {
+        bough_async::Many((self.0)(i))
     }
 }
 
@@ -466,6 +482,39 @@ pub trait Land<O>: 'static {
     unsafe fn land(&self, owner: *mut u8, o: O, first: bool);
     /// Does it write only its subject cell?
     const INTO: bool;
+    /// The boundary (`catch`) open where the question mounts (`u32::MAX`: none).
+    fn bind(&mut self, _catch: u32) {}
+}
+
+/// `ok_into(dst)`: `Ok` answers replace `dst`; an `Err` goes to the nearest `catch` (`catch.rs`).
+pub struct OkInto<D, E> {
+    off: u32,
+    catch: u32,
+    _d: PhantomData<fn() -> (D, E)>,
+}
+impl<D: 'static, T, E: 'static> Land<Result<T, E>> for OkInto<D, E>
+where
+    D: Accept<T>,
+{
+    unsafe fn land(&self, owner: *mut u8, o: Result<T, E>, _: bool) {
+        match o {
+            Ok(v) => {
+                // SAFETY: as `IntoCell`.
+                let s = unsafe { &mut *(owner.add(self.off as usize) as *mut Signal<D>) };
+                D::accept(&mut *s, v);
+            }
+            Err(e) => {
+                debug_assert!(self.catch != u32::MAX, "an `ok_into` question raised an error with no `catch` around it");
+                if self.catch != u32::MAX {
+                    crate::catch::RAISED.with(|r| r.borrow_mut().push((self.catch, Box::new(e))));
+                }
+            }
+        }
+    }
+    const INTO: bool = true;
+    fn bind(&mut self, catch: u32) {
+        self.catch = catch;
+    }
 }
 
 pub struct IntoCell<D> {
@@ -509,7 +558,7 @@ impl<V: 'static, O: 'static> Land<O> for ThenFn<V, O> {
     const INTO: bool = false;
 }
 
-/// The engine's view of a question.
+/// A question as the engine sees it (typed; `bough_async::Asking` keeps its state around it).
 struct QImpl<In, W, L> {
     read: Box<dyn Fn(*const u8) -> In>,
     w: W,
@@ -518,27 +567,19 @@ struct QImpl<In, W, L> {
     cls: u32,
 }
 
-impl<In: Clone + PartialEq + 'static, W: Starts<In>, L: Land<W::O>> Question for QImpl<In, W, L> {
-    unsafe fn input(&self, owner: *mut u8) -> Out {
-        Box::new((self.read)(owner))
+impl<In: Clone + PartialEq + 'static, W: Starts<In>, L: Land<<W::Fl as Flight>::Out>> bough_async::Ask for QImpl<In, W, L> {
+    type In = In;
+    type Fl = W::Fl;
+    unsafe fn input(&self, owner: *mut u8) -> In {
+        (self.read)(owner)
     }
-    fn same(&self, a: &dyn Any, b: &dyn Any) -> bool {
-        a.downcast_ref::<In>() == b.downcast_ref::<In>()
+    fn start(&self, i: In) -> W::Fl {
+        self.w.start(i)
     }
-    fn clone_input(&self, a: &dyn Any) -> Out {
-        Box::new(a.downcast_ref::<In>().expect("the question's input").clone())
-    }
-    fn start(&self, input: &dyn Any) -> Work {
-        self.w.start(input.downcast_ref::<In>().expect("the question's input").clone())
-    }
-    unsafe fn land(&self, owner: *mut u8, out: Out, first: bool) {
+    unsafe fn land(&self, owner: *mut u8, o: <W::Fl as Flight>::Out, first: bool) {
         touch_owner(self.owner, self.cls);
-        let o = *out.downcast::<W::O>().expect("an answer of the question's type");
         // SAFETY: the engine passes the owner the question was mounted for.
         unsafe { self.land.land(owner, o, first) }
-    }
-    fn is_stream(&self) -> bool {
-        W::STREAM
     }
 }
 
@@ -546,7 +587,7 @@ impl<In: Clone + PartialEq + 'static, W: Starts<In>, L: Land<W::O>> Question for
 
 /// A question being built: `ask(src, f)` or `follow(src, f)`, then `.into(dst)`, `.collect_into(dst)` or
 /// `.then(handler)`.
-pub struct Ask<V, S, W> {
+pub struct AskB<V, S, W> {
     src: S,
     w: W,
     opts: QOpts,
@@ -554,25 +595,25 @@ pub struct Ask<V, S, W> {
 }
 
 /// `dst = f(src)`, asked again when `src` changes; `f` returns a future. See `DESIGN.md`.
-pub fn ask<V, S: Source<V>, F, Fut>(src: S, f: F) -> Ask<V, S, Once<F>>
+pub fn ask<V, S: Source<V>, F, Fut>(src: S, f: F) -> AskB<V, S, OnceFn<F>>
 where
     F: Fn(S::In) -> Fut + 'static,
     Fut: Future + 'static,
 {
-    Ask { src, w: Once(f), opts: QOpts { hold: true, every: None, lands_into: true }, _v: PhantomData }
+    AskB { src, w: OnceFn(f), opts: QOpts { hold: true, every: None, lands_into: true }, _v: PhantomData }
 }
 
 /// A question whose answer is a sequence (`f` returns an `AsyncIterator`): the first item publishes it, every
 /// later item lands on its own.
-pub fn follow<V, S: Source<V>, F, St>(src: S, f: F) -> Ask<V, S, Many<F>>
+pub fn follow<V, S: Source<V>, F, St>(src: S, f: F) -> AskB<V, S, ManyFn<F>>
 where
     F: Fn(S::In) -> St + 'static,
     St: AsyncIterator + 'static,
 {
-    Ask { src, w: Many(f), opts: QOpts { hold: true, every: None, lands_into: true }, _v: PhantomData }
+    AskB { src, w: ManyFn(f), opts: QOpts { hold: true, every: None, lands_into: true }, _v: PhantomData }
 }
 
-impl<V, S, W> Ask<V, S, W> {
+impl<V, S, W> AskB<V, S, W> {
     /// Hold nothing while out: the destination lags its input (progress, prefetch, stats over a big list).
     pub fn deferred(mut self) -> Self {
         self.opts.hold = false;
@@ -586,6 +627,10 @@ impl<V, S, W> Ask<V, S, W> {
     /// Answers replace `dst` (a `Signal<T>`, or a `Signal<Option<T>>` taking `Some`).
     pub fn into<'a, D>(self, dst: Wired<'a, D, V>) -> Asked<V, S, W, IntoCell<D>> {
         Asked { src: self.src, w: self.w, opts: self.opts, about: dst.sig as *const Signal<D> as usize, land: IntoCell { off: dst.off, _d: PhantomData }, _v: PhantomData }
+    }
+    /// `Ok` answers replace `dst`; an `Err` goes to the nearest `catch` around the question (`catch.rs`).
+    pub fn ok_into<'a, D, E>(self, dst: Wired<'a, D, V>) -> Asked<V, S, W, OkInto<D, E>> {
+        Asked { src: self.src, w: self.w, opts: self.opts, about: dst.sig as *const Signal<D> as usize, land: OkInto { off: dst.off, catch: u32::MAX, _d: PhantomData }, _v: PhantomData }
     }
     /// The first answer for an input replaces `dst` with its default, and every answer extends it.
     pub fn collect_into<'a, C>(self, dst: Wired<'a, C, V>) -> Asked<V, S, W, CollectCell<C>> {
@@ -625,6 +670,47 @@ impl<V, S, W, L> Asked<V, S, W, L> {
     }
 }
 
+/// Mount a question of owner `owner` (class `cls`): register it with the engine, wire its source cells in the
+/// question group of their heads, mark the sources of a holding question `KEEP`, ask it the first time. Shared by
+/// the view element (`ask(..)`) and the field form (`Answer`).
+pub(crate) fn mount_question(rt: &mut Rt, scope: &mut Scope, owner: *mut u8, cls: u32, cells: Vec<SrcCell>, q: Box<dyn bough_async::Question>, about: usize, opts: QOpts) {
+    rt.async_on = true;
+    let qid = rt.asks.engine.mount(q, owner, cells.iter().map(|c| c.head).collect(), about, opts);
+    let qi = qid.0 as usize;
+    if rt.asks.q_cells.len() <= qi {
+        rt.asks.q_cells.resize_with(qi + 1, Default::default);
+    }
+    rt.asks.q_cells[qi] = (cells.iter().map(|c| c.head).collect(), opts.hold, about);
+    // the innermost open `catch` boundary takes this question's errors (and retries it)
+    if let Some(&b) = rt.asks.catching.last() {
+        rt.asks.catches[b as usize].questions.push(qid.0);
+        if rt.asks.q_catch.len() <= qi {
+            rt.asks.q_catch.resize(qi + 1, u32::MAX);
+        }
+        rt.asks.q_catch[qi] = b;
+    }
+    for c in &cells {
+        // SAFETY: `c.head` is the head of the `offset_of!`-proven cell at `c.off` of this owner type, and
+        // `patch_question` reads nothing of it (the question reads its input through its reader).
+        let head = unsafe { &*(c.head as *const Cell<u32>) };
+        let w = unsafe { rt.add_wire_in(G_QUESTION, head, c.off, cls, patch_question, qid.0, [0; 16]) };
+        scope.wires.push(w);
+        rt.register_cell(c.head, owner as usize, cls);
+        if opts.hold {
+            keep::register(c.head, c.keep, rt.asks.id);
+            head.set(head.get() | KEEP);
+        }
+    }
+    if about != 0 {
+        rt.register_cell(about, owner as usize, cls);
+    }
+    scope.asks.push(qid.0);
+    if !rt.asks.inert {
+        rt.asks.engine.first(qid);
+        rt.apply_async();
+    }
+}
+
 /// # Safety
 /// The wire contract: node is a question id of this runtime.
 unsafe fn patch_question(rt: &mut Rt, w: &Wire, _sig: *const u8, _owner: *const u8) {
@@ -635,7 +721,7 @@ unsafe fn patch_question(rt: &mut Rt, w: &Wire, _sig: *const u8, _owner: *const 
     rt.apply_async();
 }
 
-impl<V: 'static, S: Source<V>, W: Starts<S::In>, L: Land<W::O>> Element<V> for Asked<V, S, W, L> {
+impl<V: 'static, S: Source<V>, W: Starts<S::In>, L: Land<<W::Fl as Flight>::Out>> Element<V> for Asked<V, S, W, L> {
     fn mount(self, m: &mut Mounter<'_, V>) {
         let mut cells = Vec::new();
         self.src.cells(&mut cells);
@@ -644,33 +730,10 @@ impl<V: 'static, S: Source<V>, W: Starts<S::In>, L: Land<W::O>> Element<V> for A
         let read = self.src.reader();
         let mut opts = self.opts;
         opts.lands_into = L::INTO && opts.lands_into;
-        let q = QImpl { read, w: self.w, land: self.land, owner: owner as usize, cls };
-        m.rt.async_on = true;
-        let qid = m.rt.asks.engine.mount(Box::new(q), owner, cells.iter().map(|c| c.head).collect(), self.about, opts);
-        let qi = qid.0 as usize;
-        if m.rt.asks.q_cells.len() <= qi {
-            m.rt.asks.q_cells.resize_with(qi + 1, Default::default);
-        }
-        m.rt.asks.q_cells[qi] = (cells.iter().map(|c| c.head).collect(), opts.hold, self.about);
-        for c in &cells {
-            // SAFETY: `c.head` is the head of the `offset_of!`-proven cell at `c.off` of this owner type, and
-            // `patch_question` reads nothing of it (the question reads its input through its reader).
-            let head = unsafe { &*(c.head as *const Cell<u32>) };
-            unsafe { m.wire_cell_in(G_QUESTION, head, c.off, patch_question, qid.0, [0; 16]) };
-            m.rt.register_cell(c.head, owner as usize, cls);
-            if opts.hold {
-                keep::register(c.head, c.keep, m.rt.asks.id);
-                head.set(head.get() | KEEP);
-            }
-        }
-        if self.about != 0 {
-            m.rt.register_cell(self.about, owner as usize, cls);
-        }
-        m.scope.asks.push(qid.0);
-        if !m.rt.asks.inert {
-            m.rt.asks.engine.first(qid);
-            m.rt.apply_async();
-        }
+        let mut land = self.land;
+        land.bind(m.rt.asks.catching.last().copied().unwrap_or(u32::MAX));
+        let q = QImpl { read, w: self.w, land, owner: owner as usize, cls };
+        mount_question(m.rt, m.scope, owner, cls, cells, Asking::new(q), self.about, opts);
     }
     /// A mounted question is not re-described (its closures and cells are fixed at mount): a re-description
     /// steps over it, so its seal is its cells (the same question in the same place seals equal).

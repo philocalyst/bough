@@ -22,8 +22,7 @@
 //!
 //! `BOUGH_MODEL_SEEDS` (default 300) random schedules of `BOUGH_MODEL_STEPS` (default 200) steps; the
 //! exhaustive run (`exhaustive`) enumerates every schedule of `BOUGH_MODEL_DEPTH` (default 5) ops.
-use bough_async::{Engine, Out, QId, QOpts, Question, Step, Work};
-use std::any::Any;
+use bough_async::{Ask, Asking, Engine, Many, Once, Out, QId, QOpts, Step, Work};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -195,105 +194,121 @@ impl World {
     }
 }
 
+/// A model question's flight: a gate (one answer), an immediate answer, or a stream of gated items.
+enum MFl {
+    Gate(Once<GateFut>),
+    Now(Option<Val>),
+    Items(Many<std::pin::Pin<Box<dyn std::async_iter::AsyncIterator<Item = Val>>>>),
+}
+impl bough_async::Flight for MFl {
+    type Out = Val;
+    const STREAM: bool = false;
+    fn poll_flight(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Val>> {
+        // SAFETY: structural pinning; the enum is never moved out of its pin.
+        match unsafe { self.get_unchecked_mut() } {
+            MFl::Gate(g) => unsafe { Pin::new_unchecked(g) }.poll_flight(cx),
+            MFl::Now(v) => Poll::Ready(Some(v.take().flatten())),
+            MFl::Items(m) => unsafe { Pin::new_unchecked(m) }.poll_flight(cx),
+        }
+    }
+}
+
+/// A stream question's flight (its own type: `STREAM` is a constant of the flight type).
+struct SFl(Many<std::pin::Pin<Box<dyn std::async_iter::AsyncIterator<Item = Val>>>>);
+impl bough_async::Flight for SFl {
+    type Out = Val;
+    const STREAM: bool = true;
+    fn poll_flight(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Val>> {
+        // SAFETY: structural pinning.
+        unsafe { self.map_unchecked_mut(|s| &mut s.0) }.poll_flight(cx)
+    }
+}
+
 struct MQ {
     name: &'static str,
     src: usize,
     dst: usize,
-    stream: bool,
 }
 
-impl Question for MQ {
-    unsafe fn input(&self, owner: *mut u8) -> Out {
+impl Ask for MQ {
+    type In = Val;
+    type Fl = MFl;
+    unsafe fn input(&self, owner: *mut u8) -> Val {
         let w = unsafe { &*(owner as *const World) };
-        Box::new(w.vals[self.src])
+        w.vals[self.src]
     }
-    fn same(&self, a: &dyn Any, b: &dyn Any) -> bool {
-        a.downcast_ref::<Val>() == b.downcast_ref::<Val>()
-    }
-    fn clone_input(&self, a: &dyn Any) -> Out {
-        Box::new(*a.downcast_ref::<Val>().unwrap())
-    }
-    fn start(&self, input: &dyn Any) -> Work {
-        let x = *input.downcast_ref::<Val>().unwrap();
-        let name = self.name;
-        if self.stream {
-            return Work::many(async gen move {
-                if x.is_none() {
-                    return;
-                }
-                for k in 0..2 {
-                    let g = open_gate(name, x, k);
-                    yield GateFut(g).await;
-                }
-            });
-        }
+    fn start(&self, x: Val) -> MFl {
         if x.is_none() {
             // ready on its first poll: no request
-            return Work::once(async move { None::<i64> });
+            return MFl::Now(Some(None));
         }
-        let g = open_gate(name, x, 0);
-        Work::once(GateFut(g))
+        MFl::Gate(Once(GateFut(open_gate(self.name, x, 0))))
     }
-    unsafe fn land(&self, owner: *mut u8, out: Out, _first: bool) {
+    unsafe fn land(&self, owner: *mut u8, out: Val, _first: bool) {
         let w = unsafe { &mut *(owner as *mut World) };
         w.landed[self.dst] = true;
-        w.write(self.dst, *out.downcast::<Val>().unwrap());
+        w.write(self.dst, out);
     }
-    fn is_stream(&self) -> bool {
-        self.stream
+}
+
+/// `ds = stream(a)`: two gated items per input.
+struct MS;
+impl Ask for MS {
+    type In = Val;
+    type Fl = SFl;
+    unsafe fn input(&self, owner: *mut u8) -> Val {
+        let w = unsafe { &*(owner as *const World) };
+        w.vals[A]
+    }
+    fn start(&self, x: Val) -> SFl {
+        SFl(Many(Box::pin(async gen move {
+            if x.is_none() {
+                return;
+            }
+            for k in 0..2 {
+                let g = open_gate("fs", x, k);
+                yield GateFut(g).await;
+            }
+        })))
+    }
+    unsafe fn land(&self, owner: *mut u8, out: Val, _first: bool) {
+        let w = unsafe { &mut *(owner as *mut World) };
+        w.landed[DS] = true;
+        w.write(DS, out);
     }
 }
 
 /// `d5 = f5(a, b)`: two sources.
 struct MQ2;
-impl Question for MQ2 {
-    unsafe fn input(&self, owner: *mut u8) -> Out {
+impl Ask for MQ2 {
+    type In = (Val, Val);
+    type Fl = Once<GateFut>;
+    unsafe fn input(&self, owner: *mut u8) -> (Val, Val) {
         let w = unsafe { &*(owner as *const World) };
-        Box::new((w.vals[A], w.vals[B]))
+        (w.vals[A], w.vals[B])
     }
-    fn same(&self, a: &dyn Any, b: &dyn Any) -> bool {
-        a.downcast_ref::<(Val, Val)>() == b.downcast_ref::<(Val, Val)>()
+    fn start(&self, (a, b): (Val, Val)) -> Once<GateFut> {
+        Once(GateFut(open_gate("f5", a.zip(b).map(|(a, b)| a * 10 + b), 0)))
     }
-    fn clone_input(&self, a: &dyn Any) -> Out {
-        Box::new(*a.downcast_ref::<(Val, Val)>().unwrap())
-    }
-    fn start(&self, input: &dyn Any) -> Work {
-        let (a, b) = *input.downcast_ref::<(Val, Val)>().unwrap();
-        let g = open_gate("f5", a.zip(b).map(|(a, b)| a * 10 + b), 0);
-        Work::once(GateFut(g))
-    }
-    unsafe fn land(&self, owner: *mut u8, out: Out, _first: bool) {
+    unsafe fn land(&self, owner: *mut u8, out: Val, _first: bool) {
         let w = unsafe { &mut *(owner as *mut World) };
         w.landed[D5] = true;
-        w.write(D5, *out.downcast::<Val>().unwrap());
-    }
-    fn is_stream(&self) -> bool {
-        false
+        w.write(D5, out);
     }
 }
 
 /// `d6`, asked every 7 ms with no input.
 struct MQ6;
-impl Question for MQ6 {
-    unsafe fn input(&self, _owner: *mut u8) -> Out {
-        Box::new(())
+impl Ask for MQ6 {
+    type In = ();
+    type Fl = Once<GateFut>;
+    unsafe fn input(&self, _owner: *mut u8) {}
+    fn start(&self, _: ()) -> Once<GateFut> {
+        Once(GateFut(open_gate("f6", Some(6), 0)))
     }
-    fn same(&self, _: &dyn Any, _: &dyn Any) -> bool {
-        true
-    }
-    fn clone_input(&self, _: &dyn Any) -> Out {
-        Box::new(())
-    }
-    fn start(&self, _: &dyn Any) -> Work {
-        let g = open_gate("f6", Some(6), 0);
-        Work::once(GateFut(g))
-    }
-    unsafe fn land(&self, owner: *mut u8, out: Out, _first: bool) {
+    unsafe fn land(&self, owner: *mut u8, out: Val, _first: bool) {
         let w = unsafe { &mut *(owner as *mut World) };
-        w.write(D6, *out.downcast::<Val>().unwrap());
-    }
-    fn is_stream(&self) -> bool {
-        false
+        w.write(D6, out);
     }
 }
 
@@ -327,7 +342,7 @@ impl Harness {
         w.vals[B] = Some(0);
         let mut e = Engine::new();
         let owner = &mut *w as *mut World as *mut u8;
-        let q5 = e.mount(Box::new(MQ2), owner, vec![A, B], D5, QOpts { hold: true, every: None, lands_into: true });
+        let q5 = e.mount(Asking::new(MQ2), owner, vec![A, B], D5, QOpts { hold: true, every: None, lands_into: true });
         let act = e.add_action(Box::new(ALog(owner as *mut World)));
         let mut h = Harness { e, w, qs: [None; 5], q5, act, now: Duration::ZERO, log: Vec::new() };
         h.w.wires[A].push(q5);
@@ -335,7 +350,7 @@ impl Harness {
         h.w.keep.insert(A);
         h.w.keep.insert(B);
         h.e.first(q5);
-        let q6 = h.e.mount(Box::new(MQ6), owner, vec![], D6, QOpts { hold: false, every: Some(Duration::from_millis(7)), lands_into: true });
+        let q6 = h.e.mount(Asking::new(MQ6), owner, vec![], D6, QOpts { hold: false, every: Some(Duration::from_millis(7)), lands_into: true });
         h.e.first(q6);
         h.drain_out();
         for i in 0..5 {
@@ -353,7 +368,8 @@ impl Harness {
     fn mount(&mut self, i: usize) {
         let (name, src, dst, hold, stream) = SPECS[i];
         let owner = self.owner();
-        let q = self.e.mount(Box::new(MQ { name, src, dst, stream }), owner, vec![src], dst, QOpts { hold, every: None, lands_into: true });
+        let q: Box<dyn bough_async::Question> = if stream { Asking::new(MS) } else { Asking::new(MQ { name, src, dst }) };
+        let q = self.e.mount(q, owner, vec![src], dst, QOpts { hold, every: None, lands_into: true });
         self.qs[i] = Some(q);
         self.w.landed[dst] = false;
         self.w.wires[src].push(q);

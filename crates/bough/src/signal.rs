@@ -448,13 +448,16 @@ pub(crate) mod keep {
     pub(crate) fn end_turn() {
         T.with(|t| {
             let mut t = t.borrow_mut();
-            let turn = std::mem::take(&mut t.turn);
-            for c in turn {
+            let mut turn = std::mem::take(&mut t.turn);
+            for &c in &turn {
                 // SAFETY: as in `capture`.
                 if unsafe { &*(c as *const Cell<u32>) }.get() & super::HELD == 0 {
                     t.kept.remove(&c);
                 }
             }
+            // keep the list's capacity for the next turn
+            turn.clear();
+            t.turn = turn;
         })
     }
     /// Is anything kept (a hold, or a pre-image of this turn)?

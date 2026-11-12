@@ -33,6 +33,18 @@ pub struct Action<I, O> {
     /// lifetime bounds, so `ActionCell` is implemented for every `Action<I, O>` and calls these.
     start_fn: fn(&mut Action<I, O>, &mut Engine, AId),
     land_fn: unsafe fn(&mut Action<I, O>, *mut u8, Out),
+    /// `shows`: how a run in flight looks on a cell of the struct holding the action.
+    overlay: Option<Overlay<I>>,
+}
+
+/// An action's overlay on one cell: the cell's offset in the struct holding the action, its type (checked at
+/// mount), and the typed operations, made where the types are known.
+struct Overlay<I> {
+    off: u32,
+    owner: TypeId,
+    /// A copy of the cell's value, every in-flight input's overlay applied to it in order.
+    make: Box<dyn Fn(*const u8, &mut dyn Iterator<Item = &I>) -> Box<dyn std::any::Any>>,
+    swap: unsafe fn(*mut u8, &mut Box<dyn std::any::Any>),
 }
 
 fn start_runs<I: Clone + 'static, O: 'static>(a: &mut Action<I, O>, e: &mut Engine, aid: AId) {
@@ -62,7 +74,7 @@ impl<I: Clone + 'static, O: 'static> Action<I, O> {
         F: Fn(I) -> Fut + 'static,
         Fut: Future<Output = O> + 'static,
     {
-        Action { head: WireHead::new(), f: Box::new(move |i| Work::once(f(i))), land: None, queued: Vec::new(), inflight: VecDeque::new(), cancel: false, start_fn: start_runs::<I, O>, land_fn: land_one::<I, O> }
+        Action { head: WireHead::new(), f: Box::new(move |i| Work::once(f(i))), land: None, queued: Vec::new(), inflight: VecDeque::new(), cancel: false, start_fn: start_runs::<I, O>, land_fn: land_one::<I, O>, overlay: None }
     }
     /// An action whose run is the stream `f(input)`: every item lands on its own, in order.
     pub fn stream<F, St>(f: F) -> Action<I, O>
@@ -70,7 +82,7 @@ impl<I: Clone + 'static, O: 'static> Action<I, O> {
         F: Fn(I) -> St + 'static,
         St: AsyncIterator<Item = O> + 'static,
     {
-        Action { head: WireHead::new(), f: Box::new(move |i| Work::many(f(i))), land: None, queued: Vec::new(), inflight: VecDeque::new(), cancel: false, start_fn: start_runs::<I, O>, land_fn: land_one::<I, O> }
+        Action { head: WireHead::new(), f: Box::new(move |i| Work::many(f(i))), land: None, queued: Vec::new(), inflight: VecDeque::new(), cancel: false, start_fn: start_runs::<I, O>, land_fn: land_one::<I, O>, overlay: None }
     }
     /// Answers land through `h` on the struct that holds this action (checked at mount).
     pub fn then<V: 'static>(mut self, h: fn(&mut V, O)) -> Action<I, O> {
@@ -83,6 +95,34 @@ impl<I: Clone + 'static, O: 'static> Action<I, O> {
         // as `then`
         self.land = Some((TypeId::of::<V>(), Box::new(move |p: *mut u8, i: &I, o: O| h(unsafe { &mut *(p as *mut V) }, i, o))));
         self
+    }
+
+    /// How a run in flight looks on `cell` (a field of the struct holding the action): while runs are in flight,
+    /// every description reads the cell with `f(&mut value, input)` applied for each, in the order sent. A run that
+    /// lands or fails stops being applied in the turn its landing runs. Handlers, landings and wires read the cell
+    /// as it is (see `applied` for a handler that must act on what is shown).
+    pub fn shows<V: 'static, T: Clone + 'static>(mut self, cell: crate::answer::Field<V, crate::signal::Signal<T>>, f: fn(&mut T, &I)) -> Action<I, O> {
+        let make = move |p: *const u8, ins: &mut dyn Iterator<Item = &I>| -> Box<dyn std::any::Any> {
+            // SAFETY: `p` is the cell (a `Signal<T>`) at the proven offset (the caller, `ActionCell::overlay`).
+            let mut v: T = unsafe { (**(p as *const crate::signal::Signal<T>)).clone() };
+            for i in ins {
+                f(&mut v, i);
+            }
+            Box::new(v)
+        };
+        self.overlay = Some(Overlay { off: cell.offset(), owner: TypeId::of::<V>(), make: Box::new(make), swap: crate::signal::keep::swap_of::<T> });
+        self
+    }
+    /// The cell as the screen shows it: its value with this action's in-flight runs applied (a copy).
+    pub fn applied<T: Clone + 'static>(&self, cell: &crate::signal::Signal<T>) -> T {
+        let mut v = (**cell).clone();
+        if let Some(o) = self.overlay.as_ref() {
+            let b = (o.make)(cell as *const _ as *const u8, &mut self.inflight.iter());
+            if let Ok(b) = b.downcast::<T>() {
+                v = *b;
+            }
+        }
+        v
     }
 
     /// Run with `input`: it starts when this turn settles.
@@ -118,6 +158,13 @@ pub trait ActionCell {
     /// `parent` is the live struct holding this action, of the landing's type.
     unsafe fn land_out(&mut self, parent: *mut u8, out: Out);
     fn finished(&mut self);
+    /// The overlay's cell offset and owner type, if any (checked at mount).
+    fn overlay_of(&self) -> Option<(u32, TypeId)>;
+    /// Swap the overlaid value in (`kept` empty: the truth goes into `kept`) or back (`kept` full).
+    ///
+    /// # Safety
+    /// `parent` is the live struct holding the action.
+    unsafe fn overlay_swap(&mut self, parent: *mut u8, kept: &mut Option<Box<dyn std::any::Any>>);
 }
 
 impl<I, O> ActionCell for Action<I, O> {
@@ -134,6 +181,29 @@ impl<I, O> ActionCell for Action<I, O> {
     fn finished(&mut self) {
         self.inflight.pop_front();
     }
+    fn overlay_of(&self) -> Option<(u32, TypeId)> {
+        self.overlay.as_ref().map(|o| (o.off, o.owner))
+    }
+    unsafe fn overlay_swap(&mut self, parent: *mut u8, kept: &mut Option<Box<dyn std::any::Any>>) {
+        let Some(o) = self.overlay.as_ref() else { return };
+        // SAFETY: the caller's contract; `o.off` is the cell's proven offset in the parent's type (checked at mount).
+        let cell = unsafe { parent.add(o.off as usize) };
+        match kept.take() {
+            None => {
+                if self.inflight.is_empty() && self.queued.is_empty() {
+                    return;
+                }
+                let mut v = (o.make)(cell, &mut self.inflight.iter().chain(self.queued.iter()));
+                // SAFETY: the cell is a `Signal<T>` and `v` a `T` (both from `shows`).
+                unsafe { (o.swap)(cell, &mut v) };
+                *kept = Some(v);
+            }
+            Some(mut truth) => {
+                // SAFETY: as above.
+                unsafe { (o.swap)(cell, &mut truth) };
+            }
+        }
+    }
 }
 
 /// An action as the runtime keeps it: where it is, its engine id.
@@ -142,6 +212,8 @@ pub(crate) struct ActSlot {
     pub aid: AId,
     pub owner: usize,
     pub cls: u32,
+    /// The struct holding the action (its overlay's cell is a field of it).
+    pub parent: *mut u8,
 }
 
 struct ALand {
@@ -267,11 +339,14 @@ pub(crate) fn mount_actions<V: 'static>(m: &mut Mounter<'_, V>) {
         if let Some(t) = unsafe { (*cell).landing_type() } {
             assert!(t == f.parent, "an Action's `then` names a handler of another type than the struct holding the action");
         }
+        if let Some((_, t)) = unsafe { (*cell).overlay_of() } {
+            assert!(t == f.parent, "an Action's `shows` names a cell of another type than the struct holding the action");
+        }
         let parent = unsafe { owner.add(f.parent_off as usize) };
         m.rt.async_on = true;
         let aid = m.rt.asks.engine.add_action(Box::new(ALand { cell, parent, owner: owner as usize, cls: m.cls }));
         let node = m.rt.asks.acts.len() as u32;
-        m.rt.asks.acts.push(ActSlot { cell, aid, owner: owner as usize, cls: m.cls });
+        m.rt.asks.acts.push(ActSlot { cell, aid, owner: owner as usize, cls: m.cls, parent });
         // SAFETY: the action's head is its first field (`#[repr(C)]`), at a compiler-given offset of `V`;
         // `patch_action` reaches the action through the slot, not through `sig`.
         let head = unsafe { &*(at as *const std::cell::Cell<u32>) };

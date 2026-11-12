@@ -20,7 +20,7 @@ use crate::addr::AddrMap as HashMap;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
@@ -62,23 +62,194 @@ where
     }
 }
 
-/// A question, type-erased (built by the façade from the author's closures).
+/// How a question's input compares with the inputs it knows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cmp {
+    /// Equal to the input in the air (or whose answer is staged).
+    Asked,
+    /// Equal to the input whose answer is shown.
+    Shown,
+    New,
+}
+
+/// A poll of a question's flight: the answer, if any, is kept by the question.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Polled {
+    Pending,
+    /// One answer of a stream (more may follow).
+    Item,
+    /// The flight ended (with its answer staged, for a future; a stream may end with none).
+    Done,
+}
+
+/// A question as the engine drives it. Its state (inputs, the flight, staged answers) lives in the question
+/// itself, typed: the engine keeps flags. Implemented by [`Asking`] for any [`Ask`].
 pub trait Question {
-    /// The input, read from the owner's cells now.
+    /// Read the input from the owner's cells into the question's next slot, and compare it.
     ///
     /// # Safety
     /// `owner` is the live owner the question was mounted for.
-    unsafe fn input(&self, owner: *mut u8) -> Out;
-    fn same(&self, a: &dyn Any, b: &dyn Any) -> bool;
-    fn clone_input(&self, a: &dyn Any) -> Out;
-    /// The work for `input`.
-    fn start(&self, input: &dyn Any) -> Work;
-    /// Land one answer (`first`: the first since the input changed).
+    unsafe fn read(&mut self, owner: *mut u8) -> Cmp;
+    /// Start the flight for the input `read` last stored (dropping any flight in the air).
+    fn start(&mut self);
+    /// Drop the flight in the air and whatever it staged.
+    fn cancel(&mut self);
+    /// Poll the flight once.
+    fn poll(&mut self, cx: &mut Context<'_>) -> Polled;
+    /// Answers staged and not landed.
+    fn staged(&self) -> usize;
+    /// Land the oldest staged answer (`first`: the first since the input changed).
     ///
     /// # Safety
-    /// As `input`.
-    unsafe fn land(&self, owner: *mut u8, out: Out, first: bool);
+    /// As `read`.
+    unsafe fn land_one(&mut self, owner: *mut u8, first: bool);
+    /// The answers about to land answer the asked input: it is the shown one from now on (`done`: the flight is
+    /// over, so the input moves; else a stream still runs for it, so it is copied).
+    fn publish(&mut self, done: bool);
+    fn has_asked(&self) -> bool;
+    fn has_shown(&self) -> bool;
     fn is_stream(&self) -> bool;
+}
+
+/// A question's work for one input, polled in place: one answer ([`Once`]) or many ([`Many`]).
+pub trait Flight: 'static {
+    type Out: 'static;
+    const STREAM: bool;
+    /// `Ready(Some(v))`: an answer; `Ready(None)`: a stream ended.
+    fn poll_flight(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Out>>;
+}
+
+/// A future as a flight.
+pub struct Once<F>(pub F);
+impl<F: Future + 'static> Flight for Once<F>
+where
+    F::Output: 'static,
+{
+    type Out = F::Output;
+    const STREAM: bool = false;
+    fn poll_flight(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<F::Output>> {
+        // SAFETY: structural pinning of the only field; `Once` is never moved out of its pin.
+        unsafe { self.map_unchecked_mut(|o| &mut o.0) }.poll(cx).map(Some)
+    }
+}
+
+/// An async iterator as a flight.
+pub struct Many<S>(pub S);
+impl<S: AsyncIterator + 'static> Flight for Many<S>
+where
+    S::Item: 'static,
+{
+    type Out = S::Item;
+    const STREAM: bool = true;
+    fn poll_flight(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<S::Item>> {
+        // SAFETY: as `Once`.
+        unsafe { self.map_unchecked_mut(|o| &mut o.0) }.poll_next(cx)
+    }
+}
+
+/// What a question is, typed: its input, its work, its landing. [`Asking`] keeps the state around it.
+pub trait Ask: 'static {
+    type In: Clone + PartialEq + 'static;
+    type Fl: Flight;
+    /// # Safety
+    /// `owner` is the live owner the question was mounted for.
+    unsafe fn input(&self, owner: *mut u8) -> Self::In;
+    fn start(&self, i: Self::In) -> Self::Fl;
+    /// # Safety
+    /// As `input`.
+    unsafe fn land(&self, owner: *mut u8, o: <Self::Fl as Flight>::Out, first: bool);
+}
+
+/// A question's state, in place: the inputs it compares against, the flight (inline: no allocation per ask; the
+/// `Asking` lives in its box in the engine and never moves, which is what pins the flight), staged answers.
+pub struct Asking<A: Ask> {
+    pub a: A,
+    next: Option<A::In>,
+    asked: Option<A::In>,
+    shown: Option<A::In>,
+    flight: Option<A::Fl>,
+    staged: VecDeque<<A::Fl as Flight>::Out>,
+}
+
+impl<A: Ask> Asking<A> {
+    pub fn new(a: A) -> Box<Asking<A>> {
+        Box::new(Asking { a, next: None, asked: None, shown: None, flight: None, staged: VecDeque::new() })
+    }
+}
+
+impl<A: Ask> Question for Asking<A> {
+    unsafe fn read(&mut self, owner: *mut u8) -> Cmp {
+        // SAFETY: the caller's contract.
+        let i = unsafe { self.a.input(owner) };
+        let c = if self.asked.as_ref() == Some(&i) {
+            Cmp::Asked
+        } else if self.shown.as_ref() == Some(&i) {
+            Cmp::Shown
+        } else {
+            Cmp::New
+        };
+        self.next = Some(i);
+        c
+    }
+    fn start(&mut self) {
+        self.flight = None;
+        self.staged.clear();
+        self.asked = self.next.take();
+        if let Some(i) = self.asked.clone() {
+            self.flight = Some(self.a.start(i));
+        }
+    }
+    fn cancel(&mut self) {
+        self.flight = None;
+        self.staged.clear();
+        self.asked = None;
+    }
+    fn poll(&mut self, cx: &mut Context<'_>) -> Polled {
+        let Some(f) = self.flight.as_mut() else { return Polled::Pending };
+        // SAFETY: the flight is a field of this `Asking`, which stays in its box (the engine never moves it) and
+        // is dropped in place (`flight = None`), never moved out.
+        match unsafe { Pin::new_unchecked(f) }.poll_flight(cx) {
+            Poll::Pending => Polled::Pending,
+            Poll::Ready(Some(v)) => {
+                self.staged.push_back(v);
+                if <A::Fl as Flight>::STREAM {
+                    Polled::Item
+                } else {
+                    self.flight = None;
+                    Polled::Done
+                }
+            }
+            Poll::Ready(None) => {
+                self.flight = None;
+                Polled::Done
+            }
+        }
+    }
+    fn staged(&self) -> usize {
+        self.staged.len()
+    }
+    unsafe fn land_one(&mut self, owner: *mut u8, first: bool) {
+        if let Some(v) = self.staged.pop_front() {
+            // SAFETY: the caller's contract.
+            unsafe { self.a.land(owner, v, first) };
+        }
+    }
+    fn publish(&mut self, done: bool) {
+        if done {
+            self.shown = self.asked.take();
+        } else if self.asked.is_some() {
+            self.shown = self.asked.clone();
+        }
+    }
+    fn has_asked(&self) -> bool {
+        self.asked.is_some()
+    }
+    fn has_shown(&self) -> bool {
+        self.shown.is_some()
+    }
+    fn is_stream(&self) -> bool {
+        <A::Fl as Flight>::STREAM
+    }
 }
 
 /// Where an action's answers go (built by the façade; it knows the action and its owner).
@@ -145,11 +316,22 @@ struct Bell {
     ring: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
+/// A waker: per question (made once at mount, reused by every flight of it) or per action flight. `key` is the
+/// question (`Q_KEY | index`) or the flight; `generation` changes with every flight, so a late wake of a dropped
+/// flight is recognised.
 struct FWaker {
     bell: Arc<Bell>,
-    id: u32,
-    generation: u32,
+    key: u32,
+    generation: AtomicU32,
     armed: AtomicBool,
+}
+
+const Q_KEY: u32 = 1 << 31;
+
+impl FWaker {
+    fn wake_by_ref_arc(self: &Arc<Self>) {
+        Wake::wake_by_ref(self)
+    }
 }
 
 impl Wake for FWaker {
@@ -158,7 +340,7 @@ impl Wake for FWaker {
     }
     fn wake_by_ref(self: &Arc<Self>) {
         if self.armed.swap(false, Ordering::AcqRel) {
-            self.bell.woken.lock().unwrap().push((self.id, self.generation));
+            self.bell.woken.lock().unwrap().push((self.key, self.generation.load(Ordering::Acquire)));
             self.bell.rung.store(true, Ordering::Release);
             if let Some(r) = self.bell.ring.lock().unwrap().as_ref() {
                 r();
@@ -167,19 +349,15 @@ impl Wake for FWaker {
     }
 }
 
-#[derive(Clone, Copy)]
-enum FOwner {
-    Q(u32),
-    A(u32, u64),
-}
-
-struct Flight {
+/// An action run's flight (boxed: an action may have many runs in the air at once).
+struct AFlight {
     work: Work,
     waker: Arc<FWaker>,
-    owner: FOwner,
+    action: u32,
+    run: u64,
 }
 
-enum Polled {
+enum APolled {
     Pending,
     Item(Out),
     Done(Option<Out>),
@@ -194,12 +372,10 @@ struct QSlot {
     about: usize,
     opts: QOpts,
     seq: u64,
-    /// Input of the flight in the air or of its staged answer (None: idle).
-    asked: Option<Out>,
-    /// Input whose answer has landed (None: never answered).
-    shown: Option<Out>,
-    flight: Option<u32>,
-    staged: VecDeque<Out>,
+    /// Its flight is in the air.
+    in_air: bool,
+    /// Its waker, reused by every flight (the generation tells them apart).
+    waker: Arc<FWaker>,
     /// The flight ended (a stream may end with nothing).
     done: bool,
     /// The next landing is the first since the input changed.
@@ -239,7 +415,7 @@ struct Pub {
 pub struct Engine {
     bell: Arc<Bell>,
     timers: Box<Timers>,
-    flights: Vec<Option<Flight>>,
+    flights: Vec<Option<AFlight>>,
     fgen: Vec<u32>,
     ffree: Vec<u32>,
     qs: Vec<QSlot>,
@@ -249,6 +425,8 @@ pub struct Engine {
     afree: Vec<u32>,
     pubs: Vec<Option<Pub>>,
     pfree: Vec<u32>,
+    /// Retired publications' vectors, kept for the next ones (a publication allocates nothing once warm).
+    pspare: Vec<Pub>,
     /// Held cell -> the publication holding it.
     held: HashMap<usize, u32>,
     /// Source cell -> how many live questions read it.
@@ -289,7 +467,12 @@ impl Drop for Engine {
         // flights (and the sleeps inside them) go before the timers
         let timers: *const Timers = &*self.timers;
         // SAFETY: `timers` lives until the end of this function (it is a field dropped after this body).
-        with_timers(unsafe { &*timers }, || self.flights.clear());
+        with_timers(unsafe { &*timers }, || {
+            self.flights.clear();
+            for q in &mut self.qs {
+                q.q = None;
+            }
+        });
     }
 }
 
@@ -308,6 +491,7 @@ impl Engine {
             afree: Vec::new(),
             pubs: Vec::new(),
             pfree: Vec::new(),
+            pspare: Vec::new(),
             held: HashMap::default(),
             sourced: HashMap::default(),
             nloading: HashMap::default(),
@@ -378,7 +562,7 @@ impl Engine {
         self.bell.rung.store(true, Ordering::Release);
     }
     pub fn flights(&self) -> usize {
-        self.flights.iter().filter(|f| f.is_some()).count()
+        self.nflights as usize
     }
     /// Cells held now.
     pub fn held_cells(&self) -> usize {
@@ -398,7 +582,7 @@ impl Engine {
 
     // --------------------------------------------------------------------------------------------- flights
 
-    fn start_flight(&mut self, work: Work, owner: FOwner) -> u32 {
+    fn start_flight(&mut self, work: Work, action: u32, run: u64) -> u32 {
         let id = match self.ffree.pop() {
             Some(i) => i,
             None => {
@@ -408,8 +592,8 @@ impl Engine {
             }
         };
         self.fgen[id as usize] = self.fgen[id as usize].wrapping_add(1);
-        let waker = Arc::new(FWaker { bell: self.bell.clone(), id, generation: self.fgen[id as usize], armed: AtomicBool::new(true) });
-        self.flights[id as usize] = Some(Flight { work, waker, owner });
+        let waker = Arc::new(FWaker { bell: self.bell.clone(), key: id, generation: AtomicU32::new(self.fgen[id as usize]), armed: AtomicBool::new(true) });
+        self.flights[id as usize] = Some(AFlight { work, waker, action, run });
         self.nflights += 1;
         id
     }
@@ -427,9 +611,9 @@ impl Engine {
         with_timers(unsafe { &*timers }, || drop(f));
     }
 
-    /// Poll flight `id` once.
-    fn poll_flight(&mut self, id: u32) -> Polled {
-        let Some(f) = self.flights[id as usize].as_mut() else { return Polled::Pending };
+    /// Poll action flight `id` once.
+    fn poll_flight(&mut self, id: u32) -> APolled {
+        let Some(f) = self.flights[id as usize].as_mut() else { return APolled::Pending };
         f.waker.armed.store(true, Ordering::Release);
         let waker = Waker::from(f.waker.clone());
         let mut cx = Context::from_waker(&waker);
@@ -438,76 +622,94 @@ impl Engine {
         // SAFETY: the timers are boxed and outlive this call.
         let r = with_timers(unsafe { &*timers }, || match &mut f.work {
             Work::Once(fut) => match fut.as_mut().poll(&mut cx) {
-                Poll::Ready(v) => Polled::Done(Some(v)),
-                Poll::Pending => Polled::Pending,
+                Poll::Ready(v) => APolled::Done(Some(v)),
+                Poll::Pending => APolled::Pending,
             },
             Work::Many(s) => match s.as_mut().poll_next(&mut cx) {
-                Poll::Ready(Some(v)) => Polled::Item(v),
-                Poll::Ready(None) => Polled::Done(None),
-                Poll::Pending => Polled::Pending,
+                Poll::Ready(Some(v)) => APolled::Item(v),
+                Poll::Ready(None) => APolled::Done(None),
+                Poll::Pending => APolled::Pending,
             },
         });
         match r {
-            Polled::Done(_) => {
+            APolled::Done(_) => {
                 let f = self.flights[id as usize].take();
                 self.nflights -= 1;
                 self.fgen[id as usize] = self.fgen[id as usize].wrapping_add(1);
                 self.ffree.push(id);
                 with_timers(unsafe { &*timers }, || drop(f));
             }
-            Polled::Item(_) => {
+            APolled::Item(_) => {
                 // one item per turn: the stream is polled again at the next turn (after a frame)
                 if let Some(f) = self.flights[id as usize].as_ref() {
                     Waker::from(f.waker.clone()).wake_by_ref();
                 }
+            }
+            APolled::Pending => {}
+        }
+        r
+    }
+
+    /// Poll question `qi`'s flight once (its answer stays in the question).
+    fn poll_q(&mut self, qi: u32) -> Polled {
+        let q = &mut self.qs[qi as usize];
+        if !q.in_air {
+            return Polled::Pending;
+        }
+        let Some(qq) = q.q.as_mut() else { return Polled::Pending };
+        q.waker.armed.store(true, Ordering::Release);
+        let waker = Waker::from(q.waker.clone());
+        let mut cx = Context::from_waker(&waker);
+        self.stats.polls += 1;
+        let timers: *const Timers = &*self.timers;
+        // SAFETY: the timers are boxed and outlive this call.
+        let r = with_timers(unsafe { &*timers }, || qq.poll(&mut cx));
+        match r {
+            Polled::Done => {
+                q.in_air = false;
+                q.done = true;
+                self.nflights -= 1;
+            }
+            Polled::Item => {
+                // one item per turn: the stream is polled again at the next turn (after a frame)
+                q.waker.wake_by_ref_arc();
             }
             Polled::Pending => {}
         }
         r
     }
 
-    /// Route a poll result to the flight's owner.
-    fn deliver(&mut self, owner: FOwner, r: Polled) {
-        match owner {
-            FOwner::Q(qi) => {
-                let q = &mut self.qs[qi as usize];
-                match r {
-                    Polled::Pending => return,
-                    Polled::Item(v) => q.staged.push_back(v),
-                    Polled::Done(v) => {
-                        q.flight = None;
-                        q.done = true;
-                        if let Some(v) = v {
-                            q.staged.push_back(v);
-                        }
-                    }
-                }
-                if q.pubn.is_none() {
-                    if !self.alone.contains(&qi) {
-                        self.alone.push(qi);
-                    }
-                } else {
-                    self.pubs_dirty = true;
+    /// A question's flight answered (or ended): it lands alone, or its publication may be ready.
+    fn deliver_q(&mut self, qi: u32, r: Polled) {
+        if r == Polled::Pending {
+            return;
+        }
+        if self.qs[qi as usize].pubn.is_none() {
+            if !self.alone.contains(&qi) {
+                self.alone.push(qi);
+            }
+        } else {
+            self.pubs_dirty = true;
+        }
+    }
+
+    /// An action run's flight answered (or ended).
+    fn deliver_a(&mut self, ai: u32, seq: u64, r: APolled) {
+        let a = &mut self.acts[ai as usize];
+        let Some(run) = a.runs.iter_mut().find(|r| r.seq == seq) else { return };
+        match r {
+            APolled::Pending => return,
+            APolled::Item(v) => run.items.push_back(v),
+            APolled::Done(v) => {
+                run.flight = None;
+                run.done = true;
+                if let Some(v) = v {
+                    run.items.push_back(v);
                 }
             }
-            FOwner::A(ai, seq) => {
-                let a = &mut self.acts[ai as usize];
-                let Some(run) = a.runs.iter_mut().find(|r| r.seq == seq) else { return };
-                match r {
-                    Polled::Pending => return,
-                    Polled::Item(v) => run.items.push_back(v),
-                    Polled::Done(v) => {
-                        run.flight = None;
-                        run.done = true;
-                        if let Some(v) = v {
-                            run.items.push_back(v);
-                        }
-                    }
-                }
-                if !self.acts_ready.contains(&ai) {
-                    self.acts_ready.push(ai);
-                }
-            }
+        }
+        if !self.acts_ready.contains(&ai) {
+            self.acts_ready.push(ai);
         }
     }
 
@@ -526,13 +728,23 @@ impl Engine {
         }
         let mut woken = std::mem::take(&mut self.scratch_woken);
         std::mem::swap(&mut woken, &mut *self.bell.woken.lock().unwrap());
-        for &(id, g) in &woken {
-            if self.fgen.get(id as usize) != Some(&g) {
+        for &(key, g) in &woken {
+            if key & Q_KEY != 0 {
+                let qi = key & !Q_KEY;
+                let Some(q) = self.qs.get(qi as usize) else { continue };
+                if q.waker.generation.load(Ordering::Relaxed) != g || !q.in_air {
+                    continue; // a dropped flight's late wake
+                }
+                let r = self.poll_q(qi);
+                self.deliver_q(qi, r);
+                continue;
+            }
+            if self.fgen.get(key as usize) != Some(&g) {
                 continue; // dropped (and maybe reused) since it rang
             }
-            let Some(owner) = self.flights[id as usize].as_ref().map(|f| f.owner) else { continue };
-            let r = self.poll_flight(id);
-            self.deliver(owner, r);
+            let Some((ai, run)) = self.flights[key as usize].as_ref().map(|f| (f.action, f.run)) else { continue };
+            let r = self.poll_flight(key);
+            self.deliver_a(ai, run, r);
         }
         woken.clear();
         self.scratch_woken = woken;
@@ -544,17 +756,14 @@ impl Engine {
     /// Mount a question (its first request is `first`).
     pub fn mount(&mut self, q: Box<dyn Question>, owner: *mut u8, sources: Vec<usize>, about: usize, opts: QOpts) -> QId {
         self.seq += 1;
-        let slot = QSlot { q: Some(q), owner, sources, about, opts, seq: self.seq, asked: None, shown: None, flight: None, staged: VecDeque::new(), done: false, first: true, loud: false, pubn: None, due: None, loading: false };
-        let i = match self.qfree.pop() {
-            Some(i) => {
-                self.qs[i as usize] = slot;
-                i
-            }
-            None => {
-                self.qs.push(slot);
-                (self.qs.len() - 1) as u32
-            }
-        };
+        let i = self.qfree.pop().unwrap_or(self.qs.len() as u32);
+        let waker = Arc::new(FWaker { bell: self.bell.clone(), key: Q_KEY | i, generation: AtomicU32::new(0), armed: AtomicBool::new(false) });
+        let slot = QSlot { q: Some(q), owner, sources, about, opts, seq: self.seq, in_air: false, waker, done: false, first: true, loud: false, pubn: None, due: None, loading: false };
+        if (i as usize) < self.qs.len() {
+            self.qs[i as usize] = slot;
+        } else {
+            self.qs.push(slot);
+        }
         if let Some(e) = opts.every {
             self.qs[i as usize].due = Some(self.timers.now() + e);
             self.nevery += 1;
@@ -568,25 +777,27 @@ impl Engine {
     /// The first request of a just-mounted question: asked with the current input, holding nothing.
     pub fn first(&mut self, id: QId) {
         let qi = id.0;
-        let q = &self.qs[qi as usize];
-        let Some(qq) = q.q.as_ref() else { return };
+        let q = &mut self.qs[qi as usize];
+        let owner = q.owner;
+        let Some(qq) = q.q.as_mut() else { return };
         // SAFETY: the owner is the live owner the façade mounted the question for.
-        let input = unsafe { qq.input(q.owner) };
-        self.ask(qi, input, false);
+        unsafe { qq.read(owner) };
+        self.ask(qi, false);
     }
 
     /// A source cell of question `id` was written: compare its input and ask, net, or do nothing.
     pub fn written(&mut self, id: QId) {
         let qi = id.0;
-        let q = &self.qs[qi as usize];
-        let Some(qq) = q.q.as_ref() else { return };
+        let q = &mut self.qs[qi as usize];
+        let owner = q.owner;
+        let Some(qq) = q.q.as_mut() else { return };
         // SAFETY: as `first`.
-        let input = unsafe { qq.input(q.owner) };
-        if q.asked.as_ref().is_some_and(|a| qq.same(&*input, &**a)) {
+        let cmp = unsafe { qq.read(owner) };
+        if cmp == Cmp::Asked {
             return; // the same question is in the air (or its answer is staged)
         }
-        if !cfg!(feature = "sabotage_no_net") && q.shown.as_ref().is_some_and(|s| qq.same(&*input, &**s)) {
-            if q.asked.is_none() {
+        if !cfg!(feature = "sabotage_no_net") && cmp == Cmp::Shown {
+            if !qq.has_asked() {
                 return; // idle, and its answer is the one shown
             }
             // back to the input whose answer is shown: drop what is in the air
@@ -596,26 +807,27 @@ impl Engine {
             self.leave(qi);
             self.set_loading(qi, false);
             if stream {
-                // a stream's answer is live: ask the shown input again, quietly
-                self.ask(qi, input, false);
+                // a stream's answer is live: ask the shown input again, quietly (`read` kept it)
+                self.ask(qi, false);
             }
             return;
         }
-        let loud = q.opts.hold && q.shown.is_some();
-        self.ask(qi, input, loud);
+        let loud = q.opts.hold && qq.has_shown();
+        self.ask(qi, loud);
     }
 
     /// Ask again with the same input, holding nothing (`refresh`, `every`).
     fn reask(&mut self, qi: u32) {
-        let q = &self.qs[qi as usize];
-        if q.flight.is_some() || q.asked.is_some() {
+        let q = &mut self.qs[qi as usize];
+        let owner = q.owner;
+        let Some(qq) = q.q.as_mut() else { return };
+        if q.in_air || qq.has_asked() {
             return; // an answer for the current input is coming
         }
-        let Some(qq) = q.q.as_ref() else { return };
         // SAFETY: as `first`.
-        let input = unsafe { qq.input(q.owner) };
+        unsafe { qq.read(owner) };
         self.stats.quiet += 1;
-        self.ask(qi, input, false);
+        self.ask(qi, false);
     }
 
     /// Re-ask every question about `cell` (`refresh`). Returns how many were asked.
@@ -629,20 +841,19 @@ impl Engine {
 
     /// Start `input`'s work for question `qi`, dropping whatever was in the air. `loud`: join the turn's
     /// publication and hold the sources.
-    fn ask(&mut self, qi: u32, input: Out, loud: bool) {
+    fn ask(&mut self, qi: u32, loud: bool) {
         self.cancel_q(qi);
         self.stats.asked += 1;
-        let work = {
-            let q = &self.qs[qi as usize];
-            q.q.as_ref().unwrap().start(&*input)
-        };
+        let timers: *const Timers = &*self.timers;
         let q = &mut self.qs[qi as usize];
-        q.asked = Some(input);
+        // SAFETY: the timers are boxed and outlive this call (a flight dropped by `start` may hold a sleep).
+        with_timers(unsafe { &*timers }, || q.q.as_mut().unwrap().start());
         q.done = false;
         q.first = true;
         q.loud = loud;
-        let f = self.start_flight(work, FOwner::Q(qi));
-        self.qs[qi as usize].flight = Some(f);
+        q.in_air = true;
+        q.waker.generation.fetch_add(1, Ordering::AcqRel);
+        self.nflights += 1;
         if loud {
             self.join(qi);
         } else {
@@ -653,8 +864,8 @@ impl Engine {
         }
         self.set_loading(qi, true);
         // polled once at once: an answer ready on its first poll lands in this turn
-        let r = self.poll_flight(f);
-        self.deliver(FOwner::Q(qi), r);
+        let r = self.poll_q(qi);
+        self.deliver_q(qi, r);
     }
 
     fn set_loading(&mut self, qi: u32, on: bool) {
@@ -675,15 +886,23 @@ impl Engine {
 
     /// Drop question `qi`'s flight and staged answers.
     fn cancel_q(&mut self, qi: u32) {
+        let timers: *const Timers = &*self.timers;
         let q = &mut self.qs[qi as usize];
-        q.staged.clear();
-        q.asked = None;
-        q.done = false;
-        if let Some(f) = q.flight.take() {
+        if q.in_air {
+            q.in_air = false;
+            self.nflights -= 1;
             self.stats.dropped += 1;
-            self.drop_flight(f);
         }
-        self.alone.retain(|&x| x != qi);
+        q.done = false;
+        // the next flight's wakes are told from this one's
+        q.waker.generation.fetch_add(1, Ordering::AcqRel);
+        if let Some(qq) = q.q.as_mut() {
+            // SAFETY: as in `ask`.
+            with_timers(unsafe { &*timers }, || qq.cancel());
+        }
+        if !self.alone.is_empty() {
+            self.alone.retain(|&x| x != qi);
+        }
     }
 
     /// Join the turn's publication (making one if needed), carrying the question's old publication along and
@@ -757,7 +976,13 @@ impl Engine {
 
     fn new_pub(&mut self) -> u32 {
         self.npubs += 1;
-        let p = Pub { members: Vec::new(), later: Vec::new(), cells: Vec::new(), open: true };
+        let p = match self.pspare.pop() {
+            Some(mut p) => {
+                p.open = true;
+                p
+            }
+            None => Pub { members: Vec::new(), later: Vec::new(), cells: Vec::new(), open: true },
+        };
         match self.pfree.pop() {
             Some(i) => {
                 self.pubs[i as usize] = Some(p);
@@ -810,9 +1035,11 @@ impl Engine {
         self.cancel_q(qi);
         self.leave(qi);
         self.set_loading(qi, false);
+        let timers: *const Timers = &*self.timers;
         let q = &mut self.qs[qi as usize];
-        q.q = None;
-        q.shown = None;
+        let gone = q.q.take();
+        // SAFETY: as in `ask`.
+        with_timers(unsafe { &*timers }, || drop(gone));
         if q.due.take().is_some() {
             self.nevery -= 1;
         }
@@ -853,7 +1080,7 @@ impl Engine {
 
     fn member_ready(&self, qi: u32) -> bool {
         let q = &self.qs[qi as usize];
-        !q.staged.is_empty() || q.done
+        q.done || q.q.as_ref().is_some_and(|qq| qq.staged() > 0)
     }
 
     /// A closed publication whose members are all answered, or with no loud member left (nothing it holds is
@@ -875,7 +1102,8 @@ impl Engine {
         }
         for (i, q) in self.qs.iter().enumerate() {
             if q.q.is_some() {
-                let _ = writeln!(o, "q {i}: flight {:?} staged {} done {} loud {} pub {:?} asked {} shown {}", q.flight, q.staged.len(), q.done, q.loud, q.pubn, q.asked.is_some(), q.shown.is_some());
+                let qq = q.q.as_ref().unwrap();
+                let _ = writeln!(o, "q {i}: in_air {} staged {} done {} loud {} pub {:?} asked {} shown {}", q.in_air, qq.staged(), q.done, q.loud, q.pubn, qq.has_asked(), qq.has_shown());
             }
         }
         let _ = writeln!(o, "group {:?} held {:?} alone {:?}", self.group, self.held, self.alone);
@@ -967,29 +1195,26 @@ impl Engine {
 
     fn land_q(&mut self, qi: u32) {
         let q = &mut self.qs[qi as usize];
-        let Some(qq) = q.q.as_ref() else { return };
-        if q.staged.is_empty() && !q.done {
+        let owner = q.owner;
+        let (done, mut first) = (q.done, q.first);
+        let Some(qq) = q.q.as_mut() else { return };
+        let n = qq.staged();
+        if n == 0 && !done {
             return;
         }
-        let n = q.staged.len();
-        let owner = q.owner;
         // the input these answers answer is the one shown from now on
-        if q.done {
-            q.shown = q.asked.take();
-        } else if let Some(a) = q.asked.as_ref() {
-            q.shown = Some(qq.clone_input(&**a));
-        }
-        let mut first = q.first;
+        qq.publish(done);
         q.first &= n == 0;
-        let done = q.done;
-        // landings write cells (the façade's settle follows); the question table is not touched meanwhile
-        let qq: *const dyn Question = &**q.q.as_ref().unwrap();
+        if done {
+            q.done = false;
+        }
+        // landings write cells (the façade's settle follows); nothing they do reaches the engine
+        let qq: *mut dyn Question = &mut **qq;
         for _ in 0..n {
-            let Some(v) = self.qs[qi as usize].staged.pop_front() else { break };
             self.stats.landed += 1;
             // SAFETY: the question is alive (checked above) and nothing below drops it before the loop ends;
             // the owner is the live owner it was mounted for.
-            unsafe { (*qq).land(owner, v, first) };
+            unsafe { (*qq).land_one(owner, first) };
             first = false;
         }
         if done {
@@ -1025,21 +1250,27 @@ impl Engine {
             return false;
         }
         if !pb.later.is_empty() {
-            let later = std::mem::take(&mut pb.later);
+            let mut later = std::mem::take(&mut self.scratch_later);
+            std::mem::swap(&mut later, &mut pb.later);
             self.group = Some(p);
-            for m in later {
+            for &m in &later {
                 self.qs[m as usize].pubn = None;
                 self.land_q(m);
             }
+            later.clear();
+            self.scratch_later = later;
             return true;
         }
-        let pb = self.pubs[p as usize].take().unwrap();
+        let mut pb = self.pubs[p as usize].take().unwrap();
         self.pfree.push(p);
         self.npubs -= 1;
-        for c in pb.cells {
+        for c in pb.cells.drain(..) {
             self.held.remove(&c);
             self.release_out.push(c);
         }
+        pb.members.clear();
+        pb.later.clear();
+        self.pspare.push(pb);
         false
     }
 
@@ -1070,10 +1301,10 @@ impl Engine {
         let seq = a.next;
         a.next += 1;
         a.runs.push_back(Run { seq, flight: None, items: VecDeque::new(), done: false });
-        let f = self.start_flight(work, FOwner::A(ai, seq));
+        let f = self.start_flight(work, ai, seq);
         self.acts[ai as usize].runs.back_mut().unwrap().flight = Some(f);
         let r = self.poll_flight(f);
-        self.deliver(FOwner::A(ai, seq), r);
+        self.deliver_a(ai, seq, r);
     }
 
     /// Drop every run of action `id` (their inputs leave `inflight` through `finished`).

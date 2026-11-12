@@ -388,8 +388,9 @@ impl<V: View> App<V> {
             let tp: *mut Vec<u32> = if once { std::ptr::null_mut() } else { &mut tape };
             let mut m = Mounter { rt: &mut rt, owner: ptr, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None, cls: 0, tape: tp, ti: 0, pos: 0, kid: 0, keep: false };
             el.mount(&mut m);
-            // the owner's `Action` fields, found in its layout (action.rs)
+            // the owner's `Action` and `Answer` fields, found in its layout (action.rs, answer.rs)
             crate::action::mount_actions::<V>(&mut m);
+            crate::answer::mount_answers::<V>(&mut m);
         }
         rt.bough.insert_run(0, &recs);
         // layout groups of the first mount (list regions mount their first rows between its passes)
@@ -589,6 +590,8 @@ impl<V: View> App<V> {
         if !r.is_empty() {
             self.rt.take_refreshes(r);
         }
+        // the boundaries it retried (`catch`): their content mounts again at this turn's description
+        self.rt.take_retries();
         // SAFETY: as in `turn`.
         unsafe { self.rt.settle(owner) };
         unsafe { self.rt.finish_async(owner) };
@@ -613,13 +616,10 @@ impl<V: View> App<V> {
     /// `f` on the state as the screen shows it: every held cell reads its kept (shown) value. For oracles: a
     /// fresh app built from what `f` returns must look like this one.
     pub fn published<R>(&mut self, f: impl FnOnce(&V) -> R) -> R {
-        let swap = crate::signal::keep::any();
-        if swap {
-            crate::signal::keep::swap_held(true, self.rt.asks.id);
-        }
+        let swapped = self.swap_shown(true);
         let r = f(&self.owner);
-        if swap {
-            crate::signal::keep::swap_held(false, self.rt.asks.id);
+        if swapped {
+            self.swap_shown(false);
         }
         r
     }
@@ -724,14 +724,48 @@ impl<V: View> App<V> {
     /// are swapped in around it. Out of line: its size must not cost the turns of apps without async.
     #[inline(never)]
     fn redescribe_shown(&mut self) {
-        let swap = (self.rt.asks.engine.held_cells() > 0 || self.rt.asy.holding()) && crate::signal::keep::any();
-        if swap {
-            crate::signal::keep::swap_held(true, self.rt.asks.id);
-        }
+        let swapped = self.swap_shown(true);
         // SAFETY: the tape was recorded by this owner's mount at the start of the Bough.
         unsafe { crate::describe::redescribe(&mut self.rt, &*self.owner, &mut self.tape) };
-        if swap {
-            crate::signal::keep::swap_held(false, self.rt.asks.id);
+        if swapped {
+            self.swap_shown(false);
+        }
+    }
+
+    /// Put what the screen shows into the cells (`on`), or take it back out: held cells' kept values, then the
+    /// overlays of actions with runs in flight. Returns whether anything was swapped in.
+    fn swap_shown(&mut self, on: bool) -> bool {
+        let held = (self.rt.asks.engine.held_cells() > 0 || self.rt.asy.holding()) && crate::signal::keep::any();
+        if on {
+            if held {
+                crate::signal::keep::swap_held(true, self.rt.asks.id);
+            }
+            let mut kept = std::mem::take(&mut self.rt.asks.overlaid);
+            kept.clear();
+            for s in &self.rt.asks.acts {
+                let mut k = None;
+                // SAFETY: a mounted action of the live owner; its parent is the struct holding it.
+                unsafe { (*s.cell).overlay_swap(s.parent, &mut k) };
+                kept.push(k);
+            }
+            let any = kept.iter().any(|k| k.is_some());
+            self.rt.asks.overlaid = kept;
+            held || any
+        } else {
+            // back, in the reverse order
+            let mut kept = std::mem::take(&mut self.rt.asks.overlaid);
+            for (s, k) in self.rt.asks.acts.iter().zip(kept.iter_mut()).rev() {
+                if k.is_some() {
+                    // SAFETY: as above.
+                    unsafe { (*s.cell).overlay_swap(s.parent, k) };
+                }
+            }
+            kept.clear();
+            self.rt.asks.overlaid = kept;
+            if held {
+                crate::signal::keep::swap_held(false, self.rt.asks.id);
+            }
+            true
         }
     }
 

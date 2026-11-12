@@ -45,5 +45,5 @@ pub mod addr {
 
 pub use combin::{race, yield_now};
 pub use compute::{compute, compute_stream, Cancel, Report};
-pub use engine::{AId, Engine, Landing, Out, QId, QOpts, Question, Step, Work};
+pub use engine::{AId, Ask, Asking, Cmp, Engine, Flight, Landing, Many, Once, Out, Polled, QId, QOpts, Question, Step, Work};
 pub use time::{now, sleep, timeout};

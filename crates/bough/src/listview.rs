@@ -436,8 +436,9 @@ fn view_row<T: crate::app::View>(v: &T, m: &mut Mounter<'_, T>) {
         m.rt.class_changed[m.cls as usize] = Some(crate::changed::changed_shim::<T>);
     }
     v.view().mount(m);
-    // the row's `Action` fields (action.rs)
+    // the row's `Action` and `Answer` fields (action.rs, answer.rs)
     crate::action::mount_actions::<T>(m);
+    crate::answer::mount_answers::<T>(m);
 }
 
 impl Rt {
