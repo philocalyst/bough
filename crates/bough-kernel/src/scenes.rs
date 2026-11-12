@@ -135,6 +135,14 @@ pub fn adversarial(seed: u64, fw: u32, fh: u32, n: usize) -> Scene {
     let mut s = Scene::default();
     let (fwf, fhf) = (fw as f32, fh as f32);
     s.add(stage::solid(0.0, 0.0, fwf, fhf, 0xff00_0000 | r.next() as u32, &NO_CLIP));
+    for i in 0..12u16 {
+        let opaque = r.u(2) == 0;
+        s.set_entry(i, stage::table_color(r.color(opaque)));
+    }
+    for i in 12..16u16 {
+        let v = [crate::k::ONE, 0, r.u(crate::k::ONE), r.u(crate::k::ONE)][(i - 12) as usize];
+        s.set_entry(i, stage::table_scalar(v));
+    }
     for _ in 0..n {
         let clip = if r.u(4) == 0 {
             let (x, y) = (r.pos(0.0, fwf * 0.6), r.pos(0.0, fhf * 0.6));
@@ -154,7 +162,15 @@ pub fn adversarial(seed: u64, fw: u32, fh: u32, n: usize) -> Scene {
         };
         let Some(a) = a else { continue };
         if a.xs != 0 || a.par.x == crate::k::K_IMAGE || a.par.x == crate::k::K_RAMP || r.u(8) != 0 {
-            s.push(a);
+            // one command in five takes colours from the table (entries 0..11 colours, 12..15 opacity steps;
+            // an index past the table is clamped by the kernel)
+            if r.u(5) == 0 {
+                let (a1, a2, a3) = (r.u(3) != 0, r.u(3) == 0, r.u(4) == 0);
+                let (i1, i2, i3) = (r.u(12) as u16, r.u(14) as u16, 12 + r.u(6) as u16);
+                s.push_tinted(a, stage::Tint { pm: a1.then_some(i1), pm2: a2.then_some(i2), opacity: a3.then_some(i3) });
+            } else {
+                s.push(a);
+            }
             continue;
         }
         // a transition: the same kind, moved and recoloured

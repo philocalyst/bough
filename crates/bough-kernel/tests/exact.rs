@@ -56,6 +56,10 @@ fn executors_agree() {
                 panic!("seed {seed} now {now} cut {cut} flat {flat} threads {}: pixel ({x},{y}) fast {a:08x} spec {b:08x}", extra + 1);
             }
         }
+        // themed operands: the table resolved by the kernel equals the same colours staged into the commands
+        let mut out = vec![0u32; words];
+        cpu::naive(&scene.baked(), FW, FH, &atlas, now, &mut out, STRIDE);
+        assert!(first_diff(&out, &spec).is_none(), "seed {seed}: tinted != baked");
         // the per-tile specification (the oracle large scenes use)
         let mut out = vec![0u32; words];
         cpu::reference(&scene, FW, FH, &atlas, now, &mut out, STRIDE, &pool);

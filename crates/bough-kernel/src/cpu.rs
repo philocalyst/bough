@@ -256,6 +256,14 @@ impl Binner {
             off += self.count[s as usize];
         }
         w.resize(off as usize, 0);
+        // the table rides at the program's tail (header words 9 and 10: its offset and last entry); an empty
+        // table is one zero entry, so the kernel's clamped read always lands inside the buffer
+        w[9] = off;
+        w[10] = (scene.table.len() as u32 / 2).saturating_sub(1);
+        w.extend_from_slice(&scene.table[..scene.table.len() & !1]);
+        if scene.table.len() < 2 {
+            w.extend_from_slice(&[0, 0]);
+        }
         for i in 0..n {
             if scene.head(i) & F_TO != 0 {
                 continue;
@@ -764,7 +772,7 @@ pub fn naive(scene: &Scene, fw: u32, fh: u32, atlas: &Atlas, now: u32, out: &mut
     }
 }
 
-const _: () = assert!(WORDS == 30);
+const _: () = assert!(WORDS == 32);
 
 /// Identity 5 as a key: a 128-bit hash of a tile's program *relative to the tile's origin*, with every
 /// command reduced to what the tile can see of it (its window clamped to the tile; a command whose visible

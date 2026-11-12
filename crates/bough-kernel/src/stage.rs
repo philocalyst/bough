@@ -195,6 +195,48 @@ pub fn xf(c: Option<Cmd>, x: &Xf, clip: &Clip) -> Option<Cmd> {
 #[derive(Default, Clone)]
 pub struct Scene {
     pub words: Vec<u32>,
+    /// The frame's table of themed operands (two words per entry; `table_color`, `table_scalar`). Commands
+    /// staged with a `Tint` read their colours from it when they are loaded; the binner appends it to the
+    /// program, which is where the GPU reads it.
+    pub table: Vec<u32>,
+}
+
+/// Which of a command's colours come from the table (`Scene::push_tinted`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tint {
+    /// The first colour is this table entry.
+    pub pm: Option<u16>,
+    /// The second colour (a border's fill, a gradient's end) is this table entry.
+    pub pm2: Option<u16>,
+    /// Both colours are scaled by this scalar entry (an opacity step).
+    pub opacity: Option<u16>,
+}
+
+/// A table entry holding the colour `rgba8` (premultiplied here, once).
+pub fn table_color(rgba8: u32) -> [u32; 2] {
+    let p = k::premul(rgba8);
+    [p.x | p.y << 16, p.z | p.w << 16]
+}
+/// A table entry holding a Q15 scalar (ONE = 32768).
+pub fn table_scalar(q15: u32) -> [u32; 2] {
+    [q15.min(k::ONE), 0]
+}
+/// The table between `from` and `to` at progress `t` (Q15): what a presenter writes each frame of an
+/// animated theme change. The kernel's own interpolation, entry by entry.
+pub fn table_mix(from: &[u32], to: &[u32], t: u32) -> Vec<u32> {
+    let un = |w: &[u32]| Vec4 { x: w[0] & 0xffff, y: w[0] >> 16, z: w[1] & 0xffff, w: w[1] >> 16 };
+    from.chunks_exact(2)
+        .zip(to.chunks_exact(2))
+        .flat_map(|(a, b)| {
+            let v = k::mix4u(un(a), un(b), t.min(k::ONE));
+            [v.x | v.y << 16, v.z | v.w << 16]
+        })
+        .collect()
+}
+/// The damage bloom bit of a table index (a page ORs these for every index its records name; a write to
+/// entry i damages the pages whose bloom has `bloom(i)`).
+pub fn bloom(index: u16) -> u64 {
+    1 << (index & 63)
 }
 
 fn pack(c: &Cmd, flags: u32, time: u32) -> [u32; WORDS] {
@@ -231,6 +273,8 @@ fn pack(c: &Cmd, flags: u32, time: u32) -> [u32; WORDS] {
         c.xk.w as u32,
         c.xs as u32,
         0,
+        0,
+        0,
     ]
 }
 
@@ -241,8 +285,68 @@ impl Scene {
     pub fn is_empty(&self) -> bool {
         self.words.is_empty()
     }
+    /// Forget the commands (the table stays: it is the theme, not the frame).
     pub fn clear(&mut self) {
         self.words.clear();
+    }
+    /// Set table entry `i` (growing the table with zero entries as needed).
+    pub fn set_entry(&mut self, i: u16, e: [u32; 2]) {
+        let at = i as usize * 2;
+        if self.table.len() < at + 2 {
+            self.table.resize(at + 2, 0);
+        }
+        self.table[at..at + 2].copy_from_slice(&e);
+    }
+    #[inline]
+    fn entry(&self, i: u32) -> Vec4u {
+        // the kernel's clamp: an index past the table reads its last entry; an empty table is one zero entry
+        let n = self.table.len() / 2;
+        if n == 0 {
+            return k::splat(0);
+        }
+        let at = (i as usize).min(n - 1) * 2;
+        k::unpack_u16x4(self.table[at], self.table[at + 1])
+    }
+    /// One bit per table entry: is its colour opaque (resolved alpha == ONE)? A retained tile program is
+    /// valid while the bits of the entries it uses are unchanged (the occlusion cut depends on nothing else
+    /// of the table).
+    pub fn opacity_bits(&self) -> [u64; 4] {
+        let mut b = [0u64; 4];
+        for i in 0..(self.table.len() / 2).min(256) {
+            if self.table[i * 2 + 1] >> 16 == k::ONE {
+                b[i / 64] |= 1 << (i % 64);
+            }
+        }
+        b
+    }
+    /// The same scene with every themed operand written into its command (no table): what staging would
+    /// have produced had the theme been applied to each record. Equal pixels by definition; the gate checks.
+    pub fn baked(&self) -> Scene {
+        let mut out = Scene { words: self.words.clone(), table: Vec::new() };
+        for i in 0..self.len() {
+            let w = i * WORDS;
+            if self.words[w] & k::F_T_ANY == 0 {
+                continue;
+            }
+            let c = self.load(i as u32);
+            out.words[w] &= !k::F_T_ANY;
+            out.words[w + 16] = c.pm.x | c.pm.y << 16;
+            out.words[w + 17] = c.pm.z | c.pm.w << 16;
+            out.words[w + 18] = c.pm2.x | c.pm2.y << 16;
+            out.words[w + 19] = c.pm2.z | c.pm2.w << 16;
+            out.words[w + 29] = 0;
+            out.words[w + 30] = 0;
+        }
+        out
+    }
+    /// Append a command whose colours (some of them) are table entries; returns its slot.
+    pub fn push_tinted(&mut self, c: Cmd, t: Tint) -> u32 {
+        let flags = if t.pm.is_some() { k::F_T_PM } else { 0 } | if t.pm2.is_some() { k::F_T_PM2 } else { 0 } | if t.opacity.is_some() { k::F_T_OP } else { 0 };
+        let mut w = pack(&c, flags, 0);
+        w[29] = t.pm.unwrap_or(0) as u32 | (t.pm2.unwrap_or(0) as u32) << 16;
+        w[30] = t.opacity.unwrap_or(0) as u32;
+        self.words.extend_from_slice(&w);
+        (self.len() - 1) as u32
     }
     /// Append a command; returns its slot.
     pub fn push(&mut self, c: Cmd) -> u32 {
@@ -279,11 +383,18 @@ impl Scene {
     pub fn head(&self, i: u32) -> u32 {
         self.words[i as usize * WORDS]
     }
-    /// Slot `i` as stored.
+    /// Slot `i` with its themed operands resolved against the table (the CPU's twin of the kernel's `load`:
+    /// the same `decode` and `tint`, the same clamp).
     #[inline]
     pub fn load(&self, i: u32) -> Cmd {
         let w = i as usize * WORDS;
-        k::decode(self.w4(w), self.w4(w + 4), self.w4(w + 8), self.w4(w + 12), self.w4(w + 16), self.w4(w + 20), self.w4(w + 24), self.words[w + 28])
+        let c = k::decode(self.w4(w), self.w4(w + 4), self.w4(w + 8), self.w4(w + 12), self.w4(w + 16), self.w4(w + 20), self.w4(w + 24), self.words[w + 28]);
+        let flags = self.words[w];
+        if flags & k::F_T_ANY == 0 {
+            return c;
+        }
+        let ix = self.words[w + 29];
+        k::tint(c, flags, self.entry(ix & 0xffff), self.entry(ix >> 16), self.entry(self.words[w + 30] & 0xffff).x)
     }
     /// Command `i` as it is at `now` (the CPU's twin of the kernel's `load_at`: the same `decode` and `timed`
     /// over the same words).
