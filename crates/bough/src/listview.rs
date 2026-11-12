@@ -1654,18 +1654,10 @@ impl<'a, S: RowSource<V>, V: 'static> Element<V> for LList<'a, S, V> {
             Some(bg) => {
                 let node = m.rt.node_at(hd);
                 let (ins, _kind, margin) = quad_instance(bg, self.radius * s, None, s, m.space);
-                let inst = m.rt.alloc_inst();
+                let inst = m.rt.inst_of(node);
                 *m.rt.inst_mut(inst) = ins;
-                {
-                    let n = &mut m.rt.nodes[node as usize];
-                    n.inst = inst;
-                    n.space = m.space;
-                    n.clip = m.clip;
-                    n.kind = NK_QUAD;
-                    n.color = bg.0;
-                    n.margin = margin;
-                }
-                m.scope.insts.push(inst);
+                let _ = margin;
+                m.rt.hot[node as usize] = Hot { kind: NK_QUAD, flags: 0, clip: m.clip, link: 0 };
                 m.rt.lay.info[lid as usize].kind = 1;
                 m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_QUAD, payload: inst, handle: hd.idx, clip: m.clip });
             }

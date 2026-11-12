@@ -150,6 +150,7 @@ impl StoreCaps {
     fn bytes(&self) -> usize {
         let a = |n: usize| n.next_multiple_of(256) + 256;
         a(self.ids * size_of::<Node>())
+            + a(self.ids * 16)
             + a(self.runs * size_of::<Run>())
             + a(self.texts * size_of::<crate::text::TextNode>())
             + a(self.wires * size_of::<Wire>())
@@ -200,12 +201,14 @@ impl Caps {
 
     pub fn region_bytes(&self, w: u32, h: u32) -> usize {
         let caps = self.pow2();
+        // one instance per element id after the runs' region (`Rt::ibase`)
+        let instances = (caps.instances + StoreCaps::of(&caps).ids).next_power_of_two();
         // frame slots sized for the tallest window (resize never moves them; 4.3 KB each)
         let sb = Layout::slot_bytes(w, h.max(MAX_WINDOW));
         let a = |n: usize| n.next_multiple_of(256) + 256;
         HDR_BYTES
             + 3 * a(sb)
-            + a(caps.instances * size_of::<Instance>())
+            + a(instances * size_of::<Instance>())
             + a(caps.pages * size_of::<Page>())
             + 2 * a(caps.pages * 8)
             + a(caps.clips * 8)
@@ -228,31 +231,50 @@ pub struct Run {
     pub live: bool,
 }
 
-/// Mutable per-element state that wires patch. Quads and text share the struct (cold fields are small).
+/// Per-element state, by element id (round 6, lane `store`).
 ///
-/// **One index space** (round 6, lane `store`): a node's index is its record handle's index, which is also
-/// its layout node id (`Lay::info`, the engine's nodes). The state at index `i` belongs to the element whose
-/// handle is `handle` (index `i`, with its generation): `Rt::node_live` tells a current node from the
-/// leftover of an element whose handle was released.
-pub struct Node {
-    pub handle: Handle,
-    /// The element's instance (a quad's one instance; the first of a run for bars, lanes and
-    /// glyph-instance text), or `NONE`. A wire reaches the instance from the node in one load.
-    pub inst: u32,
-    /// Its instance run (`Rt::runs`) when it owns more than one instance, else `NONE`.
-    pub run: u32,
-    pub space: u16,
+/// **One index space**: an element's id is its record handle's index, which is also its layout node id
+/// (`Lay::info`, the engine's nodes) and, for an element that draws one quad, the index of its GPU instance
+/// (`Rt::inst_of`). **Columns by the pass that reads them**: what every wire and every walk reads first is
+/// eight bytes (`Hot`); the handle's generation is its own column; a quad's geometry and colour are the
+/// instance's own fields (the instance is the state: nothing mirrors it); what few elements have (a paint
+/// offset, an opacity, a bar series) is a cold record (`Node`) the hot entry links to.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Hot {
+    /// `NK_*`, with `NK_HOVERED`. 0: no element state at this id.
+    pub kind: u8,
+    /// `HF_*`.
+    pub flags: u8,
     /// bough-core clip id of the element's record.
     pub clip: u16,
-    pub kind: u8,
+    /// A text element: its text state (`Rt::texts`). With `HF_COLD`: its cold record (`Rt::cold`).
+    pub link: u32,
+}
+const _: () = assert!(size_of::<Hot>() == 8);
+
+/// `Hot::link` is a cold record (bars, lanes, a quad under a paint offset / opacity / hover).
+pub const HF_COLD: u8 = 1;
+/// A quad whose drawn colour or position is not its described one: an opacity or a paint offset is
+/// installed, or it is hovered. Its cold record holds the described colour and position.
+pub const HF_MOD: u8 = 2;
+
+/// The cold record of an element that needs one (`HF_COLD`): bars and lanes (their series and geometry
+/// constants), and a quad under a paint modifier (`HF_MOD`: its described colour, opacity, paint offset and
+/// untranslated position).
+pub struct Node {
+    /// The first instance of a run (bars, lanes).
+    pub inst: u32,
+    /// Its instance run (`Rt::runs`), or `NONE`.
+    pub run: u32,
+    pub space: u16,
     /// Quad: local px x, y(origin), w, h.
     pub x: f32,
     pub y: f32,
-    /// Quad: space-local px y of the element's origin (the `span` operand is relative to it).
+    /// Bars: space-local px y of the element's origin.
     pub y0: f32,
     pub w: f32,
     pub h: f32,
-    pub radius: f32,
     pub color: u32,
     pub margin: f32,
     pub size_px: f32,
@@ -263,8 +285,6 @@ pub struct Node {
     pub series_n: u32,
     pub series_key: u64,
     pub series_ok: bool,
-    /// Text state (`Rt::texts` index), or `NONE`.
-    pub text: u32,
     /// Box operands (`boxops.rs`): paint offset (device px) and opacity.
     pub tx: f32,
     pub ty: f32,
@@ -273,32 +293,7 @@ pub struct Node {
 
 impl Node {
     fn blank() -> Node {
-        Node {
-            handle: Handle { idx: 0, generation: 0 },
-            inst: NONE,
-            run: NONE,
-            space: 0,
-            clip: 0,
-            kind: 0,
-            x: 0.0,
-            y: 0.0,
-            y0: 0.0,
-            w: 0.0,
-            h: 0.0,
-            radius: 0.0,
-            color: 0,
-            margin: 0.0,
-            size_px: 0.0,
-            line_h: 0.0,
-            series: 0,
-            series_n: 0,
-            series_key: 0,
-            series_ok: false,
-            text: NONE,
-            tx: 0.0,
-            ty: 0.0,
-            alpha: 1.0,
-        }
+        Node { inst: NONE, run: NONE, space: 0, x: 0.0, y: 0.0, y0: 0.0, w: 0.0, h: 0.0, color: 0, margin: 0.0, size_px: 0.0, line_h: 0.0, series: 0, series_n: 0, series_key: 0, series_ok: false, tx: 0.0, ty: 0.0, alpha: 1.0 }
     }
 }
 
@@ -463,7 +458,18 @@ pub struct Rt {
     free_bits: [Vec<u64>; 16],
     pub runs: Col<Run>,
     run_free: Vec<u32>,
-    pub nodes: Col<Node>,
+    /// Per element id: the hot entry, the handle generation, and one float only some kinds use (a raw
+    /// quad's origin y, a decoration's ink margin). See [`Hot`].
+    pub hot: Col<Hot>,
+    pub hgen: Col<u32>,
+    pub aux: Col<f32>,
+    /// Cold records (`HF_COLD`), and the free ones.
+    pub cold: Col<Node>,
+    cold_free: Vec<u32>,
+    /// Index of element id 0's instance: the instance column is `[runs and static quads | one per id]`.
+    pub ibase: u32,
+    /// The highest element id handed out (the per-id columns are touched up to it).
+    max_id: u32,
     /// Handles of nodes that were allocated and given back before their record was made (an element that
     /// turned out static): the next `alloc_node` takes one.
     spare: Vec<Handle>,
@@ -542,9 +548,12 @@ impl Rt {
         for s in &mut slot {
             *s = region.reserve(sb, 256) as u32;
         }
-        let mut inst: Col<Instance> = region.carve("instances", caps.instances);
+        // the instance column: the runs' region (buddy blocks: bars, lanes, glyph text, static quads), then
+        // one instance per element id
+        let icap = (caps.instances + StoreCaps::of(&caps).ids).next_power_of_two();
+        let mut inst: Col<Instance> = region.carve("instances", icap);
         // SAFETY: carved memory is zeroed (fresh buffer / alloc_zeroed) and all-zero is a valid Instance.
-        unsafe { inst.set_len(caps.instances) };
+        unsafe { inst.set_len(icap) };
         let cols = Columns { pages: region.carve("pages", caps.pages), dir_id: region.carve("dir_id", caps.pages), dir_ink: region.carve("dir_ink", caps.pages), clips: region.carve("clips", caps.clips) };
         let pcols = PoolColumns { x: region.carve("glyph_x", caps.glyphs), ent: region.carve("glyph_ent", caps.glyphs), runs: region.carve("runs", caps.runs), spaces: region.carve("spaces", caps.spaces) };
         let toks: Col<TokStrike> = region.carve("tok_strikes", caps.strikes);
@@ -574,7 +583,7 @@ impl Rt {
             xforms_off: xforms.region_offset().unwrap() as u32,
             slot,
             masks: Masks {
-                inst: caps.instances as u32 - 1,
+                inst: icap as u32 - 1,
                 page: caps.pages as u32 - 1,
                 glyph: caps.glyphs as u32 - 1,
                 run: caps.runs as u32 - 1,
@@ -588,8 +597,18 @@ impl Rt {
         let mut store = reserve_zeroed(sc.bytes());
         let mut runs: Col<Run> = store.carve("runs", sc.runs);
         runs.push(Run::default());
-        let mut nodes: Col<Node> = store.carve("nodes", sc.ids);
-        nodes.push(Node::blank());
+        let mut hot: Col<Hot> = store.carve("element hot", sc.ids);
+        let mut hgen: Col<u32> = store.carve("element generations", sc.ids);
+        let mut aux: Col<f32> = store.carve("element aux", sc.ids);
+        // SAFETY: mapped memory is zero and all-zero is a valid `Hot` / `u32` / `f32`: the whole id range is
+        // addressable, an untouched id reads as "no element".
+        unsafe {
+            hot.set_len(sc.ids);
+            hgen.set_len(sc.ids);
+            aux.set_len(sc.ids);
+        }
+        let mut cold: Col<Node> = store.carve("element cold", sc.ids);
+        cold.push(Node::blank());
         let mut wires: Col<Wire> = store.carve("wires", sc.wires);
         wires.push(Wire { next: 0, dead: true, latest: false, node: 0, head: 0, cls: 0, patch: nop, recipe: [0; 16] });
         let texts = store.carve("texts", sc.texts);
@@ -611,7 +630,13 @@ impl Rt {
             free_bits: Default::default(),
             runs,
             run_free: Vec::new(),
-            nodes,
+            hot,
+            hgen,
+            aux,
+            cold,
+            cold_free: Vec::new(),
+            ibase: caps.instances as u32,
+            max_id: 0,
             spare: Vec::new(),
             spans,
             wires,
@@ -911,7 +936,7 @@ impl Rt {
         }
     }
     // ------------------------------------------------------------------ nodes and wires
-    /// A new element: a record handle and blank node state at its index (the node id).
+    /// A new element: a record handle, and blank state at its index (the element id).
     pub fn alloc_node(&mut self) -> u32 {
         let h = match self.spare.pop() {
             Some(h) => h,
@@ -919,39 +944,122 @@ impl Rt {
         };
         self.node_at(h)
     }
-    /// Blank node state for the element whose record handle is `h` (the node id is `h.idx`).
+    /// Blank state for the element whose record handle is `h` (the element id is `h.idx`).
+    #[inline]
     pub fn node_at(&mut self, h: Handle) -> u32 {
         let i = h.idx as usize;
-        let n = Node { handle: h, ..Node::blank() };
-        if i == self.nodes.len() {
-            self.nodes.push(n);
-        } else {
-            while self.nodes.len() <= i {
-                self.nodes.push(Node::blank());
-            }
-            self.nodes[i] = n;
-        }
+        assert!(i < self.hot.len(), "element ids exhausted ({}): raise Caps::pages", self.hot.len());
+        // the id's previous element is gone (its handle was released): so is its cold record
+        self.drop_cold(i);
+        self.hot[i] = Hot::default();
+        self.hgen[i] = h.generation;
+        self.max_id = self.max_id.max(h.idx);
         h.idx
     }
-    /// Give back a node whose record will carry no handle (its element turned out static): the handle is
-    /// kept for the next `alloc_node`.
+    /// Give back an element whose record will carry no handle (it turned out static): the handle is kept
+    /// for the next `alloc_node`.
     pub fn drop_node(&mut self, i: u32) {
-        let n = &mut self.nodes[i as usize];
-        let h = std::mem::take(&mut n.handle);
-        n.kind = 0;
-        self.spare.push(h);
+        self.drop_cold(i as usize);
+        self.hot[i as usize] = Hot::default();
+        self.spare.push(Handle { idx: i, generation: self.hgen[i as usize] });
     }
-    /// Is the state at node index `i` that of a current element (its handle is the live handle of index `i`)?
+    #[inline]
+    fn drop_cold(&mut self, i: usize) {
+        let old = self.hot[i];
+        if old.flags & HF_COLD != 0 {
+            self.cold_free.push(old.link);
+        }
+    }
+    /// The record handle of element `i`.
+    #[inline(always)]
+    pub fn handle(&self, i: u32) -> Handle {
+        Handle { idx: i, generation: self.hgen[i as usize] }
+    }
+    /// Is the state at id `i` that of a current element (its handle is the live handle of index `i`)?
     #[inline]
     pub fn node_live(&self, i: u32) -> bool {
-        i != 0 && self.nodes.get(i as usize).is_some_and(|n| n.handle.idx == i && n.kind != 0 && self.bough.handle_live(n.handle))
+        i != 0 && self.hot.get(i as usize).is_some_and(|n| n.kind != 0) && self.bough.handle_live(self.handle(i))
     }
     /// `node_live` for an element being mounted (its handle is allocated, its record not inserted yet).
     #[inline]
     pub(crate) fn node_pending(&self, i: u32) -> bool {
         self.node_live(i)
     }
-    /// One instance (a quad's): a block of the instance column.
+    /// The instance of element `i` that draws one quad: its index in the instance column is its id.
+    #[inline(always)]
+    pub fn inst_of(&self, i: u32) -> u32 {
+        self.ibase + i
+    }
+    /// The text state of text element `i`.
+    #[inline(always)]
+    pub fn text_of(&self, i: u32) -> u32 {
+        self.hot[i as usize].link
+    }
+    /// A cold record for element `i` (`HF_COLD`), blank.
+    pub fn alloc_cold(&mut self, i: u32) -> &mut Node {
+        let c = match self.cold_free.pop() {
+            Some(c) => {
+                self.cold[c as usize] = Node::blank();
+                c
+            }
+            None => {
+                self.cold.push(Node::blank());
+                (self.cold.len() - 1) as u32
+            }
+        };
+        let h = &mut self.hot[i as usize];
+        h.flags |= HF_COLD;
+        h.link = c;
+        &mut self.cold[c as usize]
+    }
+    /// The cold record of element `i` (which has one).
+    #[inline]
+    pub fn cold_of(&self, i: u32) -> &Node {
+        let h = self.hot[i as usize];
+        debug_assert!(h.flags & HF_COLD != 0);
+        &self.cold[h.link as usize]
+    }
+    #[inline]
+    pub fn cold_mut(&mut self, i: u32) -> &mut Node {
+        let h = self.hot[i as usize];
+        debug_assert!(h.flags & HF_COLD != 0);
+        &mut self.cold[h.link as usize]
+    }
+    /// The cold record of quad `i` under a paint modifier, made on first use from what the instance holds
+    /// (the instance was the state until now): described colour, position, no offset, full opacity.
+    pub fn mod_of(&mut self, i: u32) -> &mut Node {
+        if self.hot[i as usize].flags & HF_MOD == 0 {
+            let p = self.inst[self.inst_of(i) as usize];
+            let base = if p.kind == KIND_BORDER { p.color2 } else { p.color };
+            let c = self.alloc_cold(i);
+            (c.color, c.x, c.y) = (base, p.pos[0], p.pos[1]);
+            self.hot[i as usize].flags |= HF_MOD;
+        }
+        self.cold_mut(i)
+    }
+    /// The described colour of quad `i` (its fill): the instance's, or under a paint modifier the cold
+    /// record's.
+    pub fn quad_color(&self, i: u32) -> u32 {
+        let h = self.hot[i as usize];
+        if h.flags & HF_MOD != 0 {
+            return self.cold_of(i).color;
+        }
+        let p = &self.inst[self.inst_of(i) as usize];
+        if h.kind & !NK_HOVERED == NK_BORDER { p.color2 } else { p.color }
+    }
+    /// The ink margin of quad `i`: a decoration's own (`aux`), else what its instance's kind draws outside
+    /// its box (anti-aliasing of a rounded or bordered edge: 1 px; a solid: none).
+    #[inline(always)]
+    pub fn margin_of(&self, i: u32, p: &Instance) -> f32 {
+        if self.hot[i as usize].kind & !NK_HOVERED == crate::deco::NK_DECO {
+            self.aux[i as usize]
+        } else if p.kind == KIND_SOLID {
+            0.0
+        } else {
+            1.0
+        }
+    }
+    /// One instance of a static quad (no element state): a block of the instance column.
     #[inline]
     pub fn alloc_inst(&mut self) -> u32 {
         self.alloc_block(0)
@@ -1117,37 +1225,49 @@ impl Rt {
         NRect::new(x0, y0, x1, y1)
     }
 
-    /// Move a quad node's box to `(x, y, w, h)` (space-local px; snapped to the geometry grid here): node,
-    /// instance and record ink are written, and the damage is only the bands around the edges that moved
-    /// (`Bough::set_ink_handle_edges`), not old ∪ new. Edges are compared exactly: on the grid `x + w` is
-    /// exact, so an edge that did not move is bitwise the edge the GPU computes (bough-metal RESULTS Part IV).
+    /// Move quad `node`'s box to `(x, y, w, h)` (space-local px; snapped to the geometry grid here): the
+    /// instance and the record ink are written, and the damage is only the bands around the edges that moved
+    /// (`Bough::set_ink_handle_edges`), not old ∪ new. The instance is compared with, not a mirror of it:
+    /// on the grid `x + w` is exact, so an edge that did not move is bitwise the edge the GPU computes
+    /// (bough-metal RESULTS Part IV).
     #[inline]
     pub fn quad_geom(&mut self, node: u32, x: f32, y: f32, w: f32, h: f32) {
         let (x, y, w, h) = (snap(x), snap(y), snap(w), snap(h));
-        let n = &self.nodes[node as usize];
-        let moved = (n.x != x) as u8 | ((n.y != y) as u8) << 1 | ((n.x + n.w != x + w) as u8) << 2 | ((n.y + n.h != y + h) as u8) << 3;
+        let i = self.inst_of(node) as usize;
+        // a box translation (boxops' `translate` operand) offsets the drawn box, not the laid-out one
+        let (ox, oy, tx, ty) = if self.hot[node as usize].flags & HF_MOD != 0 {
+            let c = self.cold_of(node);
+            (c.x, c.y, c.tx, c.ty)
+        } else {
+            let p = &self.inst[i];
+            (p.pos[0], p.pos[1], 0.0, 0.0)
+        };
+        let p = &self.inst[i];
+        let (ow, oh) = (p.size[0], p.size[1]);
+        let moved = (ox != x) as u8 | ((oy != y) as u8) << 1 | ((ox + ow != x + w) as u8) << 2 | ((oy + oh != y + h) as u8) << 3;
         if moved == 0 {
             return;
         }
-        let (inst, margin, hd, space, tx, ty) = (n.inst, n.margin, n.handle, n.space, n.tx, n.ty);
-        let n = &mut self.nodes[node as usize];
-        (n.x, n.y, n.w, n.h) = (x, y, w, h);
-        // a box translation (boxops' `translate` operand) offsets the drawn box, not the laid-out one
-        let p = self.inst_mut(inst);
+        if self.hot[node as usize].flags & HF_MOD != 0 {
+            let c = self.cold_mut(node);
+            (c.x, c.y) = (x, y);
+        }
+        let p = &mut self.inst[i];
         p.pos = [x + tx, y + ty];
         p.size = [w, h];
-        let band = edge_band_of(p);
-        let ink = self.ink_rect(space, x + tx, y + ty, w, h, margin);
-        self.bough.set_ink_handle_edges(hd, ink, moved, band);
+        let (band, space, p) = (edge_band_of(p), p.space, *p);
+        let ink = self.ink_rect(space, x + tx, y + ty, w, h, self.margin_of(node, &p));
+        self.bough.set_ink_handle_edges(self.handle(node), ink, moved, band);
     }
 
-    /// Re-derive a quad node's ink and write it through: the old and the new ink are damaged even when the
-    /// rounded rects are equal (a sub-pixel change of an edge still changes its anti-aliased pixels).
+    /// Re-derive quad `node`'s ink from its instance and write it through: the old and the new ink are
+    /// damaged even when the rounded rects are equal (a sub-pixel change of an edge still changes its
+    /// anti-aliased pixels).
     #[inline]
     pub fn quad_ink(&mut self, node: u32) {
-        let n = &self.nodes[node as usize];
-        let ink = self.ink_rect(n.space, n.x + n.tx, n.y + n.ty, n.w, n.h, n.margin);
-        let h = n.handle;
+        let p = self.inst[self.inst_of(node) as usize];
+        let ink = self.ink_rect(p.space, p.pos[0], p.pos[1], p.size[0], p.size[1], self.margin_of(node, &p));
+        let h = self.handle(node);
         self.bough.touch_handle(h);
         self.bough.set_ink_handle(h, ink);
     }
@@ -1409,7 +1529,10 @@ impl Rt {
         // a carved column's bytes are its high-water length (what was touched), not its reservation
         let mut v: Vec<(&'static str, usize, usize)> = Vec::new();
         v.push(("core: bough (pages' directory, prefix, htab, planes)", self.bough.len(), self.bough.heap_bytes()));
-        v.push(("col rt.nodes", self.nodes.len(), self.nodes.len() * size_of::<Node>()));
+        // the per-id columns are addressable whole; what is touched is up to the highest id handed out
+        let ids = self.max_id as usize + 1;
+        v.push(("col rt.hot + hgen (12 B per element id)", ids, ids * 12));
+        v.push(("col rt.cold (bars, lanes, modified quads)", self.cold.len(), self.cold.len() * size_of::<Node>()));
         v.push(("col rt.spans (series, tapes, line windows)", self.spans.touched(), self.spans.touched() * 4));
         v.push(("col rt.runs", self.runs.len(), self.runs.len() * size_of::<Run>() + self.run_free.capacity() * 4));
         v.push(("col rt.wires", self.wires.len(), self.wires.len() * size_of::<Wire>() + self.wire_free.capacity() * 4));

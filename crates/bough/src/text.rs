@@ -444,6 +444,8 @@ pub struct TextNode {
     /// A laid-out label: its baseline's offset below the top of its line box (px), so a write-back places
     /// it without selecting its face.
     pub base_off: f32,
+    /// Per-glyph alpha (`glyph_alpha`): a hash of the alpha vector, the record's paint state.
+    pub paint_key: u64,
 }
 
 impl TextNode {

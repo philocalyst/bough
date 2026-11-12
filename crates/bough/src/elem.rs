@@ -308,26 +308,59 @@ impl Apply for ApplyBg {
     type P = Color;
     #[inline]
     fn apply(rt: &mut Rt, node: u32, v: &Color) {
-        let n = &mut rt.nodes[node as usize];
-        if n.color == v.0 {
+        // The instance is the state: the element's eight hot bytes and its instance (at its own id) are
+        // loaded side by side, the new colour is compared with the one the GPU reads, and stored there.
+        let hot = rt.hot[node as usize];
+        if hot.flags & HF_MOD != 0 {
+            return apply_bg_mod(rt, node, v.0);
+        }
+        let p = &mut rt.inst[(rt.ibase + node) as usize];
+        let field = if hot.kind == NK_BORDER { &mut p.color2 } else { &mut p.color };
+        let old = *field;
+        if old == v.0 {
             return;
         }
-        let old = n.color;
-        n.color = v.0;
-        if n.kind & NK_HOVERED != 0 {
-            return; // the hover colour shows; the base returns when the pointer leaves (input.rs)
-        }
-        let (h, inst, bordered, a) = (n.handle, n.inst, n.kind == NK_BORDER, n.alpha);
-        let p = rt.inst_mut(inst);
-        let c = crate::boxops::mul_alpha(v.0, a);
-        if bordered {
-            p.color2 = c;
-        } else {
-            p.color = c;
-        }
-        // the colour word (with the opacity operand's alpha, `boxops::paint_state`) is the record's whole paint
-        // state: logged as is (content addressing)
-        rt.paint_write(h, crate::boxops::paint_state(old, a), crate::boxops::paint_state(v.0, a));
+        *field = v.0;
+        // the colour word is the record's whole paint state: logged as is (content addressing)
+        rt.paint_write(rt.handle(node), old as u64, v.0 as u64);
+    }
+}
+
+/// `ApplyBg` for a quad whose drawn colour is not its described one (`HF_MOD`: under an opacity operand, or
+/// hovered): the described colour is the cold record's; the instance takes it through the opacity unless
+/// the hover colour shows.
+#[cold]
+fn apply_bg_mod(rt: &mut Rt, node: u32, c: u32) {
+    let hot = rt.hot[node as usize];
+    let n = rt.cold_mut(node);
+    if n.color == c {
+        return;
+    }
+    let (old, a) = (std::mem::replace(&mut n.color, c), n.alpha);
+    if hot.kind & NK_HOVERED != 0 {
+        return; // the hover colour shows; the base returns when the pointer leaves (input.rs)
+    }
+    let p = &mut rt.inst[(rt.ibase + node) as usize];
+    let shown = crate::boxops::mul_alpha(c, a);
+    if hot.kind & !NK_HOVERED == NK_BORDER {
+        p.color2 = shown;
+    } else {
+        p.color = shown;
+    }
+    // the colour word with the opacity operand's alpha (`boxops::paint_state`) is the paint state
+    rt.paint_write(rt.handle(node), crate::boxops::paint_state(old, a), crate::boxops::paint_state(c, a));
+}
+
+/// The laid-out (untranslated) box of quad `node`: its instance's, or under a paint offset the cold
+/// record's position.
+#[inline]
+pub(crate) fn quad_box(rt: &Rt, node: u32) -> (f32, f32, f32, f32) {
+    let p = &rt.inst[(rt.ibase + node) as usize];
+    if rt.hot[node as usize].flags & HF_MOD != 0 {
+        let c = rt.cold_of(node);
+        (c.x, c.y, p.size[0], p.size[1])
+    } else {
+        (p.pos[0], p.pos[1], p.size[0], p.size[1])
     }
 }
 
@@ -335,8 +368,7 @@ impl Apply for ApplyW {
     type P = f32;
     #[inline]
     fn apply(rt: &mut Rt, node: u32, v: &f32) {
-        let n = &rt.nodes[node as usize];
-        let (x, y, h) = (n.x, n.y, n.h);
+        let (x, y, _, h) = quad_box(rt, node);
         rt.quad_geom(node, x, y, *v * rt.scale, h);
     }
 }
@@ -346,8 +378,8 @@ impl Apply for ApplySpan {
     type P = (f32, f32);
     #[inline]
     fn apply(rt: &mut Rt, node: u32, v: &(f32, f32)) {
-        let n = &rt.nodes[node as usize];
-        let (x, w, y, h) = (n.x, n.w, n.y0 + v.0 * rt.scale, v.1 * rt.scale);
+        let (x, _, w, _) = quad_box(rt, node);
+        let (y, h) = (rt.aux[node as usize] + v.0 * rt.scale, v.1 * rt.scale);
         rt.quad_geom(node, x, y, w, h);
     }
 }
@@ -432,32 +464,26 @@ where
         let (mut ins, _kind, margin) = quad_instance(bg, snap(self.radius * s), self.border, s, m.space);
         ins.pos = [x_px, y_px];
         ins.size = [w_px, h_px];
-        let inst = m.rt.alloc_inst();
-        *m.rt.inst_mut(inst) = ins;
         let ink = m.rt.ink_rect(m.space, x_px, y_px, w_px, h_px, margin);
         // a re-describing owner keeps every quad addressable (any constant may change)
         let dynamic = m.scope.wires.len() > wires_before || m.taping() || std::mem::take(&mut m.keep);
         m.tape_push(node);
         let mut handle_idx = 0;
-        if dynamic {
+        let inst = if dynamic {
+            // an element: its instance is at its own id, its state is the instance and eight hot bytes
             handle_idx = node;
             m.rt.reflect.elem(node, std::any::type_name::<Self>());
-            let n = &mut m.rt.nodes[node as usize];
-            n.inst = inst;
-            n.space = m.space;
-            n.clip = m.clip;
-            n.kind = if self.border.is_some() { NK_BORDER } else { NK_QUAD };
-            n.x = x_px;
-            n.y = y_px;
-            n.y0 = y0_px;
-            n.w = w_px;
-            n.h = h_px;
-            n.color = bg.0;
-            n.margin = margin;
+            m.rt.hot[node as usize] = Hot { kind: if self.border.is_some() { NK_BORDER } else { NK_QUAD }, flags: 0, clip: m.clip, link: 0 };
+            m.rt.aux[node as usize] = y0_px;
+            m.rt.inst_of(node)
         } else {
+            // static: no element state, an instance block the scope releases
             m.rt.drop_node(node);
-        }
-        m.scope.insts.push(inst);
+            let inst = m.rt.alloc_inst();
+            m.scope.insts.push(inst);
+            inst
+        };
+        *m.rt.inst_mut(inst) = ins;
         m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: inst, handle: handle_idx, clip: m.clip });
         // children: inside the border
         let bw = self.border.map_or(0.0, |b| b.0);
@@ -483,36 +509,28 @@ where
         ins.pos = [x_px, y_px];
         ins.size = [w_px, h_px];
         let nk = if self.border.is_some() { NK_BORDER } else { NK_QUAD };
-        let (inst, hd, cur) = {
-            let n = &m.rt.nodes[node as usize];
-            (n.inst, n.handle, n.clip)
-        };
-        if cur != m.clip {
+        let inst = m.rt.inst_of(node);
+        if m.rt.hot[node as usize].clip != m.clip {
             m.rt.bough.set_clip_run(m.pos, 1, m.clip);
-            m.rt.nodes[node as usize].clip = m.clip;
+            m.rt.hot[node as usize].clip = m.clip;
         }
         let old = *m.rt.inst_mut(inst);
         let geo = old.pos != ins.pos || old.size != ins.size || old.radius != ins.radius || old.kind != ins.kind || old.bw != ins.bw || old.space != ins.space;
         // the border colour is geometry-class damage (one record, one paint state: its fill, see `paint_write`)
         let border_c = self.border.is_some() && old.color != ins.color;
-        if geo || border_c || m.rt.nodes[node as usize].kind != nk {
+        let _ = margin;
+        m.rt.aux[node as usize] = y0_px;
+        if geo || border_c || m.rt.hot[node as usize].kind & !NK_HOVERED != nk {
+            // a re-described quad is rewritten whole (a paint modifier's cold record follows it)
             *m.rt.inst_mut(inst) = ins;
-            {
-                let n = &mut m.rt.nodes[node as usize];
-                n.kind = nk;
-                n.x = x_px;
-                n.y = y_px;
-                n.y0 = y0_px;
-                n.w = w_px;
-                n.h = h_px;
-                n.color = bg.0;
-                n.margin = margin;
-                n.space = m.space;
+            let h = &mut m.rt.hot[node as usize];
+            h.kind = nk | (h.kind & NK_HOVERED);
+            if h.flags & HF_MOD != 0 {
+                let c = m.rt.cold_mut(node);
+                (c.x, c.y, c.color) = (x_px, y_px, bg.0);
             }
             m.rt.quad_ink(node);
-            let _ = hd;
         } else {
-            m.rt.nodes[node as usize].y0 = y0_px;
             ApplyBg::apply(m.rt, node, &bg);
         }
         m.pos += 1;
@@ -642,12 +660,11 @@ impl<V> TextSrc<V> for &Signal<String> {
 /// The text node of `node` was given a new value.
 #[inline]
 pub(crate) fn set_node_text(rt: &mut Rt, node: u32, s: &str) {
-    let n = &rt.nodes[node as usize];
-    let ti = n.text;
+    let n = rt.hot[node as usize];
     if n.kind == NK_LTEXT {
         rt.lay_text_changed(node, s);
     } else {
-        rt.text_set(ti, s);
+        rt.text_set(n.link, s);
     }
 }
 
@@ -695,7 +712,7 @@ unsafe fn patch_text_num<T: 'static, F: Fn(&T) -> f32 + Copy>(rt: &mut Rt, w: &W
     let s = unsafe { &*(sig as *const Signal<T>) };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
     let v = f(s);
-    let ti = rt.nodes[w.node as usize].text;
+    let ti = rt.text_of(w.node);
     let fmt = rt.texts[ti as usize].num.expect("numeric text node");
     let mut buf = [0u8; 16];
     let mut slow = String::new();
@@ -809,8 +826,10 @@ pub struct GlyphAlpha<'a, T, V> {
 
 /// Write the glyph alphas; returns a hash of the new alpha vector (the record's paint state).
 fn set_glyph_alpha<T>(rt: &mut Rt, node: u32, f: fn(usize, usize, &T) -> u8, v: &T) -> u64 {
-    let n = &rt.nodes[node as usize];
-    let (first, rgb, ti) = (n.inst, n.color & 0x00ff_ffff, n.text);
+    let ti = rt.text_of(node);
+    let t = &rt.texts[ti as usize];
+    let crate::text::TShape::Glyphs { run } = t.shape else { unreachable!("per-glyph text is glyph instances") };
+    let (first, rgb) = (rt.runs[run as usize].first, t.color & 0x00ff_ffff);
     let count = rt.texts[ti as usize].text.len();
     let mut j = 0u32;
     let mut hsh = 0xcbf2_9ce4_8422_2325u64; // FNV-1a over the alphas
@@ -833,8 +852,8 @@ unsafe fn patch_galpha<T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner
     let s = unsafe { &*(sig as *const Signal<T>) };
     let f: fn(usize, usize, &T) -> u8 = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const _) };
     let new = set_glyph_alpha(rt, w.node, f, s);
-    let n = &mut rt.nodes[w.node as usize];
-    let (h, old) = (n.handle, std::mem::replace(&mut n.series_key, new));
+    let t = &mut rt.texts[rt.hot[w.node as usize].link as usize];
+    let (h, old) = (t.handle, std::mem::replace(&mut t.paint_key, new));
     if old != new {
         rt.paint_write(h, old, new);
     }
@@ -844,12 +863,14 @@ impl<'a, V: 'static, T: 'static> GlyphOp<V> for GlyphAlpha<'a, T, V> {
     const PER_GLYPH: bool = true;
     fn install(self, m: &mut Mounter<'_, V>, node: u32) {
         let hsh = set_glyph_alpha(m.rt, node, self.f, self.sig.get());
-        m.rt.nodes[node as usize].series_key = hsh;
+        let ti = m.rt.text_of(node);
+        m.rt.texts[ti as usize].paint_key = hsh;
         m.wire(&self.sig, patch_galpha::<T>, node, recipe_of(self.f));
     }
     fn refresh(self, m: &mut Mounter<'_, V>, node: u32) {
         let hsh = set_glyph_alpha(m.rt, node, self.f, self.sig.get());
-        m.rt.nodes[node as usize].series_key = hsh;
+        let ti = m.rt.text_of(node);
+        m.rt.texts[ti as usize].paint_key = hsh;
     }
 }
 
@@ -869,7 +890,7 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
         m.tape_push(node);
         // a static text keeps no node: its record carries no handle and its text state is the scope's
         let hd = if dynamic {
-            m.rt.nodes[node as usize].handle
+            m.rt.handle(node)
         } else {
             m.rt.drop_node(node);
             Handle { idx: 0, generation: 0 }
@@ -892,21 +913,13 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
             per_glyph: G::PER_GLYPH,
             num,
             base_off: 0.0,
+            paint_key: 0,
         });
         let payload = m.rt.text_build(ti);
         m.scope.texts.push(ti);
         if dynamic {
-            let run = if let TShape::Glyphs { run } = m.rt.texts[ti as usize].shape { run } else { NONE };
-            let first = if run != NONE { m.rt.runs[run as usize].first } else { NONE };
-            let n = &mut m.rt.nodes[node as usize];
-            n.text = ti;
-            n.space = m.space;
-            n.clip = m.clip;
-            n.kind = if G::PER_GLYPH { NK_GALPHA } else { NK_TEXT };
-            n.color = self.color.0;
-            n.size_px = size_px;
-            n.line_h = lh_px;
-            (n.run, n.inst) = (run, first);
+            // a text element's state is its text state (colour, size, shape); its hot entry links to it
+            m.rt.hot[node as usize] = Hot { kind: if G::PER_GLYPH { NK_GALPHA } else { NK_TEXT }, flags: 0, clip: m.clip, link: ti };
             self.g.install(m, node);
         }
         let ink = m.rt.texts[ti as usize].ink;
@@ -919,10 +932,10 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
         let s = m.rt.scale;
         let size_px = self.size * s;
         let lh_px = self.lh * s;
-        let (ti, hd) = (m.rt.nodes[node as usize].text, m.rt.nodes[node as usize].handle);
-        if m.rt.nodes[node as usize].clip != m.clip {
+        let (ti, hd) = (m.rt.text_of(node), m.rt.handle(node));
+        if m.rt.hot[node as usize].clip != m.clip {
             m.rt.bough.set_clip_run(m.pos, 1, m.clip);
-            m.rt.nodes[node as usize].clip = m.clip;
+            m.rt.hot[node as usize].clip = m.clip;
         }
         let base = ((m.oy + self.y) * s + m.rt.text.baseline(size_px, lh_px)).round();
         let ox = (m.ox + self.x) * s;
@@ -950,18 +963,6 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
                 t.space = m.space;
             }
             let payload = m.rt.text_build(ti);
-            {
-                let n = &mut m.rt.nodes[node as usize];
-                n.color = self.color.0;
-                n.size_px = size_px;
-                n.line_h = lh_px;
-                n.space = m.space;
-            }
-            if let TShape::Glyphs { run } = m.rt.texts[ti as usize].shape {
-                let first = m.rt.runs[run as usize].first;
-                let n = &mut m.rt.nodes[node as usize];
-                (n.run, n.inst) = (run, first);
-            }
             self.g.refresh(m, node);
             m.rt.bough.set_payload_handle(hd, payload);
             let ink = m.rt.texts[ti as usize].ink;
@@ -1184,8 +1185,9 @@ impl<F, V> Bars<'_, F, V> {
 /// its old and new top (`Bough::damage_edges`, a solid's band): bars are bottom-anchored on the geometry
 /// grid, so the bottom edge `y + h` is the same exact value every tick and never damages.
 fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage: bool) -> NRect {
-    let Rt { nodes, spans, .. } = rt;
-    let n = &mut nodes[node as usize];
+    let (clip, link, hd) = (rt.hot[node as usize].clip, rt.hot[node as usize].link, rt.handle(node));
+    let Rt { cold, spans, .. } = rt;
+    let n = &mut cold[link as usize];
     let count = n.series_n as usize;
     let ser = spans.floats_mut(n.series, count);
     // The samples that leave or are overwritten: with the new series they bound every old and new bar top
@@ -1203,7 +1205,7 @@ fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage:
             *s = f(key + i as u64);
         }
     } else {
-        return rt.bough.visible_ink_handle(n.handle).unwrap_or(NRect::EMPTY);
+        return rt.bough.visible_ink_handle(hd).unwrap_or(NRect::EMPTY);
     }
     n.series_ok = true;
     n.series_key = key;
@@ -1215,7 +1217,7 @@ fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage:
     let (bottom, wb) = (snap(y0 + base_pt * scale), snap(wpx));
     let [sx, sy] = rt.space(space);
     let band = edge_band(KIND_SOLID, 0.0, 0.0) as f32;
-    let (inst, series) = (&mut rt.inst, rt.spans.floats(rt.nodes[node as usize].series, count));
+    let (inst, series) = (&mut rt.inst, rt.spans.floats(rt.cold[link as usize].series, count));
     // Bars are bottom-anchored on the geometry grid: only their top edges move (x, width and bottom are
     // fixed, written at mount; `bottom - y` is exact on the grid). The edge-band rule (`Bough::damage_edges`)
     // gives each moved bar the strip between its old and new top plus a solid's band; their union is
@@ -1243,7 +1245,6 @@ fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage:
         let (lo, hi) = (y_of(smax), y_of(smin));
         let xa = snap(x0) + sx;
         let r = NRect::new(xa.floor() as i32, (lo + sy - band).floor() as i32, (xa + snap((count as f32 - 1.0) * step) + wb).ceil() as i32, (hi + sy + band).ceil() as i32);
-        let clip = rt.nodes[node as usize].clip;
         rt.bough.damage_clipped(r, clip);
     }
     let xa = snap(x0);
@@ -1258,7 +1259,7 @@ unsafe fn patch_bars<F: Fn(u64) -> f32 + Copy>(rt: &mut Rt, w: &Wire, sig: *cons
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
     // each bar damages the strip its top moved through (inside write_bars); the record's ink is the union
     let ink = write_bars(rt, w.node, key, f, true);
-    let h = rt.nodes[w.node as usize].handle;
+    let h = rt.handle(w.node);
     rt.bough.set_ink_handle_nodamage(h, ink);
 }
 
@@ -1272,12 +1273,11 @@ impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a,
         for i in 0..self.count {
             *m.rt.inst_mut(first + i as u32) = Instance { color: self.color.0, space: m.space, kind: KIND_SOLID, ..Default::default() };
         }
+        m.rt.hot[node as usize] = Hot { kind: NK_BARS, flags: 0, clip: m.clip, link: 0 };
         {
-            let n = &mut m.rt.nodes[node as usize];
+            let n = m.rt.alloc_cold(node);
             (n.run, n.inst) = (run, first);
             n.space = m.space;
-            n.clip = m.clip;
-            n.kind = NK_BARS;
             n.x = (m.ox + self.x) * s;
             n.w = self.width * s;
             n.h = self.step * s;
@@ -1290,12 +1290,12 @@ impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a,
         }
         let series = m.rt.spans.alloc(crate::store::class_of(self.count));
         m.rt.spans.floats_mut(series, self.count).fill(0.0);
-        let n = &mut m.rt.nodes[node as usize];
+        let n = m.rt.cold_mut(node);
         (n.series, n.series_n) = (series, self.count as u32);
         m.scope.series.push((series, self.count as u32));
         let ink = write_bars(m.rt, node, *self.key.get(), self.sample, false);
         m.wire(&self.key, patch_bars::<F>, node, recipe_of(self.sample));
-        let hd = m.rt.nodes[node as usize].handle;
+        let hd = m.rt.handle(node);
         m.scope.runs.push(run);
         m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD, payload: pay_irun(first, self.count as u32), handle: hd.idx, clip: m.clip });
     }

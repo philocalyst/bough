@@ -384,7 +384,7 @@ fn act_for<V>(m: &mut Mounter<'_, V>, before: usize, flags: u8) -> u32 {
     // a node's index is its record's handle index
     let node = if m.rt.node_pending(rec.handle) { rec.handle } else { NONE };
     let h = if node != NONE {
-        m.rt.nodes[node as usize].handle
+        m.rt.handle(node)
     } else if rec.handle != 0 {
         m.rt.bough.handle_gen(rec.handle)
     } else {
@@ -410,7 +410,7 @@ pub fn act_at<V>(m: &mut Mounter<'_, V>, rec: usize) -> u32 {
     let r = m.recs[rec];
     let node = m.rt.node_pending(r.handle).then_some(r.handle);
     let h = match node {
-        Some(n) => m.rt.nodes[n as usize].handle,
+        Some(n) => m.rt.handle(n),
         None if r.handle != 0 => m.rt.bough.handle_gen(r.handle),
         None => {
             let h = m.rt.bough.new_handle();
@@ -860,15 +860,16 @@ fn place_caret(rt: &mut Rt, f: u32) {
         _ => 0,
     };
     let x = bough_text::pool::pen_px(units, scale, ox + 0.5) as f32;
-    let n = &mut rt.nodes[cn as usize];
+    // the caret quad's state is its instance
+    let (inst, h) = (rt.inst_of(cn), rt.handle(cn));
+    let p = &mut rt.inst[inst as usize];
     let want = if focused { color } else { color & 0x00ff_ffff };
-    let (moved, recolor) = (n.x != x, n.color != want);
+    let (moved, recolor) = (p.pos[0] != x, p.color != want);
     if !moved && !recolor {
         return;
     }
-    let (inst, h, old, (y, w, hh)) = (n.inst, n.handle, n.color, (n.y, n.w, n.h));
-    n.color = want;
-    rt.inst_mut(inst).color = want;
+    let (old, (y, w, hh)) = (p.color, (p.pos[1], p.size[0], p.size[1]));
+    p.color = want;
     if moved {
         // a recoloured caret changes everywhere it is: old and new ink; a moved one only near its edges
         if recolor {
@@ -1069,11 +1070,12 @@ impl<V: View> App<V> {
         let act = self.rt.input.acts[a as usize];
         let mut ran = false;
         if let Some(c) = act.hover_bg {
-            let base = if act.node != NONE { self.rt.nodes[act.node as usize].color } else { act.base };
+            // an element's described colour moves to its cold record while a hover colour shows (the
+            // colour wire writes it there: `ApplyBg` reads the flag)
+            let base = if act.node != NONE { self.rt.mod_of(act.node).color } else { act.base };
             let new = if on { c } else { base };
             if act.node != NONE {
-                // while hovered the base colour wire writes `n.color` only (ApplyBg reads the flag)
-                let n = &mut self.rt.nodes[act.node as usize];
+                let n = &mut self.rt.hot[act.node as usize];
                 n.kind = if on { n.kind | crate::rt::NK_HOVERED } else { n.kind & !crate::rt::NK_HOVERED };
             }
             let p = self.rt.inst_mut(act.inst);

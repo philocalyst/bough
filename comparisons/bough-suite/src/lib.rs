@@ -789,7 +789,7 @@ pub fn motion_config() -> Config {
 pub fn motion_parent_of<V: View>(a: &App<V>, first: &[u8]) -> Option<[f32; 3]> {
     let s = a.rt.scale;
     // a layout node's index is its node's
-    let (_, li) = a.rt.lay.info.iter().enumerate().find(|(i, li)| li.live && li.kind == 2 && a.rt.texts[a.rt.nodes[*i].text as usize].bytes() == first)?;
+    let (_, li) = a.rt.lay.info.iter().enumerate().find(|(i, li)| li.live && li.kind == 2 && a.rt.texts[a.rt.text_of(*i as u32) as usize].bytes() == first)?;
     let col = a.rt.lay.info[li.parent as usize];
     Some([col.ax / s, col.ay / s, col.aw / s])
 }

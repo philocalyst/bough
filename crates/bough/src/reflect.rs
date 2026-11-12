@@ -801,9 +801,16 @@ impl<V: crate::app::View> crate::app::App<V> {
                 let node = rt.node_live(h).then_some(h);
                 let (color, text) = match node {
                     Some(n) => {
-                        let nd = &rt.nodes[n as usize];
-                        let t = (nd.text != crate::rt::NONE).then(|| String::from_utf8_lossy(rt.texts[nd.text as usize].bytes()).into_owned());
-                        (Some(nd.color), t)
+                        // a text element's colour and bytes are its text state's; a quad's colour its instance's
+                        let k = rt.hot[n as usize].kind & !crate::rt::NK_HOVERED;
+                        if matches!(k, crate::rt::NK_TEXT | crate::rt::NK_LTEXT | crate::rt::NK_GALPHA) {
+                            let t = &rt.texts[rt.text_of(n) as usize];
+                            (Some(t.color), Some(String::from_utf8_lossy(t.bytes()).into_owned()))
+                        } else if k == crate::rt::NK_BARS {
+                            (None, None)
+                        } else {
+                            (Some(rt.quad_color(n)), None)
+                        }
                     }
                     None => (None, None),
                 };
@@ -866,7 +873,8 @@ impl<V: crate::app::View> crate::app::App<V> {
 
     /// Set the paint colour of the quad drawn by record `handle` (a paint-only write).
     pub fn reflect_set_color(&mut self, handle: u32, c: crate::color::Color) -> bool {
-        if !(self.rt.node_live(handle) && self.rt.nodes[handle as usize].inst != crate::rt::NONE && self.rt.nodes[handle as usize].text == crate::rt::NONE) {
+        let k = self.rt.hot.get(handle as usize).map_or(0, |h| h.kind & !crate::rt::NK_HOVERED);
+        if !(self.rt.node_live(handle) && matches!(k, crate::rt::NK_QUAD | crate::rt::NK_BORDER)) {
             return false;
         }
         <crate::elem::ApplyBg as crate::elem::Apply>::apply(&mut self.rt, handle, &c);

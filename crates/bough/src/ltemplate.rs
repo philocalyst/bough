@@ -404,17 +404,9 @@ fn mount_element<V: 'static>(m: &mut Mounter<'_, V>, n: &LNode, ids: &mut [u32],
             per_glyph: false,
             num: None,
             base_off: 0.0,
+            paint_key: 0,
         });
-        {
-            let nd = &mut m.rt.nodes[node as usize];
-            nd.text = ti;
-            nd.space = m.space;
-            nd.clip = m.clip;
-            nd.kind = NK_LTEXT;
-            nd.color = n.color;
-            nd.size_px = size_px;
-            nd.line_h = lh_px;
-        }
+        m.rt.hot[node as usize] = Hot { kind: NK_LTEXT, flags: 0, clip: m.clip, link: ti };
         m.rt.lay.info[lid as usize].kind = 2;
         m.scope.texts.push(ti);
         m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_TEXT, payload: 0, handle: hd.idx, clip: m.clip });
@@ -444,18 +436,10 @@ fn mount_element<V: 'static>(m: &mut Mounter<'_, V>, n: &LNode, ids: &mut [u32],
             crate::deco::gradient_instance(&mut ins, g, ramp);
             margin = 1.0;
         }
-        let inst = m.rt.alloc_inst();
+        let inst = m.rt.inst_of(node);
         *m.rt.inst_mut(inst) = ins;
-        {
-            let nd = &mut m.rt.nodes[node as usize];
-            nd.inst = inst;
-            nd.space = m.space;
-            nd.clip = m.clip;
-            nd.kind = if bordered { NK_BORDER } else { NK_QUAD };
-            nd.color = n.bg;
-            nd.margin = margin;
-        }
-        m.scope.insts.push(inst);
+        let _ = margin;
+        m.rt.hot[node as usize] = Hot { kind: if bordered { NK_BORDER } else { NK_QUAD }, flags: 0, clip: m.clip, link: 0 };
         m.rt.lay.info[lid as usize].kind = 1;
         m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_QUAD, payload: inst, handle: hd.idx, clip: m.clip });
     } else {
@@ -702,7 +686,7 @@ impl Rt {
             }
             PlaceHook::Deco { node, dx, dy, grow, sized } => {
                 let _ = space;
-                let (dw, dh) = if sized { (w + 2.0 * grow, h + 2.0 * grow) } else { (self.nodes[node as usize].w, self.nodes[node as usize].h) };
+                let (dw, dh) = if sized { (w + 2.0 * grow, h + 2.0 * grow) } else { { let p = &self.inst[self.inst_of(node) as usize]; (p.size[0], p.size[1]) } };
                 self.place_deco(node, ax + dx - grow, ay + dy - grow, dw, dh);
             }
             PlaceHook::Port { reg } => {

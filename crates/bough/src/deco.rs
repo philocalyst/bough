@@ -330,27 +330,17 @@ pub(crate) fn mount_deco<V>(m: &mut Mounter<'_, V>, ins: Instance, x: f32, y: f3
     // the geometry grid (1/256 px): sums exact on the GPU, moved edges compared exactly (rt::quad_geom)
     let (x, y, w, h) = (snap(x), snap(y), snap(w), snap(h));
     let node = m.rt.alloc_node();
-    let inst = m.rt.alloc_inst();
+    let inst = m.rt.inst_of(node);
     let mut ins = ins;
     ins.pos = [x, y];
     ins.size = [w, h];
     ins.space = m.space;
     *m.rt.inst_mut(inst) = ins;
-    let hd = m.rt.nodes[node as usize].handle;
+    let hd = m.rt.handle(node);
     let ink = m.rt.ink_rect(m.space, x, y, w, h, margin);
-    {
-        let n = &mut m.rt.nodes[node as usize];
-        n.inst = inst;
-        n.space = m.space;
-        n.clip = m.clip;
-        n.kind = NK_DECO;
-        n.x = x;
-        n.y = y;
-        n.w = w;
-        n.h = h;
-        n.margin = margin;
-    }
-    m.scope.insts.push(inst);
+    // a decoration's ink margin is its own (a shadow's blur, a rotating image's corner reach)
+    m.rt.hot[node as usize] = Hot { kind: NK_DECO, flags: 0, clip: m.clip, link: 0 };
+    m.rt.aux[node as usize] = margin;
     m.recs.push(RecordInit { depth: m.depth, ink, kind: REC_QUAD | KF_NOHIT, payload: inst, handle: hd.idx, clip: m.clip });
     node
 }
@@ -370,8 +360,7 @@ pub struct ApplyAngle;
 impl Apply for ApplyAngle {
     type P = f32;
     fn apply(rt: &mut Rt, node: u32, v: &f32) {
-        let n = &rt.nodes[node as usize];
-        let (h, inst) = (n.handle, n.inst);
+        let (h, inst) = (rt.handle(node), rt.inst_of(node));
         let p = rt.inst_mut(inst);
         let old = p.radius;
         if old == *v {
@@ -416,7 +405,7 @@ impl<V: 'static, A: IntoProp<f32, V>> Element<V> for Image<A> {
         let (x, y) = ((m.ox + self.x) * s, (m.oy + self.y) * s);
         let node = mount_deco(m, ins, x, y, wp, hp, margin.max(1) as f32);
         let a = self.angle.lower::<ApplyAngle>(m, node);
-        let inst = m.rt.nodes[node as usize].inst;
+        let inst = m.rt.inst_of(node);
         m.rt.inst_mut(inst).radius = a;
     })
     }
@@ -485,6 +474,6 @@ impl<V: 'static> Element<V> for DecoBox {
 
 /// Damage a fresh ink rect (helper for tests of exactness: the record's ink as the damage model sees it).
 pub fn ink_of(rt: &Rt, node: u32) -> NRect {
-    let n = &rt.nodes[node as usize];
-    rt.ink_rect(n.space, n.x, n.y, n.w, n.h, n.margin)
+    let p = rt.inst[rt.inst_of(node) as usize];
+    rt.ink_rect(p.space, p.pos[0], p.pos[1], p.size[0], p.size[1], rt.margin_of(node, &p))
 }

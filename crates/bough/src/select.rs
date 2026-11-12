@@ -60,7 +60,7 @@ unsafe fn patch_select<T: Copy + Eq + Hash + 'static, P: 'static>(rt: &mut Rt, w
             for (k, on) in [(old, false), (new, true)] {
                 if let Some(ds) = t.by_key.get_mut(&k) {
                     ds.retain(|d| {
-                        if !(rt.node_live(d.node) && rt.nodes[d.node as usize].handle == d.handle) {
+                        if !(rt.node_live(d.node) && rt.handle(d.node) == d.handle) {
                             return false; // its subtree was released
                         }
                         (d.apply)(rt, d.node, if on { &d.on } else { &d.off });
@@ -89,7 +89,7 @@ impl<'a, T: Copy + Eq + Hash + 'static, V, P: Clone + 'static> IntoProp<P, V> fo
             }
         };
         m.keep = true;
-        let handle = m.rt.nodes[node as usize].handle;
+        let handle = m.rt.handle(node);
         let d = Dest { node, handle, on: self.on.clone(), off: self.off.clone(), apply: K::apply };
         let t = m.rt.selects.tables[ti as usize].downcast_mut::<SelTable<T, P>>().expect("one value type per selected signal");
         t.by_key.entry(self.key).or_default().push(d);

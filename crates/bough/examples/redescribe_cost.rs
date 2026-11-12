@@ -213,9 +213,9 @@ fn appliers() {
     let mut a = App::new(Table::<0> { rows, selected: u32::MAX }, cfg, false);
     a.turn(|_| {});
     let rt = &mut a.rt;
-    let n = rt.nodes.len() as u32;
-    let quad = (1..n).rev().find(|&i| rt.node_live(i) && rt.nodes[i as usize].kind == bough::rt::NK_QUAD).expect("a painted box");
-    let label = (1..n).rev().find(|&i| rt.node_live(i) && rt.nodes[i as usize].kind == bough::rt::NK_LTEXT).expect("a label");
+    let n = 4096u32;
+    let quad = (1..n).rev().find(|&i| rt.node_live(i) && rt.hot[i as usize].kind == bough::rt::NK_QUAD).expect("a painted box");
+    let label = (1..n).rev().find(|&i| rt.node_live(i) && rt.hot[i as usize].kind == bough::rt::NK_LTEXT).expect("a label");
     let slope = |run: &mut dyn FnMut(u32) -> u64| {
         run(64);
         let (lo, hi) = (run(1000), run(3000));
