@@ -124,3 +124,95 @@ fn list_row_transition_survives_resize() {
         assert!(px == full, "step {k}: presented != full redraw");
     }
 }
+
+/// Wrapped paragraphs in a scroll box (the chat's conversation). Reported by the chat scene: a scroll offset is
+/// not re-clamped when the content gets shorter, so after scrolling to the end of a narrow window, widening it
+/// (the text re-wraps onto fewer lines) leaves the offset past the content's end and the view blank.
+struct Paras {
+    scroll: Signal<f32>,
+}
+impl View for Paras {
+    fn view(&self) -> impl Element<Self> + '_ {
+        column(each((0..60).map(|i| {
+            para(format!("message {i}: a paragraph long enough to wrap onto several lines in a narrow window and onto one or two in a wide one"))
+                .font(12.0, 18.0)
+                .w_pct(1.0)
+        })))
+        .w_pct(1.0)
+        .h_pct(1.0)
+        .scroll(sig!(self.scroll))
+    }
+}
+
+fn paras(w: f32) -> App<Paras> {
+    let mut a = App::new(Paras { scroll: Signal::new(0.0) }, Config::new(w, 300.0, 1.0, bough_workloads::font()).once(), true);
+    a.frame();
+    a.wheel_points(w / 2.0, 150.0, 1.0e7);
+    a.tick(1.0 / 60.0);
+    a.frame();
+    a
+}
+
+#[test]
+#[ignore = "defect (reported by the chat scene): a scroll offset is not re-clamped when the content gets shorter (round6 3b0b00c698)"]
+fn scroll_offset_reclamps_when_content_shrinks() {
+    let mut a = paras(300.0);
+    let narrow_end = *a.owner.scroll;
+    a.resize(900.0, 300.0);
+    a.tick(1.0 / 60.0);
+    a.frame();
+    let after = *a.owner.scroll;
+    let mut b = paras(900.0);
+    let wide_end = *b.owner.scroll;
+    assert!(narrow_end > wide_end, "the setup must scroll further in the narrow window ({narrow_end} vs {wide_end})");
+    assert!(after <= wide_end + 0.5, "offset {after} is past the content's end ({wide_end}) after the content got shorter");
+    let (pa, pb) = (a.presented_pixels(), b.presented_pixels());
+    assert!(pa == pb, "the widened window differs from a fresh one at the content's end, first diff {:?}", first_diff(&pa, &pb, a.rt.win_w as usize));
+}
+
+/// A PNG of `w` x `h`: a gradient between two colours from `seed` (distinct images, distinct atlas entries).
+fn gradient_png(w: u32, h: u32, seed: u32) -> &'static [u8] {
+    let (a, b) = ([(seed * 70 % 256) as u8, (seed * 130 % 256) as u8, 90], [30, (seed * 50 % 256) as u8, (seed * 200 % 256) as u8]);
+    let mut raw = Vec::with_capacity((w * h * 3) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let t = (x + y) as f32 / (w + h) as f32;
+            for c in 0..3 {
+                raw.push((a[c] as f32 + (b[c] as f32 - a[c] as f32) * t) as u8);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, w, h);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut wr = enc.write_header().expect("png header");
+        wr.write_image_data(&raw).expect("png data");
+    }
+    Box::leak(out.into_boxed_slice())
+}
+
+/// Distinct images in a column, each drawn at 200 x 130 points (the chat's media).
+struct Gallery {
+    pngs: Vec<&'static [u8]>,
+}
+impl View for Gallery {
+    fn view(&self) -> impl Element<Self> + '_ {
+        column(each(self.pngs.iter().map(|p| image(p).w(200.0).h(130.0)))).gap(4.0).w_pct(1.0)
+    }
+}
+
+/// Reported by the chat scene: the image atlas is one 1024 x 1024 texture with a shelf packer that never evicts,
+/// so a ninth distinct image of the chat's size panics at mount with `image atlas full`.
+#[test]
+#[ignore = "defect (reported by the chat scene): the image atlas is one fixed 1024 x 1024 texture; distinct images past it panic at mount (round6 3b0b00c698)"]
+fn nine_distinct_images_mount() {
+    let pngs: Vec<&'static [u8]> = (0..9).map(|k| gradient_png(400, 260, k + 1)).collect();
+    let mut c = Config::new(640.0, 1400.0, 2.0, bough_workloads::font()).once();
+    c.caps = bough::raw::Caps { glyphs: 1 << 16, ..bough::raw::Caps::DEFAULT };
+    let mut a = App::new(Gallery { pngs }, c, true);
+    a.frame();
+    let (px, full) = (a.presented_pixels(), a.reference_pixels());
+    assert!(px == full, "presented != full redraw");
+}
