@@ -227,7 +227,8 @@ mod sys {
     unsafe extern "C" {
         fn syscall(n: c_long, ...) -> c_long;
         fn ioctl(fd: c_int, req: c_ulong, ...) -> c_int;
-        fn read(fd: c_int, buf: *mut c_void, n: usize) -> isize;
+        #[link_name = "read"]
+        fn sys_read(fd: c_int, buf: *mut c_void, n: usize) -> isize;
         fn close(fd: c_int) -> c_int;
     }
 
@@ -319,7 +320,7 @@ mod sys {
         let want = (3 + g.evs.len()) * 8;
         // SAFETY: reading a PERF_FORMAT_GROUP record (nr, time_enabled, time_running, values[nr]) into a buffer
         // large enough for MAX values.
-        let got = unsafe { read(g.fds[0], buf.as_mut_ptr() as *mut c_void, std::mem::size_of_val(&buf)) };
+        let got = unsafe { sys_read(g.fds[0], buf.as_mut_ptr() as *mut c_void, std::mem::size_of_val(&buf)) };
         assert_eq!(got as usize, want, "pmu: short read of the counter group");
         let mut r = Reading { n: buf[0] as usize, enabled: buf[1], running: buf[2], ..Reading::default() };
         r.v[..r.n].copy_from_slice(&buf[3..3 + r.n]);
