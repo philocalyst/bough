@@ -90,19 +90,23 @@ impl Ev {
 
 // =============================================================================== routes
 
-/// A typed route lowered: a trampoline monomorphised for (owner type, closure type) and the closure's
-/// bytes. Created only by `Mounter<V>`, whose `V` is the app's owner type (every mount in one runtime is).
+/// A typed route lowered: a trampoline monomorphised for (receiver type, closure type), the closure's
+/// bytes, and the receiver's path from the root (`OwnerRef`, resolved along the owner chain when the route
+/// is mounted: the design's L4). The receiver is the nearest enclosing owner whose type is the handler's
+/// `&mut R`: the element's own owner (the root view, a list row, an entity), or an ancestor of it.
 pub(crate) type RouteFn = unsafe fn(*mut u8, &[u8; 16], &Ev);
 
 #[derive(Clone, Copy)]
 pub(crate) struct Route {
     f: RouteFn,
     r: [u8; 16],
+    own: OwnerRef,
 }
 
 impl Route {
     /// # Safety
-    /// `owner` points at the live owner the route was lowered for.
+    /// `owner` points at the live owner the route was lowered for (the one `self.own` names), uniquely
+    /// borrowed for the call.
     #[inline]
     unsafe fn call(&self, owner: *mut u8, e: &Ev) {
         // SAFETY: see the function contract; the recipe holds the closure the trampoline reads.
@@ -134,11 +138,43 @@ unsafe fn call_ev<V, F: Fn(&mut V, &Ev) + Copy>(o: *mut u8, r: &[u8; 16], e: &Ev
     f(unsafe { &mut *(o as *mut V) }, e)
 }
 
-fn route_plain<V, F: Fn(&mut V) + Copy + 'static>(f: F) -> Route {
-    Route { f: call_plain::<V, F>, r: recipe(f) }
+fn route_plain<V, F: Fn(&mut V) + Copy + 'static>(f: F, own: OwnerRef) -> Route {
+    Route { f: call_plain::<V, F>, r: recipe(f), own }
 }
-fn route_ev<V, F: Fn(&mut V, &Ev) + Copy + 'static>(f: F) -> Route {
-    Route { f: call_ev::<V, F>, r: recipe(f) }
+fn route_ev<V, F: Fn(&mut V, &Ev) + Copy + 'static>(f: F, own: OwnerRef) -> Route {
+    Route { f: call_ev::<V, F>, r: recipe(f), own }
+}
+
+/// The receiver of a route whose handler takes `&mut R`, lowered by a mounter of owner type `V`: the nearest
+/// owner of type `R` on the chain from the element's own owner up to the root. None: a mount error.
+#[track_caller]
+fn receiver<V: 'static, R: 'static>(m: &Mounter<'_, V>, what: &str) -> OwnerRef {
+    use std::any::TypeId;
+    let want = TypeId::of::<R>();
+    if want == TypeId::of::<V>() {
+        return m.own;
+    }
+    let mut o = m.own;
+    while !o.is_root() {
+        let (ty, parent) = m.rt.owner_parent(o);
+        if ty == want {
+            return parent;
+        }
+        o = parent;
+    }
+    panic!("{what}: the handler takes `&mut {}`, but no owner of that type encloses the element (it is mounted by `{}`)", std::any::type_name::<R>(), std::any::type_name::<V>());
+}
+
+/// A re-description's closure for a route already installed: the trampoline and the receiver are fixed by
+/// the description's type and place; the captures are this description's (a row id, an index).
+#[inline]
+fn refresh_route<F: Copy>(slot: &mut Option<Route>, f: F) {
+    if cfg!(feature = "mutant_route_stale") {
+        return;
+    }
+    if let Some(r) = slot {
+        r.r = recipe(f);
+    }
 }
 
 // =============================================================================== the act table
@@ -250,8 +286,13 @@ pub struct Input {
     /// Scroll views (`template::scroll_y`) and the one whose content is being mounted.
     pub(crate) views: Vec<crate::template::ScrollView>,
     pub(crate) mounting_view: Option<u32>,
+    /// Released views' slots (`Rt::release_view`), reused by the next view.
+    pub(crate) view_free: Vec<u32>,
     /// Layout placement hooks (`ltemplate::PlaceHook`, by `LInfo::hook`).
     pub(crate) lhooks: Vec<(crate::ltemplate::PlaceHook, u32)>,
+    /// Hook slots of removed layout nodes (`Rt::lay_node_dead`), and tooltip slots of released scopes.
+    pub(crate) lhook_free: Vec<u32>,
+    pub(crate) tip_free: Vec<u32>,
     /// Layout clips by parent clip id (re-cut when the parent changes).
     pub(crate) clip_kids: std::collections::HashMap<u16, Vec<u32>>,
     /// Wired clips (`template::clip_by`): (clip id, space, parent clip).
@@ -297,7 +338,10 @@ impl Default for Input {
             tips: Vec::new(),
             views: Vec::new(),
             mounting_view: None,
+            view_free: Vec::new(),
             lhooks: Vec::new(),
+            lhook_free: Vec::new(),
+            tip_free: Vec::new(),
             clip_kids: Default::default(),
             wclips: Vec::new(),
             offsets: Vec::new(),
@@ -429,13 +473,13 @@ pub fn act_at<V>(m: &mut Mounter<'_, V>, rec: usize) -> u32 {
     a
 }
 
-/// Routes, scrollers and text fields run on the app's root owner (`App` dispatches them with it), so they
-/// may only be mounted by the root owner's description: in a list row or an entity view (another owner
-/// type, `Mounter::cls != 0`) the route's `V` is not the root's, and calling it would be undefined
-/// behaviour. Refused at mount (a panic, not UB) until routes carry their owner.
+/// Scrollers and text fields write a signal of the app's root owner at a root-relative offset (`App`
+/// reaches it from the root), so they may only be mounted by the root owner's description: in a list row or
+/// an entity view the offset is another owner type's. Refused at mount (a panic, not UB) until they carry
+/// their owner's path as routes do (`Route::own`).
 #[track_caller]
 fn root_owner_only<V>(m: &Mounter<'_, V>, what: &str) {
-    assert!(m.cls == 0, "{what} inside a list row or an entity view: routes run on the app's root owner; put it on an element of the root view");
+    assert!(m.own.is_root() && m.cls == 0, "{what} inside a list row or an entity view: it writes a signal of the app's root owner; put it on an element of the root view");
 }
 
 /// One interaction op on an element (`On<E, O>` installs it on E's first record).
@@ -443,6 +487,9 @@ pub trait ActOp<V> {
     /// Kind flags the record gets besides [`KF_INTERACT`].
     const FLAGS: u8 = 0;
     fn install(self, m: &mut Mounter<'_, V>, act: u32);
+    /// A re-description: bring what the op captured by value up to date (a route's closure, a hover
+    /// colour); what it installed (wires, scrollers, the act) stays.
+    fn refresh(self, m: &mut Mounter<'_, V>, act: u32);
 }
 
 /// An element with an interaction op on its first record.
@@ -454,32 +501,48 @@ impl<V, E: Element<V>, O: ActOp<V>> Element<V> for On<E, O> {
         self.0.mount(m);
         let a = act_for(m, before, nodes_before, O::FLAGS);
         self.1.install(m, a);
+        m.tape_push(a);
     }
-    /// The interaction stays installed on the element's first record; the element re-describes.
+    /// The interaction stays installed on the element's first record; the element re-describes, and the
+    /// op takes this description's captures (the act is on the tape, after the element's own entries).
     fn update(self, m: &mut Mounter<'_, V>) {
         self.0.update(m);
+        let a = m.tape_next();
+        self.1.refresh(m, a);
+    }
+    fn dyn_key(&self) -> u64 {
+        self.0.dyn_key()
     }
 }
 
-pub struct Click<F>(pub F);
-impl<V: 'static, F: Fn(&mut V) + Copy + 'static> ActOp<V> for Click<F> {
+pub struct Click<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
+impl<V: 'static, R: 'static, F: Fn(&mut R) + Copy + 'static> ActOp<V> for Click<R, F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
-        root_owner_only(m, "click");
-        m.rt.input.acts[a as usize].click = Some(route_plain::<V, F>(self.0));
+        let own = receiver::<V, R>(m, "on_click");
+        m.rt.input.acts[a as usize].click = Some(route_plain::<R, F>(self.0, own));
+    }
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        refresh_route(&mut m.rt.input.acts[a as usize].click, self.0);
     }
 }
-pub struct Press<F>(pub F);
-impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Press<F> {
+pub struct Press<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
+impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for Press<R, F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
-        root_owner_only(m, "press");
-        m.rt.input.acts[a as usize].press = Some(route_ev::<V, F>(self.0));
+        let own = receiver::<V, R>(m, "on_press");
+        m.rt.input.acts[a as usize].press = Some(route_ev::<R, F>(self.0, own));
+    }
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        refresh_route(&mut m.rt.input.acts[a as usize].press, self.0);
     }
 }
-pub struct Hover<F>(pub F);
-impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Hover<F> {
+pub struct Hover<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
+impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for Hover<R, F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
-        root_owner_only(m, "hover");
-        m.rt.input.acts[a as usize].hover = Some(route_ev::<V, F>(self.0));
+        let own = receiver::<V, R>(m, "on_hover");
+        m.rt.input.acts[a as usize].hover = Some(route_ev::<R, F>(self.0, own));
+    }
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        refresh_route(&mut m.rt.input.acts[a as usize].hover, self.0);
     }
 }
 pub struct HoverBg(pub Color);
@@ -495,25 +558,53 @@ impl<V> ActOp<V> for HoverBg {
         act.base = base;
         act.bordered = bordered;
     }
+    /// A new hover colour: stored; shown at once if the pointer is over the element.
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        let act = m.rt.input.acts[a as usize];
+        if act.hover_bg == Some(self.0 .0) {
+            return;
+        }
+        m.rt.input.acts[a as usize].hover_bg = Some(self.0 .0);
+        if act.hovered {
+            let p = m.rt.inst_mut(act.inst);
+            let old = pair(p.color, p.color2);
+            if act.bordered {
+                p.color2 = self.0 .0;
+            } else {
+                p.color = self.0 .0;
+            }
+            let now = pair(p.color, p.color2);
+            if old != now {
+                m.rt.paint_write(act.handle, old, now);
+            }
+        }
+    }
 }
 pub struct Focusable;
 impl<V> ActOp<V> for Focusable {
     const FLAGS: u8 = KF_FOCUS;
     fn install(self, _: &mut Mounter<'_, V>, _: u32) {}
+    fn refresh(self, _: &mut Mounter<'_, V>, _: u32) {}
 }
-pub struct OnKey<F>(pub F);
-impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for OnKey<F> {
+pub struct OnKey<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
+impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for OnKey<R, F> {
     const FLAGS: u8 = KF_FOCUS;
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
-        root_owner_only(m, "onkey");
-        m.rt.input.acts[a as usize].key = Some(route_ev::<V, F>(self.0));
+        let own = receiver::<V, R>(m, "on_key");
+        m.rt.input.acts[a as usize].key = Some(route_ev::<R, F>(self.0, own));
+    }
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        refresh_route(&mut m.rt.input.acts[a as usize].key, self.0);
     }
 }
-pub struct Drag<F>(pub F);
-impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Drag<F> {
+pub struct Drag<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
+impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for Drag<R, F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
-        root_owner_only(m, "drag");
-        m.rt.input.acts[a as usize].drag = Some(route_ev::<V, F>(self.0));
+        let own = receiver::<V, R>(m, "on_drag");
+        m.rt.input.acts[a as usize].drag = Some(route_ev::<R, F>(self.0, own));
+    }
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        refresh_route(&mut m.rt.input.acts[a as usize].drag, self.0);
     }
 }
 /// The element scrolls the owner's `Signal<f32>` (points, `0..=max`) with wheel glides.
@@ -527,6 +618,14 @@ impl<V> ActOp<V> for Scrolls<'_, V> {
         root_owner_only(m, "scrolls");
         m.rt.input.scrollers.push(Scroller { off: self.sig.off, line: self.line, max: self.max, glide: None, root: NONE, port_h: 0.0 });
         m.rt.input.acts[a as usize].scroll = (m.rt.input.scrollers.len() - 1) as u32;
+    }
+    /// The scroller stays (its glide, its content root): only the by-value step and limit follow.
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        let sc = m.rt.input.acts[a as usize].scroll;
+        let s = &mut m.rt.input.scrollers[sc as usize];
+        assert!(s.off == self.sig.off, "a re-description cannot change which signal an element scrolls");
+        s.line = self.line;
+        s.max = self.max;
     }
 }
 
@@ -562,6 +661,11 @@ impl<'a, T: 'static, V, F: Fn(&T) -> (Color, Color) + Copy + 'static> ActOp<V> f
         }
         m.wire(&self.sig, patch_paint2::<T, F>, a, recipe(self.f));
     }
+    /// The wire stays; this description's colours are applied (as the wire would).
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        let (c1, c2) = (self.f)(self.sig.get());
+        paint2(m.rt, a, c1, c2);
+    }
 }
 
 /// # Safety
@@ -571,8 +675,13 @@ unsafe fn patch_paint2<T: 'static, F: Fn(&T) -> (Color, Color) + Copy>(rt: &mut 
     let s = unsafe { &*(sig as *const Signal<T>) };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
     let (c1, c2) = f(s);
-    let act = rt.input.acts[w.node as usize];
-    rt.input.acts[w.node as usize].base = c2.0;
+    paint2(rt, w.node, c1, c2);
+}
+
+/// Write act `a`'s two colour words (hover-aware).
+fn paint2(rt: &mut Rt, a: u32, c1: Color, c2: Color) {
+    let act = rt.input.acts[a as usize];
+    rt.input.acts[a as usize].base = c2.0;
     let p = rt.inst_mut(act.inst);
     let old = pair(p.color, p.color2);
     let fill = if act.hovered && act.hover_bg.is_some() { act.hover_bg.unwrap() } else { c2.0 };
@@ -588,20 +697,22 @@ unsafe fn patch_paint2<T: 'static, F: Fn(&T) -> (Color, Color) + Copy>(rt: &mut 
     }
 }
 
-/// Interaction ops on any element (they apply to its first record). The owner type is inferred from
-/// where the element is mounted (and from the closures' argument types).
+/// Interaction ops on any element (they apply to its first record). A handler's receiver is its `&mut`
+/// argument's type: the owner that describes the element (the view, a list row, an entity) or an owner
+/// enclosing it (a row's button calling the app: `.on_click(|app: &mut App| ..)`), resolved when the
+/// element is mounted.
 pub trait Interact: Sized {
     /// Activation (a primary press and release on the element, zgui's / the DOM's click).
-    fn on_click<V, F: Fn(&mut V) + Copy + 'static>(self, f: F) -> On<Self, Click<F>> {
-        On(self, Click(f))
+    fn on_click<V, F: Fn(&mut V) + Copy + 'static>(self, f: F) -> On<Self, Click<V, F>> {
+        On(self, Click(f, std::marker::PhantomData))
     }
     /// The press itself.
-    fn on_press<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Press<F>> {
-        On(self, Press(f))
+    fn on_press<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Press<V, F>> {
+        On(self, Press(f, std::marker::PhantomData))
     }
     /// Pointer enters (`ev.on`) or leaves the element.
-    fn on_hover<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Hover<F>> {
-        On(self, Hover(f))
+    fn on_hover<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Hover<V, F>> {
+        On(self, Hover(f, std::marker::PhantomData))
     }
     /// Background while hovered (`:hover { background }`): a paint write on crossing, no route.
     fn hover_bg(self, c: Color) -> On<Self, HoverBg> {
@@ -617,12 +728,12 @@ pub trait Interact: Sized {
         On(self, Focusable)
     }
     /// Keys while the element (or a descendant) has focus; a tab stop.
-    fn on_key<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, OnKey<F>> {
-        On(self, OnKey(f))
+    fn on_key<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, OnKey<V, F>> {
+        On(self, OnKey(f, std::marker::PhantomData))
     }
     /// Pointer travel while pressed (capture: no hit test until release). `ev.dx/dy` since the press.
-    fn on_drag<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Drag<F>> {
-        On(self, Drag(f))
+    fn on_drag<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Drag<V, F>> {
+        On(self, Drag(f, std::marker::PhantomData))
     }
     /// The wheel over this element glides `sig` (points) within `0..=max`, `line` points per detent line.
     fn scrolls<V>(self, sig: Wired<'_, f32, V>, line: f32, max: f32) -> On<Self, Scrolls<'_, V>> {
@@ -696,6 +807,28 @@ pub(crate) struct Tip {
     /// Current alpha (0..=1) and whether it is fading in.
     alpha: f32,
     fading: bool,
+    /// The view whose content it is in (its rect follows that view), or NONE.
+    view: u32,
+}
+
+impl Rt {
+    /// The scope that mounted tooltip `k` is released: its fade stops (its instance and label are the
+    /// scope's, about to be reused), it leaves its view, and its clip and slot return.
+    pub(crate) fn release_tip(&mut self, k: u32) {
+        let (clip, view) = {
+            let t = &mut self.input.tips[k as usize];
+            t.fading = false;
+            (t.clip, std::mem::replace(&mut t.view, NONE))
+        };
+        if view != NONE {
+            let tips = &mut self.input.views[view as usize].tips;
+            if let Some(i) = tips.iter().position(|&x| x == k) {
+                tips.swap_remove(i);
+            }
+        }
+        self.free_clip(clip);
+        self.input.tip_free.push(k);
+    }
 }
 
 fn with_alpha(c: u32, a: f32) -> u32 {
@@ -747,7 +880,7 @@ impl<T> Tooltip<T> {
         self.trigger.mount(m);
         let a = act_for(m, before, nodes_before, 0);
         let s = m.rt.scale;
-        let id = m.rt.bough.new_clip(NRect::EMPTY);
+        let id = m.rt.own_clip(NRect::EMPTY);
         let [x, y, w, h] = self.rect;
         let o = m.rt.space(m.space);
         let r = NRect::new((o[0] + (m.ox + x) * s).floor() as i32, (o[1] + (m.oy + y) * s).floor() as i32, (o[0] + (m.ox + x + w) * s).ceil() as i32, (o[1] + (m.oy + y + h) * s).ceil() as i32);
@@ -772,11 +905,22 @@ impl<T> Tooltip<T> {
             rec.kind |= KF_NOHIT;
         }
         m.clip = prev;
-        let k = m.rt.input.tips.len() as u32;
-        m.rt.input.tips.push(Tip { clip: id, rect: r, bubble, inst, label, ti, style: st, alpha: 0.0, fading: false });
+        let view = m.rt.input.mounting_view.unwrap_or(NONE);
+        let tip = Tip { clip: id, rect: r, bubble, inst, label, ti, style: st, alpha: 0.0, fading: false, view };
+        let k = match m.rt.input.tip_free.pop() {
+            Some(k) => {
+                m.rt.input.tips[k as usize] = tip;
+                k
+            }
+            None => {
+                m.rt.input.tips.push(tip);
+                (m.rt.input.tips.len() - 1) as u32
+            }
+        };
+        m.scope.owned.push(Owned::Tip(k));
         m.rt.input.acts[a as usize].tip = k;
-        if let Some(v) = m.rt.input.mounting_view {
-            m.rt.input.views[v as usize].tips.push(k);
+        if view != NONE {
+            m.rt.input.views[view as usize].tips.push(k);
         }
     }
 }
@@ -917,7 +1061,7 @@ impl<V: 'static> TextField<'_, V> {
         } else {
             inner
         };
-        m.clip = m.rt.scoped_clip(r, clip);
+        m.clip = m.rt.scoped_clip(m.scope, r, clip);
         // the caret wire first: wires run newest first, so it runs after the label's patch
         let lh = (self.size * 1.4).ceil();
         let ty = ((h - 2.0) - lh) * 0.5;
@@ -968,6 +1112,40 @@ impl<V: View> App<V> {
         &mut *self.owner as *mut V as *mut u8
     }
 
+    /// Run route `r` on its receiver. The root is called directly; any other owner is reached along its
+    /// path from the root (`Rt::owner_mut`), and a route whose receiver is gone (its row or entity removed,
+    /// its slot reused by another item) does not run. Returns whether it ran.
+    fn run_route(&mut self, r: Route, e: &Ev) -> bool {
+        let root = self.owner_mut();
+        let o = if r.own.is_root() {
+            root
+        } else {
+            // SAFETY: `root` derives from the unique borrow of the app's owner (the type the runtime was mounted
+            // for), and no other reference into it is live during dispatch.
+            match unsafe { self.rt.owner_mut(root, r.own) } {
+                Some(o) => o,
+                None => return false,
+            }
+        };
+        self.rt.input.stats.routes += 1;
+        // SAFETY: `o` is the live owner `r.own` names, whose type the route's receiver was matched against when
+        // it was lowered (`receiver`), uniquely borrowed (derived from the root's unique borrow).
+        unsafe { r.call(o, e) };
+        true
+    }
+
+    /// The pressed act, if its element is still mounted. An element removed while pressed (a re-description
+    /// dropped it, its list row left) ends its press and its drag capture: no route of it runs again.
+    fn pressed_live(&mut self) -> u32 {
+        let pa = self.rt.input.pressed;
+        if pa != 0 && !cfg!(feature = "mutant_route_owner") && self.rt.bough.pos_of(self.rt.input.acts[pa as usize].handle).is_none() {
+            self.rt.input.pressed = 0;
+            self.rt.input.dragging = false;
+            return 0;
+        }
+        pa
+    }
+
     /// Settle what routes queued and lay out what changed (the end of an input turn).
     fn settle_input(&mut self) {
         let owner = &mut *self.owner as *mut V as *const u8;
@@ -994,15 +1172,12 @@ impl<V: View> App<V> {
         self.sync_pub();
         let (px, py) = self.dev(x, y);
         self.rt.input.pointer = Some((px, py));
-        let pa = self.rt.input.pressed;
+        let pa = self.pressed_live();
         if pa != 0 && self.rt.input.dragging {
             if let Some(r) = self.rt.input.acts[pa as usize].drag {
                 let (x0, y0) = self.rt.input.press_at;
                 let e = Ev { dx: x - x0, dy: y - y0, ..Ev::at(x, y) };
-                let o = self.owner_mut();
-                self.rt.input.stats.routes += 1;
-                // SAFETY: the route was lowered for this owner type.
-                unsafe { r.call(o, &e) };
+                self.run_route(r, &e);
                 self.settle_input();
                 return;
             }
@@ -1066,6 +1241,12 @@ impl<V: View> App<V> {
         if a == 0 {
             return false;
         }
+        if self.rt.bough.pos_of(h).is_none() {
+            // the element was removed while hovered (a re-description dropped it, its row left): what its act
+            // names (an instance, a tooltip, a route's captures) is no longer its own, so nothing is written or run
+            self.rt.input.acts[a as usize].hovered = false;
+            return false;
+        }
         self.rt.input.acts[a as usize].hovered = on;
         let act = self.rt.input.acts[a as usize];
         let mut ran = false;
@@ -1108,10 +1289,7 @@ impl<V: View> App<V> {
         }
         if let Some(r) = act.hover {
             let e = Ev { on, ..Ev::at(x, y) };
-            let o = self.owner_mut();
-            self.rt.input.stats.routes += 1;
-            // SAFETY: the route was lowered for this owner type.
-            unsafe { r.call(o, &e) };
+            self.run_route(r, &e);
             ran = true;
         }
         ran
@@ -1149,10 +1327,7 @@ impl<V: View> App<V> {
             let act = self.rt.input.acts[a as usize];
             if let Some(r) = act.press {
                 let e = Ev { button, ..Ev::at(x, y) };
-                let o = self.owner_mut();
-                self.rt.input.stats.routes += 1;
-                // SAFETY: the route was lowered for this owner type.
-                unsafe { r.call(o, &e) };
+                self.run_route(r, &e);
                 break;
             }
         }
@@ -1168,7 +1343,8 @@ impl<V: View> App<V> {
     /// its chain that has one).
     pub fn pointer_up(&mut self, x: f32, y: f32, button: Button) {
         self.sync_pub();
-        let pa = std::mem::replace(&mut self.rt.input.pressed, 0);
+        let pa = self.pressed_live();
+        self.rt.input.pressed = 0;
         let dragging = std::mem::replace(&mut self.rt.input.dragging, false);
         let (px, py) = self.dev(x, y);
         self.rt.input.pointer = Some((px, py));
@@ -1176,9 +1352,7 @@ impl<V: View> App<V> {
             if let Some(r) = self.rt.input.acts[pa as usize].drag {
                 let (x0, y0) = self.rt.input.press_at;
                 let e = Ev { dx: x - x0, dy: y - y0, on: false, ..Ev::at(x, y) };
-                let o = self.owner_mut();
-                // SAFETY: the route was lowered for this owner type.
-                unsafe { r.call(o, &e) };
+                self.run_route(r, &e);
             }
             self.update_hover(px, py, x, y);
             self.settle_input();
@@ -1192,10 +1366,7 @@ impl<V: View> App<V> {
                 for h in chain {
                     let a = self.rt.input.act_of(h);
                     if let Some(r) = self.rt.input.acts[a as usize].click {
-                        let o = self.owner_mut();
-                        self.rt.input.stats.routes += 1;
-                        // SAFETY: the route was lowered for this owner type.
-                        unsafe { r.call(o, &Ev::at(x, y)) };
+                        self.run_route(r, &Ev::at(x, y));
                         break;
                     }
                 }
@@ -1381,10 +1552,7 @@ impl<V: View> App<V> {
                     let a = self.rt.input.act_of(h);
                     if let Some(r) = self.rt.input.acts[a as usize].key {
                         let e = Ev { key: Some(key), mods, ..Ev::at(0.0, 0.0) };
-                        let o = self.owner_mut();
-                        self.rt.input.stats.routes += 1;
-                        // SAFETY: the route was lowered for this owner type.
-                        unsafe { r.call(o, &e) };
+                        self.run_route(r, &e);
                         break;
                     }
                 }

@@ -40,6 +40,8 @@ pub struct Mounter<'a, V> {
     pub(crate) kid: usize,
     /// An operand asked to keep the element's node addressable (`select`: an outside table names it).
     pub(crate) keep: bool,
+    /// The path of `owner` from the root (`OwnerRef`): what a route lowered here is dispatched along.
+    pub(crate) own: OwnerRef,
 }
 
 impl<V> Mounter<'_, V> {
@@ -80,7 +82,7 @@ impl<V> Mounter<'_, V> {
     /// A mounter for a sub-part (a dynamic item) of this one: same position state, its own scope, records
     /// buffer and tape.
     pub(crate) fn sub<'b>(&'b mut self, recs: &'b mut Vec<RecordInit>, scope: &'b mut Scope, tape: *mut Vec<u32>) -> Mounter<'b, V> {
-        Mounter { rt: &mut *self.rt, owner: self.owner, recs, scope, depth: self.depth, ox: self.ox, oy: self.oy, space: self.space, clip: self.clip, pending_num: None, cls: self.cls, tape, ti: 0, pos: self.pos, kid: self.kid, keep: false }
+        Mounter { rt: &mut *self.rt, owner: self.owner, recs, scope, depth: self.depth, ox: self.ox, oy: self.oy, space: self.space, clip: self.clip, pending_num: None, cls: self.cls, tape, ti: 0, pos: self.pos, kid: self.kid, keep: false, own: self.own }
     }
     pub fn mount(&mut self, e: impl Element<V>) {
         e.mount(self)
@@ -924,7 +926,7 @@ impl<V, Ch: Element<V>> Element<V> for Clip<Ch> {
         let prev = m.clip;
         // nested clips compose (intersection, in `scoped_clip`); inside a scroll view's content the clip moves
         // with the content and is re-cut against its parent when either moves (template.rs)
-        m.clip = m.rt.scoped_clip(r, prev);
+        m.clip = m.rt.scoped_clip(m.scope, r, prev);
         self.1.mount(m);
         m.clip = prev;
     }
@@ -961,16 +963,16 @@ pub(crate) unsafe fn mount_row<V: 'static>(rt: &mut Rt, owner: *const u8, reg: u
     let space = rt.alloc_space();
     let origin = rt.region_row_space_origin(reg, row);
     rt.set_space(space, origin);
-    let (clip, depth, f) = {
+    let (clip, depth, f, cls, own) = {
         let r = &rt.regions[reg];
-        (r.clip, r.depth, r.row_fn)
+        (r.clip, r.depth, r.row_fn, r.cls, r.own)
     };
     // SAFETY: the region was created by `VirtualList::<V>::mount` from a `fn(&V, usize, &mut Mounter<V>)`.
     let f: fn(&V, usize, &mut Mounter<'_, V>) = unsafe { std::mem::transmute::<usize, fn(&V, usize, &mut Mounter<'_, V>)>(f) };
     let mut scope = Scope::default();
     let before = recs.len();
     {
-        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls: 0, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false };
+        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false, own };
         // SAFETY: see the function contract.
         f(unsafe { &*(owner as *const V) }, row, &mut m);
     }
@@ -1012,6 +1014,8 @@ impl<'a, V: 'static> Element<V> for VirtualList<'a, V> {
             scale_pt: s,
             mount_row: mount_row::<V>,
             row_fn: self.row as usize,
+            cls: m.cls,
+            own: m.own,
         });
         m.wire(&self.scroll, patch_scroll, reg as u32, [0; 16]);
         m.tape_push(reg as u32);
