@@ -538,3 +538,59 @@ has that bit.
 root shift are derived from them at staging, so a radius that changes without restaging would invalidate the
 core (identity 3) unless the record also declared an upper bound and was staged for it. That is possible
 later (stage with the bound, resolve the value at load) but it is not free, so it is not in this change.
+
+### The signal-write frame taken apart (commit `b5fd480284`; micro_bench SCENE=state, release, M3 Pro)
+
+The frame: a ten-glyph label at 2x in a 1920x1440 window; a write changes digits; at ring 1 the damage is 2
+tiles (the label straddles a tile row), 6-8 entries. Three instruments, because the first one lied:
+`BOUGH_KPROF=1` (laps of the thread's instruction counter between named points; each lap costs two reads of
+~1,460 instructions and it over-reports the phase it is in by up to 2x: it said 47 K for a raster that is
+25 K); subtraction (`BOUGH_KERNEL_DRY=1` skips only the raster; slope of `/usr/bin/time -l` between OPS 2000
+and 8000, three repetitions, agreeing within 6 %); and the raster alone in the kernel crate (`kbench sig`,
+dist profile, 20,000 repetitions). The numbers below are subtraction and `kbench sig`; kprof is used only
+for the proportions of the non-raster part.
+
+| piece | before (`5f3313a8c9`) | now | what it is |
+|---|---:|---:|---|
+| turn + flush (`RENDER=0`) | 3.9 K | 3.9 K | core's |
+| stage | ~5.0 K | ~5.0 K | plane reset and tile list 1.0, page cull 0.7, ten glyph records to commands 3.3 (330 each) |
+| IOSurface lock | ~3.8 K | ~3.8 K | `write_begin` |
+| bin | 6.0 K | 2.75 K | was two full decodes of every 32-word command; now reads window and core from their words |
+| raster: the call | 1.2 K | 0.5 K | was a vector of bands and their locks even for one core |
+| raster: two tiles | 24.3 K | 18.0 K | glyph rows 180 -> ~120 instructions per 12 px row; flat-row copies 70 -> ~10 each |
+| certificates + unlock | ~2.4 K | ~2.4 K | `forget_tiles`, `write_end` |
+| **frame, ring 1** | **46.0-46.6 K** | **34.0-36.1 K** | 2.1 us of CPU (p10 2.0, p90 2.9) |
+| frame, ring 2 / ring 4 | 47.1 / 52.8 K | 37.4-38.4 / 42.9-44.1 K | |
+
+The <= 40 K target is met at ages 1 and 2 and missed at age 4 (the headless default).
+
+**The floor that has nothing to do with the tile** is about 15 K: the turn (3.9), staging (5.0), the
+surface lock and unlock (6.2). **The floor that is the tile** is the other 18 K: a changed digit is 216
+pixels, and the frame zeroes, shades and stores two whole tiles (2,048 pixels) because damage arrives as
+tile bits.
+
+What removes each:
+* *Tile granularity* (18 K -> ~9.6 K measured): `Opt::clip`, a pixel rectangle outside which a tile's
+  rows and columns are neither shaded nor stored (`kbench sig`: 18,497 -> 9,584; gated: a clipped repair over
+  the old frame equals the new frame). It needs one thing from core: the damage's pixel bounds per epoch
+  (today only tile bits survive `damage_rect`). With it the frame is ~26 K.
+* *Staging the changed record* (3.3 K) is real work for a record that did change; a retained program keyed
+  on page seals does not help the page that was written, only its neighbours (here the background, 1
+  command). It will matter on frames whose damage touches many unchanged pages: scroll strips, hovers.
+* *Lock and unlock* (6.2 K): the price of CPU writes to an IOSurface under the documented protocol; the
+  unlock's seed bump is also what tells the compositor the contents changed when the same surface is shown
+  again. Not removed. (On wl_shm there is no such call.)
+* Not chased: 330 instructions to stage a glyph (it packs 32 words to say "these texels, here, this
+  colour").
+
+**Wall time, one-change frame, ring 1** (`BOUGH_KPROF=wall`, 3,000 frames; the bench's own median for the
+whole frame is 2.1 us, kprof's laps add to that, so the split is by proportion):
+* CPU executor: `frame()` entry to words in the surface ~1.6-1.8 us (stage 0.35, lock 0.3, bin 0.15,
+  raster 1.0); unlock and certificates ~0.25 us; `show_held` 0.03 us. Headless there is no publisher and no
+  transaction, so what follows `show_held` in a window (the post to the publisher thread, its wake, the
+  CATransaction commit) is not in any number here.
+* GPU executor (pinned): 210-290 us from entry to words: upload of the frame's words, one command buffer and
+  encoder, `waitUntilCompleted`. The first frame also pays ~200 ms to compile the kernel's MSL and build
+  the pipeline. Nothing is queued after it; the wait is on the frame thread.
+**Windowed present was not measured** (no window may be opened on the active Space; the lead has taken this
+to the user).

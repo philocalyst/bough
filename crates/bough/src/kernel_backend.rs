@@ -295,8 +295,10 @@ impl KernelBackend {
                                 g.upload_images(rt.images.pixels());
                                 self.uploaded = Some(stamps);
                             }
+                            kprof::lap(7);
                             g.upload_frame(&self.scene, &self.prog);
                             g.render_to(tiles as usize, t);
+                            kprof::lap(8);
                             true
                         }
                         None => false,
@@ -424,9 +426,18 @@ pub mod kprof {
         static FRAMES: Cell<u64> = const { Cell::new(0) };
     }
     static ON: OnceLock<(bool, u64)> = OnceLock::new();
+    /// `BOUGH_KPROF=wall`: laps are nanoseconds of wall time instead of instructions.
+    static WALL: OnceLock<Option<std::time::Instant>> = OnceLock::new();
+
+    fn read() -> u64 {
+        match WALL.get_or_init(|| (std::env::var("BOUGH_KPROF").as_deref() == Ok("wall")).then(std::time::Instant::now)) {
+            Some(t0) => t0.elapsed().as_nanos() as u64,
+            None => read_instr(),
+        }
+    }
 
     #[cfg(target_os = "macos")]
-    fn read() -> u64 {
+    fn read_instr() -> u64 {
         unsafe extern "C" {
             fn thread_selfcounts(kind: i32, buf: *mut u64, nbytes: usize) -> i32;
         }
@@ -436,7 +447,7 @@ pub mod kprof {
         c[0]
     }
     #[cfg(not(target_os = "macos"))]
-    fn read() -> u64 {
+    fn read_instr() -> u64 {
         bough_sys::perf::snap().instrs
     }
     fn cfg() -> (bool, u64) {
@@ -482,7 +493,8 @@ pub mod kprof {
             return;
         }
         let acc = ACC.with(|a| a.get());
-        eprintln!("kprof: {n} frames; instructions per frame by phase (one counter read = {c}, subtracted)");
+        let unit = if WALL.get().is_some_and(|w| w.is_some()) { "nanoseconds" } else { "instructions" };
+        eprintln!("kprof: {n} frames; {unit} per frame by phase (one counter read = {c}, subtracted)");
         for (name, v) in NAMES.iter().zip(acc) {
             if v != 0 {
                 eprintln!("  {:>8.0}  {name}", v as f64 / n as f64);
