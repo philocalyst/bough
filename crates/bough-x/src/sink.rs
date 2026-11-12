@@ -348,7 +348,7 @@ struct Discover<'a, B> {
 }
 impl<V, B: Backend> Leaf<V> for Discover<'_, B> {
     fn leaf<A: Arch>(&mut self, _: &A, key: TypeId, hov: Option<Hov>) {
-        self.st.discover(desc::<A, B>(), self.rects[self.k], key, hov);
+        self.st.discover(desc::<A, B>(), self.rects[self.k], key, TypeId::of::<A>(), hov);
         self.k += 1;
     }
 }
@@ -447,6 +447,10 @@ impl<'w, 'c, V, B: Backend> Sink<V> for Write<'w, 'c, V, B> {
         st.row_live[0] = 1;
         let mut sub = Write::<V, B>::new(st, self.cx, fresh);
         f(&mut sub);
+        let st = &self.st.subs[q];
+        if st.timed {
+            st.resweep(self.cx.u, self.cx.tiles);
+        }
     }
     #[inline(always)]
     fn list<R: Row<V>, F: FnMut(usize) -> R>(&mut self, l: &List<'_>, f: F) {
@@ -536,6 +540,10 @@ pub fn list_sync<V, R: Row<V>, F: FnMut(usize) -> R, B: Backend>(parent: &mut St
         }
     }
     st.plan = plan;
+    if st.timed {
+        // rows came, went or were rewritten: which records are in motion, and where, is to be said again
+        st.resweep(cx.u, cx.tiles);
+    }
 }
 
 #[cold]
