@@ -524,8 +524,31 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
             }
             // a box kind: edge pixels through the kernel (a coverage row, then one vector blend), the core
             // as one span
-            let (a, b) = if gy >= c.core.y && gy < c.core.w && cx0 < cx1 { (cx0, cx1) } else { (x1, x1) };
             let cy = gy * 256 + 128;
+            // the row's constant span and its value: the core on a core row; on a top or bottom edge row of a
+            // rounded box or border, the pixels between the corners, whose distance is `qy - r` whatever x is
+            let (a, b, mid_sh) = if gy >= c.core.y && gy < c.core.w && cx0 < cx1 {
+                (cx0, cx1, cv)
+            } else if kind == k::K_RRECT || kind == k::K_BORDER {
+                let r = c.rad.x;
+                let qy = (cy - c.b.w).max(c.b.y - cy) + r;
+                let e = (-qy).max(0);
+                let (lo, hi) = (c.b.x + r + e, c.b.z - r - e);
+                let sa = (((lo + 127) >> 8) - ox).clamp(x0, x1);
+                let sb = (((hi - 128) >> 8) + 1 - ox).clamp(sa, x1);
+                // the kernel's `sd` with the x term inactive: the y leg alone, in the command's root units
+                let d = if qy > 0 { (((qy as u32 >> c.par.y).min(16383) << c.par.y) as i32) - r } else { qy - r };
+                let outer = k::cov(d);
+                let sh = if kind == k::K_RRECT {
+                    k::scale(c.pm, outer)
+                } else {
+                    let inner = k::cov(d + c.rad.y).min(outer);
+                    k::scale(c.pm, outer - inner) + k::scale(c.pm2, inner)
+                };
+                (sa, sb, sh)
+            } else {
+                (x1, x1, cv)
+            };
             let px0 = |xa: i32| (ox + xa) * 256 + 128;
             // a shadow away from its corners is the product of a column profile and a row value
             let shadow_row = if kind == k::K_SHADOW {
@@ -611,10 +634,10 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
                             *p = st(k::blend(ld(p), k::user_color(*c, px0(a) + i as i32 * 256, cy, now)));
                         }
                     }
-                    _ => over(mid, cv),
+                    _ => over(mid, mid_sh),
                 }
-                edge(&mut row[b as usize..x1 as usize], b);
             }
+            edge(&mut row[b as usize..x1 as usize], b);
         }
     }
     let (ka, kb) = (kx0 as usize, kx1 as usize);

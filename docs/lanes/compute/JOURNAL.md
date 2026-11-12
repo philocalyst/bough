@@ -594,3 +594,22 @@ whole frame is 2.1 us, kprof's laps add to that, so the split is by proportion):
   the pipeline. Nothing is queued after it; the wait is on the frame thread.
 **Windowed present was not measured** (no window may be opened on the active Space; the lead has taken this
 to the user).
+
+### 3. Rounded boxes and shadows as GUI shapes: predictions (before the code)
+
+**Rounded box rows.** On a row at height qy against the top or bottom edge, every pixel whose centre lies in
+`[b.x0 + r + max(-qy, 0), b.x1 - r - max(-qy, 0)]` has distance `qy - r` exactly (the kernel's `sd` with the
+x term inactive), so the row is corner pixels + one constant-coverage span + corner pixels. Borders the
+same with two coverages. Only the corner columns (radius + about a pixel each side) keep the per-pixel
+distance. Prediction: the 10,720-cell transition scene (30x10 px cells, r 3, nearly all edge) one core
+12.0 ms / 184 M instructions -> <= 7 ms / 100 M. Kill: under 1.2x.
+
+**Shadow corners as a cached block.** Away from its corners a shadow is already a product of two 1-D
+profiles. A corner's block of coverage depends only on (radius, blur width, root shift, which corner, the
+corner's sub-pixel phase, the parity of the box's size) once the box is large enough that the opposite edges
+and corners are out of the kernel's reach (half-size >= r + 3 w per axis): thousands of cards share one
+block. The executor fills a block from the kernel the first time a key is seen (per worker, kept across
+frames) and afterwards copies its rows into the coverage row. Exact because the block holds the kernel's own
+values; small boxes keep the per-pixel path. Prediction: rounded shadow 27.6 K (19.5 K flat) per
+tile-command -> <= 8 K (5 K); canvas full frame one core 112 ms -> <= 60 ms. Kill: under 1.3x on the canvas,
+or any gate difference that needs the key widened beyond those six things.
