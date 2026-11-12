@@ -10,7 +10,7 @@ fn main() {
     use bough_host::wl::{Conn, Shm, Wl};
     let a: Vec<String> = std::env::args().collect();
     let (mut w, mut h) = (a.get(1).and_then(|s| s.parse().ok()).unwrap_or(1280), a.get(2).and_then(|s| s.parse().ok()).unwrap_or(800));
-    let run = || -> Result<(), bough_host::wl::Error> {
+    let mut run = || -> Result<(), bough_host::wl::Error> {
         let mut c = Conn::connect()?;
         c.flush()?;
         let mut shm = Shm::new((w * h * 4) as usize)?;
