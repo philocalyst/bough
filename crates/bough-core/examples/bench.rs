@@ -13,6 +13,9 @@ use bough_core::{Bough, NRect, Plane};
 use std::hint::black_box;
 use std::time::Instant;
 
+#[path = "support/cost_r6.rs"]
+mod cost_r6;
+
 // ------------------------------------------------------------------------------------ counters
 
 #[repr(C)]
@@ -137,6 +140,10 @@ fn want(filter: &Option<String>, name: &str) -> bool {
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "--cost-r6") {
+        cost_r6::run(false);
+        return;
+    }
     let filter = std::env::var("BENCH_FILTER").ok();
     let base = baseline();
     println!("# bough-core bench ({})", if cfg!(debug_assertions) { "DEBUG BUILD - numbers meaningless" } else { "optimized" });
