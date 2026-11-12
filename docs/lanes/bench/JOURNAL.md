@@ -30,5 +30,21 @@ Branch `r7/bench` in `wt/r7-bench`, from `round6` `3b0b00c698`. Brief: `bough/ru
 * `bough_mem::pmu`: the calling thread's counters on both hosts (Linux perf_event_open group, macOS
   thread_selfcounts); `bough_damage_lab::measure` uses it on Linux, so bough-core's examples build there.
 * Finding: `signal_cost` at 64 rows prints 144115188075854459 for the mount-once number and string cells
-  (deterministic). That is `(hi - lo) / 128` wrapping: 64 repetitions cost ~181 K instructions more than 192.
-  Cause under investigation (first write to each row's label paid inside the 64-rep batch).
+  (deterministic). That is `(hi - lo) / 128` wrapping. Cause: the first write to each row's label lands in the
+  measured batches (and value-dependent digit counts). `SC_STABLE=1` fixes the method; numbers in
+  MEASUREMENT.md. Told the lead.
+* hotpath overhead measured on signal_cost (5 runs, medians): ~310 instructions per measured call, +1,550 per turn;
+  +2,000-7,600 with alloc tracking. Nested allocators verified. Details in MEASUREMENT.md.
+* perf recipe works (pstat.sh, three-event groups after finding 4+ multiplex to ~50 %); in-process and perf stat
+  agree on set_ink at 1e5 within 1 %. Told the lead (with the transfer recipe and the rxf.sh window leak).
+* bough-core examples run on x86-64 (`trace_bench` checked). Cache matrix `bench/results/r7/pmu_cells-matrix.ilo-prod.tsv`:
+  at 1e6 records `set_ink` is 969 instructions, ~2,100 cycles, 18 L1d misses, 17 L2 misses, 3.4 lines from DRAM;
+  at 1e5: 909 instructions, 8.6 L1d, 3.9 L2, 0.04 DRAM. `translate_all` at 1e6: 2.2 M instructions, 22.9 K L1d misses.
+* Scenes: crate `comparisons/bough-workloads` (harness + sheet by me; ide, dash, canvas, chat by four Sonnet
+  agents from `SCENE-BRIEF.md` in the scratchpad, each scene behind its own cargo feature so they build apart).
+  Sheet at full size (100,000 cells) mounts with RENDER=1: 3.51 G instructions, 480 ms, 240,055 records,
+  footprint 365 MiB; theme switch 57 M instructions / 8.7 ms; hover 15 M / 9.9 ms; resize 127 M / 52 ms per step
+  [M3, busy, 1eca7b5dc9 tree]. RENDER=0 needed a larger glyph capacity (fixed: ~21 glyph slots per numeric cell).
+* hotpath on the sheet (scale 0.2): resize 37 %, lay_flush 29 %, frame 26 %, mount 17 % of the run.
+* Dashboard (merged `lane/research/round6` for its files): zortax quick-1 section, labelled rough baseline;
+  workloads section waits for the baselines.
