@@ -252,6 +252,9 @@ fn edit(rng: &mut Rng, tree: &mut Tree<Text>, root: NodeId) {
 fn run(seed: u64, steps: usize) {
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let mut fused: Tree<Text> = Tree::new();
+    // The fused and the general algorithm leave the same caches; the shape memo leaves fewer (it
+    // stores no child answers it did not ask: tests/memo.rs), so it is off on both sides here.
+    fused.set_memo(false);
     let root = build(&mut rng, &mut fused, 0);
     let mut generic = fused.clone_cold();
     let threads = if seed.is_multiple_of(2) { 3 } else { 1 };
