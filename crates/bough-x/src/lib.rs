@@ -11,6 +11,7 @@
 //!
 //! Nothing here depends on the façade's runtime.
 pub use bough_expr as expr;
+pub mod draw;
 pub mod event;
 pub mod kinds;
 pub mod reflect;

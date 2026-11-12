@@ -253,6 +253,8 @@ pub trait Backend: 'static {
     fn num<A: crate::kinds::NumArch>(&mut self, col: ColRef<'_, A>, u: &U);
     fn label<A: crate::kinds::LabelArch>(&mut self, col: ColRef<'_, A>, u: &U);
     fn outline<A: crate::kinds::OutlineArch>(&mut self, col: ColRef<'_, A>, u: &U);
+    /// A column of records that draw themselves (`draw.rs`): the open end of the set.
+    fn draws<A: crate::draw::Draws>(&mut self, col: ColRef<'_, A>, u: &U);
 }
 
 /// A typed view of a column for a pass.

@@ -1,0 +1,18 @@
+[package]
+name = "bough-span"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Round 8, e2e lane: the CPU span raster for bough-x. Opaque boxes as spans and glyphs from a prepared image, written straight into the surface the compositor reads, restricted to the damaged tiles"
+
+[dependencies]
+bough-x = { path = "../bough-x" }
+bough-expr = { path = "../bough-expr" }
+bough-glyph = { path = "../bough-glyph" }
+
+[features]
+# Mutants the pixel gates must fail with:
+# a glyph that straddles a damaged and an undamaged tile is blended into both
+mutant_straddle = []
+# a repair forgets the tiles an older buffer missed
+mutant_age = []

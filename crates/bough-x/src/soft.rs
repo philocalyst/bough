@@ -122,7 +122,28 @@ impl Soft {
     }
 }
 
+/// The oracle's primitives: boxes as they are, text in the block font, a turned box as its bounding box.
+struct SoftPrims<'a>(&'a mut Soft);
+impl crate::draw::Prims for SoftPrims<'_> {
+    fn solid(&mut self, r: Rect, c: u32) {
+        self.0.rect(r, c)
+    }
+    fn text(&mut self, r: Rect, cut: Rect, s: &[u8], _: crate::draw::Align, c: u32) {
+        self.0.text(r, r.and(cut), s, c)
+    }
+    fn rbox(&mut self, r: Rect, cut: Rect, _: i32, _: u32, c: u32) {
+        self.0.rect(r.and(cut), c)
+    }
+}
+
 impl Backend for Soft {
+    fn draws<A: crate::draw::Draws>(&mut self, col: ColRef<'_, A>, u: &U) {
+        let (org, clip) = (col.space.origin(u), col.space.clip);
+        col.each(|r, a| {
+            self.records += 1;
+            a.draw(r.shift(org), clip, u, &mut SoftPrims(self))
+        });
+    }
     fn fill<A: FillArch>(&mut self, col: ColRef<'_, A>, u: &U) {
         let (org, clip) = (col.space.origin(u), col.space.clip);
         col.each(|r, a| {
