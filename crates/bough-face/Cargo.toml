@@ -1,0 +1,8 @@
+[package]
+name = "bough-face"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Round 8, text lane: a face at a size as a prepared image (shaping steps, ligatures, glyph coverage, the digit cell), read in place from rodata; shaped lines as ranges of two shared lanes; the span kernel over them. No dependencies: no font file is opened and no shaper is constructed"
+
+[dependencies]
