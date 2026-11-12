@@ -187,3 +187,82 @@ The two lanes' traits differ in three places; proposed resolution in each:
 | stage | `type Stage: Stage`, joined by `Join` impls | `const STAGE: Stage` | both: the type lets a bound refuse a stage (`T::Stage: Cpu`), the const is what `Code` and the plan read |
 | inputs | `eval(&self, u: &U)` | `eval(&self, cx: &Cx)` with `Cx { u, rect }` | the raster's: `Lane` (the record's own rect) is an operand |
 | block words | `Un<L: Lens>` (a named, typed word) | `Uw<const S: usize>` | `Un<L>`, with `Uw<S>` as the untyped form underneath |
+
+## 7. The layout seam (agreed 2026-11-12 with the layout lane's `LAYOUT-SEAM.md` v0; trait text is theirs)
+
+The expr lane's first proposal (an owned `&[Rect]` per shape, identity as equality) is withdrawn. What holds:
+
+1. A layout answer is one rect per record of the row type, in the depth-first order of the type, `i32` device
+   pixels, half open, relative to the row (a list row) or the space (a fixed row). `Lay::LEAVES == Row::LEAVES`.
+2. The answer is **written straight into the page's rect lanes** by the row type's monomorphised
+   `Lay::place<O: Out>(&self, at, avail, u, out) -> Valid`; the sink's sites implement `Out::put(k, Rect)` (four
+   stores at a site pointer). No slice, no memo, no identity. `Sink::row(|| element)`: an element is both `Row`
+   (operands) and `Lay` (layout). `Rect` lives in `bough-expr` (done, `479687b4f1`).
+3. `Valid { lo, hi }` is kept per exposed row as two lanes of a list's ring and as one pair per fixed row. A
+   change classifies exposed rows without calling the row function: *holds* (nothing), *moved* (`y0 += dy;
+   y1 += dy` over the live bits of each page, and one `(rect, dy)` copy hint beside the damage), *changed* (row
+   function, `place`, row damaged). `list_plan` no longer resets the window when the layout changes. The
+   interval check belongs to the list pass and never to a delta kernel.
+4. A list takes an `Extent` (`top`, `row_at`, `total`, `set`, `insert`, `remove`): `Uniform` is arithmetic; the
+   layout lane's blocked prefix sum is the general one. One row type per list.
+5. **Order lane** (expr builds it with relations): `order[k]: u16` is the ring slot of the k-th exposed row; a
+   free slot is `trailing_zeros(!live)`. An insert writes one row, moves at most `cap` `u16`, and translates
+   the rows after it; a remove clears a live bit. A row keeps its slot for as long as it is exposed, which is
+   also what makes a record's id (section 9) stable. Columns are then not in row order; no kernel relies on it.
+6. **Scroll.** `Space.scroll` stays a word of the block. The author's scroll state is the façade's `f32`; the
+   list's settle writes a core-owned `i32` word, `extent.top(anchor_row) + offset`. For a `Uniform` extent that
+   is the identity, so scroll is a Frame word the raster may latch late; for a prefix-sum extent it is a
+   Turn-stage value in the same word, and a correction above the anchor changes neither the word nor the
+   screen.
+7. Open, expr's to provide: a run of records inside a row (`each` in a row, a conditional child): one child
+   store for the whole parent list with a `(first, count)` lane per parent slot; the conditional child is the
+   count 0 or 1 case.
+
+Held against it when it lands: scroll-a-page on the sheet is 30,042 instructions for 34 rows today with rects
+copied from a const slice (about 4 instructions per record); `place` must fold to that.
+
+## 8. Hot words (Time, the pointer): never differentiated, bounded by their readers
+
+Built at `479687b4f1`. A word that changes every frame is not part of the turn's compare (`HOT`, words 60..63).
+
+* **Time.** `Expr::until(&self, cx) -> u32`: the value of `Time` from which the expression no longer changes
+  with time alone under the other words (0: at rest; `u32::MAX`: never). Defaulted: an expression that reads
+  `Time` and says nothing never rests; `Map` and tuples forward; a leaf function over time (`x_glide`,
+  `x_tween`) computes it. A paint that moves a record also says the box it stays inside (`Arch::sweep`).
+  A column whose archetype reads `Time` has at most one entry in `Tiles::sweeps`: `{ col, until, rect, space }`,
+  recomputed by a per-archetype kernel in any turn that touches the column (a word it reads changed, rows
+  entered or left, it was re-described). **A frame evaluates nothing and visits no store**: it marks the
+  entries, and drops the ones whose `until` has passed (that frame is their last).
+* **What the raster receives**: the sweeps as a slice, each frame. It may mark them itself; `Tiles::tick` does
+  that for a CPU-only frame and for the oracle. The cost that remains per frame on the CPU is the tile rows of
+  the marks (about 6 instructions per tile row), which is the raster's own input and can stay a rect.
+* **Reduced motion** (surface S2: the presenter adds 2^30 to `Time`) needs nothing here: every bounded
+  expression is then past its `until`, so the sweeps drain in one frame. An endless one (`until == MAX`) keeps
+  animating; an author who wants it to stop under reduced motion reads `Env`.
+* **The pointer words** have no bound yet: a column that reads `PtrX` or `PtrY` differentiates all its exposed
+  records on every pointer event (measured: 8.7 instructions per record). A bound of the same kind (an
+  influence box per record, tested like a hit) would cut that to the records under the old and new pointer; not
+  built, see the journal for whether it is worth it.
+
+## 9. The block's allocation, ids, archetype identity (answers to surface S1 to S3 and raster section 8)
+
+* **One allocation, never seen by the author.** Author words grow up from word 0: the Frame-reachable fields of
+  the view's own state, slots from `offset_of!` (Amendment 2; no numbering). Core words grow down from word 55:
+  one per scrolled space (the derived origin of 7.6), and the start words of transitions the core starts itself.
+  Surface words 56..59: `Focus`, `Press`, `Env`, one spare. Raster words 60..63: `PtrY`, `PtrX`, `Pick`, `Time`.
+  `APP_WORDS` becomes 56. The two growing regions meeting is an error at the first mount (the author's count is
+  a constant of the view type, so it can be a compile error once core words are counted per view type). The
+  turn's compare covers words 0..60; 60..63 are hot. More state than this is the second tier of SEAM 1 (words
+  in a column).
+* **S1, the pick id** `col:12 | index:20`: accepted. `col` is the column's number in the world-wide table of
+  columns in paint order (expr builds that table for its own reasons: it is also what takes the store tree off
+  the path from a block write to a page, journal 9.3); `index` is the record's index in the column, which is
+  `site base + slot`. With the order lane a row keeps its slot while exposed, so the id is stable. HIT derived
+  from the column having handler components: accepted (`RawCol.hover` is that today).
+* **S3, a record's own id as a leaf** (`Code::Id`, `Cx::id`): accepted; the patch comes from `r8/raster`. On the
+  CPU the id is computed in the kernels from (column number, page, index), so it costs no record word.
+* **Archetype identity** for generated code keyed per archetype rather than per column: `RawCol.arch`, the
+  `TypeId` of the record type without its handler (built). Columns are per store and site and are unbounded;
+  archetypes are per program and bounded by its source. Two lists with one row type, or two instances of a
+  component, are different columns of the same archetypes. A descriptor's address is *not* offered as the key:
+  it is a promoted constant and may be duplicated or merged across codegen units.
