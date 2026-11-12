@@ -1867,11 +1867,7 @@ impl<'a, S: RowSource<V>, V: 'static> Element<V> for LList<'a, S, V> {
             None => m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: hd.idx, clip: m.clip }),
         }
         // a definite width is known now
-        let width = match self.spec.w {
-            Dim::Pt(w) => w * s - pad[0] - pad[2],
-            Dim::Px(w) => w - pad[0] - pad[2],
-            _ => f32::NAN,
-        };
+        let width = self.spec.w.fixed_px(s).map_or(f32::NAN, |w| w - pad[0] - pad[2]);
         // a virtual list's rows are cut to its box (the clip's rect is set when the box is placed)
         let clip = if self.virt { m.rt.bough.new_clip(NRect::EMPTY) } else { m.clip };
         let cls = m.rt.new_class();

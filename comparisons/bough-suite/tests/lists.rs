@@ -15,6 +15,10 @@ use common::*;
 fn cfg(w: f32, h: f32) -> Config {
     Config::new(w, h, 1.0, font()).once()
 }
+/// `cfg` for a view whose handlers change what it describes (plain fields, not signals): it re-describes.
+fn cfg_redescribing(w: f32, h: f32) -> Config {
+    Config::new(w, h, 1.0, font())
+}
 
 #[test]
 fn update_rows_are_pixel_exact() {
@@ -211,11 +215,11 @@ fn teardown_and_mount_are_pixel_exact() {
     for ring in RINGS {
         check(
             "teardown",
-            app_ring(Teardown { n: 60, show: true }, cfg(1200.0, 900.0), ring),
+            app_ring(Teardown { n: 60, show: true }, cfg_redescribing(1200.0, 900.0), ring),
             4,
             1,
             |a, t| a.turn(|v| v.show = t % 2 == 0),
-            || App::new(Teardown { n: 60, show: true }, with_ring(cfg(1200.0, 900.0), ring), true),
+            || App::new(Teardown { n: 60, show: true }, with_ring(cfg_redescribing(1200.0, 900.0), ring), true),
         );
     }
 }
