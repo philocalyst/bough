@@ -424,7 +424,7 @@ fn pixels<V: Bench>(a: &mut App<V>, ring: usize) {
     // Reproduce transient hover through the input path (row data/scroll are copied above).
     if !V::header() {
         if let Some((x, y)) = a.rt.input.pointer {
-            fresh.pointer_move(x as f32, y as f32);
+            fresh.pointer_move(x as f32 / a.rt.scale, y as f32 / a.rt.scale);
         }
     }
     compare(&retained, &fresh.reference_pixels(), "retained-fresh");
@@ -451,8 +451,10 @@ fn layout<V: Bench>(a: &mut App<V>) {
             (640, 31, spec::ROW_BORDER),
         ]
     };
+    let (k, w) = (a.rt.scale as usize, a.rt.win_w as usize);
     for (x, y, color) in checks {
-        let off = (y * 1280 + x) * 4;
+        // points to device pixels (the centre of the point's k x k block)
+        let off = ((y * k + k / 2) * w + x * k + k / 2) * 4;
         let (r, g, b) = spec::rgb(color);
         assert_eq!(&p[off..off + 4], &[b, g, r, 255], "layout point {x},{y}");
     }
@@ -608,8 +610,9 @@ pub fn headless<V: Bench>(view: V, op: &str, o: Opts) {
                 }
                 if op == "hover" {
                     let p = a.presented_pixels();
+                    let (k, w) = (a.rt.scale as usize, a.rt.win_w as usize);
                     let yy = if undo { 16 } else { 176 };
-                    let i = (yy * 1280 + 640) * 4;
+                    let i = (yy * k * w + 640 * k) * 4;
                     let (r, g, b) = spec::rgb(spec::ROW_HOVER);
                     assert_eq!(&p[i..i + 4], &[b, g, r, 255], "expected hover colour");
                 }

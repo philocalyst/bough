@@ -99,8 +99,15 @@ fn gate<V: Snap>(a: &Args, app: &mut App<V>, undo: bool, probe: Probe<V>) -> Str
         fresh.frame();
     }
     let fp = fresh.reference_pixels();
+    if let (Ok(dir), true) = (std::env::var("ADV_DUMP"), full != fp) {
+        let k = std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0) / 2;
+        std::fs::write(format!("{dir}/{k}-retained.bgra"), &full).unwrap();
+        std::fs::write(format!("{dir}/{k}-fresh.bgra"), &fp).unwrap();
+    }
     let pr = probe(app, a, undo, &shown);
-    format!("pf={} rf={} probes={}", diff(&shown, &full), diff(&full, &fp), if pr.is_empty() { "ok".into() } else { pr.join("; ") })
+    let fr = probe(&mut fresh, a, undo, &fp);
+    let show = |v: Vec<String>| if v.is_empty() { "ok".to_string() } else { v.join("; ") };
+    format!("pf={} rf={} records={}/{} probes={} fresh-probes={}", diff(&shown, &full), diff(&full, &fp), app.record_count(), fresh.record_count(), show(pr), show(fr))
 }
 
 /// Operation/undo pairs.
@@ -320,6 +327,13 @@ fn tall_probe(app: &mut App<Tall>, a: &Args, undo: bool, p: &[u8]) -> Vec<String
         want(&mut out, p, w, 640, h - 65 + d, TA, "first block bottom");
     } else if a.op == "end" {
         want(&mut out, p, w, 640, 0, TA, "first block");
+    } else {
+        if y != total - a.h {
+            out.push(format!("WRONG offset {y} want {}", total - a.h));
+        }
+        want(&mut out, p, w, 640, h - 1, TC, "last block");
+        want(&mut out, p, w, 640, h - 33, TB, "second block bottom");
+        want(&mut out, p, w, 640, h - 65, TA, "first block bottom");
     }
     out
 }
@@ -359,7 +373,8 @@ impl Snap for Virtual {
     }
 }
 fn rows_probe(app: &mut App<Rows>, a: &Args, undo: bool, p: &[u8]) -> Vec<String> {
-    let exp = if undo { 0.0 } else { app.owner.count as f32 * 32.0 - a.h };
+    let end = app.owner.count as f32 * 32.0 - a.h;
+    let exp = if a.op == "end-1" { if undo { end } else { end - 1.0 } } else if undo { 0.0 } else { end };
     let mut out = stripes(p, app.rt.win_w as usize, app.rt.win_h as usize, *app.owner.y as i64, app.owner.count);
     if *app.owner.y != exp {
         out.push(format!("WRONG offset {} want {exp}", *app.owner.y));
@@ -367,7 +382,8 @@ fn rows_probe(app: &mut App<Rows>, a: &Args, undo: bool, p: &[u8]) -> Vec<String
     out
 }
 fn virtual_probe(app: &mut App<Virtual>, a: &Args, undo: bool, p: &[u8]) -> Vec<String> {
-    let exp = if undo { 0.0 } else { app.owner.count as f32 * 32.0 - a.h };
+    let end = app.owner.count as f32 * 32.0 - a.h;
+    let exp = if a.op == "end-1" { if undo { end } else { end - 1.0 } } else if undo { 0.0 } else { end };
     let mut out = stripes(p, app.rt.win_w as usize, app.rt.win_h as usize, *app.owner.y as i64, app.owner.count);
     if *app.owner.y != exp {
         out.push(format!("WRONG offset {} want {exp}", *app.owner.y));
@@ -412,12 +428,11 @@ impl Snap for Wrap {
 impl View for Wrap {
     fn view(&self) -> impl Element<Self> + '_ {
         let over = if self.mounted { self.n } else { 2 };
-        div()
+        // the 8 pt block keeps the scroll port off the window origin (a list in a port at the origin mounts no rows)
+        column((block(0.0, 8.0).w_pct(1.0).shrink(0.0).bg(rgb(0xeeeeee)), div().w_pct(1.0).grow(1.0).min_h(0.0).scroll(sig!(self.y)).child(list(sig!(self.rows)).w_pct(1.0).overscan(over))))
             .w_pct(1.0)
             .h_pct(1.0)
             .bg(rgb(0xffffff))
-            .scroll(sig!(self.y))
-            .child(list(sig!(self.rows)).w_pct(1.0).overscan(over))
             .on_key(|v: &mut Self, e| {
                 let extra = if e.key == Some(Key::Char('g')) { 60 } else { 0 };
                 if v.rows.len() > 1 {
@@ -548,10 +563,12 @@ fn nested_probe(app: &mut App<Nested>, a: &Args, undo: bool, p: &[u8]) -> Vec<St
 
 // ------------------------------------------------------------------ a deep tree
 const DL: u32 = 0x118833;
+#[cfg(feature = "deep")]
 macro_rules! nest {
     ($leaf:expr;) => { $leaf };
     ($leaf:expr; $h:tt $($t:tt)*) => { div().p(1.0).bg(rgb(0x335577)).child(nest!($leaf; $($t)*)) };
 }
+#[cfg(feature = "deep")]
 macro_rules! deep {
     ($name:ident, $($t:tt)*) => {
         struct $name {
@@ -573,10 +590,15 @@ macro_rules! deep {
         }
     };
 }
+#[cfg(feature = "deep")]
 deep!(Deep10, x x x x x x x x x x);
+#[cfg(feature = "deep")]
 deep!(Deep50, x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x);
+#[cfg(feature = "deep")]
 deep!(Deep100, x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x);
+#[cfg(feature = "deep")]
 deep!(Deep200, x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x);
+#[cfg(feature = "deep")]
 fn deep_input<V: View>(app: &mut App<V>, a: &Args, undo: bool) {
     let d = a.n as f32;
     match a.op.as_str() {
@@ -587,6 +609,7 @@ fn deep_input<V: View>(app: &mut App<V>, a: &Args, undo: bool) {
         _ => panic!("op"),
     }
 }
+#[cfg(feature = "deep")]
 fn deep_probe<V: View>(app: &mut App<V>, a: &Args, undo: bool, p: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     let w = app.rt.win_w as usize;
@@ -676,7 +699,7 @@ impl Snap for Cells {
 impl View for Cells {
     fn view(&self) -> impl Element<Self> + '_ {
         let over = if self.mounted { self.n } else { 2 };
-        div().w_pct(1.0).h_pct(1.0).bg(rgb(0xffffff)).scroll(sig!(self.y)).child(list(sig!(self.rows)).w_pct(1.0).overscan(over)).on_key(|v: &mut Self, _| {
+        column((block(0.0, 8.0).w_pct(1.0).shrink(0.0).bg(rgb(0xeeeeee)), div().w_pct(1.0).grow(1.0).min_h(0.0).scroll(sig!(self.y)).child(list(sig!(self.rows)).w_pct(1.0).overscan(over)))).w_pct(1.0).h_pct(1.0).bg(rgb(0xffffff)).on_key(|v: &mut Self, _| {
             let step = (v.n / v.k).max(1);
             for i in (0..v.n).step_by(step).take(v.k) {
                 let c = v.rows.edit(i);
@@ -742,8 +765,84 @@ fn fan_probe(app: &mut App<Fan>, _: &Args, _: bool, p: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     let w = app.rt.win_w as usize;
     want(&mut out, p, w, 5, 20 + 7, if *app.owner.on { WF } else { DL }, "first dependent block");
-    want(&mut out, p, w, 5, 20 + 14 * 40 + 7, if *app.owner.on { WF } else { DL }, "41st dependent block");
+    if app.owner.n > 40 {
+        want(&mut out, p, w, 5, 20 + 14 * 40 + 7, if *app.owner.on { WF } else { DL }, "41st dependent block");
+    }
     out
+}
+
+// ------------------------------------------------------------------ where does a list mount its rows?
+struct ListBox {
+    rows: List<Cell>,
+    y: Signal<f32>,
+    shape: usize,
+}
+impl Snap for ListBox {
+    fn snap(&self) -> Self {
+        ListBox { rows: List::from_iter_in(self.rows.iter().map(|c| Cell { v: Signal::new(*c.v) })), y: Signal::new(*self.y), shape: self.shape }
+    }
+}
+impl View for ListBox {
+    fn view(&self) -> impl Element<Self> + '_ {
+        let s = self.shape;
+        (
+            // 0: the scroll box is the root element (as `Rows` is, with `each`)
+            (s == 0).then(|| div().w_pct(1.0).h_pct(1.0).bg(rgb(0xffffff)).scroll(sig!(self.y)).child(list(sig!(self.rows)).w_pct(1.0))),
+            // 1: the same inside a column (as the table port)
+            (s == 1).then(|| column((div().w_pct(1.0).grow(1.0).min_h(0.0).scroll(sig!(self.y)).child(list(sig!(self.rows)).w_pct(1.0)),)).w_pct(1.0).h_pct(1.0).bg(rgb(0xffffff))),
+            // 2: a plain root box, no scroll
+            (s == 2).then(|| div().w_pct(1.0).h_pct(1.0).bg(rgb(0xffffff)).child(list(sig!(self.rows)).w_pct(1.0))),
+            // 5: shape 1 below a 40 pt header block; 6: below a 1 pt block; 7: above a footer block; 8: rows with a background
+            (s == 5).then(|| column((block(0.0, 40.0).w_pct(1.0).shrink(0.0).bg(rgb(0xeeeeee)), div().w_pct(1.0).grow(1.0).min_h(0.0).scroll(sig!(self.y)).child(list(sig!(self.rows)).w_pct(1.0)))).w_pct(1.0).h_pct(1.0).bg(rgb(0xffffff))),
+            (s == 6).then(|| column((block(0.0, 1.0).w_pct(1.0).shrink(0.0).bg(rgb(0xeeeeee)), div().w_pct(1.0).grow(1.0).min_h(0.0).scroll(sig!(self.y)).child(list(sig!(self.rows)).w_pct(1.0)))).w_pct(1.0).h_pct(1.0).bg(rgb(0xffffff))),
+            (s == 7).then(|| column((div().w_pct(1.0).grow(1.0).min_h(0.0).scroll(sig!(self.y)).child(list(sig!(self.rows)).w_pct(1.0)), block(0.0, 40.0).w_pct(1.0).shrink(0.0).bg(rgb(0xeeeeee)))).w_pct(1.0).h_pct(1.0).bg(rgb(0xffffff))),
+            (s == 8).then(|| column((text("header").color(rgb(0)), div().w_pct(1.0).grow(1.0).min_h(0.0).scroll(sig!(self.y)).child(list(sig!(self.rows)).w_pct(1.0)))).w_pct(1.0).h_pct(1.0).bg(rgb(0xffffff))),
+        )
+    }
+}
+
+macro_rules! vrow {
+    ($name:ident, $s:ident, $body:expr) => {
+        struct $name {
+            v: Signal<u32>,
+        }
+        impl View for $name {
+            fn view(&self) -> impl Element<Self> + '_ {
+                let $s = self;
+                $body
+            }
+        }
+        impl From<u32> for $name {
+            fn from(v: u32) -> Self {
+                $name { v: Signal::new(v) }
+            }
+        }
+    };
+}
+// A: the Cell row with a background; B: 32 pt tall; C: constant text; D: no height (auto); E: a bare block with bg; F: bare block no bg
+vrow!(RowA, s, row((text(sig!(s.v).map(|n| n.to_string())).font(10.0, 12.0).color(rgb(0x000000)),)).w_pct(1.0).h(14.0).shrink(0.0).px(4.0).bg(rgb(0xffffff)));
+vrow!(RowB, s, row((text(sig!(s.v).map(|n| n.to_string())).font(10.0, 12.0).color(rgb(0x000000)),)).w_pct(1.0).h(32.0).shrink(0.0).px(4.0));
+vrow!(RowC, _s, row((text("x").font(10.0, 12.0).color(rgb(0x000000)),)).w_pct(1.0).h(14.0).shrink(0.0).px(4.0));
+vrow!(RowD, s, row((text(sig!(s.v).map(|n| n.to_string())).font(10.0, 12.0).color(rgb(0x000000)),)).w_pct(1.0).px(4.0).bg(rgb(0xffffff)));
+vrow!(RowE, _s, block(0.0, 14.0).w_pct(1.0).shrink(0.0).bg(rgb(0xeeeeee)));
+vrow!(RowF, _s, block(0.0, 14.0).w_pct(1.0).shrink(0.0));
+struct ListBoxOf<R: View> {
+    rows: List<R>,
+    y: Signal<f32>,
+}
+impl<R: View> View for ListBoxOf<R> {
+    fn view(&self) -> impl Element<Self> + '_ {
+        column((div().w_pct(1.0).grow(1.0).min_h(0.0).scroll(sig!(self.y)).child(list(sig!(self.rows)).w_pct(1.0)),)).w_pct(1.0).h_pct(1.0).bg(rgb(0xffffff))
+    }
+}
+fn listbox_of<R: View + From<u32>>(a: &Args, name: &str) {
+    stage("mount", || {
+        let mut c = cfg(a);
+        c.mount_once = a.once;
+        let mut app = App::new(ListBoxOf::<R> { rows: List::from_iter_in((0..a.n as u32).map(R::from)), y: Signal::new(0.0) }, c, false);
+        app.frame();
+        format!("row={name} rows={} records={}", a.n, app.record_count())
+    });
 }
 
 // ------------------------------------------------------------------ structure churn
@@ -780,7 +879,7 @@ impl Snap for Churn {
 impl View for Churn {
     fn view(&self) -> impl Element<Self> + '_ {
         let over = if self.mounted { self.cap } else { 2 };
-        div().w_pct(1.0).h_pct(1.0).bg(rgb(0xffffff)).scroll(sig!(self.y)).child(list(sig!(self.rows)).w_pct(1.0).overscan(over)).on_key(|v: &mut Self, e| match e.key {
+        column((block(0.0, 8.0).w_pct(1.0).shrink(0.0).bg(rgb(0xeeeeee)), div().w_pct(1.0).grow(1.0).min_h(0.0).scroll(sig!(self.y)).child(list(sig!(self.rows)).w_pct(1.0).overscan(over)))).w_pct(1.0).h_pct(1.0).bg(rgb(0xffffff)).on_key(|v: &mut Self, e| match e.key {
             Some(Key::Char('f')) => {
                 v.rows.insert(0, CRow { label: Signal::new(format!("item {}", v.next)) });
                 v.next += 1;
@@ -928,6 +1027,7 @@ fn main() {
         "wrap" => pairs(&a, &|| Wrap::new(n, a.flag), grow_input, no_probe),
         "wrap-coarse" => pairs(&a, &|| WrapC { rows: (0..n).map(|i| words(i, 0)).collect() }, grow_input, no_probe),
         "nested" => pairs(&a, &Nested::new, nested_input, nested_probe),
+        #[cfg(feature = "deep")]
         "deep" => match n {
             10 => pairs(&a, &|| Deep10 { flip: false }, deep_input, deep_probe),
             50 => pairs(&a, &|| Deep50 { flip: false }, deep_input, deep_probe),
@@ -940,6 +1040,18 @@ fn main() {
         "fan" => pairs(&a, &|| Fan { v: Signal::new(0), on: Signal::new(false), plain: 0, n }, fan_input, fan_probe),
         "churn" => seq(&a, &|| Churn::new(n, n + a.k, a.flag), churn_input, no_probe),
         "churn-coarse" => seq(&a, &|| ChurnC { rows: (0..n).map(|i| format!("item {i}")).collect(), next: n, rng: 1 }, churn_input, no_probe),
+        "listbox" => stage("mount", || {
+            let app = mount(&a, ListBox { rows: List::from_iter_in((0..n).map(|i| Cell { v: Signal::new(i as u32) })), y: Signal::new(0.0), shape: a.k }, false);
+            format!("shape={} rows={} records={}", a.k, n, app.record_count())
+        }),
+        "listbox-rows" => {
+            listbox_of::<RowA>(&a, "A cell+bg");
+            listbox_of::<RowB>(&a, "B cell h32");
+            listbox_of::<RowC>(&a, "C const text");
+            listbox_of::<RowD>(&a, "D auto height +bg");
+            listbox_of::<RowE>(&a, "E block+bg");
+            listbox_of::<RowF>(&a, "F block");
+        }
         "scripts" => scripts(&a),
         _ => panic!("unknown case"),
     }

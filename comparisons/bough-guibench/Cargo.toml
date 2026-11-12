@@ -13,6 +13,10 @@ bough-metal = { path = "../../crates/bough-metal" }
 block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["block2"] }
 
+[features]
+# the 10/50/100/200-level statically nested views of the adversarial matrix (minutes to compile)
+deep = []
+
 [[bin]]
 name = "bough-bench"
 path = "src/main.rs"

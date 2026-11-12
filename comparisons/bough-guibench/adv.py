@@ -38,8 +38,10 @@ P = 'placement saturates or loses precision past 32,767 / 65,535 / 2^24 px'
 for px in [20000, 40000, 70000, 16777216 + 1000, 40000000]:
     for op in ['end', 'end-1']:
         adv('tall', P if px > 32767 else 'control', 'tall-block', op, n=px)
-for n in [1100, 2100]:
-    adv('tall', P, 'tall-rows', 'end', n=n)
+for n in [1000, 1020, 1030, 1100, 2100]:
+    adv('tall', P if n > 1023 else 'control: 32 px rows end below 32,767 px', 'tall-rows', 'end', n=n)
+for n in [500, 520, 600]:
+    adv('tall', 'at scale 2 the device-pixel limit is reached at half the points: 16,383 pt', 'tall-rows', 'end', n=n, scale=2)
 for n in [100000, 600000, 1000000, 4000000]:
     for op in ['end', 'end-1']:
         adv('tall', P + ' (virtual list, 32 px rows)', 'tall-virtual', op, n=n)
@@ -104,6 +106,9 @@ for n in [10, 100, 1000]:
 # 12. scale: no live entry point (FRICTION G11); static scale-2 cells
 for op in ['hover', 'scroll']:
     head('scale', 'scale 2 mounts and repairs exactly (static; a live 1 -> 2 -> 1 switch has no host entry point)', 'rows', op, 100, extra=['--scale', '2'], env={'GUIBENCH_REHOVER': 'same'})
+for op in ['hover', 'select', 'swap']:
+    head('hover-redescribe', 'a hover crossing or click on a plain (non-scroll) coarse table re-describes the root: O(N)', 'table', op, 1000, extra=['--variant', 'coarse', '--plain'])
+    head('hover-redescribe', 'control at 100 rows', 'table', op, 100, extra=['--variant', 'coarse', '--plain'])
 head('scale', 'as above', 'table', 'select', 100, extra=['--variant', 'fine', '--scale', '2'])
 head('scale', 'as above', 'table', 'update10', 100, extra=['--variant', 'fine', '--scale', '2'])
 
