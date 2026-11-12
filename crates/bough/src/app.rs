@@ -1027,6 +1027,8 @@ impl<V: View> App<V> {
             unsafe { crate::backend::surfaces::copy_rect(src, sbpr, dst, dbpr, copy) };
         }
         let (p, bpr) = t.pixels(i);
+        // the only executor drawing these surfaces: every kind is modelled (cpu_raster.rs)
+        self.cpu.all_kinds = true;
         // SAFETY: the target's contract: `p` holds the window's rows at `bpr`, and nothing else touches surface
         // `i` while it is not in use (`pick` chose it so).
         let r = unsafe { self.cpu.repair(&self.rt, &self.rows, full, p, bpr) };
@@ -1131,6 +1133,7 @@ impl<V: View> App<V> {
         if self.target.is_some() {
             let (w, h) = (self.rt.win_w as usize, self.rt.win_h as usize);
             let mut v = vec![0u8; w * 4 * h];
+            self.cpu.all_kinds = true;
             // SAFETY: `v` holds `h` rows of `4 w` bytes, the window's size.
             unsafe { self.cpu.repair(&self.rt, &[], true, v.as_mut_ptr(), w * 4) }.expect("the CPU executor refused the reference frame");
             return v;

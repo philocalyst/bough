@@ -247,6 +247,7 @@ pub fn window<V: Bench>(view: V, title: &str) -> ! {
     let period = view.period();
     let mut run = bough::backend::Run::default()
         .seconds(seconds)
+        .app_id("gui-bench.bough")
         .start(|a: &mut App<V>| focus(a))
         .report(|a: &mut App<V>| {
             eprintln!(

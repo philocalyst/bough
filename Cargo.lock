@@ -228,6 +228,7 @@ dependencies = [
 name = "bough-text"
 version = "0.0.0"
 dependencies = [
+ "bough-damage-lab",
  "bough-mem",
  "icu_segmenter",
  "libc",

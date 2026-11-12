@@ -95,11 +95,11 @@ struct Timer {
 
 /// Open the window and run until it closes (or `run.seconds` pass). See the module docs.
 pub fn run<V: View>(title: &str, make_cfg: fn(f32) -> Config, view: V, run: Run<V>) -> ! {
-    let Run { seconds, start, mut every, report, mut linked } = run;
+    let Run { seconds, start, mut every, report, mut linked, app_id } = run;
     let probe = make_cfg(1.0);
     let (w, h, ring) = (probe.width_pt.round() as u32, probe.height_pt.round() as u32, probe.surfaces());
     drop(probe);
-    let app_id = std::env::var("BOUGH_APP_ID").unwrap_or_else(|_| "bough".into());
+    let app_id = app_id.or_else(|| std::env::var("BOUGH_APP_ID").ok()).unwrap_or_else(|| "bough".into());
     let shell = match Shell::connect(title, &app_id, w, h, ring) {
         Ok(s) => s,
         Err(e) => {

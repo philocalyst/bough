@@ -37,11 +37,13 @@ pub struct Run<V: View> {
     /// first)` runs once per refresh while the frames it leaves keep drawing; a refresh with nothing to draw stops
     /// it (a finished animation costs nothing).
     pub linked: Option<Box<dyn FnMut(&mut App<V>, f64)>>,
+    /// The application id the compositor sees (Wayland `xdg_toplevel.app_id`); default `BOUGH_APP_ID`, then "bough".
+    pub app_id: Option<String>,
 }
 
 impl<V: View> Default for Run<V> {
     fn default() -> Self {
-        Run { seconds: 0.0, start: Box::new(|_| {}), every: None, report: Box::new(|_| {}), linked: None }
+        Run { seconds: 0.0, start: Box::new(|_| {}), every: None, report: Box::new(|_| {}), linked: None, app_id: None }
     }
 }
 
@@ -60,6 +62,10 @@ impl<V: View> Run<V> {
     }
     pub fn report(mut self, f: impl FnOnce(&mut App<V>) + 'static) -> Self {
         self.report = Box::new(f);
+        self
+    }
+    pub fn app_id(mut self, id: impl Into<String>) -> Self {
+        self.app_id = Some(id.into());
         self
     }
     pub fn linked(mut self, f: impl FnMut(&mut App<V>, f64) + 'static) -> Self {
@@ -103,7 +109,7 @@ pub fn run_window_linked<V: View>(title: &str, make_cfg: fn(f32) -> Config, view
 pub fn run<V: View>(title: &str, make_cfg: fn(f32) -> Config, view: V, run: Run<V>) -> ! {
     #[cfg(target_os = "macos")]
     {
-        let Run { seconds, start, every, report, linked } = run;
+        let Run { seconds, start, every, report, linked, app_id: _ } = run;
         assert!(linked.is_none(), "Run::linked on macOS: use run_window_linked");
         host::run_interactive(
             title,
