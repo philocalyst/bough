@@ -72,10 +72,14 @@ impl View for Dashboard {
     }
 }
 
+/// The workload's view.
+pub fn app() -> Dashboard {
+    Dashboard { notes: Signal::new("Project notes".to_string()), refreshes: Signal::new(0), enabled: Signal::new(false), y: Signal::new(0.0) }
+}
+
 /// The workload's window (also what the memory-ledger harness runs).
 pub fn window() -> Window<Dashboard> {
-    let app = Dashboard { notes: Signal::new("Project notes".to_string()), refreshes: Signal::new(0), enabled: Signal::new(false), y: Signal::new(0.0) };
-    Window::document(app).title("bough Dashboard").size(1000.0, 700.0)
+    Window::document(app()).title("bough Dashboard").size(1000.0, 700.0)
 }
 
 pub fn main() {

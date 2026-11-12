@@ -20,9 +20,14 @@ impl View for ScrollApp {
     }
 }
 
+/// The workload's view (`SCROLL_ROWS` rows, scrolled to the top).
+pub fn app() -> ScrollApp {
+    ScrollApp { rows: row_count(), y: Signal::new(0.0) }
+}
+
 /// The workload's window (also what the memory-ledger harness runs).
 pub fn window() -> Window<ScrollApp> {
-    Window::document(ScrollApp { rows: row_count(), y: Signal::new(0.0) }).title("bough Scroll").size(1000.0, 700.0)
+    Window::document(app()).title("bough Scroll").size(1000.0, 700.0)
 }
 
 pub fn main() {

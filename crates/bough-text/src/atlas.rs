@@ -235,6 +235,10 @@ impl GlyphCache {
     pub fn strike_tables(&self) -> usize {
         self.toks.len()
     }
+    /// Strike `i`'s token table, as the GPU reads it (diagnostics: a CPU model of the kernels).
+    pub fn tok_strike(&self, i: usize) -> Option<&TokStrike> {
+        self.toks.get(i)
+    }
 
     /// Region offset of strike 0's token table (`None` when not carved).
     pub fn tok_offset(&self) -> Option<usize> {

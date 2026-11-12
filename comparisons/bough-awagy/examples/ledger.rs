@@ -231,6 +231,52 @@ fn bough_metal_instructions() -> u64 {
     r.rest[29]
 }
 
+/// The post-idle wake (lane memory, round 6: what keep-warm buys for the driver block it holds). For each idle
+/// length D: 2 s of counter turns at 120 Hz (the GPU warm), D of nothing, then one turn and frame, waited until
+/// the GPU finished it. Per probe: the process footprint just before (is the driver block still charged?), the
+/// wall time from the turn to the GPU's completion, and the process's instructions over it (driver threads
+/// included). `BOUGH_KEEPWARM` (bough-metal: period ms, window s; 0 = off) is the variable.
+fn wake(app: Rc<RefCell<App<counter::Counter>>>, idles: Vec<f64>) {
+    #[derive(Clone, Copy)]
+    enum Ph {
+        Warm(f64),
+        Idle(f64),
+    }
+    let t0 = std::time::Instant::now();
+    let state = Rc::new(Cell::new((0usize, Ph::Warm(2.0))));
+    timer(1.0 / 120.0, true, move || {
+        let now = t0.elapsed().as_secs_f64();
+        let (k, ph) = state.get();
+        if k >= idles.len() {
+            return;
+        }
+        let Ok(mut a) = app.try_borrow_mut() else { return };
+        match ph {
+            Ph::Warm(until) => {
+                a.turn(|c| c.inc());
+                a.frame();
+                if now >= until {
+                    a.wait_presented();
+                    state.set((k, Ph::Idle(now + idles[k])));
+                }
+            }
+            Ph::Idle(until) => {
+                if now < until {
+                    return;
+                }
+                let fp = bough::ledger::Proc::now().phys_footprint;
+                let (i0, w0) = (bough_metal_instructions(), std::time::Instant::now());
+                a.turn(|c| c.inc());
+                a.frame();
+                a.wait_presented();
+                let (dt, di) = (w0.elapsed().as_secs_f64() * 1e3, bough_metal_instructions() - i0);
+                eprintln!("wake: idle {:.1} s  footprint before {:.1} MiB  turn->GPU done {:.2} ms  {} instructions", idles[k], fp as f64 / 1048576.0, dt, di);
+                state.set((k + 1, Ph::Warm(now + 2.0)));
+            }
+        }
+    });
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let what = args.get(1).map(String::as_str).unwrap_or("scroll").to_string();
@@ -238,6 +284,11 @@ fn main() {
     let total: f64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(10.0);
     let steady = Rc::new(Cell::new(Steady::default()));
     match what.as_str() {
+        "wake" => {
+            let idles: Vec<f64> = std::env::var("WAKE_IDLES").unwrap_or_else(|_| "0.3,1,1.5,3,6".into()).split(',').filter_map(|x| x.parse().ok()).collect();
+            let total = idles.iter().map(|d| d + 2.2).sum::<f64>() + 1.0;
+            Application::run_harness(Window::document(counter::Counter { count: Signal::new(0) }).title("Counter"), total, move |_, app| wake(app, idles), |_| {})
+        }
         "counter" => {
             let st = steady.clone();
             Application::run_harness(
