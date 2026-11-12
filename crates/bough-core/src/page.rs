@@ -86,6 +86,9 @@ pub struct Page {
     /// 0 for a plain page; otherwise the page is not in the plain frame (see `F_XF`, `F_FAR`,
     /// `F_WIDE`) and every stored-to-absolute conversion takes the exact path. (A former padding byte.)
     pub flags: u8,
+    /// Non-zero iff the page has a state page (`state.rs`: some record here has, or had until its consumer
+    /// acknowledges, a state bit). A stateless page's operations test this byte and nothing else.
+    pub state: u8,
     /// Only grows: bumped on alloc, free and every structural edit (shift/insert/remove).
     pub version: u32,
     pub id: u32,
@@ -141,6 +144,7 @@ impl Page {
             clip: [0; CAP],
             cgroups: 0,
             flags: 0,
+            state: 0,
             version: 0,
             id,
             dir: u32::MAX,
@@ -507,6 +511,7 @@ impl PagePool {
         p.gink = [NRect::EMPTY; NGROUPS];
         p.cgroups = 0;
         p.flags = 0;
+        p.state = 0;
         p.set_off(0, 0);
         // A freed page carries no transform: the next run to reuse it must not inherit one (round 6).
         (p.xm, p.xv) = ([0.0; 4], [0.0; 2]);
@@ -521,6 +526,11 @@ impl PagePool {
     }
     pub fn free_pages(&self) -> usize {
         self.free.len()
+    }
+    /// The stable pointer of page `id`.
+    #[inline(always)]
+    pub fn ptr(&self, id: u32) -> *mut Page {
+        self.pages[id as usize]
     }
     pub fn page(&self, id: u32) -> &Page {
         // SAFETY: as in `alloc`; shared access through &self.

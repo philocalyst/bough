@@ -494,6 +494,69 @@ fn handles(rs: &[RecordInit], ov: u64) {
         b.check_invariants();
         emit(n, "ordered-wide", name, 0, pages, count, &values, 0);
     }
+    // Record state planes: what a flag flip costs (the signal path): one record through its handle,
+    // the consumer's turn after it (flips + commit), a range write of half the tree, and the summary
+    // query over the whole tree with nothing set and with one record set.
+    for name in [
+        "state-set-handle",
+        "state-flip-turn",
+        "state-run-half",
+        "state-any-none",
+        "state-any-one",
+    ] {
+        if !want(name) {
+            continue;
+        }
+        let mut values = Vec::new();
+        let mut hits = 0usize;
+        for _ in 0..SAMPLES {
+            b.set_state_run(0, n, 5, false);
+            b.commit_state(5);
+            if name == "state-any-one" {
+                b.set_state(n - 1, 5, true);
+            }
+            values.push(match name {
+                "state-set-handle" => timed(
+                    || {
+                        black_box(b.set_state_handle(black_box(h), 5, i & 1 == 0));
+                        i += 1;
+                    },
+                    count,
+                    ov,
+                ),
+                "state-flip-turn" => timed(
+                    || {
+                        b.set_state_handle(black_box(h), 5, i & 1 == 0);
+                        i += 1;
+                        b.flips(5, |pos, now| hits += pos + now as usize);
+                        b.commit_state(5);
+                    },
+                    count,
+                    ov,
+                ),
+                "state-run-half" => timed(
+                    || {
+                        b.set_state_run(black_box(n / 4), n / 2, 5, i & 1 == 0);
+                        i += 1;
+                    },
+                    count,
+                    ov,
+                ),
+                _ => timed(
+                    || {
+                        hits += black_box(b.any_state(black_box(0), n, 5)) as usize;
+                    },
+                    count,
+                    ov,
+                ),
+            });
+        }
+        black_box(hits);
+        b.set_state_run(0, n, 5, false);
+        b.commit_state(5);
+        b.check_invariants();
+        emit(n, "ordered-wide", name, 0, pages, count, &values, 0);
+    }
     let new: Vec<_> = (0..8)
         .map(|i| RecordInit::new(1, NRect::new(2, 2, 14, 14), 1, (n + i) as u32))
         .collect();
@@ -530,6 +593,148 @@ fn handles(rs: &[RecordInit], ov: u64) {
     }
 }
 
+/// Page-splitting inserts at one place, the directory's adversarial case: 256 inserts of 64 records
+/// at the front, each timed. `insert64-front-worst` is the dearest of them (a rebalance of the widest
+/// window it needed, or the directory growing), `insert64-front-amortised` their mean.
+fn overflow(rs: &[RecordInit], ov: u64) {
+    if !want("insert64-front-worst") && !want("insert64-front-amortised") {
+        return;
+    }
+    let n = rs.len();
+    let new: Vec<_> = (0..64)
+        .map(|i| RecordInit::new(1, NRect::new(2, 2, 14, 14), 1, (n + i) as u32))
+        .collect();
+    let (mut worst, mut mean) = (Vec::new(), Vec::new());
+    let mut pages = 0;
+    let count = 256;
+    for _ in 0..SAMPLES {
+        let mut b = build(rs);
+        pages = b.num_pages();
+        settle(&b);
+        let (mut total, mut max) = (0u64, 0u64);
+        for _ in 0..count {
+            let one = timed(|| b.insert_run(black_box(1), black_box(&new)), 1, ov);
+            total += one;
+            max = max.max(one);
+        }
+        b.check_invariants();
+        worst.push(max);
+        mean.push(total / count as u64);
+    }
+    emit(
+        n,
+        "ordered-wide",
+        "insert64-front-worst",
+        64,
+        pages,
+        1,
+        &worst,
+        count,
+    );
+    emit(
+        n,
+        "ordered-wide",
+        "insert64-front-amortised",
+        64,
+        pages,
+        1,
+        &mean,
+        count,
+    );
+}
+
+/// Content beyond the 16-bit pixel domain (the store lane's attack on the exact-coordinate work): rows
+/// of 32 px, five records each, mounted blank and then given their inks through handles, as a layout
+/// write-back does. `writeback-row` is the whole write-back per row; `far-set-ink` moves the last row's
+/// first record by a pixel and back; `far-scroll` scrolls the whole column by 3 px. A far row must cost
+/// what a near one does: rows from 1,024 on are outside the domain.
+pub fn far(ov: u64) {
+    use bough_core::WRect;
+    for rows in [1000usize, 3000, 10_000, 100_000] {
+        if std::env::var("R6_MAX_N")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .is_some_and(|max| rows > max)
+        {
+            continue;
+        }
+        let rect = |row: usize, k: usize| {
+            WRect::new(
+                8 + 40 * k as i32,
+                32 * row as i32,
+                44 + 40 * k as i32,
+                32 * row as i32 + 30,
+            )
+        };
+        let n = 1 + rows * 5;
+        let (mut wb, mut si, mut sc) = (Vec::new(), Vec::new(), Vec::new());
+        let mut pages = 0;
+        for _ in 0..SAMPLES {
+            let mut b = Bough::new(SIDE, SIDE);
+            b.insert_run(0, &[RecordInit::new(0, NRect::EMPTY, 1, 0)]);
+            let mut recs = Vec::with_capacity(n);
+            let mut hs = Vec::with_capacity(n);
+            for i in 1..n {
+                let h = b.new_handle();
+                hs.push(h);
+                recs.push(RecordInit {
+                    handle: h.idx,
+                    ..RecordInit::new(1, NRect::EMPTY, 1, i as u32)
+                });
+            }
+            b.insert_run(1, &recs);
+            b.next_epoch();
+            settle(&b);
+            wb.push(timed(
+                || {
+                    for (i, &h) in hs.iter().enumerate() {
+                        b.set_ink_handle_edges_wide(h, rect(i / 5, i % 5), 15, 2);
+                    }
+                },
+                1,
+                ov,
+            ));
+            pages = b.num_pages();
+            b.check_invariants();
+            for (i, _) in hs.iter().enumerate().step_by(997) {
+                assert_eq!(b.ink_wide_at(1 + i), rect(i / 5, i % 5));
+            }
+            let (h, r0) = (hs[n - 6], rect(rows - 1, 0));
+            let r1 = WRect::new(r0.0[0] + 1, r0.0[1], r0.0[2] + 1, r0.0[3]);
+            let mut i = 0usize;
+            si.push(timed(
+                || {
+                    black_box(
+                        b.set_ink_handle_wide(black_box(h), if i & 1 == 0 { r1 } else { r0 }),
+                    );
+                    i += 1;
+                },
+                1024,
+                ov,
+            ));
+            sc.push(timed(
+                || {
+                    b.scroll_run(
+                        1,
+                        n - 1,
+                        0,
+                        if i & 1 == 0 { -3 } else { 3 },
+                        NRect::new(0, 0, SIDE, SIDE),
+                    );
+                    i += 1;
+                },
+                64,
+                ov,
+            ));
+            b.check_invariants();
+        }
+        let per_row: Vec<u64> = wb.iter().map(|v| v / rows as u64).collect();
+        emit(rows, "rows32", "writeback-row", 5, pages, 1, &per_row, 0);
+        emit(rows, "rows32", "far-set-ink", 1, pages, 1024, &si, 0);
+        emit(rows, "rows32", "far-scroll", n - 1, pages, 64, &sc, 0);
+    }
+}
+
 fn negative_control() {
     let rs = records(1000, false, false);
     let b = build(&rs);
@@ -555,6 +760,10 @@ pub fn run(spatial_only: bool) {
     );
     negative_control();
     println!("n,shape,operation,k,pages,batch,sample,instructions,instructions_per_op,output");
+    if !spatial_only && std::env::var("R6_FAR").is_ok() {
+        far(ov);
+        return;
+    }
     for n in [1000, 10000, 100000, 1000000] {
         if std::env::var("R6_MAX_N")
             .ok()
@@ -608,6 +817,7 @@ pub fn run(spatial_only: bool) {
         queries(&rs, false, ov);
         queries(&records(n, false, true), true, ov);
         handles(&rs, ov);
+        overflow(&rs, ov);
         eprintln!("finished core N={n}");
     }
 }

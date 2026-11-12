@@ -173,7 +173,9 @@ impl Caps {
             + 3 * a(sb)
             + a(caps.instances * size_of::<Instance>())
             + a(caps.pages * size_of::<Page>())
-            + 2 * a(caps.pages * 8)
+            // the directory's page ids and inks: twice the page capacity (blocks of 64 with holes)
+            + a(2 * caps.pages * 4)
+            + a(2 * caps.pages * 8)
             + a(caps.clips * 8)
             + a(caps.spaces * 8)
             + a(caps.spaces * 32)
@@ -527,7 +529,10 @@ impl Rt {
         let mut inst: Col<Instance> = region.carve_paged("instances", caps.instances);
         // SAFETY: carved memory is zeroed (fresh mapping / buffer) and all-zero is a valid Instance.
         unsafe { inst.set_len(caps.instances) };
-        let cols = Columns { pages: region.carve_paged("pages", caps.pages), dir_id: region.carve_paged("dir_id", caps.pages), dir_ink: region.carve_paged("dir_ink", caps.pages), clips: region.carve_paged("clips", caps.clips) };
+        // the directory columns hold twice the page capacity: the core's directory is blocks of 64 entries with
+        // holes after the live pages (32 to 64 live per block), so its length runs ahead of the page count; the
+        // kernels clamp the directory scan to `2 * (m_page + 1)` entries
+        let cols = Columns { pages: region.carve_paged("pages", caps.pages), dir_id: region.carve_paged("dir_id", 2 * caps.pages), dir_ink: region.carve_paged("dir_ink", 2 * caps.pages), clips: region.carve_paged("clips", caps.clips) };
         let pcols = PoolColumns { x: region.carve_paged("glyph_x", caps.glyphs), ent: region.carve_paged("glyph_ent", caps.glyphs), runs: region.carve_paged("runs", caps.runs), spaces: region.carve_paged("spaces", caps.spaces) };
         let toks: Col<TokStrike> = region.carve_paged("tok_strikes", caps.strikes);
         // per space: the affine of a transformed subtree (zeroed: the identity; `set_space_xform`)
@@ -574,8 +579,10 @@ impl Rt {
             l.cols[COL_INST] = d(l.inst_off, size_of::<Instance>(), caps.instances, G_INST);
             l.cols[COL_SPACES] = d(l.spaces_off, 8, caps.spaces, G_SPACE);
             l.cols[COL_CLIPS] = d(l.clips_off, 8, caps.clips, G_CLIP);
-            l.cols[COL_DIR_ID] = d(l.dir_id_off, 4, caps.pages, G_PAGE);
-            l.cols[COL_DIR_INK] = d(l.dir_ink_off, 8, caps.pages, G_PAGE);
+            // a page-group element of a directory column is a pair of entries (the columns hold 2x pages), so
+            // a view of the page group's capacity covers the `2 * (m_page + 1)` entries the kernels may scan
+            l.cols[COL_DIR_ID] = d(l.dir_id_off, 2 * 4, caps.pages, G_PAGE);
+            l.cols[COL_DIR_INK] = d(l.dir_ink_off, 2 * 8, caps.pages, G_PAGE);
             l.cols[COL_PAGES] = d(l.pages_off, size_of::<Page>(), caps.pages, G_PAGE);
             l.cols[COL_GX] = d(l.gx_off, 4, caps.glyphs, G_GLYPH);
             l.cols[COL_GENT] = d(l.gent_off, 2, caps.glyphs, G_GLYPH);
@@ -660,10 +667,10 @@ impl Rt {
     /// (`Fused::ensure_columns`); loads and compares only.
     #[inline]
     pub fn column_needs(&self) -> [usize; bough_metal::fused::NGROUPS] {
-        let (pages, clips) = self.bough.gpu_extent();
+        let (pages, dir, clips) = self.bough.gpu_extent();
         [
             self.next_fresh as usize,
-            pages,
+            pages.max(dir.div_ceil(2)),
             self.glyphs.x.len().max(self.glyphs.ent.len()),
             self.glyphs.runs.len(),
             self.next_space as usize + 1,

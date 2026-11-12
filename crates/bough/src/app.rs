@@ -878,7 +878,7 @@ impl<V: View> App<V> {
             copy = self.copy_plan(i, epoch, age.unwrap());
         }
         self.prof.mark(PH_DAMAGE);
-        let n_dir = self.rt.bough.num_pages() as u32;
+        let n_dir = self.rt.bough.dir_len() as u32;
         self.surf_stats.uses[i] += 1;
         self.surf_stats.gpu += 1;
         self.last_use[i] = self.frames;
@@ -1007,7 +1007,7 @@ impl<V: View> App<V> {
     /// A from-scratch full redraw of the current retained state (every tile, the same kernels).
     #[cfg(target_os = "macos")]
     pub fn reference_pixels(&mut self) -> Vec<u8> {
-        let n_dir = self.rt.bough.num_pages() as u32;
+        let n_dir = self.rt.bough.dir_len() as u32;
         let g = self.gpu.as_mut().unwrap();
         let a = &mut self.rt.text.cache.atlas;
         if g.sync_atlas(a.width, a.height, &a.pixels, a.dirty_bytes != 0) {

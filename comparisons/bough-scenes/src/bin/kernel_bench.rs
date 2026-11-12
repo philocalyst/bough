@@ -28,7 +28,7 @@ fn main() {
     }
     let rows = app.debug_rows().to_vec();
     let tiles: u32 = rows.iter().map(|r| r.count_ones()).sum();
-    let n_dir = app.rt.bough.num_pages() as u32;
+    let n_dir = app.rt.bough.dir_len() as u32;
     let target = app.last_surface;
     let g = app.gpu.as_mut().unwrap();
     for &d in &debugs {
