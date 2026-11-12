@@ -118,6 +118,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-async"
+version = "0.0.0"
+
+[[package]]
 name = "bough-awagy"
 version = "0.0.0"
 dependencies = [

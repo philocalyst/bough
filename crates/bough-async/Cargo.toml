@@ -1,0 +1,8 @@
+[package]
+name = "bough-async"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "bough's async core, platform-independent: flights polled on the UI thread, the clock, workers, and the publication engine (questions, holds, publications, actions)"
+
+[dependencies]
