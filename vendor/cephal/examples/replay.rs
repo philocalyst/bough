@@ -208,6 +208,21 @@ fn main() {
             if reps == 1 {
                 println!("step {k:2}\t{w}x{h}\troots={}\t{n}\t{}", ch.len(), stats());
             }
+            // `SHOW_WIDTH=<px>`: the laid-out widths of every node whose style fixes that width, as a histogram
+            if let Some(px) = std::env::var("SHOW_WIDTH").ok().and_then(|v| v.parse::<f32>().ok()) {
+                let mut hist: std::collections::BTreeMap<u32, usize> = Default::default();
+                for &(r, _) in &sc.roots {
+                    let mut st = vec![r];
+                    while let Some(n) = st.pop() {
+                        if sc.tree.style(n).size.width == cephal::style::Dimension::length(px) {
+                            *hist.entry(sc.tree.unrounded_layout(n).size.width.to_bits()).or_default() += 1;
+                        }
+                        st.extend(sc.tree.children(n));
+                    }
+                }
+                let v: Vec<String> = hist.iter().map(|(b, c)| format!("{}x{c}", f32::from_bits(*b))).collect();
+                println!("   widths of {px}px boxes: {}", v.join(" "));
+            }
         }
         if reps > 1 {
             println!("resize rep {rep}\t{total}");
