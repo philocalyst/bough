@@ -69,8 +69,7 @@ tail -5 $B/logs/cell-$1-$2.log
 d=\$(dirname \$(find \$out -name cell.json | head -1))
 echo "== cell.json"; cat \$d/cell.json | python3 -c 'import json,sys; c=json.load(sys.stdin); print("done", c["done"]); print("errors", c["errors"]); print("skipped", c["skipped"])'
 echo "== reports"
-for f in \$d/*.json; do
-  n=\$(basename \$f .json); case \$n in cell|startup) ;; *) python3 - \$f <<'PY'
+cat > /tmp/sum.\$\$.py <<'PY'
 import json, sys
 r = json.load(open(sys.argv[1]))
 name = sys.argv[1].rsplit('/', 1)[1][:-5]
@@ -83,8 +82,10 @@ for sec in r.get('sections', []):
             out.append(f"{sec['name']}.{m['name']}={m.get('median', 0):.4g}{m.get('unit', '')}")
 print(f"{name}: valid={v.get('valid')} failed_checks={bad} " + '; '.join(out[:12]))
 PY
-  ;; esac
+for f in \$d/*.json; do
+  case \$(basename \$f) in cell.json|startup.json) ;; *) python3 /tmp/sum.\$\$.py \$f ;; esac
 done
+rm -f /tmp/sum.\$\$.py
 echo "== app.log (tail)"; tail -15 \$d/app.log
 echo "SHOT \$d/screenshot.png"
 EOS

@@ -74,7 +74,7 @@
 //!   layout owns except a `scroll` box.
 //! * heterogeneous children: `Element` is not object safe (generic `seal`), there is no `Either`, `AnyElement`
 //!   or `Vec<Box<dyn Element>>`, and `each` needs one item type: a design tool's mixed list of layers needs the
-//!   `El` wrapper below (a boxed `FnOnce(&mut Mounter)` that mounts the node).
+//!   `El` wrapper below (a boxed object-safe `Mount` trait that mounts and re-describes the node).
 //! * a fill or colour from two signals (theme and hover) is packed into one `u32` by hand (`look`), and
 //!   `[Signal<T>; N]` arrays (`pos`, `anim_pos`, `anim_op`, `insp`) stand in for per-node state: a `Vec` cannot
 //!   be wired. `.map` closures are at most 16 bytes of captures (12 for `.transition`): a clip rect with its
@@ -557,18 +557,33 @@ impl Canvas {
 /// A node of a frame as an element. The nodes are of many types (shadowed cards, gradient boxes, labels, icons,
 /// components, flow boxes), and `Element` is not object safe (its `seal` is generic), so a design tool's list
 /// of heterogeneous layers needs this forwarding wrapper: the node is mounted by a boxed closure.
-struct El<'a>(Box<dyn FnOnce(&mut Mounter<'_, Canvas>) + 'a>);
+struct El<'a>(Box<dyn Mount + 'a>);
+
+/// Object-safe mounting and re-describing of any element of this view.
+trait Mount {
+    fn mount_box(self: Box<Self>, m: &mut Mounter<'_, Canvas>);
+    fn update_box(self: Box<Self>, m: &mut Mounter<'_, Canvas>);
+}
+impl<E: Element<Canvas>> Mount for E {
+    fn mount_box(self: Box<Self>, m: &mut Mounter<'_, Canvas>) {
+        (*self).mount(m)
+    }
+    fn update_box(self: Box<Self>, m: &mut Mounter<'_, Canvas>) {
+        (*self).update(m)
+    }
+}
 
 fn el<'a>(e: impl Element<Canvas> + 'a) -> El<'a> {
-    El(Box::new(move |m| e.mount(m)))
+    El(Box::new(e))
 }
 
 impl Element<Canvas> for El<'_> {
     fn mount(self, m: &mut Mounter<'_, Canvas>) {
-        (self.0)(m)
+        self.0.mount_box(m)
     }
-    // only ever inside the canvas's anchor, which a re-description steps over
-    fn update(self, _: &mut Mounter<'_, Canvas>) {}
+    fn update(self, m: &mut Mounter<'_, Canvas>) {
+        self.0.update_box(m)
+    }
 }
 
 const NUM: NumFmt = NumFmt::new("", Some(1), "");

@@ -182,8 +182,13 @@ pub mod sheet {
 ///
 /// A frame: its title "Frame f+1" (11 px, MUTED) with its baseline area at `frame_rect.y - 16`; a FRAME_RADIUS
 /// rounded rect of FRAME_BG with a FRAME_SHADOW under it; its nodes clipped to the frame's rectangle (a rounded
-/// clip where the framework has one), drawn in index order, later on top. Node `i` of frame `f` is `node(f, i)`;
-/// group nodes are also clipped to their group's rectangle inside the frame (`group_rect`).
+/// clip where the framework has one), drawn in index order, later on top, except the selected node (node 0 of
+/// frame 0), which is drawn after all of frame 0's other nodes, on top of them (in index order it would be covered
+/// by up to 249 later nodes and the `m` probe could not see it move). Node `i` of frame `f` is `node(f, i)`; group
+/// nodes are also clipped to their group's rectangle inside the frame (`group_rect`).
+///
+/// Shadows: `blur` is the CSS blur radius (the Gaussian's standard deviation is `blur / 2`); map it to the
+/// framework's own parameter and say how in DEVIATIONS.
 ///
 /// Input: the pointer over component row `k` (`component_row_y(k)`) makes component `k` hot: all its instances take
 /// HOT_FILL. `t` toggles the theme. `m` toggles the selected node (node 0 of frame 0, MOVE_A or MOVE_B) between its

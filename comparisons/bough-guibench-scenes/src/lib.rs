@@ -21,6 +21,10 @@ static CAPS: OnceLock<Caps> = OnceLock::new();
 fn make_cfg(scale: f32) -> Config {
     let mut c = Config::new(spec::WINDOW.0, spec::WINDOW.1, scale, bough::ui::default_font());
     c.caps = *CAPS.get().expect("caps set before the window");
+    // `BOUGH_ONCE=1`: mount once, wires only (the harness's switch, for diagnosis; never the reported default)
+    if std::env::var("BOUGH_ONCE").is_ok_and(|v| v == "1") {
+        c = c.once();
+    }
     c
 }
 
