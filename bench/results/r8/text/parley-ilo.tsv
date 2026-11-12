@@ -1,0 +1,14 @@
+# host: ilo-prod (Ryzen 7 3700X, Zen 2), taskset 8-15 nice 19; profile dist; commit 9ebb8a9d89; DejaVu Sans; load average: 8.50, 3.13, 3.57; events: l1d-misses, cache-misses, branch-misses
+cell	unit	instructions	cycles	l1d-misses	cache-misses	branch-misses	note
+p.upstream.chat.layout	instr/byte	2177.5	898.8	5.4	1.7	2.8	shape and break every message into a retained layout (allocations reused)
+p.upstream.chat.rebreak	instr/para	22798.6	13913.6	120.1	37.9	45.0	break_all_lines at a new width, no shaping
+p.upstream.chat.exposed20	instr	10369968.5	3369154.1	19954.7	332.7	12068.7	20 messages laid out from nothing (stage_bench s1)
+p.upstream.append.1k	instr/append	2835869.5	860518.4	8507.4	337.3	1899.1	6 bytes appended: the text laid out again (parley has no append)
+p.upstream.append.10k	instr/append	22398556.9	8272509.5	111242.4	6515.1	25836.7	6 bytes appended: the text laid out again (parley has no append)
+p.upstream.ide.lines130	instr	7096694.9	2705423.6	24401.8	444.6	5641.0	130 one-line layouts from nothing (stage_bench s2)
+p.grafted.chat.layout	instr/byte	302.6	142.1	1.2	0.1	1.0	shape and break every message into a retained layout (allocations reused)
+p.grafted.chat.rebreak	instr/para	22798.6	14621.0	118.4	36.4	45.8	break_all_lines at a new width, no shaping
+p.grafted.chat.exposed20	instr	1454646.6	789692.8	12019.4	645.7	4493.4	20 messages laid out from nothing (stage_bench s1)
+p.grafted.append.1k	instr/append	368372.8	194714.0	1975.2	230.3	1082.6	6 bytes appended: the text laid out again (parley has no append)
+p.grafted.append.10k	instr/append	2874849.0	1538604.9	13537.1	1991.0	9403.4	6 bytes appended: the text laid out again (parley has no append)
+p.grafted.ide.lines130	instr	1802384.1	1055415.3	24162.8	847.1	2139.4	130 one-line layouts from nothing (stage_bench s2)

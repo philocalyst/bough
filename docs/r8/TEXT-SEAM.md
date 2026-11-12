@@ -1,6 +1,7 @@
 # The text lane's seams (round 8)
 
-Status: **v0, 2026-11-12.** Part A answers the layout lane's proposal (`wt/r8-layout/docs/r8/LAYOUT-SEAM.md`
+Status: **v0, 2026-11-12, with revision 1 at the end** (what the first measurements changed: read it with
+parts A1 and B2). Part A answers the layout lane's proposal (`wt/r8-layout/docs/r8/LAYOUT-SEAM.md`
 section 5): accepted, with five amendments. Part B is the text lane's proposal to the raster lane for the
 glyph-instance column, the glyph coverage paint and the atlas. Part C is the seam with the surface lane
 (selection and editing for accessibility) and the threads lane. Nothing here is built unless a line says so;
@@ -236,3 +237,32 @@ strike's generation in the memo key.
   long text (lands as a `Shaped` range and a `Block`), glyph raster (lands as atlas bytes and a generation), and
   the layout lane's measuring sweep. Each is a pure function of bytes the worker owns (the text is copied into
   the memo's key arena when queued), so no application state is borrowed across threads.
+
+## Revision 1 (2026-11-12, after the first measurements; `docs/lanes/text/JOURNAL.md` sections 4 and 5)
+
+* **A1.** The break table is not the thing to cache for text shaped one glyph per byte. Building it costs more
+  than shaping (12 against 7.8 instructions per byte on the Mac). `block(w)` is answered from the shaped
+  run's pen lane and the text (`brk::block_bytes`: 374 instructions per paragraph on the Mac, nothing stored),
+  so a size-only measurement is: shape into a scratch run, one `block`, keep `(h, lo, hi)`. Measured for the
+  chat's 1,980 unexposed messages: 4.0 M instructions on the Mac, 7.2 M on ilo-prod (no vector shaper there).
+  The table remains for other text, and, per the ilo-prod counters, a compact form of it is still wanted for a
+  paragraph that is re-broken many times (the no-table form takes 5.4 L2 misses per re-break against 0.4).
+  Nothing in the `Measure` trait changes.
+* **A, amendment 3 (`guess`).** Measured on the chat's messages: total extent within 1.7 %, 93 to 98 % of rows
+  exact, every row within one line, 12 instructions per row. The running mean of the first 15 rows has as
+  good a total and 19 to 38 % of rows exact. So `guess` is offered as measured: it does not improve the
+  scrollbar's length much, it makes each unmeasured row's own height nearly right, which is what keeps content
+  from jumping when a row is measured.
+* **A2.** A one-pixel change of the window re-breaks 2.1 % of the chat's paragraphs and changes the height of
+  0.2 %; a 69 pt jump (the round-7 harness's step) leaves 79 % outside their interval. The interval is a
+  drag-resize mechanism, not a jump-resize one.
+* **B2.** Recommended glyph form: **the memo's own lanes** (a pen in font units and a glyph id, 6 bytes per
+  glyph, size- and position-independent), with the pixel position computed where the glyph is binned
+  (`Strike::px`: one multiply, integer, the same on both executors) and the box and texel from a per-strike
+  slot table. The placed three-word form costs 31 instructions per glyph to produce at every mount, re-break
+  and size, for 9 instructions per glyph saved in kernel setup. A line record is then four words: first glyph,
+  count, the pen the line starts at, the strike. The request to the raster lane (B3) is unchanged except that
+  the glyph column binding is the memo's two lanes plus the strike's slot table.
+* **B2, `Digits`.** `.tabular()` is a definition (digits on the cell, no kerning among digits, point and
+  minus), because faces kern digits (Arial: "11"). The arithmetic equals the shaper only where the face does
+  not. Leaves measured at 19 instructions per glyph.
