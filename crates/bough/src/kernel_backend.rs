@@ -6,9 +6,10 @@
 //! it), so there is no second arithmetic model, no per-machine self-check and no seam when the choice changes
 //! from one frame to the next.
 //!
-//! What it does not draw yet: images, ramp gradients, transformed spaces. A frame holding one is refused
-//! before a byte is written and the App falls back to the presenter's kernels for good (their pixels differ
-//! from this kernel's, so the two never share a surface ring).
+//! It draws every kind there is (solids, rounded boxes, borders, glyph runs, images, ramp gradients, shadows,
+//! transformed spaces) and never refuses a frame: a record that indexes outside its columns (a corrupted
+//! region) is skipped, and every texel index is clamped by the kernel, so a bad region draws wrong pixels
+//! but reads nothing outside its buffers.
 use crate::rt::Rt;
 use bough_core::Plane;
 use bough_kernel::cpu::{self, Atlas, Binner, Damage, Exec, Opt, Pool, Prog};
@@ -56,6 +57,8 @@ pub struct KernelBackend {
     /// Per surface: the address its target buffer wraps, and the buffer.
     #[cfg(target_os = "macos")]
     targets: Vec<Option<(usize, bough_kernel::metal::Target)>>,
+    /// The atlases' stamps at their last upload to the GPU executor.
+    uploaded: Option<(u64, usize, u64)>,
     /// When the GPU executor last ran (its fixed cost depends on whether it has clocked down).
     last_gpu: Option<std::time::Instant>,
     pub stats: KStats,
@@ -93,29 +96,38 @@ impl KernelBackend {
             gpu: None,
             #[cfg(target_os = "macos")]
             targets: Vec::new(),
+            uploaded: None,
             last_gpu: None,
             stats: KStats::default(),
             last: None,
         }
     }
 
-    fn space(rt: &Rt, s: u16) -> Option<[f32; 2]> {
+    /// A space's origin and, if it is transformed, its affine (`f_xf` of the presenter's kernels: the stored
+    /// matrix is M - I, the pivot is relative to the origin, and an identity with no translation is
+    /// untransformed).
+    fn space(rt: &Rt, s: u16) -> Option<([f32; 2], Option<stage::Xf>)> {
         let xf = rt.xforms.get(s as usize)?;
-        if xf.iter().any(|&v| v != 0.0) {
-            return None;
-        }
         let o = rt.glyphs.spaces.get(s as usize)?;
-        Some([o[0] as f32, o[1] as f32])
+        let off = [o[0] as f32, o[1] as f32];
+        if xf.iter().all(|&v| v == 0.0) || (xf[..4].iter().all(|&v| v == 0.0) && xf[6] == 0.0 && xf[7] == 0.0) {
+            return Some((off, None));
+        }
+        Some((off, Some(stage::Xf { m: [xf[0] + 1.0, xf[1], xf[2], xf[3] + 1.0], k: [off[0] + xf[4], off[1] + xf[5]], t: [xf[6], xf[7]] })))
     }
 
-    /// Stage every record touching a damaged tile into kernel commands, in paint order. `false`: something
-    /// this kernel does not draw; nothing was written anywhere.
+    /// Stage every record touching a damaged tile into kernel commands, in paint order. Always `true` (the
+    /// return value is kept for the callers that still test it): records that index outside their columns
+    /// are skipped and counted in `stats.refused`.
     pub fn stage(&mut self, rt: &Rt, rows: &[u128], full: bool) -> bool {
         let (w, h) = (rt.win_w, rt.win_h);
         let pl = &mut *self.plane;
         let ty = (h as usize).div_ceil(32);
         let all = if w >= 128 * 32 { u128::MAX } else { (1u128 << (w as u32).div_ceil(32)) - 1 };
-        pl.rows = [0; bough_core::damage::MAX_TILES_Y];
+        // only the rows the last frame set need clearing (the plane is otherwise zero)
+        if pl.y0 < pl.y1 {
+            pl.rows[pl.y0 as usize..(pl.y1 as usize).min(bough_core::damage::MAX_TILES_Y)].fill(0);
+        }
         pl.n = ty as u32;
         let (mut y0, mut y1) = (u32::MAX, 0u32);
         self.tiles.clear();
@@ -142,16 +154,17 @@ impl KernelBackend {
         let bbox = pl.px_bbox(rt.bough.window());
         rt.bough.cull_tiles_pos(pl, bbox, &mut self.pos);
         let pos = std::mem::take(&mut self.pos);
-        let ok = pos.iter().all(|&p| self.stage_record(rt, p as usize));
+        for &p in &pos {
+            if !self.stage_record(rt, p as usize) {
+                self.stats.refused += 1;
+            }
+        }
         self.pos = pos;
         self.stats.staged += self.scene.len() as u64;
-        ok
+        true
     }
 
     fn stage_record(&mut self, rt: &Rt, pos: usize) -> bool {
-        if rt.bough.xform_at(pos).is_some() {
-            return false;
-        }
         let r = rt.bough.record(pos);
         if r.clip as usize >= rt.bough.gpu_extent().1 {
             return false;
@@ -164,10 +177,10 @@ impl KernelBackend {
             let (r0, rn) = (p & 0xFFFFF, ((p >> 20) & 0x7FF) + 1);
             for run in r0..r0 + rn {
                 let Some(rh) = rt.glyphs.runs.get(run as usize).copied() else { return false };
-                let Some(off) = Self::space(rt, rh.space) else { return false };
+                let Some((off, xf)) = Self::space(rt, rh.space) else { return false };
                 let Some(toks) = rt.text.cache.tok_strike(rh.strike as usize) else { return false };
                 for slot in rh.base..rh.base + rh.len {
-                    let (Some(&x), Some(&e)) = (rt.glyphs.x.get(slot as usize), rt.glyphs.ent.get(slot as usize)) else { return false };
+                    let (Some(&x), Some(&e)) = (rt.glyphs.x.get(slot as usize), rt.glyphs.ent.get(slot as usize)) else { break };
                     let en = &toks.entry[(e & 255) as usize];
                     if en.uv[2] == 0 {
                         continue;
@@ -177,7 +190,11 @@ impl KernelBackend {
                     let dx = x.wrapping_sub(rh.x0);
                     let px = (dx as f32).mul_add(rh.scale, rh.origin[0] + 0.5).floor() + en.geo[0];
                     let texel0 = en.uv[1] as u32 * atlas.width + en.uv[0] as u32;
-                    self.scene.add(stage::glyph(px + off[0], rh.origin[1] + en.geo[1] + off[1], en.geo[2] as u32, en.geo[3] as u32, texel0, rh.color, &cl));
+                    let (gx, gy, gw, gh) = (px + off[0], rh.origin[1] + en.geo[1] + off[1], en.geo[2] as u32, en.geo[3] as u32);
+                    match &xf {
+                        None => self.scene.add(stage::glyph(gx, gy, gw, gh, texel0, rh.color, &cl)),
+                        Some(x) => self.scene.add(stage::xf(stage::glyph(gx, gy, gw, gh, texel0, rh.color, &stage::NO_CLIP), x, &cl)),
+                    }
                 }
             }
             return true;
@@ -185,22 +202,34 @@ impl KernelBackend {
         let (i0, n) = if p & PAY_IRUN != 0 { (p & 0x3FFFF, ((p >> 18) & 0xFFF) + 1) } else { (p, 1) };
         for i in i0..i0 + n {
             let Some(q) = rt.inst.get(i as usize) else { return false };
-            let Some(off) = Self::space(rt, q.space) else { return false };
+            let Some((off, xf)) = Self::space(rt, q.space) else { return false };
             let (x, y, w, h) = (q.pos[0] + off[0], q.pos[1] + off[1], q.size[0], q.size[1]);
+            // a transformed record is staged in its own frame, unclipped, and then placed (`stage::xf`)
+            let lc = if xf.is_some() { &stage::NO_CLIP } else { &cl };
+            let iw = bough_metal::fused::IMG_W;
             let c = match q.kind {
-                0 => stage::solid(x, y, w, h, q.color, &cl),
-                1 => stage::rrect(x, y, w, h, q.radius, q.color, &cl),
-                2 => stage::border(x, y, w, h, q.radius, q.bw, q.color, q.color2, &cl),
-                3 => stage::glyph(x, y, w as u32, h as u32, q.uv[1] as u32 * atlas.width + q.uv[0] as u32, q.color, &cl),
+                0 => stage::solid(x, y, w, h, q.color, lc),
+                1 => stage::rrect(x, y, w, h, q.radius, q.color, lc),
+                2 => stage::border(x, y, w, h, q.radius, q.bw, q.color, q.color2, lc),
+                3 => stage::glyph(x, y, w as u32, h as u32, q.uv[1] as u32 * atlas.width + q.uv[0] as u32, q.color, lc),
+                // an image's `radius` word is its angle
+                4 => stage::image(x, y, w, h, q.radius, q.uv[1] as u32 * iw + q.uv[0] as u32, q.color, lc),
+                5 => {
+                    let dir = if q.uv[2] == 0 { stage::Ramp::Linear(q.bw) } else { stage::Ramp::Radial(f32::from_bits(q.color), f32::from_bits(q.color2)) };
+                    stage::ramp(x, y, w, h, q.radius, dir, q.uv[1] as u32 * iw + q.uv[0] as u32, lc)
+                }
                 6 => {
                     // the record's ink (what damage tracks) is its box grown by `flags` px: the shadow is
                     // clipped to it, so nothing is painted where a later move would not repair
                     let m = if q.flags != 0 { q.flags as f32 } else { 1.0 };
-                    let ink = [cl[0].max(x - m), cl[1].max(y - m), cl[2].min(x + w + m), cl[3].min(y + h + m)];
+                    let ink = [lc[0].max(x - m), lc[1].max(y - m), lc[2].min(x + w + m), lc[3].min(y + h + m)];
                     stage::shadow(x, y, w, h, q.radius, q.bw.max(1e-3), q.color, &ink)
                 }
-                // images and ramp gradients: not in this kernel yet
                 _ => return false,
+            };
+            let c = match &xf {
+                Some(x) => stage::xf(c, x, &cl),
+                None => c,
             };
             self.scene.add(c);
         }
@@ -217,7 +246,7 @@ impl KernelBackend {
     pub unsafe fn run(&mut self, rt: &Rt, full: bool, dst: *mut u8, bpr: usize, alloc: usize, surf: usize) -> u32 {
         let (w, h) = (rt.win_w as u32, rt.win_h as u32);
         let a = &rt.text.cache.atlas;
-        let atlas = Atlas { px: &a.pixels, w: a.width };
+        let atlas = Atlas::new(&a.pixels, a.width).with_images(rt.images.pixels(), bough_metal::fused::IMG_W);
         let stride = bpr / 4;
         let damage = if full { Damage::All } else { Damage::Tiles(&self.tiles) };
         #[cfg(target_os = "macos")]
@@ -253,9 +282,13 @@ impl KernelBackend {
                     }
                     match &self.targets[surf] {
                         Some((_, t)) => {
-                            // the atlas is uploaded whole per GPU frame for now (a generation counter in
-                            // bough-text would make it per change)
-                            g.upload_atlas(&a.pixels);
+                            // the atlases are uploaded when they change (their stamps), not per frame
+                            let stamps = (a.stamp, a.pixels.len(), rt.images.stamp());
+                            if self.uploaded != Some(stamps) {
+                                g.upload_atlas(&a.pixels);
+                                g.upload_images(rt.images.pixels());
+                                self.uploaded = Some(stamps);
+                            }
                             g.upload_frame(&self.scene, &self.prog);
                             g.render_to(tiles as usize, t);
                             true
@@ -322,16 +355,14 @@ impl KernelBackend {
     /// A from-scratch redraw of the whole window by the kernel's definition (`cpu::reference`: every pixel
     /// folds its tile's whole uncut list through `shade`, with no executor shortcut): the gates' oracle in kernel mode. `None`: the
     /// scene holds something this kernel does not draw.
-    pub fn reference(&mut self, rt: &Rt) -> Option<Vec<u8>> {
-        if !self.stage(rt, &[], true) {
-            return None;
-        }
+    pub fn reference(&mut self, rt: &Rt) -> Vec<u8> {
+        self.stage(rt, &[], true);
         let (w, h) = (rt.win_w as u32, rt.win_h as u32);
         let a = &rt.text.cache.atlas;
-        let atlas = Atlas { px: &a.pixels, w: a.width };
+        let atlas = Atlas::new(&a.pixels, a.width).with_images(rt.images.pixels(), bough_metal::fused::IMG_W);
         let mut out = vec![0u32; (w * h) as usize];
         cpu::reference(&self.scene, w, h, &atlas, 0, &mut out, w as usize, &self.pool);
-        Some(out.iter().flat_map(|p| p.to_le_bytes()).collect())
+        out.iter().flat_map(|p| p.to_le_bytes()).collect()
     }
 }
 

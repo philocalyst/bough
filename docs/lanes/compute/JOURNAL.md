@@ -373,3 +373,52 @@ written and a repair: GPU 1.34-1.84 ms, pool 2.3-3.0 ms, one core 12 ms (184 M i
 rounded boxes are nearly all edge). What a turn per frame adds before any pixel, in this crate alone:
 restaging 0.43 ms / 6.8 M instructions and binning 0.25 ms / 7.3 M; in the application also 10,720 writes,
 their damage and the applier. Not wired to the façade yet (`transition.rs` still applies per frame).
+
+## 4. After the lead's second brief (2026-11-12, ~03:40)
+
+Order given: (1) finish the kernel (images, ramps, transformed spaces), make the backend the default, delete
+what it replaces; (2) explicit vectors in the CPU executors' inner loops, scalar form kept as the
+specification, vector == scalar gated; (3) validate the estimator on the bench lane's five scenes with
+regret against an oracle; (4) retained staging on (page, seal); (5) transitions and user nodes through the
+façade.
+
+### 1a. Every kind in the kernel (commit after `eb06240d21`: "transformed spaces, images and ramp gradients")
+
+* A command may live in an affine space: inverse matrix in Q16, pivot and translated pivot in Q8, scale in
+  Q8 (words 20-29; a command is now 30 words, the extra ten read only when flagged). The map
+  `u = k + M^-1 (c - k - t)` uses a 16-bit-limb product (`mulq16`): WGSL has no 64-bit integers and a Q8
+  coordinate times a Q16 matrix entry does not fit 32 bits. A transformed solid becomes a square-cornered
+  box; coverage is `cov(d * scale)`; no core survives a transform.
+* Samplers: `taps` returns up to four texel indices (one atlas byte for a glyph, four for a transformed
+  glyph, four RGBA texels for an image rotated about its centre, two for a ramp, linear or radial); `shade`
+  takes the four fetched values. The GPU reads them from the atlas and a new image buffer; the CPU from the
+  same bytes.
+* Gate: 125 scenes, now with one command in six in a random rotated/scaled/sheared space and images and
+  ramps among the kinds: 0 differing words, three executors, hash `a27797983e9e39f9`; four mutants caught.
+  It passed on the first run; the only failure was my translation test not moving the pivots.
+* `kernel_backend.rs` stages kinds 4 and 5 and transformed spaces from the runtime's records; the only frame
+  it still refuses is one with out-of-range ids. Atlases are uploaded to the GPU executor when their stamps
+  change (`Atlas::stamp` in bough-text, `Images::stamp`), not per frame.
+
+### 2. Explicit vectors: predictions (written before any vector code exists)
+
+Structure: every kind's row becomes "a coverage row (u16 x 32, Q15), then one shared vector blend"; the
+coverage producers call the kernel (scalar) except where a row is separable (a shadow's 1-D profiles, a
+glyph's bytes). Vector primitives (portable SIMD, 32-bit lanes with widening multiply and rounding narrow,
+which is what both NEON and AVX2 have; a 16-bit rounding high multiply would halve it but ONE = 32768 does
+not fit a signed 16-bit lane): `store_row`, `blend_const`, `blend_cov`, `blend_rgba`.
+
+| loop | now, instr/px | predicted |
+|---|---:|---:|
+| store | ~12 | <= 4 |
+| constant translucent blend | 7.6 | <= 4.5 |
+| glyph box pixel | 13 | <= 7 |
+| shadow, square corners (non-flat rows) | 41 | <= 7 |
+| shadow, rounded (corner pixels stay scalar) | 61 | <= 30 |
+| gradient, not vertical | 24.5 | <= 12 |
+| user node | 54 | <= 30 |
+| canvas, full frame, one core | 238 ms | 110-140 ms (pool 40 -> ~20 ms; GPU is 5.5 ms) |
+| signal-write frame in the app | 55 K | <= 40 K |
+
+Kill: a formulation whose vector result differs from the scalar specification is dropped, not patched;
+the whole item is dropped if the canvas gains less than 1.3x.

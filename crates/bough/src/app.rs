@@ -160,28 +160,22 @@ pub use bough_gpu::fused as presenter;
 #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
 pub use bough_metal::fused as presenter;
 
-/// Which backend may repair a frame (`BOUGH_REPAIR`: `gpu`, the default for now; `auto`, the cost model; `cpu`,
-/// whenever the frame's records are all modelled, which tests use to hold the CPU path to the GPU's reference).
-/// Every backend writes the same pixels (cpu_raster.rs); `Auto` also requires the device's self-check
-/// (`repair::cpu_exact`).
+/// Which kernels repair a frame. `Kernel` (the default): the one integer kernel of `bough-kernel`, run per
+/// frame on this thread, across the pool or on the GPU, whichever the measured costs favour; the executors
+/// write the same bytes by construction (kernel_backend.rs). `Gpu` (`BOUGH_REPAIR=gpu`): the presenter's
+/// hand-written Metal kernels, kept for comparison until the kernel backend's GPU executor publishes
+/// asynchronously; their pixels differ from the kernel's, so a ring is drawn by one or the other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Repair {
-    Auto,
     Gpu,
-    Cpu,
-    /// The integer kernel (`bough-kernel`): its CPU executors or its GPU executor per frame, chosen by cost;
-    /// exact against each other by construction (kernel_backend.rs). Falls back to `Gpu` for good at the
-    /// first frame holding something that kernel does not draw.
     Kernel,
 }
 
 impl Repair {
     pub fn from_env() -> Repair {
         match std::env::var("BOUGH_REPAIR").as_deref() {
-            Ok("auto") => Repair::Auto,
-            Ok("cpu") => Repair::Cpu,
-            Ok("kernel") => Repair::Kernel,
-            _ => Repair::Gpu,
+            Ok("gpu") => Repair::Gpu,
+            _ => Repair::Kernel,
         }
     }
 }
@@ -227,11 +221,8 @@ pub struct App<V: View> {
     tape: Vec<u32>,
     /// `Config::mount_once`: no tape, no re-description.
     once: bool,
-    /// The repair backends' choice and the CPU backend (cpu_raster.rs).
+    /// Which kernels repair frames.
     pub repair: Repair,
-    pub cpu: crate::cpu_raster::CpuRaster,
-    /// `BOUGH_CPU_VERIFY`: compare every CPU-repaired frame with the GPU's full redraw and report (diagnostics).
-    cpu_verify: bool,
     /// `Repair::Kernel`: the integer kernel's executors (kernel_backend.rs), made at the first frame.
     pub kernel: Option<Box<crate::kernel_backend::KernelBackend>>,
 }
@@ -323,8 +314,6 @@ const BIN_CAP: u32 = 1024;
 
 /// Repair-backend limits (damaged tiles per frame below which the CPU backend repairs): provisional values until
 /// the per-tile costs of both backends are measured (card `2026-11-11-repair-backends`).
-const CPU_TILES_WARM: u32 = 16;
-const CPU_TILES_COLD: u32 = 4096;
 
 impl<V: View> App<V> {
     /// Mount `view`. `gpu`: create the fused presenter (its shared buffer is the region); otherwise the
@@ -535,21 +524,7 @@ impl<V: View> App<V> {
             tape,
             once,
             repair: Repair::from_env(),
-            cpu: crate::cpu_raster::CpuRaster::new(),
-            cpu_verify: std::env::var_os("BOUGH_CPU_VERIFY").is_some(),
             kernel: None,
-        }
-    }
-
-    /// The cost model's limit: frames of at most this many damaged tiles are repaired on the CPU. While the
-    /// GPU's queue has not run work (or was released) a GPU frame costs a queue wake (~3 ms, ~11 M instructions,
-    /// drvprobe) and the driver's 69 MiB, so the CPU takes much larger frames.
-    #[inline]
-    fn repair_limit(&self, gpu_warm: bool) -> u32 {
-        if gpu_warm {
-            CPU_TILES_WARM
-        } else {
-            CPU_TILES_COLD
         }
     }
 
@@ -970,11 +945,6 @@ impl<V: View> App<V> {
         // a CPU-repairable frame must not make the surface resident (a first residency drains the pre-armed
         // frames: GPU work); its volatility is handled by `write_begin` / `prepare_target`, whichever runs
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
-        if self.repair == Repair::Auto && !crate::repair::cpu_exact(self.rt.text.font_bytes()) {
-            // this device, OS build or shader draws differently from the CPU model: the GPU repairs everything
-            self.repair = Repair::Gpu;
-        }
-        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
         let cpu_able = self.repair != Repair::Gpu;
         #[cfg(not(all(target_os = "macos", not(feature = "wgpu"))))]
         let cpu_able = false;
@@ -995,8 +965,7 @@ impl<V: View> App<V> {
             self.surf_stats.purged += 1;
         }
         let age = self.held[i].map(|l| epoch - l);
-        #[allow(unused_mut)]
-        let mut full = !matches!(age, Some(a) if a as usize <= RING);
+        let full = !matches!(age, Some(a) if a as usize <= RING);
         let mut copy = bough_metal::fused::SlotCopy::NONE;
         self.last_full = full;
         if !full {
@@ -1023,7 +992,9 @@ impl<V: View> App<V> {
                     }
                 };
                 mark(0);
-                if kb.stage(&self.rt, &self.rows, full) {
+                // staging never refuses: a record that indexes outside its columns is skipped
+                kb.stage(&self.rt, &self.rows, full);
+                {
                     mark(1);
                     let (p, bpr, _) = g.write_begin(i);
                     let (_, _, alloc) = g.surface_mem(i);
@@ -1051,78 +1022,6 @@ impl<V: View> App<V> {
                     }
                     self.surf_stats.cpu += 1;
                     drawn = true;
-                } else {
-                    // something this kernel does not draw: the presenter's kernels take over for good. Their
-                    // pixels differ, so every surface is repainted whole at its next use.
-                    kb.stats.refused += 1;
-                    // gates: a scene that silently fell back would pass on the other kernels
-                    assert!(std::env::var_os("BOUGH_KERNEL_STRICT").is_none(), "the kernel backend refused a frame (an image, a ramp gradient or a transformed space)");
-                    self.repair = Repair::Gpu;
-                    self.held.iter_mut().for_each(|h| *h = None);
-                    self.shown = None;
-                    full = true;
-                    self.last_full = true;
-                    copy = bough_metal::fused::SlotCopy::NONE;
-                }
-            }
-        }
-        // the CPU backend (cpu_raster.rs): the damaged tiles written into the surface directly, no GPU work
-        #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
-        if cpu_able && copy.is_none() && !drawn && self.repair != Repair::Gpu {
-            let tiles = if full {
-                self.rt.layout.tiles_x() * self.rt.layout.tiles_y()
-            } else {
-                self.rows.iter().map(|r| r.count_ones()).sum()
-            };
-            let warm = self.gpu.as_ref().is_some_and(|g| g.gpu_used());
-            let limit = self.repair_limit(warm);
-            if let Some(g) = self.gpu.as_mut() {
-                if self.repair == Repair::Cpu || tiles <= limit {
-                    let (p, bpr, _) = g.write_begin(i);
-                    // SAFETY: the surface is locked for this thread's writes, `bpr` bytes per row for the window's
-                    // rows (`write_begin`); the GPU finished every frame.
-                    let r = unsafe { self.cpu.repair(&self.rt, &self.rows, full, p, bpr) };
-                    g.write_end(i);
-                    if let Some(nt) = r {
-                        self.repaired_tiles = nt;
-                        if self.cpu_verify {
-                            // diagnostics (BOUGH_CPU_VERIFY): the CPU frame against the GPU's full redraw, now
-                            let a = &mut self.rt.text.cache.atlas;
-                            if g.sync_atlas(a.width, a.height, &a.pixels, a.dirty_bytes != 0) {
-                                a.dirty_bytes = 0;
-                            }
-                            if let Some(rows) = self.rt.images.take_dirty() {
-                                g.sync_images(self.rt.images.pixels(), rows);
-                            }
-                            g.ensure_columns(&self.rt.column_needs());
-                            let reference = g.reference_pixels(self.rt.bough.num_pages() as u32);
-                            let px = g.surface_pixels(i);
-                            let w = self.rt.win_w as usize;
-                            if let Some(k) = px
-                                .chunks_exact(4)
-                                .zip(reference.chunks_exact(4))
-                                .position(|(a, b)| a != b)
-                            {
-                                let (x, y) = (k % w, k / w);
-                                eprintln!(
-                                    "cpu-verify: frame {} surface {i} age {age:?} full {full} tiles {nt}: ({x},{y}) cpu {:?} gpu {:?}; tile damaged: {}",
-                                    self.frames,
-                                    &px[k * 4..k * 4 + 4],
-                                    &reference[k * 4..k * 4 + 4],
-                                    full || self
-                                        .rows
-                                        .get(y / 32)
-                                        .is_some_and(|r| r >> (x / 32) & 1 != 0)
-                                );
-                                for e in self.cpu.entries_at(x as i32, y as i32) {
-                                    eprintln!("  {e}");
-                                }
-                            }
-                        }
-                        g.show_held::<PACED>(i);
-                        self.surf_stats.cpu += 1;
-                        drawn = true;
-                    }
                 }
             }
         }
@@ -1258,9 +1157,7 @@ impl<V: View> App<V> {
     pub fn reference_pixels(&mut self) -> Vec<u8> {
         #[cfg(not(feature = "wgpu"))]
         if self.repair == Repair::Kernel {
-            if let Some(px) = self.kernel.get_or_insert_with(Default::default).reference(&self.rt) {
-                return px;
-            }
+            return self.kernel.get_or_insert_with(Default::default).reference(&self.rt);
         }
         let n_dir = self.rt.bough.num_pages() as u32;
         let g = self.gpu.as_mut().unwrap();

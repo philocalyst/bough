@@ -60,7 +60,7 @@ fn main() {
     for k in [1usize, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768] {
         for be in ["cpu", "gpu", "gpu-idle2s"] {
             let mut app = App::new(Grid { c: Signal::new(1), k }, Config::new(1024.0, 768.0, 1.0, font.clone()).once(), true);
-            app.repair = if be == "cpu" { Repair::Cpu } else { Repair::Gpu };
+            app.repair = if be == "cpu" { Repair::Kernel } else { Repair::Gpu };
             app.frame();
             app.wait_presented();
             let n = if be == "gpu-idle2s" { 5 } else { 40 };
