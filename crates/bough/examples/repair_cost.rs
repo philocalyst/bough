@@ -46,7 +46,7 @@ impl View for Grid {
 }
 
 fn instrs() -> u64 {
-    bough_metal::perf::snap().instrs
+    bough_sys::perf::snap().instrs
 }
 
 fn median(mut v: Vec<f64>) -> f64 {

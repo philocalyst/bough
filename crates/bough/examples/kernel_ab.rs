@@ -1,3 +1,4 @@
+#![cfg_attr(not(target_os = "macos"), allow(unused_imports, dead_code))]
 //! GPU kernel time of the fused tile pass on an SDF-dense scene, for A/B of a kernel change on one binary
 //! (`BOUGH_METAL_SRC`): the CPU-repair test's adversarial scene (600 translucent quads, 300 rounded boxes and
 //! borders, 61 labels) fully redrawn `REPS` times back to back in one command buffer (`Fused::bench_frames`: the
@@ -50,6 +51,7 @@ impl View for Stress {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn main() {
     let font = std::fs::read(std::env::var("ZGX_FONT_FILE").unwrap_or_else(|_| "/System/Library/Fonts/Supplemental/Arial.ttf".into())).unwrap();
     let reps: usize = std::env::var("REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(400);
@@ -61,8 +63,14 @@ fn main() {
         let n_dir = app.rt.bough.num_pages() as u32;
         let target = app.last_surface;
         let g = app.gpu.as_mut().unwrap();
-        let mut full: Vec<f64> = (0..5).map(|_| g.bench_frames(target, &[], true, n_dir, reps, 0, &bough_metal::fused::SlotCopy::NONE)).collect();
+        let mut full: Vec<f64> = (0..5).map(|_| g.bench_frames(target, &[], true, n_dir, reps, 0, &bough_frame::SlotCopy::NONE)).collect();
         full.sort_by(|a, b| a.partial_cmp(b).unwrap());
         println!("seed {seed}: full redraw {:.4} ms [{:.4}..{:.4}]", full[2], full[0], full[4]);
     }
+}
+
+/// Metal only (the workspace builds on every platform).
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!("kernel_ab: macOS only");
 }

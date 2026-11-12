@@ -23,5 +23,5 @@ fn main() {
     println!("cephal NodeCache (pointer) {}", size_of::<cephal::tree::NodeCache>());
     println!("cephal LayoutOutput {}", size_of::<cephal::tree::LayoutOutput>());
     println!("cephal LayoutInput {}", size_of::<cephal::tree::LayoutInput>());
-    println!("instance {}", size_of::<bough_metal::instance::Instance>());
+    println!("instance {}", size_of::<bough_frame::Instance>());
 }
