@@ -601,8 +601,11 @@ macro_rules! int_text {
             }
             #[inline]
             fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
-                let mut buf = [0u8; 40];
-                s.bytes(decimal(*self as i128, &mut buf).as_bytes())
+                // OPUS EXPERIMENT (IDEAS-OPUS.md, finding A1d): the text is a function of the integer, so the
+                // integer is the operand: two words, no decimal formatting to compare.
+                let v = *self as i128 as u64;
+                s.word(v as u32);
+                s.word((v >> 32) as u32);
             }
         }
     )*};
