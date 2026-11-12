@@ -85,6 +85,7 @@ default-features = false
 
 [dependencies.zeno]
 version = "0.3.3"
+path = "../zeno"
 optional = true
 default-features = false
 

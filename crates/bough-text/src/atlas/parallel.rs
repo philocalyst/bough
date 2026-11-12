@@ -56,9 +56,9 @@ fn thread_instr() -> u64 {
 
 fn render_strike(ctx: &mut ScaleContext, font: &[u8], size: f32, gids: &[u16]) -> Vec<Glyph> {
     let fr = FontRef::from_index(font, 0).expect("font");
-    let mut sc = ctx.builder(fr).size(size).hint(false).build();
+    let mut sc = ctx.builder(fr).size(size).build_unhinted();
     gids.iter()
-        .map(|&g| match Render::new(&[Source::Outline]).format(Format::Alpha).render(&mut sc, g) {
+        .map(|&g| match render_outline_alpha(&mut sc, g) {
             Some(img) if img.placement.width > 0 && img.placement.height > 0 && img.content == Content::Mask => {
                 (g, img.placement.left, img.placement.top, img.placement.width, img.placement.height, img.data)
             }

@@ -270,6 +270,9 @@ extern crate alloc;
 
 mod command;
 mod geometry;
+// bough (vendor/README.md): the fill-only alpha mask path
+#[cfg(feature = "eval")]
+mod fill;
 #[cfg(feature = "eval")]
 mod hit_test;
 #[cfg(feature = "eval")]
@@ -290,6 +293,8 @@ mod traversal;
 
 pub use command::{Command, Verb};
 pub use geometry::{Angle, Bounds, Origin, Placement, Point, Transform, Vector};
+#[cfg(feature = "eval")]
+pub use fill::fill_alpha;
 #[cfg(feature = "eval")]
 pub use hit_test::HitTest;
 #[cfg(feature = "eval")]

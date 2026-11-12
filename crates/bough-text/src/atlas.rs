@@ -5,8 +5,7 @@
 //! in `RESULTS.md`; steady-state text never rasterizes.
 
 use crate::shape::{GlyphRun, Shaper};
-use swash::scale::{image::Content, Render, ScaleContext, Source};
-use swash::zeno::Format;
+use swash::scale::{image::Content, render_outline_alpha, ScaleContext};
 use swash::FontRef;
 
 /// Rasterising strikes on several cores (`atlas/parallel.rs`).
@@ -256,8 +255,10 @@ impl GlyphCache {
         let (size, f) = (self.strikes[strike].size, self.strikes[strike].face);
         let bytes: &[u8] = if f == 0 { &self.font } else { &self.faces[f as usize - 1] };
         let font = FontRef::from_index(bytes, 0).expect("font");
-        let mut scaler = self.ctx.builder(font).size(size).hint(false).build();
-        let img = Render::new(&[Source::Outline]).format(Format::Alpha).render(&mut scaler, gid);
+        // unhinted outline, non-zero alpha fill: `Render::new(&[Source::Outline]).format(Format::Alpha)` on a
+        // `hint(false)` scaler, through the paths that leave hinting, bitmaps and the stroker unlinked
+        let mut scaler = self.ctx.builder(font).size(size).build_unhinted();
+        let img = render_outline_alpha(&mut scaler, gid);
         let mut e = Entry { state: 1, ..Default::default() };
         if let Some(img) = img {
             if img.placement.width > 0 && img.placement.height > 0 && img.content == Content::Mask {

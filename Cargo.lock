@@ -221,7 +221,7 @@ dependencies = [
  "parley 0.11.1",
  "parley 0.11.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustybuzz",
- "swash",
+ "swash 0.2.10",
  "ttf-parser",
  "zgx-cosmic-text",
  "zgx-workload",
@@ -281,7 +281,7 @@ dependencies = [
  "png",
  "resvg",
  "rustybuzz",
- "swash",
+ "swash 0.2.10 (registry+https://github.com/rust-lang/crates.io-index)",
  "zgx-workload",
 ]
 
@@ -1539,12 +1539,21 @@ dependencies = [
 [[package]]
 name = "swash"
 version = "0.2.10"
+dependencies = [
+ "skrifa 0.40.0",
+ "yazi",
+ "zeno 0.3.3",
+]
+
+[[package]]
+name = "swash"
+version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c2499c2d826531388872b2268718aed907a39bd785ab0dcfe57fab26283f92e"
 dependencies = [
  "skrifa 0.44.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "yazi",
- "zeno",
+ "zeno 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -2057,6 +2066,10 @@ dependencies = [
 [[package]]
 name = "zeno"
 version = "0.3.3"
+
+[[package]]
+name = "zeno"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"
 
@@ -2139,6 +2152,7 @@ dependencies = [
 [[package]]
 name = "zgx-cosmic-text"
 version = "0.19.7"
+source = "git+https://github.com/zeronsh/zgx?rev=06debe9df86dbcb0a82d6074d01f98ace98a65b3#06debe9df86dbcb0a82d6074d01f98ace98a65b3"
 dependencies = [
  "bitflags 2.13.2",
  "fontdb",
@@ -2149,7 +2163,7 @@ dependencies = [
  "self_cell",
  "skrifa 0.40.0",
  "smol_str",
- "swash",
+ "swash 0.2.10 (registry+https://github.com/rust-lang/crates.io-index)",
  "sys-locale",
  "unicode-bidi",
  "unicode-linebreak",
@@ -2161,6 +2175,7 @@ dependencies = [
 [[package]]
 name = "zgx-harfrust"
 version = "0.5.3"
+source = "git+https://github.com/zeronsh/zgx?rev=06debe9df86dbcb0a82d6074d01f98ace98a65b3#06debe9df86dbcb0a82d6074d01f98ace98a65b3"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
@@ -2172,6 +2187,7 @@ dependencies = [
 [[package]]
 name = "zgx-workload"
 version = "0.1.0"
+source = "git+https://github.com/zeronsh/zgx?rev=06debe9df86dbcb0a82d6074d01f98ace98a65b3#06debe9df86dbcb0a82d6074d01f98ace98a65b3"
 
 [[package]]
 name = "zlib-rs"

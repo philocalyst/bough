@@ -473,6 +473,28 @@ impl<'a> ScalerBuilder<'a> {
             skrifa_size,
         }
     }
+
+    /// bough (vendor/README.md): [`build`](Self::build) for a scaler that never hints. The hinting cache is not
+    /// touched, so no hinting instance (TrueType interpreter, autohinter) is reachable from the scaler, and the
+    /// outline is drawn exactly as `build()` with `hint(false)` draws it.
+    pub fn build_unhinted(self) -> Scaler<'a> {
+        let upem = self.proxy.metrics.units_per_em();
+        let skrifa_size = if self.size != 0.0 && upem != 0 {
+            SkrifaSize::new(self.size)
+        } else {
+            SkrifaSize::unscaled()
+        };
+        Scaler {
+            state: self.state,
+            font: self.font,
+            outlines: self.outlines,
+            hinting_instance: None,
+            proxy: self.proxy,
+            coords: &self.coords[..],
+            size: self.size,
+            skrifa_size,
+        }
+    }
 }
 
 /// Scales outline and bitmap glyphs.
@@ -579,6 +601,30 @@ impl<'a> Scaler<'a> {
                     .draw(settings, &mut OutlineWriter(&mut outline))
                     .is_ok()
                 {
+                    outline.maybe_close();
+                    outline.finish();
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// bough (vendor/README.md): `scale_outline_impl(glyph_id, None, None)` with the unhinted draw settings only,
+    /// so the hinted arm of `OutlineGlyph::draw` folds away. Equal to `scale_outline_impl` for a scaler without a
+    /// hinting instance (`hint(false)`, or [`ScalerBuilder::build_unhinted`]).
+    #[cfg(feature = "render")]
+    fn scale_outline_unhinted_impl(&mut self, glyph_id: GlyphId) -> bool {
+        let outline = &mut self.state.outline;
+        if let Some(outlines) = &self.outlines {
+            if let Some(glyph) = outlines.get(SkrifaGlyphId::from(glyph_id)) {
+                outline.begin_layer(None);
+                let settings: skrifa::outline::DrawSettings = (
+                    self.skrifa_size,
+                    skrifa::instance::LocationRef::new(self.coords),
+                )
+                    .into();
+                if glyph.draw(settings, &mut OutlineWriter(outline)).is_ok() {
                     outline.maybe_close();
                     outline.finish();
                     return true;
@@ -990,4 +1036,31 @@ impl<'a> Render<'a> {
             None
         }
     }
+}
+
+/// bough (vendor/README.md): `Render::new(&[Source::Outline]).format(Format::Alpha).render(scaler, glyph_id)` for a
+/// scaler built by [`ScalerBuilder::build_unhinted`], through zeno's fill-only mask (`zeno::fill_alpha`): no
+/// embolden, transform or offset, the default non-zero fill, bottom-left origin, as that call has. Colour outlines,
+/// bitmaps, the stroker and subpixel formats are not reachable from it.
+#[cfg(feature = "render")]
+pub fn render_outline_alpha(scaler: &mut Scaler, glyph_id: GlyphId) -> Option<Image> {
+    let mut image = Image::new();
+    if !scaler.has_outlines() {
+        return None;
+    }
+    scaler.state.outline.clear();
+    if scaler.scale_outline_unhinted_impl(glyph_id) {
+        let state = &mut scaler.state;
+        image.placement = zeno::fill_alpha(
+            state.outline.path(),
+            zeno::Fill::NonZero,
+            Origin::BottomLeft,
+            &mut state.rcx,
+            &mut image.data,
+        );
+        image.content = Content::Mask;
+        image.source = Source::Outline;
+        return Some(image);
+    }
+    None
 }

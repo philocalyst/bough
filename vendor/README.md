@@ -97,3 +97,34 @@ same input.
 | parley | `src/builder.rs`, `src/shape/mod.rs` (`build_simple`), `src/layout/data.rs` (`push_slot_run`, `SlotRun`, `run_metrics` factored), `src/bough/fast.rs` (per-segment slots) | **graft 5**: the fused build. Simple text in one item, whose style runs' fonts are first complete candidates with covering tables, is laid out in one pass per font segment from bough's table output (same clusters, glyphs, f32 operations and run accounting as `process_clusters`), skipping analysis, style-index fill, the item/segment loops and harfrust; all or nothing |
 | parley | `src/bough/breaks.rs` (new), `src/analysis/mod.rs`, `src/shape/mod.rs`, `src/layout/data.rs` | **graft 3b**: exact UAX #14 / #29 boundaries for all covered Latin-1 text by walking ICU4X's own baked rule tables (`Baked::SINGLETON_SEGMENTER_BREAK_{LINE,WORD}_V1`) over a 256-entry property map (the iterators' `next` transcribed); graft 3 and graft 5 accept every covered Latin/Common character (digits and other emoji-property characters included) | labels, numbers and log lines take the fused path |
 | parley | `src/layout/layout.rs` (`Layout::retext`), `src/layout/data.rs` (`FastKey`), `src/shape/mod.rs` (`retext_simple`) | **graft 6**: retained re-text. A layout the fused path built from one style on one font keeps that font's key; a new covered text is laid out without the builder, style resolution or font query (boundaries, table shaping, clusters only) | labels, numbers, log lines, messages |
+
+## Glyph rasteriser (size lane, `docs/lanes/developer-loop/`)
+
+bough-text rasterises unhinted glyph outlines into alpha coverage with swash, which draws outlines through skrifa
+and fills them with zeno. Both are vendored so the rasteriser can be reached through the outline-and-fill path alone:
+upstream chooses hinting, colour/bitmap glyphs, the stroker and subpixel formats with run-time values, so all of
+them are linked into every executable that rasterises a glyph (about 200 KB of code under `production`).
+
+| crate | version | upstream commit | source | licence |
+|---|---|---|---|---|
+| `swash` | 0.2.10 | dfrg/swash `7773843df0d63cd468db61a29c152b5e7a99d4ab` | crates.io `swash-0.2.10` | Apache-2.0 OR MIT |
+| `zeno` | 0.3.3 | dfrg/zeno `698399439f8035736d01de00cbcdc413b3976a18` | crates.io `zeno-0.3.3` | Apache-2.0 OR MIT |
+
+Copied from the registry sources; `.cargo_vcs_info.json` kept, `Cargo.toml.orig`, `Cargo.lock`, `.github`,
+dotfiles and zeno's `benches/` dropped. zeno's sources have CRLF line endings upstream; the repository stores them
+with LF. swash keeps resolving skrifa 0.44 from crates.io (the vendored `skrifa` is parley's; it is the same
+version but is not shared, to keep this change to the two crates).
+
+### Changes against upstream (additive: no upstream function changed)
+
+| crate | file | change | why |
+|---|---|---|---|
+| swash | `Cargo.toml` | `zeno` takes `path = "../zeno"` | use the vendored copy |
+| swash | `src/scale/mod.rs` | `ScalerBuilder::build_unhinted` (`build` without the hinting cache: `hinting_instance: None`) | no hinting instance, so the TrueType interpreter and the autohinter are unreachable |
+| swash | `src/scale/mod.rs` | `Scaler::scale_outline_unhinted_impl` (`scale_outline_impl(gid, None, None)` with the unhinted draw settings only) | the hinted arm of skrifa's `OutlineGlyph::draw` folds away |
+| swash | `src/scale/mod.rs` | `render_outline_alpha(scaler, gid) -> Option<Image>`: `Render::new(&[Source::Outline]).format(Format::Alpha).render` for such a scaler, through `zeno::fill_alpha` | colour outlines, bitmap strikes (and yazi's inflate), the stroker and subpixel formats are unreachable |
+| zeno | `src/fill.rs` (new), `src/lib.rs` (`mod fill; pub use fill::fill_alpha;`) | `fill_alpha(data, fill, origin, scratch, buf) -> Placement`: `Mask::with_scratch(..).format(Alpha).origin(..).style(fill).inspect(resize).render_into(.., None)` with no transform and zero offsets, step for step | `Mask` keeps a run-time `Style`, which links the stroker |
+
+Gate: the frames of every pixel case (`bench/size/pixels.sh`: heavy, lab, animate, vlist, counter) are
+byte-identical to the unmodified rasteriser's, and `cargo test --release -p bough-text` (the atlas, cache and window
+tests) passes.
