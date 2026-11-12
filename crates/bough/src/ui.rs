@@ -125,7 +125,22 @@ impl Application {
         let w = root.into_window();
         let title = if w.title.is_empty() { "bough".to_string() } else { w.title };
         let _ = WINDOW.set((w.size.0, w.size.1, default_font()));
-        crate::backend::host::run_interactive(&title, window_config, w.view, 0.0, |_, _| {}, |_| {})
+        // the devtools server, only when asked for (`devtools.rs`): read once here, never in a turn
+        let dev = std::env::var_os("BOUGH_DEVTOOLS").map(std::path::PathBuf::from);
+        crate::backend::host::run_interactive(
+            &title,
+            window_config,
+            w.view,
+            0.0,
+            move |_, app| {
+                if let Some(path) = dev {
+                    if let Err(e) = crate::devtools::serve_windowed(app, path) {
+                        eprintln!("bough devtools: {e}");
+                    }
+                }
+            },
+            |_| {},
+        )
     }
 }
 

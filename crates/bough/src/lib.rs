@@ -3,6 +3,7 @@
 //! bough: the public façade over bough-core (records, damage), bough-text (shaping into the glyph pool),
 //! cephal (layout) and bough-metal's fused presenter. One region holds everything the GPU reads
 //! (`rt.rs`); a frame's CPU work ends at the tile list (`app.rs`).
+pub mod a11y;
 pub mod app;
 pub mod backend;
 pub mod boxops;
@@ -10,6 +11,7 @@ pub mod changed;
 pub mod color;
 pub mod deco;
 pub mod describe;
+pub mod devtools;
 pub mod elem;
 pub mod entity;
 pub mod find;

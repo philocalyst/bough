@@ -140,6 +140,8 @@ pub struct OwnerView {
     pub parent: Option<u32>,
     /// The field path from its parent owner (`embed!`).
     pub field: Option<String>,
+    /// Offset inside the root owner (an embedded view's; 0 otherwise).
+    pub base: u32,
 }
 
 /// A window's records with what is known about each.
@@ -401,7 +403,7 @@ pub(crate) fn build(rt: &Rt, w: Walk) -> Tree {
             p = nodes[a].parent;
         }
     }
-    let owners = w.owners.iter().map(|o| OwnerView { ty: o.ty, kind: o.kind.clone(), parent: o.parent, field: o.field.clone() }).collect();
+    let owners = w.owners.iter().map(|o| OwnerView { ty: o.ty, kind: o.kind.clone(), parent: o.parent, field: o.field.clone(), base: o.base }).collect();
     Tree { nodes, owners, lost: w.lost, scale: rt.scale }
 }
 

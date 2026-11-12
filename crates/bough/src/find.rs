@@ -33,6 +33,8 @@ enum Pred {
     Any,
     /// A role, a builder name or an owner type (`button`, `row`, `MonthPicker`).
     Word(String),
+    /// Bound to the signal at this offset of an owner of this type (`bound(sig!(..))`).
+    Bound(&'static str, u32),
     Role(Role),
     Name(String),
     NameHas(String),
@@ -121,6 +123,12 @@ pub fn part<S>(key: Part<S>) -> Sel {
 /// Elements a builder or an owner type names (`"row"`, `"MonthPicker"`), or of the role of that name.
 pub fn word(w: &str) -> Sel {
     Sel::one(Pred::Word(w.into()))
+}
+/// Every element bound to the signal `w` names (`bound(sig!(page: Page => count))`): no string, and a
+/// renamed field is a compile error, not a test that finds nothing. A signal of the root owner reaches into
+/// embedded views (`sig!(page: Page => depart.month)`); a list row's is named by its item type.
+pub fn bound<T, V>(w: crate::signal::Wired<'_, T, V>) -> Sel {
+    Sel::one(Pred::Bound(std::any::type_name::<V>(), w.off))
 }
 /// Every element inside an owner of type `T` (a view embedded, a list row, an entity).
 pub fn owner<T>() -> Sel {
@@ -273,6 +281,7 @@ impl std::fmt::Display for Sel {
             for p in &st.preds {
                 match p {
                     Pred::Any => f.write_str("*")?,
+                    Pred::Bound(t, o) => write!(f, "<bound {}+{o}>", short(t))?,
                     Pred::Word(w) => write!(f, "{w}")?,
                     Pred::Role(r) => write!(f, "{}", format!("{r:?}").to_ascii_lowercase())?,
                     Pred::Name(n) => write!(f, "{n:?}")?,
@@ -304,6 +313,11 @@ impl Tree {
     fn pred(&self, n: &Node, p: &Pred) -> bool {
         match p {
             Pred::Any => true,
+            Pred::Bound(ty, off) => {
+                let o = &self.owners[n.owner as usize];
+                let root = o.kind == crate::probe::OwnerKind::Embedded && self.owners[0].ty == *ty;
+                n.binds.iter().any(|b| (o.ty == *ty && b.off == *off) || (root && o.base + b.off == *off))
+            }
             Pred::Word(w) => role_named(w) == Some(n.role) || n.elem.eq_ignore_ascii_case(w) || self.owner_is(Some(n.owner), w),
             Pred::Role(r) => n.role == *r,
             Pred::Name(s) => n.name == *s,
