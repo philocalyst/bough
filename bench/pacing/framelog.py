@@ -85,7 +85,9 @@ def analyse(rows, scene=None, ngaps=5):
             windows = [("scroll", anchor_from, min(end, anchor_from + int(3e9)))]
     out = {"scene": scene, "windows": {}}
     # inputs that left something to show -> the first frame at or after their turn
-    frames = [t for t in turns if t[M_FID] > 0]
+    # frame turns: a frame ran (flag bit 0); one that published has a sequence number, one whose state was
+    # already on screen (the input's change was undone before the frame, e.g. a hover crossing and back) has none
+    frames = [t for t in turns if t[M_FLAGS] & 1]
     fdisp = [t[M_DISPATCH] for t in frames]
 
     def next_vsync(c):
@@ -95,7 +97,7 @@ def analyse(rows, scene=None, ngaps=5):
     def shown_at(t):
         """Commit end of the first committed publication including turn `t`'s effect."""
         i = bisect.bisect_left(fdisp, t[M_DISPATCH])
-        if i >= len(frames):
+        if i >= len(frames) or frames[i][M_FID] == 0:
             return None
         fid = frames[i][M_FID]
         j = bisect.bisect_left(seqs, fid)
@@ -123,11 +125,13 @@ def analyse(rows, scene=None, ngaps=5):
         w["received"] = sum(1 for e in events if a <= e[3] < b)
         by_kind = defaultdict(list)
         lat_all, lat_vs = [], []
+        undone = 0
         for t in ins:
             if not (t[M_FLAGS] >> 3) & 1:
                 continue
             s = shown_at(t)
             if s is None or not t[M_EVENT]:
+                undone += s is None
                 continue
             ms = (s - t[M_EVENT]) / 1e6
             by_kind[KIND[t[1]]].append(ms)
@@ -136,6 +140,7 @@ def analyse(rows, scene=None, ngaps=5):
             if v is not None:
                 lat_vs.append((v - t[M_EVENT]) / 1e6)
         w["input_to_commit_ms"] = dist(lat_all)
+        w["inputs_not_shown"] = undone  # their change was undone before a frame showed it
         w["input_to_vsync_after_commit_ms"] = dist(lat_vs)
         # commits per refresh interval (a value above 1 is a present the display never showed)
         per = defaultdict(int)

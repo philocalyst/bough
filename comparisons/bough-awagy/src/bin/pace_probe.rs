@@ -8,8 +8,8 @@
 //!
 //!   pace_probe dashboard [rate=240] [phase_s=2] [warm_s=1] [tail_s=0]
 //!   pace_probe scroll [rows=1000] [rate=144] [secs=5.5] [tail_s=0]
-//!   pace_probe hover [rate=240] [secs=4]     (the dashboard; the pointer alternates between the Refresh button
-//!                                             and the gap beside it: every move is a hover crossing)
+//!   pace_probe hover [rate=240] [secs=4]     (the dashboard; the pointer sweeps the toolbar across both
+//!                                             buttons: ~32 hover crossings a second)
 //!   pace_probe idle [secs=5]
 #[path = "../dashboard.rs"]
 #[allow(dead_code)]
@@ -166,8 +166,10 @@ fn scroll_script(t: Target, rate: f64, secs: f64, tail: f64) {
     }
 }
 
-/// A hover storm (performance.md workload #3 at 240 Hz): every move enters or leaves the Refresh button, a
-/// paint write of its hover background.
+/// A hover sweep (performance.md workload #3, at 240 moves/s): the pointer sweeps the toolbar back and forth
+/// (x 380..820 at y 90, a 0.25 s triangle), crossing the Refresh and toggle buttons' edges ~32 times a second;
+/// every crossing is a paint write of a hover background, the moves between crossings answer from the hit
+/// cell. Crossings are ~40 ms apart, so no frame sees a crossing undone.
 fn hover_script(t: Target, rate: f64, secs: f64) {
     drive::sleep_until(fl::now_ns() + ms(500.0));
     let vsyncs = drive::VsyncRecorder::start();
@@ -182,8 +184,9 @@ fn hover_script(t: Target, rate: f64, secs: f64) {
             break;
         }
         if now >= next {
-            let x = if n % 2 == 0 { 496.0 } else { 600.0 };
-            drive::mouse(&t, EvKind::MOVE, x, 90.0, n as isize + 1);
+            let ph = ((now - start) % 250_000_000) as f64 / 250e6;
+            let tri = if ph < 0.5 { ph * 2.0 } else { 2.0 - ph * 2.0 };
+            drive::mouse(&t, EvKind::MOVE, 380.0 + 440.0 * tri, 90.0, n as isize + 1);
             n += 1;
             next = (next + step).max(fl::now_ns());
         }
