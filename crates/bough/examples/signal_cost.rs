@@ -63,7 +63,7 @@ fn slope(mut run: impl FnMut(u32) -> u64) -> u64 {
     (hi - lo) / 128
 }
 
-fn cells(n: usize, once: bool) -> [u64; 4] {
+fn cells(n: usize, once: bool) -> [u64; 6] {
     let mut a = app(n, once);
     let mut k = 0u32;
     let mut cell = |a: &mut App<Rows>, which: u8| {
@@ -76,13 +76,22 @@ fn cells(n: usize, once: bool) -> [u64; 4] {
                     0 => a.turn(|r| drop(r.tint[i].set(Color(0xff00_0000 | (k & 0xff_ffff))))),
                     1 => a.turn(|r| drop(r.count[i].set(k % 1000))),
                     2 => a.turn(|r| drop(r.name[i].set(k % 1000))),
+                    // with the frame after it (headless: up to the tile list): where a direct write's damage is made
+                    4 => {
+                        a.turn(|r| drop(r.tint[i].set(Color(0xff00_0000 | (k & 0xff_ffff)))));
+                        a.frame();
+                    }
+                    5 => {
+                        a.turn(|_| {});
+                        a.frame();
+                    }
                     _ => a.turn(|_| {}),
                 }
             }
             tinstr() - t0
         })
     };
-    [cell(&mut a, 0), cell(&mut a, 1), cell(&mut a, 2), cell(&mut a, 3)]
+    [cell(&mut a, 0), cell(&mut a, 1), cell(&mut a, 2), cell(&mut a, 3), cell(&mut a, 4), cell(&mut a, 5)]
 }
 
 /// Layout probe (`PHASES=1`, lane `layout`): every write changes the label's width (the string alternates
@@ -141,12 +150,12 @@ fn main() {
     }
     let sizes: Vec<usize> = std::env::args().skip(1).filter_map(|s| s.parse().ok()).collect();
     let sizes = if sizes.is_empty() { vec![16, 64, 256] } else { sizes };
-    println!("rows,mode,colour,number,string,idle");
+    println!("rows,mode,colour,number,string,idle,colour+frame,idle+frame");
     for n in sizes {
         assert!(n <= MAX && n > 0);
         for (name, once) in [("once", true), ("redescribe", false)] {
             let c = cells(n, once);
-            println!("{n},{name},{},{},{},{}", c[0], c[1], c[2], c[3]);
+            println!("{n},{name},{},{},{},{},{},{}", c[0], c[1], c[2], c[3], c[4], c[5]);
         }
     }
 }

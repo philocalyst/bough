@@ -145,6 +145,11 @@ impl<V, A: BoxOps<V>, B: BoxOps<V>> BoxOps<V> for (A, B) {
         self.0.refresh(rt, lid, node);
         self.1.refresh(rt, lid, node);
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        self.0.seal(s);
+        self.1.seal(s);
+    }
 }
 
 pub struct Opacity<P>(pub P);
@@ -162,6 +167,11 @@ impl<V, P: IntoProp<f32, V>> BoxOps<V> for Opacity<P> {
     fn refresh(self, rt: &mut Rt, _lid: u32, node: u32) {
         ApplyOpacity::apply(rt, node, &self.0.value());
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x50);
+        self.0.seal(s);
+    }
 }
 impl<V, P: IntoProp<(f32, f32), V>> BoxOps<V> for Translate<P> {
     const SIZE: bool = false;
@@ -175,6 +185,11 @@ impl<V, P: IntoProp<(f32, f32), V>> BoxOps<V> for Translate<P> {
     fn refresh(self, rt: &mut Rt, _lid: u32, node: u32) {
         ApplyTranslate::apply(rt, node, &self.0.value());
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x51);
+        self.0.seal(s);
+    }
 }
 impl<V, P: IntoProp<f32, V>> BoxOps<V> for WidthOp<P> {
     const SIZE: bool = true;
@@ -185,6 +200,11 @@ impl<V, P: IntoProp<f32, V>> BoxOps<V> for WidthOp<P> {
     fn refresh(self, rt: &mut Rt, lid: u32, _node: u32) {
         ApplyBoxW::apply(rt, lid, &self.0.value());
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x52);
+        self.0.seal(s);
+    }
 }
 impl<V, P: IntoProp<f32, V>> BoxOps<V> for HeightOp<P> {
     const SIZE: bool = true;
@@ -194,6 +214,11 @@ impl<V, P: IntoProp<f32, V>> BoxOps<V> for HeightOp<P> {
     }
     fn refresh(self, rt: &mut Rt, lid: u32, _node: u32) {
         ApplyBoxH::apply(rt, lid, &self.0.value());
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x53);
+        self.0.seal(s);
     }
 }
 
@@ -206,7 +231,21 @@ impl Apply for ApplyTextColor {
         if rt.hot[node as usize].kind == 0 {
             return; // mounting: the element's text is created after its operands are lowered
         }
-        let (ti, h) = (rt.text_of(node), rt.handle(node));
+        if rt.hot[node as usize].kind & NK_HOVERED != 0 {
+            // under variants (`flags.rs`): the colour is the base; the table shows what the flags select
+            let a = rt.input.act_of_handle(rt.handle(node));
+            return rt.flags_rebase(a, None, Some(v.0));
+        }
+        text_color(rt, node, v.0);
+    }
+}
+
+/// Show colour `c` on laid-out text `node` (its lines' run headers, or its label's run): a paint write. The
+/// text state's colour is what is drawn; under variants the described colour is the table's base.
+pub(crate) fn text_color(rt: &mut Rt, node: u32, c: u32) {
+    let (ti, h) = (rt.text_of(node), rt.handle(node));
+    let v = crate::color::Color(c);
+    {
         let old = rt.texts[ti as usize].color;
         if old == v.0 {
             return;

@@ -40,6 +40,8 @@ pub struct Mounter<'a, V> {
     pub(crate) kid: usize,
     /// An operand asked to keep the element's node addressable (`select`: an outside table names it).
     pub(crate) keep: bool,
+    /// The path of `owner` from the root (`OwnerRef`): what a route lowered here is dispatched along.
+    pub(crate) own: OwnerRef,
 }
 
 impl<V> Mounter<'_, V> {
@@ -80,7 +82,7 @@ impl<V> Mounter<'_, V> {
     /// A mounter for a sub-part (a dynamic item) of this one: same position state, its own scope, records
     /// buffer and tape.
     pub(crate) fn sub<'b>(&'b mut self, recs: &'b mut Vec<RecordInit>, scope: &'b mut Scope, tape: *mut Vec<u32>) -> Mounter<'b, V> {
-        Mounter { rt: &mut *self.rt, owner: self.owner, recs, scope, depth: self.depth, ox: self.ox, oy: self.oy, space: self.space, clip: self.clip, pending_num: None, cls: self.cls, tape, ti: 0, pos: self.pos, kid: self.kid, keep: false }
+        Mounter { rt: &mut *self.rt, owner: self.owner, recs, scope, depth: self.depth, ox: self.ox, oy: self.oy, space: self.space, clip: self.clip, pending_num: None, cls: self.cls, tape, ti: 0, pos: self.pos, kid: self.kid, keep: false, own: self.own }
     }
     pub fn mount(&mut self, e: impl Element<V>) {
         e.mount(self)
@@ -197,6 +199,9 @@ where
 /// How a property's new value is applied to its node (monomorphic, one per property).
 pub trait Apply {
     type P: 'static;
+    /// The property is a plain colour-word store into the node's instance: a binding may be a direct wire
+    /// (`direct.rs`), applied by the signal's write.
+    const DIRECT: bool = false;
     fn apply(rt: &mut Rt, node: u32, v: &Self::P);
 }
 
@@ -214,17 +219,35 @@ pub trait IntoProp<P: 'static, V>: Sized {
     }
 }
 
-macro_rules! const_prop {
-    ($($t:ty),*) => {$(
-        impl<V> IntoProp<$t, V> for $t {
-            #[inline]
-            fn lower<K: Apply<P = $t>>(self, _: &mut Mounter<'_, V>, _: u32) -> $t { self }
-            #[inline]
-            fn value(self) -> $t { self }
-        }
-    )*};
+impl<V> IntoProp<f32, V> for f32 {
+    #[inline]
+    fn lower<K: Apply<P = f32>>(self, _: &mut Mounter<'_, V>, _: u32) -> f32 {
+        self
+    }
+    #[inline]
+    fn value(self) -> f32 {
+        self
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.f32(*self)
+    }
 }
-const_prop!(f32, (f32, f32));
+impl<V> IntoProp<(f32, f32), V> for (f32, f32) {
+    #[inline]
+    fn lower<K: Apply<P = (f32, f32)>>(self, _: &mut Mounter<'_, V>, _: u32) -> (f32, f32) {
+        self
+    }
+    #[inline]
+    fn value(self) -> (f32, f32) {
+        self
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.f32(self.0);
+        s.f32(self.1);
+    }
+}
 impl<V> IntoProp<Color, V> for Color {
     #[inline]
     fn lower<K: Apply<P = Color>>(self, _: &mut Mounter<'_, V>, _: u32) -> Color {
@@ -254,7 +277,7 @@ impl<T: Clone + 'static, V> IntoProp<T, V> for &Signal<T> {
 /// The wire contract (`PatchFn`): `sig` is a `Signal<T>`.
 unsafe fn patch_sig<K: Apply<P = T>, T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
-    let s = unsafe { &*(sig as *const Signal<T>) };
+    let s = unsafe { (*(sig as *const Signal<T>)).peek() };
     K::apply(rt, w.node, s);
 }
 
@@ -262,7 +285,7 @@ unsafe fn patch_sig<K: Apply<P = T>, T: 'static>(rt: &mut Rt, w: &Wire, sig: *co
 /// As `patch_sig`; the recipe holds an `F` written by `lower`.
 unsafe fn patch_map<K: Apply, T: 'static, F: Fn(&T) -> K::P + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract; F is Copy and was written unaligned into the 16-byte recipe.
-    let s = unsafe { &*(sig as *const Signal<T>) };
+    let s = unsafe { (*(sig as *const Signal<T>)).peek() };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
     let v = f(s);
     K::apply(rt, w.node, &v);
@@ -293,6 +316,12 @@ fn seal_wire<S: crate::seal::Sealer>(s: &mut S, tag: u32, off: u32, recipe: [u8;
 impl<'a, T: Clone + 'static, V> IntoProp<T, V> for Wired<'a, T, V> {
     fn lower<K: Apply<P = T>>(self, m: &mut Mounter<'_, V>, node: u32) -> T {
         m.wire(&self, patch_sig::<K, T>, node, [0; 16]);
+        if K::DIRECT {
+            // a plain colour store: the write itself may apply it (`direct.rs`)
+            let w = *m.scope.wires.last().expect("the wire just installed");
+            let rt = &mut *m.rt;
+            rt.input.direct.bind(&rt.wires, w, self.sig.head(), node);
+        }
         self.get().clone()
     }
     fn value(self) -> T {
@@ -325,6 +354,17 @@ where
 // =============================================================================== properties
 
 pub struct ApplyBg;
+/// `ApplyBg` where nothing else writes the colour word (no opacity or paint operand on the element): its
+/// bindings may be direct wires (`direct.rs`).
+pub struct ApplyBgDirect;
+impl Apply for ApplyBgDirect {
+    type P = Color;
+    const DIRECT: bool = true;
+    #[inline]
+    fn apply(rt: &mut Rt, node: u32, v: &Color) {
+        ApplyBg::apply(rt, node, v)
+    }
+}
 pub struct ApplyW;
 pub struct ApplySpan;
 
@@ -351,8 +391,9 @@ impl Apply for ApplyBg {
 }
 
 /// `ApplyBg` for a quad whose drawn colour is not its described one (`HF_MOD`: under an opacity operand, or
-/// hovered): the described colour is the cold record's; the instance takes it through the opacity unless
-/// the hover colour shows.
+/// under variants): the described colour is the cold record's; the instance takes it through the opacity, or
+/// under variants (`NK_HOVERED`, `flags.rs`) it is the table's base and the instance shows what the flags
+/// select.
 #[cold]
 fn apply_bg_mod(rt: &mut Rt, node: u32, c: u32) {
     let hot = rt.hot[node as usize];
@@ -362,7 +403,9 @@ fn apply_bg_mod(rt: &mut Rt, node: u32, c: u32) {
     }
     let (old, a) = (std::mem::replace(&mut n.color, c), n.alpha);
     if hot.kind & NK_HOVERED != 0 {
-        return; // the hover colour shows; the base returns when the pointer leaves (input.rs)
+        // under variants (`flags.rs`): the colour is the base; the table shows what the flags select
+        let act = rt.input.act_of_handle(rt.handle(node));
+        return rt.flags_rebase(act, Some(c), None);
     }
     let p = &mut rt.inst[(rt.ibase + node) as usize];
     let shown = crate::boxops::mul_alpha(c, a);
@@ -478,7 +521,7 @@ where
     fn mount(self, m: &mut Mounter<'_, V>) {
         let node = m.rt.alloc_node();
         let wires_before = m.scope.wires.len();
-        let bg = self.bg.lower::<ApplyBg>(m, node);
+        let bg = self.bg.lower::<ApplyBgDirect>(m, node);
         let w = self.wd.lower::<ApplyW>(m, node);
         let (y, h) = self.sp.lower::<ApplySpan>(m, node);
         let s = m.rt.scale;
@@ -540,8 +583,9 @@ where
         }
         let old = *m.rt.inst_mut(inst);
         let geo = old.pos != ins.pos || old.size != ins.size || old.radius != ins.radius || old.kind != ins.kind || old.bw != ins.bw || old.space != ins.space;
-        // the border colour is geometry-class damage (one record, one paint state: its fill, see `paint_write`)
-        let border_c = self.border.is_some() && old.color != ins.color;
+        // the border colour is geometry-class damage (one record, one paint state: its fill, see `paint_write`);
+        // under variants the description's border is the table's base, not what a variant shows
+        let border_c = self.border.is_some() && m.rt.flags_base_border(node).unwrap_or(old.color) != ins.color;
         let _ = margin;
         m.rt.aux[node as usize] = y0_px;
         if geo || border_c || m.rt.hot[node as usize].kind & !NK_HOVERED != nk {
@@ -554,6 +598,7 @@ where
                 (c.x, c.y, c.color) = (x_px, y_px, bg.0);
             }
             m.rt.quad_ink(node);
+            m.rt.flags_reshow_node(node);
         } else {
             ApplyBg::apply(m.rt, node, &bg);
         }
@@ -567,6 +612,21 @@ where
         m.depth -= 1;
         m.ox = ox;
         m.oy = oy;
+    }
+
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x10 | (self.border.is_some() as u32) << 8);
+        s.f32(self.x);
+        self.wd.seal(s);
+        self.sp.seal(s);
+        self.bg.seal(s);
+        s.f32(self.radius);
+        if let Some((w, c)) = self.border {
+            s.f32(w);
+            s.word(c.0);
+        }
+        self.ch.seal(s);
     }
 }
 
@@ -696,7 +756,7 @@ pub(crate) fn set_node_text(rt: &mut Rt, node: u32, s: &str) {
 /// Wire contract: `sig` is a `Signal<String>`.
 unsafe fn patch_text(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
-    let s = unsafe { &*(sig as *const Signal<String>) };
+    let s = unsafe { (*(sig as *const Signal<String>)).peek() };
     set_node_text(rt, w.node, s);
 }
 
@@ -704,7 +764,7 @@ unsafe fn patch_text(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
 /// Wire contract: `sig` is a `Signal<T>`; the recipe holds an `F`.
 unsafe fn patch_text_map<T: 'static, F: Fn(&T) -> String + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
-    let s = unsafe { &*(sig as *const Signal<T>) };
+    let s = unsafe { (*(sig as *const Signal<T>)).peek() };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
     let v = f(s);
     set_node_text(rt, w.node, &v);
@@ -733,7 +793,7 @@ fn render_num(fmt: &bough_text::numeric::NumFmt, v: f32, buf: &mut [u8; 16], slo
 /// Wire contract: `sig` is a `Signal<T>`; the recipe holds an `F`; the node's text has a `NumFmt`.
 unsafe fn patch_text_num<T: 'static, F: Fn(&T) -> f32 + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
-    let s = unsafe { &*(sig as *const Signal<T>) };
+    let s = unsafe { (*(sig as *const Signal<T>)).peek() };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
     let v = f(s);
     let ti = rt.text_of(w.node);
@@ -791,7 +851,8 @@ impl<'a, T: 'static, V, F: Fn(&T) -> f32 + Copy + 'static> TextSrc<V> for Num<'a
         let mut slow = String::new();
         let n = render_num(&self.fmt, v, &mut buf, &mut slow);
         if n == usize::MAX { slow } else { bough_text::numeric::as_str(&buf, n).to_owned() }
-    }    #[inline(always)]
+    }
+    #[inline(always)]
     fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
         seal_wire(s, 0x574e_554d, self.w.off, recipe_of(self.f));
         s.bytes(&self.fmt.identity());
@@ -847,8 +908,12 @@ pub trait GlyphOp<V>: Sized {
     fn install(self, m: &mut Mounter<'_, V>, node: u32);
     /// The text was rebuilt by a re-description: write the per-glyph state again.
     fn refresh(self, m: &mut Mounter<'_, V>, node: u32);
+    /// Its part of the text's seal (`seal.rs`): the wire's field and function.
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S);
 }
 impl<V> GlyphOp<V> for () {
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, _: &mut S) {}
     const PER_GLYPH: bool = false;
     #[inline]
     fn install(self, _: &mut Mounter<'_, V>, _: u32) {}
@@ -885,7 +950,7 @@ fn set_glyph_alpha<T>(rt: &mut Rt, node: u32, f: fn(usize, usize, &T) -> u8, v: 
 /// Wire contract: `sig` is a `Signal<T>`; the recipe holds the `fn`.
 unsafe fn patch_galpha<T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
-    let s = unsafe { &*(sig as *const Signal<T>) };
+    let s = unsafe { (*(sig as *const Signal<T>)).peek() };
     let f: fn(usize, usize, &T) -> u8 = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const _) };
     let new = set_glyph_alpha(rt, w.node, f, s);
     let t = &mut rt.texts[rt.hot[w.node as usize].link as usize];
@@ -896,6 +961,12 @@ unsafe fn patch_galpha<T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner
 }
 
 impl<'a, V: 'static, T: 'static> GlyphOp<V> for GlyphAlpha<'a, T, V> {
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x0220);
+        s.word(self.sig.off);
+        crate::seal::closure(s, &self.f);
+    }
     const PER_GLYPH: bool = true;
     fn install(self, m: &mut Mounter<'_, V>, node: u32) {
         let hsh = set_glyph_alpha(m.rt, node, self.f, self.sig.get());
@@ -1007,6 +1078,18 @@ impl<V: 'static, S: TextSrc<V>, G: GlyphOp<V>> Element<V> for Text<S, G> {
         }
         m.pos += 1;
     }
+
+    #[inline(always)]
+    fn seal<Z: crate::seal::Sealer>(&self, s: &mut Z) {
+        s.word(0x11);
+        s.f32(self.x);
+        s.f32(self.y);
+        s.f32(self.size);
+        s.f32(self.lh);
+        s.word(self.color.0);
+        self.g.seal(s);
+        self.s.seal(s);
+    }
 }
 
 // =============================================================================== grouping
@@ -1032,6 +1115,13 @@ impl<V, Ch: Element<V>> Element<V> for At<Ch> {
         self.2.update(m);
         m.ox = ox;
         m.oy = oy;
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x12);
+        s.f32(self.0);
+        s.f32(self.1);
+        self.2.seal(s);
     }
 }
 
@@ -1064,6 +1154,14 @@ impl<V, Ch: Element<V>> Element<V> for Clip<Ch> {
         self.1.update(m);
         m.clip = prev;
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x13);
+        for v in self.0 {
+            s.f32(v);
+        }
+        self.1.seal(s);
+    }
     fn mount(self, m: &mut Mounter<'_, V>) {
         let s = m.rt.scale;
         let o = m.rt.space(m.space);
@@ -1072,7 +1170,7 @@ impl<V, Ch: Element<V>> Element<V> for Clip<Ch> {
         let prev = m.clip;
         // nested clips compose (intersection, in `scoped_clip`); inside a scroll view's content the clip moves
         // with the content and is re-cut against its parent when either moves (template.rs)
-        m.clip = m.rt.scoped_clip(r, prev);
+        m.clip = m.rt.scoped_clip(m.scope, r, prev);
         self.1.mount(m);
         m.clip = prev;
     }
@@ -1109,16 +1207,16 @@ pub(crate) unsafe fn mount_row<V: 'static>(rt: &mut Rt, owner: *const u8, reg: u
     let space = rt.alloc_space();
     let origin = rt.region_row_space_origin(reg, row);
     rt.set_space(space, origin);
-    let (clip, depth, f) = {
+    let (clip, depth, f, cls, own) = {
         let r = &rt.regions[reg];
-        (r.clip, r.depth, r.row_fn)
+        (r.clip, r.depth, r.row_fn, r.cls, r.own)
     };
     // SAFETY: the region was created by `VirtualList::<V>::mount` from a `fn(&V, usize, &mut Mounter<V>)`.
     let f: fn(&V, usize, &mut Mounter<'_, V>) = unsafe { std::mem::transmute::<usize, fn(&V, usize, &mut Mounter<'_, V>)>(f) };
     let mut scope = Scope::default();
     let before = recs.len();
     {
-        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls: 0, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false };
+        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false, own };
         // SAFETY: see the function contract.
         f(unsafe { &*(owner as *const V) }, row, &mut m);
     }
@@ -1129,8 +1227,8 @@ pub(crate) unsafe fn mount_row<V: 'static>(rt: &mut Rt, owner: *const u8, reg: u
 /// Wire contract: `sig` is a `Signal<f32>`; `owner` is the region's owner.
 pub(crate) unsafe fn patch_scroll(rt: &mut Rt, w: &Wire, sig: *const u8, owner: *const u8) {
     // SAFETY: see the function contract.
-    let s = unsafe { &*(sig as *const Signal<f32>) };
-    unsafe { rt.region_scroll(w.node as usize, owner, **s) };
+    let s = unsafe { (*(sig as *const Signal<f32>)).peek() };
+    unsafe { rt.region_scroll(w.node as usize, owner, *s) };
 }
 
 impl<'a, V: 'static> Element<V> for VirtualList<'a, V> {
@@ -1160,6 +1258,8 @@ impl<'a, V: 'static> Element<V> for VirtualList<'a, V> {
             scale_pt: s,
             mount_row: mount_row::<V>,
             row_fn: self.row as usize,
+            cls: m.cls,
+            own: m.own,
         });
         m.wire(&self.scroll, patch_scroll, reg as u32, [0; 16]);
         m.tape_push(reg as u32);
@@ -1291,7 +1391,7 @@ fn write_bars<F: Fn(u64) -> f32>(rt: &mut Rt, node: u32, key: u64, f: F, damage:
 /// Wire contract: `sig` is a `Signal<u64>`; the recipe holds an `F`.
 unsafe fn patch_bars<F: Fn(u64) -> f32 + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
-    let key = **unsafe { &*(sig as *const Signal<u64>) };
+    let key = *unsafe { (*(sig as *const Signal<u64>)).peek() };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
     // each bar damages the strip its top moved through (inside write_bars); the record's ink is the union
     let ink = write_bars(rt, w.node, key, f, true);
@@ -1338,5 +1438,10 @@ impl<'a, V: 'static, F: Fn(u64) -> f32 + Copy + 'static> Element<V> for Bars<'a,
     /// The series is wire-driven; its geometry constants are taken as fixed for the owner's life.
     fn update(self, m: &mut Mounter<'_, V>) {
         m.pos += 1;
+    }
+    /// Its re-description does nothing but step over its record: nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x14);
     }
 }

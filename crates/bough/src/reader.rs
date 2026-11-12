@@ -49,18 +49,37 @@ impl<T> Reader<T> {
     pub const fn new() -> Reader<T> {
         Reader { head: WireHead::new(), phead: Cell::new(0), state: Cell::new(0), ticket: Cell::new(0), value: UnsafeCell::new(None), staged: UnsafeCell::new(None), fault: UnsafeCell::new(None) }
     }
+    /// A plain read while an owner describes itself: not every change of a reader queues its head, so the
+    /// owner describes itself again after every turn while it reads one plainly (`grain.rs`).
+    #[inline(always)]
+    fn read(&self) {
+        crate::grain::read(&self.head.0, crate::grain::Dep::Always, crate::grain::wake_root);
+    }
     /// The last committed (Ready) value; `None` before first readiness.
     pub fn latest(&self) -> Option<&T> {
+        self.read();
+        self.latest_raw()
+    }
+    /// `latest` for the runtime's own operands (wired: not a plain read).
+    #[inline(always)]
+    pub(crate) fn latest_raw(&self) -> Option<&T> {
         // SAFETY: `value` is written only by the runtime's commit, which holds the owner uniquely.
         unsafe { (*self.value.get()).as_ref() }
     }
     /// Does the next visible answer still wait on a request?
     /// The last request's failure (the reader keeps its last value), until a request succeeds.
     pub fn fault(&self) -> Option<&str> {
+        self.read();
         // SAFETY: written only by the runtime's commit, which holds the owner uniquely.
         unsafe { (*self.fault.get()).as_deref() }
     }
     pub fn is_pending(&self) -> bool {
+        self.read();
+        self.pending_raw()
+    }
+    /// `is_pending` for the runtime's own operands.
+    #[inline(always)]
+    pub(crate) fn pending_raw(&self) -> bool {
         self.state.get() & PENDING != 0
     }
     /// The value's address (reflection; only while `has_value`).
@@ -72,6 +91,7 @@ impl<T> Reader<T> {
         }
     }
     pub fn has_value(&self) -> bool {
+        self.read();
         self.state.get() & HAS != 0
     }
 }
@@ -150,13 +170,13 @@ unsafe fn patch_rmap<K: Apply, T: 'static, F: Fn(Option<&T>) -> K::P + Copy>(rt:
     // SAFETY: wire contract: `sig` is a `Reader<T>`; the recipe holds an `F`.
     let r = unsafe { &*(sig as *const Reader<T>) };
     let f: F = unsafe { unrecipe(&w.recipe) };
-    K::apply(rt, w.node, &f(r.latest()));
+    K::apply(rt, w.node, &f(r.latest_raw()));
 }
 unsafe fn patch_rpmap<K: Apply, T: 'static, F: Fn(bool) -> K::P + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _o: *const u8) {
     // SAFETY: wire contract: `sig` is the `phead` of a `Reader<T>` (offset 4); the recipe holds an `F`.
     let r = unsafe { &*(sig.sub(4) as *const Reader<T>) };
     let f: F = unsafe { unrecipe(&w.recipe) };
-    K::apply(rt, w.node, &f(r.is_pending()));
+    K::apply(rt, w.node, &f(r.pending_raw()));
 }
 /// # Safety
 /// `PatchFn`'s contract: `sig` is the `head` (offset 0) of a `Reader<T>`; the recipe holds an `F`.
@@ -164,7 +184,7 @@ unsafe fn patch_rmap_text<T: 'static, F: Fn(Option<&T>) -> String + Copy>(rt: &m
     // SAFETY: the contract: `sig` is a `Reader<T>` (its head is the first field, `#[repr(C)]`); the recipe holds an `F`.
     let r = unsafe { &*(sig as *const Reader<T>) };
     let f: F = unsafe { unrecipe(&w.recipe) };
-    crate::elem::set_node_text(rt, w.node, &f(r.latest()));
+    crate::elem::set_node_text(rt, w.node, &f(r.latest_raw()));
 }
 /// # Safety
 /// `PatchFn`'s contract: `sig` is the `phead` of a `Reader<T>` (offset 4); the recipe holds an `F`.
@@ -172,47 +192,71 @@ unsafe fn patch_rpmap_text<T: 'static, F: Fn(bool) -> String + Copy>(rt: &mut Rt
     // SAFETY: the contract: `phead` sits 4 bytes after the reader's start (`#[repr(C)]`); the recipe holds an `F`.
     let r = unsafe { &*(sig.sub(4) as *const Reader<T>) };
     let f: F = unsafe { unrecipe(&w.recipe) };
-    crate::elem::set_node_text(rt, w.node, &f(r.is_pending()));
+    crate::elem::set_node_text(rt, w.node, &f(r.pending_raw()));
 }
 
 impl<'a, T: 'static, V, P: 'static, F: Fn(Option<&T>) -> P + Copy + 'static> IntoProp<P, V> for RMap<'a, T, V, F> {
     fn lower<K: Apply<P = P>>(self, m: &mut Mounter<'_, V>, node: u32) -> P {
         // SAFETY: `self.w` is an `offset_of!`-proven `Reader<T>`; the patch reads one.
         unsafe { m.wire_cell(&self.w.r.head, self.w.off, patch_rmap::<K, T, F>, node, recipe(self.f)) };
-        (self.f)(self.w.r.latest())
+        (self.f)(self.w.r.latest_raw())
     }
     fn value(self) -> P {
-        (self.f)(self.w.r.latest())
+        (self.f)(self.w.r.latest_raw())
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x0230);
+        s.word(self.w.off);
+        crate::seal::closure(s, &self.f);
     }
 }
 impl<'a, T: 'static, V, P: 'static, F: Fn(bool) -> P + Copy + 'static> IntoProp<P, V> for RPMap<'a, T, V, F> {
     fn lower<K: Apply<P = P>>(self, m: &mut Mounter<'_, V>, node: u32) -> P {
         // SAFETY: `phead` sits at `off + 4` (`#[repr(C)]`); the patch reads the reader 4 bytes before it.
         unsafe { m.wire_cell(&self.w.r.phead, self.w.off + 4, patch_rpmap::<K, T, F>, node, recipe(self.f)) };
-        (self.f)(self.w.r.is_pending())
+        (self.f)(self.w.r.pending_raw())
     }
     fn value(self) -> P {
-        (self.f)(self.w.r.is_pending())
+        (self.f)(self.w.r.pending_raw())
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x0231);
+        s.word(self.w.off);
+        crate::seal::closure(s, &self.f);
     }
 }
 impl<'a, T: 'static, V, F: Fn(Option<&T>) -> String + Copy + 'static> TextSrc<V> for RMap<'a, T, V, F> {
     fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String {
         // SAFETY: `self.w` is an `offset_of!`-proven `Reader<T>`; `patch_rmap_text` reads one.
         unsafe { m.wire_cell(&self.w.r.head, self.w.off, patch_rmap_text::<T, F>, node, recipe(self.f)) };
-        (self.f)(self.w.r.latest())
+        (self.f)(self.w.r.latest_raw())
     }
     fn value(self) -> String {
-        (self.f)(self.w.r.latest())
+        (self.f)(self.w.r.latest_raw())
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x0232);
+        s.word(self.w.off);
+        crate::seal::closure(s, &self.f);
     }
 }
 impl<'a, T: 'static, V, F: Fn(bool) -> String + Copy + 'static> TextSrc<V> for RPMap<'a, T, V, F> {
     fn lower(self, m: &mut Mounter<'_, V>, node: u32) -> String {
         // SAFETY: `phead` sits at `off + 4` (`#[repr(C)]`); `patch_rpmap_text` reads the reader 4 bytes before it.
         unsafe { m.wire_cell(&self.w.r.phead, self.w.off + 4, patch_rpmap_text::<T, F>, node, recipe(self.f)) };
-        (self.f)(self.w.r.is_pending())
+        (self.f)(self.w.r.pending_raw())
     }
     fn value(self) -> String {
-        (self.f)(self.w.r.is_pending())
+        (self.f)(self.w.r.pending_raw())
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x0233);
+        s.word(self.w.off);
+        crate::seal::closure(s, &self.f);
     }
 }
 
@@ -229,6 +273,11 @@ impl<'a, T: 'static, V, F: Fn(&T) -> String + Copy + 'static> TextSrc<V> for Lat
     fn value(self) -> String {
         <crate::signal::WMap<'a, T, V, F> as TextSrc<V>>::value(self.0)
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x0234);
+        <crate::signal::WMap<'a, T, V, F> as TextSrc<V>>::seal(&self.0, s);
+    }
 }
 impl<'a, T: Clone + 'static, V, P: 'static> IntoProp<P, V> for Latest<Wired<'a, T, V>>
 where
@@ -242,6 +291,11 @@ where
     }
     fn value(self) -> P {
         self.0.value()
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x0235);
+        <Wired<'a, T, V> as IntoProp<P, V>>::seal(&self.0, s);
     }
 }
 
@@ -465,10 +519,10 @@ unsafe fn patch_produce<S: PartialEq + Clone + 'static, T: Send + 'static>(rt: &
     if p.dead {
         return;
     }
-    if p.last.as_ref().and_then(|b| b.downcast_ref::<S>()) == Some(&**src) {
+    if p.last.as_ref().and_then(|b| b.downcast_ref::<S>()) == Some(src.peek()) {
         return;
     }
-    p.last = Some(Box::new((**src).clone()));
+    p.last = Some(Box::new(src.peek().clone()));
     // SAFETY: `p.f` was stored from a `fn(&S) -> Request<T>` of this same `S` and `T` when `Produce::mount` pushed
     // the producer (`f: self.f as usize`); a fn pointer round-trips through `usize` on every supported target.
     let f: fn(&S) -> Request<T> = unsafe { std::mem::transmute::<usize, fn(&S) -> Request<T>>(p.f) };
@@ -478,7 +532,7 @@ unsafe fn patch_produce<S: PartialEq + Clone + 'static, T: Send + 'static>(rt: &
     let r = unsafe { &*(addr as *const Reader<T>) };
     let ticket = r.ticket.get().wrapping_add(1);
     r.ticket.set(ticket);
-    let job = f(src).0;
+    let job = f(src.peek()).0;
     rt.asy.stats.requests += 1;
     if r.state.get() & PENDING == 0 {
         r.state.set(r.state.get() | PENDING);
@@ -550,6 +604,11 @@ impl<'a, S: PartialEq + Clone + 'static, T: Send + 'static, V: 'static> crate::e
         unsafe { patch_produce::<S, T>(m.rt, &wire, self.src.sig as *const Signal<S> as *const u8, owner) };
     }
     fn update(self, _m: &mut Mounter<'_, V>) {}
+    /// Its re-description does nothing: nothing to compare.
+    #[inline(always)]
+    fn seal<Z: crate::seal::Sealer>(&self, s: &mut Z) {
+        s.word(0x44);
+    }
 }
 
 // =============================================================================== boundary
@@ -634,5 +693,10 @@ impl<'a, T: 'static, V: 'static, L: crate::elem::Element<V>, F: crate::elem::Ele
     }
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
+    }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x42);
     }
 }

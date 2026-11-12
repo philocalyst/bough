@@ -564,6 +564,11 @@ impl<V: 'static> Element<V> for LTemplate<V> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x41);
+    }
 }
 
 // =============================================================================== placement hooks
@@ -606,17 +611,20 @@ impl Rt {
 
     /// A clip owned by layout node `lid`: its rect follows the laid-out box.
     pub(crate) fn layout_clip(&mut self, lid: u32, parent: u16) -> u16 {
-        let id = self.bough.new_clip(NRect::EMPTY);
+        let id = self.own_clip(NRect::EMPTY);
         let (view, slot) = match self.input.mounting_view {
             Some(v) => {
                 let views = &mut self.input.views[v as usize];
-                views.clips.push((id, parent, [0.0; 4]));
+                views.clips.push((id, parent, [0.0; 4], NONE));
                 (v, (views.clips.len() - 1) as u32)
             }
             None => (NONE, NONE),
         };
         self.add_place_hook(lid, PlaceHook::Clip { clip: id, parent, view, slot, abs: [0.0; 4] });
         let k = self.lay.info[lid as usize].hook;
+        if view != NONE {
+            self.input.views[view as usize].clips[slot as usize].3 = k;
+        }
         self.input.clip_kids.entry(parent).or_default().push(k);
         id
     }
@@ -624,8 +632,52 @@ impl Rt {
     /// Chain a placement hook onto layout node `lid`.
     pub(crate) fn add_place_hook(&mut self, lid: u32, h: PlaceHook) {
         let next = self.lay.info[lid as usize].hook;
-        self.input.lhooks.push((h, next));
-        self.lay.info[lid as usize].hook = (self.input.lhooks.len() - 1) as u32;
+        let k = match self.input.lhook_free.pop() {
+            Some(k) => {
+                self.input.lhooks[k as usize] = (h, next);
+                k
+            }
+            None => {
+                self.input.lhooks.push((h, next));
+                (self.input.lhooks.len() - 1) as u32
+            }
+        };
+        self.lay.info[lid as usize].hook = k;
+    }
+
+    /// Layout node `n` left the engine (its subtree or its group was removed): its placement hooks go with
+    /// it. A clip it owned is unregistered (from its parent's re-cut list, from the view whose content it
+    /// was in) and its id returns; the hook slots return.
+    #[inline]
+    pub(crate) fn lay_node_dead(&mut self, n: u32) {
+        let k = std::mem::replace(&mut self.lay.info[n as usize].hook, NONE);
+        if k != NONE {
+            self.free_hooks(k);
+        }
+    }
+    #[cold]
+    fn free_hooks(&mut self, mut k: u32) {
+        while k != NONE {
+            let (hk, next) = self.input.lhooks[k as usize];
+            if let PlaceHook::Clip { clip, parent, view, slot, .. } = hk {
+                if let Some(kids) = self.input.clip_kids.get_mut(&parent) {
+                    if let Some(i) = kids.iter().position(|&x| x == k) {
+                        kids.swap_remove(i);
+                    }
+                    if kids.is_empty() {
+                        self.input.clip_kids.remove(&parent);
+                    }
+                }
+                // the clips cut inside it belong to nodes below this one, removed with it
+                self.input.clip_kids.remove(&clip);
+                if view != NONE {
+                    self.view_clip_gone(view, slot, clip);
+                }
+                self.free_clip(clip);
+            }
+            self.input.lhook_free.push(k);
+            k = next;
+        }
     }
 
     /// Layout placed a hooked node at (ax, ay, w, h), group-local px in `space`.
@@ -639,13 +691,24 @@ impl Rt {
 
     /// Re-cut clip hook `k` from its box and its parent clip, then every clip below it.
     fn recut(&mut self, k: u32) {
-        let PlaceHook::Clip { clip, parent, abs, .. } = self.input.lhooks[k as usize].0 else { return };
+        let PlaceHook::Clip { clip, parent, abs, view, slot } = self.input.lhooks[k as usize].0 else { return };
+        // inside a view the box is content: its absolute rect is its content rect at the view's origin *now* (the
+        // view may have moved or scrolled since the box was placed; `abs` is only as fresh as the last placement)
+        let abs = if view != NONE {
+            let (ox, oy) = crate::template::view_origin(self, view as usize);
+            let r = self.input.views[view as usize].clips[slot as usize].2;
+            [r[0] + ox, r[1] + oy, r[2] + ox, r[3] + oy]
+        } else {
+            abs
+        };
         let r = NRect::new(abs[0].floor() as i32, abs[1].floor() as i32, abs[2].ceil() as i32, abs[3].ceil() as i32);
         let r = r.intersect(self.bough.clip_rect(parent)).canon();
         if r == self.bough.clip_rect(clip) {
             return;
         }
         self.bough.set_clip_rect(clip, r);
+        // what windows against a clip (a list region's exposure) is placed again (`lay_flush`)
+        self.lay.clips_moved = true;
         let kids = self.input.clip_kids.get(&clip).cloned().unwrap_or_default();
         for c in kids {
             self.recut(c);

@@ -44,6 +44,25 @@ sabotage_views = ["bough-metal/sabotage_views"]
 sabotage_blend = []
 # cephal's query counters (`cephal::compute::stats`), for the layout probes in the cost examples.
 cephal-stats = ["cephal/stats"]
+# Mutants of the round-6 re-description and route gates (tests/redescribe_scroll.rs, tests/routes.rs): each must
+# fail its test. A scroll container's content is opaque to a re-description again; a re-described route keeps the
+# closure it was mounted with; a drag is dispatched to a removed element's owner slot (no liveness, no generation).
+mutant_scroll_skip = []
+mutant_route_stale = []
+mutant_route_owner = []
+# Mutants of the owner-grain gates (tests/owner_grain.rs): the plan's last plain range is not compared; plain reads of
+# cells subscribe nothing.
+mutant_grain_plan = []
+mutant_grain_track = []
+# The owner seal answers "unchanged" without comparing (tests/owner_grain.rs).
+mutant_owner_seal = []
+# A list's item-flag change skips the second row it changes (tests/flags.rs).
+mutant_flags_range = []
+# Direct wires (tests/direct.rs): no binding is direct (a control, not a mutant); the frame marks no damage for direct
+# writes; the write does not store.
+mutant_direct_off = []
+mutant_direct_damage = []
+mutant_direct_store = []
 
 [dev-dependencies]
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }

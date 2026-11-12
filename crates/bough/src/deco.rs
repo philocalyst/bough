@@ -419,6 +419,11 @@ impl<V: 'static, A: IntoProp<f32, V>> Element<V> for Image<A> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x40);
+    }
 }
 
 /// A box (x, y, w, h points, corner radius) with CSS box shadows beneath and a fill: a gradient, or
@@ -476,6 +481,11 @@ impl<V: 'static> Element<V> for DecoBox {
     }
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
+    }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x40);
     }
 }
 

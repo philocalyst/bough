@@ -114,6 +114,7 @@ impl Rt {
                 ctx.release(&mut self.glyphs);
             }
             self.lay.info[x as usize].live = false;
+            self.lay_node_dead(x);
         }
         self.lay.eng.remove_tree(&self.bough, n, &all);
     }
@@ -415,20 +416,76 @@ impl<V, E: Element<V>> Element<V> for Option<E> {
     fn update(self, m: &mut Mounter<'_, V>) {
         update_dyn(m, self.into_iter());
     }
+    /// Present or not, then the item's own operands.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        match self {
+            Some(e) => {
+                s.word(0x31);
+                e.seal(s);
+            }
+            None => s.word(0x30),
+        }
+    }
+}
+
+/// The seal of an owner's whole description (`seal.rs`): a re-description whose operands are bit-identical to
+/// it is stepped over whole (the retained records are what the walk would leave). An owner whose description
+/// refuses (an element with state of its own that a description does not determine, a `Vec` of items) is
+/// walked as before.
+#[derive(Default)]
+pub struct OwnerSeal {
+    bytes: Vec<u8>,
+    state: u8,
+}
+const SEAL_SET: u8 = 1;
+const SEAL_REFUSED: u8 = 2;
+impl OwnerSeal {
+    /// Is `el` described exactly as the retained seal says? (The owner's mounting context is fixed.)
+    #[inline]
+    pub(crate) fn same<V, E: Element<V>>(&self, el: &E, descs: &crate::layout::SpecTable) -> bool {
+        if self.state != SEAL_SET || cfg!(feature = "mutant_owner_seal") {
+            return self.state == SEAL_SET && cfg!(feature = "mutant_owner_seal");
+        }
+        let mut c = crate::seal::SealCheck::new(&self.bytes, descs);
+        el.seal(&mut c);
+        c.equal()
+    }
+    /// Keep `el`'s seal (about to be mounted or walked); a refusal is final for the owner.
+    #[inline]
+    pub(crate) fn write<V, E: Element<V>>(&mut self, el: &E, descs: &mut crate::layout::SpecTable) {
+        if self.state == SEAL_REFUSED {
+            return;
+        }
+        self.bytes.clear();
+        let mut w = crate::seal::SealWrite { out: &mut self.bytes, descs, ok: true };
+        el.seal(&mut w);
+        if w.ok {
+            self.state = SEAL_SET;
+        } else {
+            self.state = SEAL_REFUSED;
+            self.bytes = Vec::new();
+        }
+    }
 }
 
 /// Re-describe the root owner `v` against its tape (`App::turn` and every handler, unless `Config::mount_once`).
+/// A description equal to the retained seal (`OwnerSeal`) is stepped over whole.
 ///
 /// # Safety
 /// `tape` is the tape recorded when `v` was mounted at the start of the Bough, and `v` is that owner.
-pub(crate) unsafe fn redescribe<V: crate::app::View>(rt: &mut Rt, v: &V, tape: &mut Vec<u32>) {
+pub(crate) unsafe fn redescribe<V: crate::app::View>(rt: &mut Rt, v: &V, tape: &mut Vec<u32>, seal: &mut OwnerSeal) {
     let el = v.view();
+    if seal.same(&el, &rt.lay.descs) {
+        return;
+    }
+    seal.write(&el, &mut rt.lay.descs);
     let mut recs: Vec<RecordInit> = Vec::new();
     let mut scope = Scope::default();
     let prev = rt.lay.cur;
     rt.lay.cur = NONE;
     {
-        let mut m = Mounter { rt, owner: v as *const V, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None, cls: 0, tape: tape as *mut Vec<u32>, ti: 0, pos: 0, kid: 0, keep: false };
+        let mut m = Mounter { rt, owner: v as *const V, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None, cls: 0, tape: tape as *mut Vec<u32>, ti: 0, pos: 0, kid: 0, keep: false, own: OwnerRef::ROOT };
         el.update(&mut m);
         debug_assert_eq!(m.ti, tape.len(), "re-description walked a different shape than the tape");
     }

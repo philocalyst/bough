@@ -1,0 +1,17 @@
+lane: surface-api
+state: CARD
+owner: surface-api round 6 session
+predecessor: aa9943e7ae50595f6af026773ee82b46a4b85ae0; nightly-2026-10-17, default features, release
+question: What does owner re-description cost, and can ordinary scroll children and child-owner handlers satisfy retained == fresh?
+change: First a prelude workload harness measuring the existing path. Then retain scroll child tapes and resolve routes to validated owner chains, including child-owner re-description. No larger propagation optimization before proposal review.
+implication: Establishes measured F8 costs and bounded correctness of the two repairs; neither independent acceptance nor removal of Config::once.
+platforms: Local Apple M3 Pro, macOS, direct Metal; CPU instruction batches headless.
+workloads: Counter; unchanged AWAGY dashboard and scroll descriptions; plain columns at 10/100/1000/10000 children (one changed operand); nested/deep tree; fixed shape with wires; List rows at the same sizes (mounted count reported). Three independent instruction runs. Scroll correctness includes plain data, insertion/removal, nonzero offset, nested clipping and moving/resizing port. Routes include list/entity receivers, ancestor resolution, nearest same type, removal/reuse and multiple views.
+gates: Retained == fresh mount after every operation, presented == full redraw across ring sizes 1..4, existing bough tests and workspace all-target check. Negative controls: suppress scroll child update; suppress child-owner re-description/receiver resolution (must fail exact oracle). Baseline stale scroll is retained as a failure, never a speed result.
+thresholds: Every STATUS and zgx/zgui Config::once cell <=1.02x baseline. Re-description target <=1.05x mount-once. No substitution of a faster incorrect result. F8 is characterization: report all results, including above target.
+measurement: proc_pid_rusage ri_instructions, warmed batches and three runs, paired once/normal where meaningful; exclusive shared measurement lock for batch, check lock before builds/tests; no wall/GPU speed claims under load. Keep executable hashes and source revisions. Assembly inspection of touched hot code.
+budget: Only this worktree/local machine; four build jobs. No remote use. Bounded defects plus proposal, no larger build.
+stop conditions: Correctness mismatch, source/executable mismatch or capacity limit => preserve failed attempt and diagnose; no weakened gate. Missing full floor coverage => explicitly UNKNOWN, not accepted.
+do not revisit: SETTLED exclusions, hooks, ambient tracking, component macros, per-view static switches, different Vec identity semantics, root manifests/shared reports.
+
+Pre-measurement clarification: F8 uses App::turn brackets (handler + settle + effects + description + layout), reports both once and ordinary totals and their difference; no presenter in the bracket. Prelude has no App/Config/counter exports, so harness infrastructure imports app/rt modules; workload views use only prelude. All-template/wire cell means a fixed typed tree of 64 wired paint leaves with constant layout operands (raw Template is excluded from the new prelude benchmark). Deep tree is 32 nested columns. List count characterization forces all rows mounted via overscan; harness spaces=16384 instead of APP_CAPS=4096, explicitly a capacity-controlled experiment, not shipping capacity success. AWAGY descriptions copied with only constructor/step accessors and asset path adjustment.

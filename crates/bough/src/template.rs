@@ -92,6 +92,11 @@ impl<V: 'static> Element<V> for Template<V> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x43);
+    }
 }
 impl<V: 'static> Template<V> {
     fn mount_in(self, m: &mut Mounter<'_, V>) {
@@ -142,7 +147,7 @@ impl<V: 'static> Template<V> {
                 let o = m.rt.space(m.space);
                 let [x, y, w, h] = n.rect;
                 let r = [o[0] + (ox + x) * s, o[1] + (oy + y) * s, o[0] + (ox + x + w) * s, o[1] + (oy + y + h) * s];
-                let id = m.rt.scoped_clip(r, m.clip);
+                let id = m.rt.scoped_clip(m.scope, r, m.clip);
                 clips.push((n.depth, id));
             }
         }
@@ -185,8 +190,11 @@ pub(crate) struct ScrollView {
     pub vy: f32,
     /// Current offset (device px).
     pub px: f32,
-    /// Clips owned by the content: (id, parent clip id, rect in content px at offset 0).
-    pub clips: Vec<(u16, u16, [f32; 4])>,
+    /// Clips owned by the content: (id, parent clip id, rect in content px at offset 0, the layout hook that
+    /// places it or NONE). Parents first (registration order is preorder). An id of 0 is a returned clip's
+    /// entry (`clips_dead` of them), dropped by the next compaction.
+    pub clips: Vec<(u16, u16, [f32; 4], u32)>,
+    pub clips_dead: u32,
     /// Views nested in this one's content (their origins follow this one's moves) and tooltips inside it.
     pub nested: Vec<u32>,
     pub tips: Vec<u32>,
@@ -195,11 +203,108 @@ pub(crate) struct ScrollView {
     pub root: u32,
     pub follows: bool,
     pub inset_w: f32,
+    /// The view this one's port lies in (`nested` of that view holds it), or NONE.
+    pub outer: u32,
+    /// Its wheel target (`Input::scrollers`), or NONE.
+    pub scroller: u32,
+}
+
+impl ScrollView {
+    pub(crate) fn new(handle: bough_core::Handle, space: u16, clip: u16, vx: f32, vy: f32, px: f32) -> ScrollView {
+        ScrollView { handle, space, clip, vx, vy, px, clips: Vec::new(), clips_dead: 0, nested: Vec::new(), tips: Vec::new(), root: NONE, follows: false, inset_w: 0.0, outer: NONE, scroller: NONE }
+    }
+}
+
+impl Rt {
+    /// Register a view (a scroll view, an anchor): nested in the view being mounted, owned by `scope`.
+    pub(crate) fn add_view(&mut self, scope: &mut Scope, mut view: ScrollView) -> u32 {
+        view.outer = self.input.mounting_view.unwrap_or(NONE);
+        let v = match self.input.view_free.pop() {
+            Some(v) => {
+                self.input.views[v as usize] = view;
+                v
+            }
+            None => {
+                self.input.views.push(view);
+                (self.input.views.len() - 1) as u32
+            }
+        };
+        if let Some(outer) = self.input.mounting_view {
+            self.input.views[outer as usize].nested.push(v);
+        }
+        scope.owned.push(Owned::View(v));
+        v
+    }
+
+    /// Clip `id`, registered in view `view`'s content at `slot` (or wherever it is: `NONE`), was returned:
+    /// its entry is emptied, and the entries are compacted (order kept, the layout hooks' slots following)
+    /// once most of them are empty.
+    pub(crate) fn view_clip_gone(&mut self, view: u32, slot: u32, id: u16) {
+        let vw = &mut self.input.views[view as usize];
+        let slot = if slot != NONE { slot as usize } else { vw.clips.iter().position(|e| e.0 == id).unwrap_or(usize::MAX) };
+        // a view released before its content's scopes has no entries left
+        let Some(e) = vw.clips.get_mut(slot).filter(|e| e.0 == id) else { return };
+        e.0 = 0;
+        vw.clips_dead += 1;
+        if vw.clips_dead >= 16 && vw.clips_dead as usize * 2 > vw.clips.len() {
+            let mut k = 0;
+            for i in 0..vw.clips.len() {
+                let e = vw.clips[i];
+                if e.0 == 0 {
+                    continue;
+                }
+                vw.clips[k] = e;
+                if e.3 != NONE {
+                    if let crate::ltemplate::PlaceHook::Clip { slot, .. } = &mut self.input.lhooks[e.3 as usize].0 {
+                        *slot = k as u32;
+                    }
+                }
+                k += 1;
+            }
+            vw.clips.truncate(k);
+            vw.clips_dead = 0;
+        }
+    }
+
+    /// A scope's own clip inside view `view` (`scoped_clip`) is released with the scope.
+    pub(crate) fn release_scoped_clip(&mut self, id: u16, view: u32) {
+        self.input.clip_kids.remove(&id);
+        self.view_clip_gone(view, NONE, id);
+        self.free_clip(id);
+    }
+
+    /// The scope that mounted view `v` is released (`cut_scope`): the view leaves the view it was nested in
+    /// (an outer scroll no longer moves it), its glide stops, and its space and its slot return. What it
+    /// held by index (clips, tooltips, views nested in it) was mounted by the same scope or by scopes
+    /// inside it, released with it.
+    pub(crate) fn release_view(&mut self, v: u32) {
+        let (outer, space, scroller) = {
+            let view = &mut self.input.views[v as usize];
+            view.clips.clear();
+            view.clips_dead = 0;
+            view.nested.clear();
+            view.tips.clear();
+            view.follows = false;
+            view.root = NONE;
+            (std::mem::replace(&mut view.outer, NONE), view.space, std::mem::replace(&mut view.scroller, NONE))
+        };
+        if outer != NONE {
+            let n = &mut self.input.views[outer as usize].nested;
+            if let Some(i) = n.iter().position(|&x| x == v) {
+                n.swap_remove(i);
+            }
+        }
+        if scroller != NONE {
+            self.input.scrollers[scroller as usize].glide = None;
+        }
+        self.free_space(space);
+        self.input.view_free.push(v);
+    }
 }
 
 /// The content origin of view `v`.
 #[inline]
-fn view_origin(rt: &Rt, v: usize) -> (f32, f32) {
+pub(crate) fn view_origin(rt: &Rt, v: usize) -> (f32, f32) {
     let view = &rt.input.views[v];
     (view.vx, view.vy - view.px)
 }
@@ -208,11 +313,17 @@ fn view_origin(rt: &Rt, v: usize) -> (f32, f32) {
 fn view_clips(rt: &mut Rt, v: usize) {
     let (ox, oy) = view_origin(rt, v);
     for k in 0..rt.input.views[v].clips.len() {
-        let (id, parent, r) = rt.input.views[v].clips[k];
+        let (id, parent, r, _) = rt.input.views[v].clips[k];
+        if id == 0 {
+            continue;
+        }
         let p = rt.bough.clip_rect(parent).to_xyxy();
         let a = [r[0] + ox, r[1] + oy, r[2] + ox, r[3] + oy];
         let c = NRect::new(a[0].max(p[0] as f32).floor() as i32, a[1].max(p[1] as f32).floor() as i32, a[2].min(p[2] as f32).ceil() as i32, a[3].min(p[3] as f32).ceil() as i32);
-        rt.bough.set_clip_rect(id, c);
+        if rt.bough.clip_rect(id) != c.canon() {
+            rt.bough.set_clip_rect(id, c);
+            rt.lay.clips_moved = true;
+        }
     }
 }
 
@@ -275,25 +386,25 @@ impl Rt {
         let o = self.space(parent);
         self.set_space(s, o);
         let hd = self.bough.new_handle();
-        let v = self.input.views.len() as u32;
-        self.input.views.push(ScrollView { handle: hd, space: s, clip: 0, vx: o[0], vy: o[1], px: 0.0, clips: Vec::new(), nested: Vec::new(), tips: Vec::new(), root: NONE, follows: false, inset_w: 0.0 });
-        if let Some(outer) = self.input.mounting_view {
-            self.input.views[outer as usize].nested.push(v);
-        }
+        // not owned by a scope (its caller has none at hand): it stays registered for the app's life
+        let mut scope = Scope::default();
+        self.add_view(&mut scope, ScrollView::new(hd, s, 0, o[0], o[1], 0.0));
         s
     }
 
     /// A clip for an absolute rect inside the current clip `parent`. Inside a scroll view's content the
-    /// clip is fresh (it moves with the content) and registered with the view; elsewhere it is shared.
-    pub(crate) fn scoped_clip(&mut self, r: [f32; 4], parent: u16) -> u16 {
+    /// clip is fresh (it moves with the content), registered with the view and owned by `scope`; elsewhere
+    /// it is shared.
+    pub(crate) fn scoped_clip(&mut self, scope: &mut Scope, r: [f32; 4], parent: u16) -> u16 {
         let p = self.bough.clip_rect(parent).to_xyxy();
         let c = [r[0].max(p[0] as f32), r[1].max(p[1] as f32), r[2].min(p[2] as f32), r[3].min(p[3] as f32)];
         if let Some(v) = self.input.mounting_view {
             let view = &self.input.views[v as usize];
             // content px at offset 0: absolute minus the port origin plus the offset
             let (dx, dy) = (view.vx, view.vy - view.px);
-            let id = self.bough.new_clip(NRect::new(c[0].floor() as i32, c[1].floor() as i32, c[2].ceil() as i32, c[3].ceil() as i32));
-            self.input.views[v as usize].clips.push((id, parent, [r[0] - dx, r[1] - dy, r[2] - dx, r[3] - dy]));
+            let id = self.own_clip(NRect::new(c[0].floor() as i32, c[1].floor() as i32, c[2].ceil() as i32, c[3].ceil() as i32));
+            self.input.views[v as usize].clips.push((id, parent, [r[0] - dx, r[1] - dy, r[2] - dx, r[3] - dy], NONE));
+            scope.owned.push(Owned::Clip(id, v));
             return id;
         }
         self.clip_rect(c)
@@ -304,9 +415,9 @@ impl Rt {
 /// Wire contract: `sig` is a `Signal<f32>`; `w.node` is the view index.
 unsafe fn patch_view(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
-    let s = unsafe { &*(sig as *const Signal<f32>) };
+    let s = unsafe { (*(sig as *const Signal<f32>)).peek() };
     let v = w.node as usize;
-    let new_px = (**s * rt.scale).round();
+    let new_px = (*s * rt.scale).round();
     let old_px = rt.input.views[v].px;
     if new_px == old_px {
         return;
@@ -359,16 +470,8 @@ impl<V, C> ScrollY<'_, V, C> {
 }
 
 impl<V: 'static, C: Element<V>> Element<V> for ScrollY<'_, V, C> {
+    /// The tape: the port quad's entries, the view, then the content's own entries.
     fn mount(self, m: &mut Mounter<'_, V>) {
-        crate::describe::mount_opaque(m, |m| self.mount_in(m));
-    }
-    /// State-driven content: a re-description steps over it.
-    fn update(self, m: &mut Mounter<'_, V>) {
-        crate::describe::update_opaque(m);
-    }
-}
-impl<V: 'static, C: Element<V>> ScrollY<'_, V, C> {
-    fn mount_in(self, m: &mut Mounter<'_, V>) {
         let [x, y, w, h] = self.rect;
         let s = m.rt.scale;
         let before = m.recs.len();
@@ -378,16 +481,15 @@ impl<V: 'static, C: Element<V>> ScrollY<'_, V, C> {
         let handle = m.rt.bough.handle_gen(hidx);
         let o = m.rt.space(m.space);
         let (vx, vy) = (o[0] + (m.ox + x) * s, o[1] + (m.oy + y) * s);
-        let clip = m.rt.scoped_clip([vx, vy, vx + w * s, vy + h * s], m.clip);
+        let clip = m.rt.scoped_clip(m.scope, [vx, vy, vx + w * s, vy + h * s], m.clip);
         let space = m.rt.alloc_space_in(m.space);
         let px = (*self.sig.get() * s).round();
         m.rt.set_space(space, [vx, vy - px]);
-        let v = m.rt.input.views.len() as u32;
         let follows = vx == 0.0 && vy == 0.0 && (w * s).round() as i32 == m.rt.win_w && (h * s).round() as i32 == m.rt.win_h;
-        m.rt.input.views.push(ScrollView { handle, space, clip, vx, vy, px, clips: Vec::new(), nested: Vec::new(), tips: Vec::new(), root: NONE, follows, inset_w: 0.0 });
-        if let Some(outer) = m.rt.input.mounting_view {
-            m.rt.input.views[outer as usize].nested.push(v);
-        }
+        let a = m.rt.input.act_of_handle(handle);
+        let sc = m.rt.input.acts[a as usize].scroll;
+        let v = m.rt.add_view(m.scope, ScrollView { follows, scroller: sc, ..ScrollView::new(handle, space, clip, vx, vy, px) });
+        m.tape_push(v);
         m.wire(&self.sig, patch_view, v, [0; 16]);
         let saved = (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view);
         m.space = space;
@@ -399,7 +501,7 @@ impl<V: 'static, C: Element<V>> ScrollY<'_, V, C> {
         let roots_before = m.scope.lroots.len();
         let lay_cur = m.rt.lay.cur;
         m.rt.lay.cur = NONE; // the content is a layout group of its own
-        self.content.mount(m);
+        mount_content(m, self.content);
         m.rt.lay.cur = lay_cur;
         if let Some(&root) = m.scope.lroots.get(roots_before) {
             // laid-out content: the wheel's limit is the content's laid-out height
@@ -407,13 +509,70 @@ impl<V: 'static, C: Element<V>> ScrollY<'_, V, C> {
             let view = &mut m.rt.input.views[v as usize];
             view.root = root;
             view.inset_w = w * s - avail;
-            let a = m.rt.input.act_of_handle(handle);
-            let sc = m.rt.input.acts[a as usize].scroll;
             m.rt.input.scrollers[sc as usize].root = root;
             m.rt.input.scrollers[sc as usize].port_h = h;
         }
         (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view) = saved;
     }
+
+    /// The view keeps its identity (offset, space, clip, scroller, layout group); the port and the content
+    /// re-describe like any other element, the content in the view's own context. The port's rect is taken as
+    /// fixed for the view's life (a laid-out port is `LBox::scroll`).
+    fn update(self, m: &mut Mounter<'_, V>) {
+        let [x, y, w, h] = self.rect;
+        quad(x, y, w, h).bg(self.bg).scrolls(self.sig, self.line, self.max).update(m);
+        let v = m.tape_next();
+        update_content(m, v, self.content);
+    }
+    /// The port's operands, the scrolled field and the content's operands (the view's offset, space and clip
+    /// are its own state).
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x60);
+        for v in self.rect {
+            s.f32(v);
+        }
+        s.word(self.bg.0);
+        s.f32(self.line);
+        s.f32(self.max);
+        s.word(self.sig.off);
+        self.content.seal(s);
+    }
+}
+
+/// Mount a view's content (the view's context is set by the caller).
+#[inline]
+fn mount_content<V, C: Element<V>>(m: &mut Mounter<'_, V>, content: C) {
+    // the mutant of the scroll gates: the content is opaque to a re-description again
+    if cfg!(feature = "mutant_scroll_skip") {
+        return crate::describe::mount_opaque(m, |m| content.mount(m));
+    }
+    content.mount(m)
+}
+
+/// Re-describe the content of view `v` in the context it was mounted in: the view's space and clip, origin
+/// zero, one level below the port, nested views registering with `v`, and a layout group of its own (no
+/// layout parent, child index 0). The caller's context is restored.
+fn update_content<V, C: Element<V>>(m: &mut Mounter<'_, V>, v: u32, content: C) {
+    let (space, clip) = {
+        let view = &m.rt.input.views[v as usize];
+        (view.space, view.clip)
+    };
+    let saved = (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view, m.rt.lay.cur, m.kid);
+    m.space = space;
+    m.ox = 0.0;
+    m.oy = 0.0;
+    m.clip = clip;
+    m.depth += 1;
+    m.rt.input.mounting_view = Some(v);
+    m.rt.lay.cur = NONE;
+    m.kid = 0;
+    if cfg!(feature = "mutant_scroll_skip") {
+        crate::describe::update_opaque(m);
+    } else {
+        content.update(m);
+    }
+    (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view, m.rt.lay.cur, m.kid) = saved;
 }
 
 /// A laid-out scroll box (`LBox::scroll`, the design's `.scroll(&self.scroll)`). The port is a box in its
@@ -442,6 +601,7 @@ impl<'a, V, Bg, Ch> ScrollBox<'a, V, Bg, Ch> {
 }
 
 impl<'a, V: 'static, Bg: crate::elem::IntoProp<Color, V>, Ch: Element<V>> Element<V> for ScrollBox<'a, V, Bg, Ch> {
+    /// The tape: the port box's entries, the view, then the content's own entries.
     fn mount(self, m: &mut Mounter<'_, V>) {
         let s = m.rt.scale;
         let before = m.recs.len();
@@ -453,17 +613,12 @@ impl<'a, V: 'static, Bg: crate::elem::IntoProp<Color, V>, Ch: Element<V>> Elemen
         let space = m.rt.alloc_space();
         let px = (*self.sig.get() * s).round();
         m.rt.set_space(space, [0.0, -px]);
-        let v = m.rt.input.views.len() as u32;
-        m.rt.input.views.push(ScrollView { handle, space, clip, vx: 0.0, vy: 0.0, px, clips: Vec::new(), nested: Vec::new(), tips: Vec::new(), root: NONE, follows: false, inset_w: 0.0 });
-        if let Some(outer) = m.rt.input.mounting_view {
-            m.rt.input.views[outer as usize].nested.push(v);
-        }
         let a = m.rt.input.act_of_handle(handle);
         let sc = m.rt.input.acts[a as usize].scroll;
+        let v = m.rt.add_view(m.scope, ScrollView { scroller: sc, ..ScrollView::new(handle, space, clip, 0.0, 0.0, px) });
+        m.tape_push(v);
         m.rt.add_place_hook(lid, crate::ltemplate::PlaceHook::ScrollPort { view: v, scroller: sc });
         m.wire(&self.sig, patch_view, v, [0; 16]);
-        // the view's index on the tape: a re-description finds its space and clip again (`update`)
-        m.tape_push(v);
         let saved = (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view);
         m.space = space;
         m.ox = 0.0;
@@ -474,7 +629,7 @@ impl<'a, V: 'static, Bg: crate::elem::IntoProp<Color, V>, Ch: Element<V>> Elemen
         let roots_before = m.scope.lroots.len();
         let lay_cur = m.rt.lay.cur;
         m.rt.lay.cur = NONE; // the content is a layout group of its own
-        self.content.mount(m);
+        mount_content(m, self.content);
         m.rt.lay.cur = lay_cur;
         if let Some(&root) = m.scope.lroots.get(roots_before) {
             m.rt.input.views[v as usize].root = root;
@@ -483,30 +638,23 @@ impl<'a, V: 'static, Bg: crate::elem::IntoProp<Color, V>, Ch: Element<V>> Elemen
         (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view) = saved;
     }
 
-    /// Re-described like any box (round 7, platform lane; generalization OVERFIT 1: plain state inside a scroll
-    /// box was never re-described, so a coarse table showed its first state forever): the port updates in the
-    /// parent's flow, the content in the view's space and clip as a layout group of its own, exactly the context
-    /// `mount` gave it. The scroll offset is a wire (`patch_view`), not an operand.
+    /// The box keeps its identity: the view (offset, space, clip, scroll-by-copy state), the scroller and
+    /// its glide, the placement hook, the content's layout group. The port re-describes in its parent's
+    /// flow; the content re-describes like any other element, in the view's own context.
     fn update(self, m: &mut Mounter<'_, V>) {
         self.port.scrolls(self.sig, self.line, 0.0).update(m);
         let v = m.tape_next();
-        let (space, clip) = {
-            let view = &m.rt.input.views[v as usize];
-            (view.space, view.clip)
-        };
-        let saved = (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view, m.kid);
-        m.space = space;
-        m.ox = 0.0;
-        m.oy = 0.0;
-        m.clip = clip;
-        m.depth += 1;
-        m.rt.input.mounting_view = Some(v);
-        let lay_cur = m.rt.lay.cur;
-        m.rt.lay.cur = NONE;
-        m.kid = 0;
-        self.content.update(m);
-        m.rt.lay.cur = lay_cur;
-        (m.space, m.ox, m.oy, m.clip, m.depth, m.rt.input.mounting_view, m.kid) = saved;
+        update_content(m, v, self.content);
+    }
+    /// The port box, the scrolled field and its step, then the content (the view's offset, space and clip
+    /// are its own state).
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x61);
+        self.port.seal(s);
+        s.word(self.sig.off);
+        s.f32(self.line);
+        self.content.seal(s);
     }
 }
 
@@ -527,7 +675,7 @@ pub fn clip_by<'a, T, V, F: Fn(&T) -> [f32; 4] + Copy + 'static, C>(sig: Wired<'
 /// Wire contract: `sig` is a `Signal<T>`; the recipe holds an `F`; `w.node` is the clip index in `Input::clips`.
 unsafe fn patch_clip_by<T: 'static, F: Fn(&T) -> [f32; 4] + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
-    let s = unsafe { &*(sig as *const Signal<T>) };
+    let s = unsafe { (*(sig as *const Signal<T>)).peek() };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
     let (id, space, parent) = rt.input.wclips[w.node as usize];
     let r = clip_px(rt, space, f(s), parent);
@@ -563,6 +711,11 @@ impl<'a, T: 'static, V, F: Fn(&T) -> [f32; 4] + Copy + 'static, C: Element<V>> E
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x43);
+    }
 }
 impl<'a, T: 'static, V, F: Fn(&T) -> [f32; 4] + Copy + 'static, C: Element<V>> ClipBy<'a, T, V, F, C> {
     fn mount_in(self, m: &mut Mounter<'_, V>) {
@@ -597,7 +750,7 @@ pub fn port_list<'a, V>(scroll: Wired<'a, f32, V>, top: Wired<'a, f32, V>, x: f3
 /// Wire contract: `sig` is a `Signal<f32>` (the port's top edge, points); `owner` is the region's owner.
 unsafe fn patch_port(rt: &mut Rt, w: &Wire, sig: *const u8, owner: *const u8) {
     // SAFETY: see the function contract.
-    let top = **unsafe { &*(sig as *const Signal<f32>) };
+    let top = *unsafe { (*(sig as *const Signal<f32>)).peek() };
     let reg = w.node as usize;
     let s = rt.scale;
     let (x0, bottom_px, wpx) = {
@@ -664,6 +817,11 @@ impl<'a, V: 'static> Element<V> for PortList<'a, V> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x43);
+    }
 }
 impl<'a, V: 'static> PortList<'a, V> {
     fn mount_in(self, m: &mut Mounter<'_, V>) {
@@ -698,6 +856,8 @@ impl<'a, V: 'static> PortList<'a, V> {
             scale_pt: s,
             mount_row: crate::elem::mount_row::<V>,
             row_fn: self.row as usize,
+            cls: m.cls,
+            own: m.own,
         });
         m.wire(&self.scroll, crate::elem::patch_scroll, reg as u32, [0; 16]);
         m.wire(&self.top, patch_port, reg as u32, [0; 16]);
@@ -727,7 +887,7 @@ pub(crate) type OffsetState = (bough_core::Handle, u16, f32, f32, [i32; 2]);
 /// Wire contract: `sig` is a `Signal<(f32, f32)>`; `w.node` indexes `Input::offsets`.
 unsafe fn patch_offset(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
-    let v = **unsafe { &*(sig as *const Signal<(f32, f32)>) };
+    let v = *unsafe { (*(sig as *const Signal<(f32, f32)>)).peek() };
     let (h, space, bx, by, cur) = rt.input.offsets[w.node as usize];
     let s = rt.scale;
     let new = [(v.0 * s).round() as i32, (v.1 * s).round() as i32];
@@ -750,6 +910,11 @@ impl<V: 'static, C: Element<V>> Element<V> for Offset<'_, V, C> {
     /// State-driven content: a re-description steps over it.
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
+    }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x43);
     }
 }
 impl<V: 'static, C: Element<V>> Offset<'_, V, C> {
@@ -807,11 +972,8 @@ impl<V: 'static, C: Element<V>> Element<V> for Anchor<C> {
         m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_BOX, payload: 0, handle: hd.idx, clip: m.clip });
         let space = m.rt.alloc_space();
         m.rt.set_space(space, [0.0, 0.0]);
-        let v = m.rt.input.views.len() as u32;
-        m.rt.input.views.push(ScrollView { handle: hd, space, clip: m.clip, vx: 0.0, vy: 0.0, px: 0.0, clips: Vec::new(), nested: Vec::new(), tips: Vec::new(), root: NONE, follows: false, inset_w: 0.0 });
-        if let Some(outer) = m.rt.input.mounting_view {
-            m.rt.input.views[outer as usize].nested.push(v);
-        }
+        let clip = m.clip;
+        let v = m.rt.add_view(m.scope, ScrollView::new(hd, space, clip, 0.0, 0.0, 0.0));
         m.rt.add_place_hook(lid, crate::ltemplate::PlaceHook::Anchor { view: v });
         let saved = (m.space, m.ox, m.oy, m.depth, m.rt.input.mounting_view, m.rt.lay.cur);
         m.space = space;
@@ -827,6 +989,11 @@ impl<V: 'static, C: Element<V>> Element<V> for Anchor<C> {
     }
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
+    }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x43);
     }
 }
 
@@ -873,6 +1040,8 @@ impl<'a, V: 'static> Element<V> for PortListIn<'a, V> {
             scale_pt: s,
             mount_row: crate::elem::mount_row::<V>,
             row_fn: self.row as usize,
+            cls: m.cls,
+            own: m.own,
         });
         m.wire(&self.scroll, crate::elem::patch_scroll, reg as u32, [0; 16]);
         m.rt.add_place_hook(lid, crate::ltemplate::PlaceHook::Port { reg: reg as u32 });
@@ -881,5 +1050,10 @@ impl<'a, V: 'static> Element<V> for PortListIn<'a, V> {
     }
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
+    }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x43);
     }
 }

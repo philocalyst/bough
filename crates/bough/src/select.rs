@@ -50,7 +50,7 @@ impl<'a, T, V> Wired<'a, T, V> {
 /// # Safety
 /// Wire contract: `sig` is a `Signal<T>`; `w.node` a `SelTable<T, P>`.
 unsafe fn patch_select<T: Copy + Eq + Hash + 'static, P: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _o: *const u8) {
-    let new = **unsafe { &*(sig as *const Signal<T>) };
+    let new = *unsafe { (*(sig as *const Signal<T>)).peek() };
     let mut tb = std::mem::replace(&mut rt.selects.tables[w.node as usize], Box::new(()));
     {
         let t = tb.downcast_mut::<SelTable<T, P>>().expect("select table of the signal's type");

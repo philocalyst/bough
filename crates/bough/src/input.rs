@@ -90,19 +90,23 @@ impl Ev {
 
 // =============================================================================== routes
 
-/// A typed route lowered: a trampoline monomorphised for (owner type, closure type) and the closure's
-/// bytes. Created only by `Mounter<V>`, whose `V` is the app's owner type (every mount in one runtime is).
+/// A typed route lowered: a trampoline monomorphised for (receiver type, closure type), the closure's
+/// bytes, and the receiver's path from the root (`OwnerRef`, resolved along the owner chain when the route
+/// is mounted: the design's L4). The receiver is the nearest enclosing owner whose type is the handler's
+/// `&mut R`: the element's own owner (the root view, a list row, an entity), or an ancestor of it.
 pub(crate) type RouteFn = unsafe fn(*mut u8, &[u8; 16], &Ev);
 
 #[derive(Clone, Copy)]
 pub(crate) struct Route {
     f: RouteFn,
     r: [u8; 16],
+    own: OwnerRef,
 }
 
 impl Route {
     /// # Safety
-    /// `owner` points at the live owner the route was lowered for.
+    /// `owner` points at the live owner the route was lowered for (the one `self.own` names), uniquely
+    /// borrowed for the call.
     #[inline]
     unsafe fn call(&self, owner: *mut u8, e: &Ev) {
         // SAFETY: see the function contract; the recipe holds the closure the trampoline reads.
@@ -134,11 +138,43 @@ unsafe fn call_ev<V, F: Fn(&mut V, &Ev) + Copy>(o: *mut u8, r: &[u8; 16], e: &Ev
     f(unsafe { &mut *(o as *mut V) }, e)
 }
 
-fn route_plain<V, F: Fn(&mut V) + Copy + 'static>(f: F) -> Route {
-    Route { f: call_plain::<V, F>, r: recipe(f) }
+fn route_plain<V, F: Fn(&mut V) + Copy + 'static>(f: F, own: OwnerRef) -> Route {
+    Route { f: call_plain::<V, F>, r: recipe(f), own }
 }
-fn route_ev<V, F: Fn(&mut V, &Ev) + Copy + 'static>(f: F) -> Route {
-    Route { f: call_ev::<V, F>, r: recipe(f) }
+fn route_ev<V, F: Fn(&mut V, &Ev) + Copy + 'static>(f: F, own: OwnerRef) -> Route {
+    Route { f: call_ev::<V, F>, r: recipe(f), own }
+}
+
+/// The receiver of a route whose handler takes `&mut R`, lowered by a mounter of owner type `V`: the nearest
+/// owner of type `R` on the chain from the element's own owner up to the root. None: a mount error.
+#[track_caller]
+fn receiver<V: 'static, R: 'static>(m: &Mounter<'_, V>, what: &str) -> OwnerRef {
+    use std::any::TypeId;
+    let want = TypeId::of::<R>();
+    if want == TypeId::of::<V>() {
+        return m.own;
+    }
+    let mut o = m.own;
+    while !o.is_root() {
+        let (ty, parent) = m.rt.owner_parent(o);
+        if ty == want {
+            return parent;
+        }
+        o = parent;
+    }
+    panic!("{what}: the handler takes `&mut {}`, but no owner of that type encloses the element (it is mounted by `{}`)", std::any::type_name::<R>(), std::any::type_name::<V>());
+}
+
+/// A re-description's closure for a route already installed: the trampoline and the receiver are fixed by
+/// the description's type and place; the captures are this description's (a row id, an index).
+#[inline]
+fn refresh_route<F: Copy>(slot: &mut Option<Route>, f: F) {
+    if cfg!(feature = "mutant_route_stale") {
+        return;
+    }
+    if let Some(r) = slot {
+        r.r = recipe(f);
+    }
 }
 
 // =============================================================================== the act table
@@ -151,13 +187,14 @@ pub(crate) struct Act {
     pub node: u32,
     /// Its single instance (the payload of a quad record), or NONE.
     pub inst: u32,
-    pub hover_bg: Option<u32>,
-    /// The instance's colour when it has no node (a constant background): restored on leave.
-    pub base: u32,
-    /// The instance is a border box: its background is `color2`.
-    pub bordered: bool,
-    /// The pointer is over it (its hover style shows).
-    pub hovered: bool,
+    /// Its variant table (`Input::vtabs`, `flags.rs`), or NONE.
+    pub vt: u32,
+    /// Its state flags (`flags.rs`): its own, those it sets for its subtree, those it inherits, and the
+    /// effective word (own | inherited) its table is indexed by.
+    pub own: u16,
+    pub sub: u16,
+    pub inh: u16,
+    pub eff: u16,
     pub click: Option<Route>,
     pub press: Option<Route>,
     pub hover: Option<Route>,
@@ -173,7 +210,7 @@ pub(crate) struct Act {
 
 impl Act {
     fn new(handle: Handle) -> Act {
-        Act { handle, node: NONE, inst: NONE, hover_bg: None, base: 0, bordered: false, hovered: false, click: None, press: None, hover: None, key: None, drag: None, scroll: NONE, field: NONE, tip: NONE }
+        Act { handle, node: NONE, inst: NONE, vt: NONE, own: 0, sub: 0, inh: 0, eff: 0, click: None, press: None, hover: None, key: None, drag: None, scroll: NONE, field: NONE, tip: NONE }
     }
 }
 
@@ -250,8 +287,13 @@ pub struct Input {
     /// Scroll views (`template::scroll_y`) and the one whose content is being mounted.
     pub(crate) views: Vec<crate::template::ScrollView>,
     pub(crate) mounting_view: Option<u32>,
+    /// Released views' slots (`Rt::release_view`), reused by the next view.
+    pub(crate) view_free: Vec<u32>,
     /// Layout placement hooks (`ltemplate::PlaceHook`, by `LInfo::hook`).
     pub(crate) lhooks: Vec<(crate::ltemplate::PlaceHook, u32)>,
+    /// Hook slots of removed layout nodes (`Rt::lay_node_dead`), and tooltip slots of released scopes.
+    pub(crate) lhook_free: Vec<u32>,
+    pub(crate) tip_free: Vec<u32>,
     /// Layout clips by parent clip id (re-cut when the parent changes).
     pub(crate) clip_kids: std::collections::HashMap<u16, Vec<u32>>,
     /// Wired clips (`template::clip_by`): (clip id, space, parent clip).
@@ -285,6 +327,20 @@ pub struct Input {
     blink_t: f32,
     chain: Vec<usize>,
     chain_h: Vec<Handle>,
+    /// Variant tables (`flags.rs`), by `Act::vt`.
+    pub(crate) vtabs: Vec<crate::flags::VTab>,
+    /// Acts whose subtree flags wait for their records to be in the Bough (`Rt::flags_flush`).
+    pub(crate) flags_pending: Vec<(u32, u16)>,
+    pub(crate) flag_scratch: Vec<usize>,
+    pub(crate) flag_stack: Vec<(u16, u16)>,
+    /// The records `PRESSED` and `DRAG_OVER` are set on now.
+    pressed_chain: Vec<Handle>,
+    drag_over: Vec<Handle>,
+    focus_within: Vec<Handle>,
+    /// Some record sets flags for its subtree (a record mounted later may inherit them).
+    pub(crate) any_sub: bool,
+    /// Direct wires (`direct.rs`), boxed: the thread's write path finds it by address.
+    pub(crate) direct: Box<crate::direct::Table>,
 }
 
 impl Default for Input {
@@ -297,7 +353,10 @@ impl Default for Input {
             tips: Vec::new(),
             views: Vec::new(),
             mounting_view: None,
+            view_free: Vec::new(),
             lhooks: Vec::new(),
+            lhook_free: Vec::new(),
+            tip_free: Vec::new(),
             clip_kids: Default::default(),
             wclips: Vec::new(),
             offsets: Vec::new(),
@@ -322,6 +381,15 @@ impl Default for Input {
             blink_t: 0.0,
             chain: Vec::new(),
             chain_h: Vec::new(),
+            vtabs: Vec::new(),
+            flags_pending: Vec::new(),
+            flag_scratch: Vec::new(),
+            flag_stack: Vec::new(),
+            pressed_chain: Vec::new(),
+            drag_over: Vec::new(),
+            focus_within: Vec::new(),
+            any_sub: false,
+            direct: Box::default(),
         }
     }
 }
@@ -386,7 +454,7 @@ impl Input {
 
 /// Make the first record `m` pushed since `before` interactive: give it a handle (if it has none), flag
 /// it, and return its act. A quad's node and instance are found so interaction styles can write it.
-fn act_for<V>(m: &mut Mounter<'_, V>, before: usize, flags: u8) -> u32 {
+pub(crate) fn act_for<V>(m: &mut Mounter<'_, V>, before: usize, flags: u8) -> u32 {
     assert!(m.recs.len() > before, "an interactive element mounts a record");
     let rec = m.recs[before];
     // a node's index is its record's handle index
@@ -438,13 +506,13 @@ pub fn act_at<V>(m: &mut Mounter<'_, V>, rec: usize) -> u32 {
     a
 }
 
-/// Routes, scrollers and text fields run on the app's root owner (`App` dispatches them with it), so they
-/// may only be mounted by the root owner's description: in a list row or an entity view (another owner
-/// type, `Mounter::cls != 0`) the route's `V` is not the root's, and calling it would be undefined
-/// behaviour. Refused at mount (a panic, not UB) until routes carry their owner.
+/// Scrollers and text fields write a signal of the app's root owner at a root-relative offset (`App`
+/// reaches it from the root), so they may only be mounted by the root owner's description: in a list row or
+/// an entity view the offset is another owner type's. Refused at mount (a panic, not UB) until they carry
+/// their owner's path as routes do (`Route::own`).
 #[track_caller]
 fn root_owner_only<V>(m: &Mounter<'_, V>, what: &str) {
-    assert!(m.cls == 0, "{what} inside a list row or an entity view: routes run on the app's root owner; put it on an element of the root view");
+    assert!(m.own.is_root() && m.cls == 0, "{what} inside a list row or an entity view: it writes a signal of the app's root owner; put it on an element of the root view");
 }
 
 /// One interaction op on an element (`On<E, O>` installs it on E's first record).
@@ -452,6 +520,26 @@ pub trait ActOp<V> {
     /// Kind flags the record gets besides [`KF_INTERACT`].
     const FLAGS: u8 = 0;
     fn install(self, m: &mut Mounter<'_, V>, act: u32);
+    /// A re-description: bring what the op captured by value up to date (a route's closure, a hover
+    /// colour); what it installed (wires, scrollers, the act) stays.
+    fn refresh(self, m: &mut Mounter<'_, V>, act: u32);
+    /// The op's part of its element's seal (`seal.rs`): what `refresh` would write. An op with state of its
+    /// own that a description does not determine (a scroller, a wire) refuses, the default.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.refuse()
+    }
+}
+
+/// A route's seal: which route it is and its closure's bytes. The trampoline and the receiver are fixed by
+/// the description's type and place (a seal is only ever compared with one of the same item type at the same
+/// place in the owner tree), so equal bytes are the same handler with the same captures; different bytes are
+/// refreshed by the ordinary update. (Padding inside the captures has no defined value: it can only make two
+/// equal closures look different, which costs a refresh.)
+#[inline(always)]
+fn seal_route<S: crate::seal::Sealer, F: Copy>(s: &mut S, which: u32, f: F) {
+    s.word(0x0100 | which);
+    s.bytes(&recipe(f)[..size_of::<F>()]);
 }
 
 /// An element with an interaction op on its first record.
@@ -463,66 +551,149 @@ impl<V, E: Element<V>, O: ActOp<V>> Element<V> for On<E, O> {
         self.0.mount(m);
         let a = act_for(m, before, O::FLAGS);
         self.1.install(m, a);
+        m.tape_push(a);
     }
-    /// The interaction stays installed on the element's first record; the element re-describes.
+    /// The interaction stays installed on the element's first record; the element re-describes, and the
+    /// op takes this description's captures (the act is on the tape, after the element's own entries).
     fn update(self, m: &mut Mounter<'_, V>) {
         self.0.update(m);
+        let a = m.tape_next();
+        self.1.refresh(m, a);
+    }
+    fn dyn_key(&self) -> u64 {
+        self.0.dyn_key()
+    }
+    /// The element's operands, then the op's: an unchanged closure on an unchanged element is stepped over.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        self.0.seal(s);
+        self.1.seal(s);
     }
 }
 
-pub struct Click<F>(pub F);
-impl<V: 'static, F: Fn(&mut V) + Copy + 'static> ActOp<V> for Click<F> {
-    fn install(self, m: &mut Mounter<'_, V>, a: u32) {
-        root_owner_only(m, "click");
-        m.rt.input.acts[a as usize].click = Some(route_plain::<V, F>(self.0));
+pub struct Click<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
+impl<R, F> Click<R, F> {
+    pub fn new(f: F) -> Self {
+        Click(f, std::marker::PhantomData)
     }
 }
-pub struct Press<F>(pub F);
-impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Press<F> {
+impl<V: 'static, R: 'static, F: Fn(&mut R) + Copy + 'static> ActOp<V> for Click<R, F> {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
-        root_owner_only(m, "press");
-        m.rt.input.acts[a as usize].press = Some(route_ev::<V, F>(self.0));
+        let own = receiver::<V, R>(m, "on_click");
+        m.rt.input.acts[a as usize].click = Some(route_plain::<R, F>(self.0, own));
+    }
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        refresh_route(&mut m.rt.input.acts[a as usize].click, self.0);
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        seal_route(s, 1, self.0);
     }
 }
-pub struct Hover<F>(pub F);
-impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Hover<F> {
-    fn install(self, m: &mut Mounter<'_, V>, a: u32) {
-        root_owner_only(m, "hover");
-        m.rt.input.acts[a as usize].hover = Some(route_ev::<V, F>(self.0));
+pub struct Press<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
+impl<R, F> Press<R, F> {
+    pub fn new(f: F) -> Self {
+        Press(f, std::marker::PhantomData)
     }
 }
+impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for Press<R, F> {
+    fn install(self, m: &mut Mounter<'_, V>, a: u32) {
+        let own = receiver::<V, R>(m, "on_press");
+        m.rt.input.acts[a as usize].press = Some(route_ev::<R, F>(self.0, own));
+    }
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        refresh_route(&mut m.rt.input.acts[a as usize].press, self.0);
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        seal_route(s, 2, self.0);
+    }
+}
+pub struct Hover<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
+impl<R, F> Hover<R, F> {
+    pub fn new(f: F) -> Self {
+        Hover(f, std::marker::PhantomData)
+    }
+}
+impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for Hover<R, F> {
+    fn install(self, m: &mut Mounter<'_, V>, a: u32) {
+        let own = receiver::<V, R>(m, "on_hover");
+        m.rt.input.acts[a as usize].hover = Some(route_ev::<R, F>(self.0, own));
+    }
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        refresh_route(&mut m.rt.input.acts[a as usize].hover, self.0);
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        seal_route(s, 3, self.0);
+    }
+}
+/// The background while hovered: one variant of the record's flags (`.hover(|s| s.bg(c))`, `flags.rs`).
 pub struct HoverBg(pub Color);
 impl<V> ActOp<V> for HoverBg {
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
-        let inst = m.rt.input.acts[a as usize].inst;
-        assert!(inst != NONE, "hover_bg needs a painted quad");
-        let i = &m.rt.inst[inst as usize];
-        let bordered = i.kind == KIND_BORDER;
-        let base = if bordered { i.color2 } else { i.color };
-        let act = &mut m.rt.input.acts[a as usize];
-        act.hover_bg = Some(self.0 .0);
-        act.base = base;
-        act.bordered = bordered;
+        let act = m.rt.input.acts[a as usize];
+        assert!(act.inst != NONE, "hover_bg needs a painted quad");
+        crate::flags::install_variants(m.rt, a, &[crate::flags::Variant { when: crate::flags::Flag::HOVERED.bit(), look: crate::flags::Look::default().bg(self.0) }]);
+    }
+    /// The hover colour is a paint operand (it never changes a shape).
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x0107);
+        s.paint(self.0 .0);
+    }
+    /// A new hover colour: the table is resolved again (shown at once if the pointer is over the element).
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        crate::flags::refresh_variants(m.rt, a, &[crate::flags::Variant { when: crate::flags::Flag::HOVERED.bit(), look: crate::flags::Look::default().bg(self.0) }]);
     }
 }
 pub struct Focusable;
 impl<V> ActOp<V> for Focusable {
     const FLAGS: u8 = KF_FOCUS;
     fn install(self, _: &mut Mounter<'_, V>, _: u32) {}
-}
-pub struct OnKey<F>(pub F);
-impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for OnKey<F> {
-    const FLAGS: u8 = KF_FOCUS;
-    fn install(self, m: &mut Mounter<'_, V>, a: u32) {
-        root_owner_only(m, "onkey");
-        m.rt.input.acts[a as usize].key = Some(route_ev::<V, F>(self.0));
+    fn refresh(self, _: &mut Mounter<'_, V>, _: u32) {}
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x0104);
     }
 }
-pub struct Drag<F>(pub F);
-impl<V: 'static, F: Fn(&mut V, &Ev) + Copy + 'static> ActOp<V> for Drag<F> {
+pub struct OnKey<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
+impl<R, F> OnKey<R, F> {
+    pub fn new(f: F) -> Self {
+        OnKey(f, std::marker::PhantomData)
+    }
+}
+impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for OnKey<R, F> {
+    const FLAGS: u8 = KF_FOCUS;
     fn install(self, m: &mut Mounter<'_, V>, a: u32) {
-        root_owner_only(m, "drag");
-        m.rt.input.acts[a as usize].drag = Some(route_ev::<V, F>(self.0));
+        let own = receiver::<V, R>(m, "on_key");
+        m.rt.input.acts[a as usize].key = Some(route_ev::<R, F>(self.0, own));
+    }
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        refresh_route(&mut m.rt.input.acts[a as usize].key, self.0);
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        seal_route(s, 5, self.0);
+    }
+}
+pub struct Drag<R, F>(pub F, pub std::marker::PhantomData<fn(&mut R)>);
+impl<R, F> Drag<R, F> {
+    pub fn new(f: F) -> Self {
+        Drag(f, std::marker::PhantomData)
+    }
+}
+impl<V: 'static, R: 'static, F: Fn(&mut R, &Ev) + Copy + 'static> ActOp<V> for Drag<R, F> {
+    fn install(self, m: &mut Mounter<'_, V>, a: u32) {
+        let own = receiver::<V, R>(m, "on_drag");
+        m.rt.input.acts[a as usize].drag = Some(route_ev::<R, F>(self.0, own));
+    }
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        refresh_route(&mut m.rt.input.acts[a as usize].drag, self.0);
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        seal_route(s, 6, self.0);
     }
 }
 /// The element scrolls the owner's `Signal<f32>` (points, `0..=max`) with wheel glides.
@@ -536,6 +707,22 @@ impl<V> ActOp<V> for Scrolls<'_, V> {
         root_owner_only(m, "scrolls");
         m.rt.input.scrollers.push(Scroller { off: self.sig.off, line: self.line, max: self.max, glide: None, root: NONE, port_h: 0.0 });
         m.rt.input.acts[a as usize].scroll = (m.rt.input.scrollers.len() - 1) as u32;
+    }
+    /// The scroller stays (its glide, its content root): only the by-value step and limit follow.
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        let sc = m.rt.input.acts[a as usize].scroll;
+        let s = &mut m.rt.input.scrollers[sc as usize];
+        assert!(s.off == self.sig.off, "a re-description cannot change which signal an element scrolls");
+        s.line = self.line;
+        s.max = self.max;
+    }
+    /// The scrolled field, the step and the limit (what `refresh` writes).
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x0108);
+        s.word(self.sig.off);
+        s.f32(self.line);
+        s.f32(self.max);
     }
 }
 
@@ -558,18 +745,26 @@ impl<'a, T: 'static, V, F: Fn(&T) -> (Color, Color) + Copy + 'static> ActOp<V> f
         assert!(inst != NONE, "paint_with needs a painted quad");
         let bordered = m.rt.inst[inst as usize].kind == KIND_BORDER;
         let (c1, c2) = (self.f)(self.sig.get());
-        let act = &mut m.rt.input.acts[a as usize];
-        act.bordered = bordered;
         let p = &mut m.rt.inst[inst as usize];
         if bordered {
             p.color = c1.0;
             p.color2 = c2.0;
-            act.base = c2.0;
         } else {
             p.color = c2.0;
-            act.base = c2.0;
         }
         m.wire(&self.sig, patch_paint2::<T, F>, a, recipe(self.f));
+    }
+    /// The wire stays; this description's colours are applied (as the wire would).
+    fn refresh(self, m: &mut Mounter<'_, V>, a: u32) {
+        let (c1, c2) = (self.f)(self.sig.get());
+        paint2(m.rt, a, c1, c2);
+    }
+    /// The wire's field and the mapping (its colours travel through the wire).
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x0109);
+        s.word(self.sig.off);
+        crate::seal::closure(s, &self.f);
     }
 }
 
@@ -577,19 +772,26 @@ impl<'a, T: 'static, V, F: Fn(&T) -> (Color, Color) + Copy + 'static> ActOp<V> f
 /// Wire contract: `sig` is a `Signal<T>`; the recipe holds an `F`; `w.node` is the act.
 unsafe fn patch_paint2<T: 'static, F: Fn(&T) -> (Color, Color) + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
-    let s = unsafe { &*(sig as *const Signal<T>) };
+    let s = unsafe { (*(sig as *const Signal<T>)).peek() };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
     let (c1, c2) = f(s);
-    let act = rt.input.acts[w.node as usize];
-    rt.input.acts[w.node as usize].base = c2.0;
+    paint2(rt, w.node, c1, c2);
+}
+
+/// Write act `a`'s two colour words: its base look under variants (`flags.rs`), else the instance itself.
+fn paint2(rt: &mut Rt, a: u32, c1: Color, c2: Color) {
+    let act = rt.input.acts[a as usize];
+    if act.vt != NONE {
+        return rt.flags_rebase(a, Some(c2.0), Some(c1.0));
+    }
     let p = rt.inst_mut(act.inst);
+    let bordered = p.kind == KIND_BORDER;
     let old = pair(p.color, p.color2);
-    let fill = if act.hovered && act.hover_bg.is_some() { act.hover_bg.unwrap() } else { c2.0 };
-    if act.bordered {
+    if bordered {
         p.color = c1.0;
-        p.color2 = fill;
+        p.color2 = c2.0;
     } else {
-        p.color = fill;
+        p.color = c2.0;
     }
     let now = pair(p.color, p.color2);
     if now != old {
@@ -597,20 +799,22 @@ unsafe fn patch_paint2<T: 'static, F: Fn(&T) -> (Color, Color) + Copy>(rt: &mut 
     }
 }
 
-/// Interaction ops on any element (they apply to its first record). The owner type is inferred from
-/// where the element is mounted (and from the closures' argument types).
+/// Interaction ops on any element (they apply to its first record). A handler's receiver is its `&mut`
+/// argument's type: the owner that describes the element (the view, a list row, an entity) or an owner
+/// enclosing it (a row's button calling the app: `.on_click(|app: &mut App| ..)`), resolved when the
+/// element is mounted.
 pub trait Interact: Sized {
     /// Activation (a primary press and release on the element, zgui's / the DOM's click).
-    fn on_click<V, F: Fn(&mut V) + Copy + 'static>(self, f: F) -> On<Self, Click<F>> {
-        On(self, Click(f))
+    fn on_click<V, F: Fn(&mut V) + Copy + 'static>(self, f: F) -> On<Self, Click<V, F>> {
+        On(self, Click(f, std::marker::PhantomData))
     }
     /// The press itself.
-    fn on_press<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Press<F>> {
-        On(self, Press(f))
+    fn on_press<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Press<V, F>> {
+        On(self, Press(f, std::marker::PhantomData))
     }
     /// Pointer enters (`ev.on`) or leaves the element.
-    fn on_hover<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Hover<F>> {
-        On(self, Hover(f))
+    fn on_hover<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Hover<V, F>> {
+        On(self, Hover(f, std::marker::PhantomData))
     }
     /// Background while hovered (`:hover { background }`): a paint write on crossing, no route.
     fn hover_bg(self, c: Color) -> On<Self, HoverBg> {
@@ -626,12 +830,12 @@ pub trait Interact: Sized {
         On(self, Focusable)
     }
     /// Keys while the element (or a descendant) has focus; a tab stop.
-    fn on_key<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, OnKey<F>> {
-        On(self, OnKey(f))
+    fn on_key<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, OnKey<V, F>> {
+        On(self, OnKey(f, std::marker::PhantomData))
     }
     /// Pointer travel while pressed (capture: no hit test until release). `ev.dx/dy` since the press.
-    fn on_drag<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Drag<F>> {
-        On(self, Drag(f))
+    fn on_drag<V, F: Fn(&mut V, &Ev) + Copy + 'static>(self, f: F) -> On<Self, Drag<V, F>> {
+        On(self, Drag(f, std::marker::PhantomData))
     }
     /// The wheel over this element glides `sig` (points) within `0..=max`, `line` points per detent line.
     fn scrolls<V>(self, sig: Wired<'_, f32, V>, line: f32, max: f32) -> On<Self, Scrolls<'_, V>> {
@@ -655,6 +859,10 @@ impl<V, E: Element<V>> Element<V> for NoHit<E> {
     }
     fn update(self, m: &mut Mounter<'_, V>) {
         self.0.update(m);
+    }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        self.0.seal(s);
     }
 }
 
@@ -705,6 +913,28 @@ pub(crate) struct Tip {
     /// Current alpha (0..=1) and whether it is fading in.
     alpha: f32,
     fading: bool,
+    /// The view whose content it is in (its rect follows that view), or NONE.
+    view: u32,
+}
+
+impl Rt {
+    /// The scope that mounted tooltip `k` is released: its fade stops (its instance and label are the
+    /// scope's, about to be reused), it leaves its view, and its clip and slot return.
+    pub(crate) fn release_tip(&mut self, k: u32) {
+        let (clip, view) = {
+            let t = &mut self.input.tips[k as usize];
+            t.fading = false;
+            (t.clip, std::mem::replace(&mut t.view, NONE))
+        };
+        if view != NONE {
+            let tips = &mut self.input.views[view as usize].tips;
+            if let Some(i) = tips.iter().position(|&x| x == k) {
+                tips.swap_remove(i);
+            }
+        }
+        self.free_clip(clip);
+        self.input.tip_free.push(k);
+    }
 }
 
 fn with_alpha(c: u32, a: f32) -> u32 {
@@ -745,6 +975,10 @@ impl<V: 'static, T: Element<V>> Element<V> for Tooltip<T> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x45);
+    }
 }
 impl<T> Tooltip<T> {
     fn mount_in<V: 'static>(self, m: &mut Mounter<'_, V>)
@@ -756,7 +990,7 @@ impl<T> Tooltip<T> {
         self.trigger.mount(m);
         let a = act_for(m, before, 0);
         let s = m.rt.scale;
-        let id = m.rt.bough.new_clip(NRect::EMPTY);
+        let id = m.rt.own_clip(NRect::EMPTY);
         let [x, y, w, h] = self.rect;
         let o = m.rt.space(m.space);
         let r = NRect::new((o[0] + (m.ox + x) * s).floor() as i32, (o[1] + (m.oy + y) * s).floor() as i32, (o[0] + (m.ox + x + w) * s).ceil() as i32, (o[1] + (m.oy + y + h) * s).ceil() as i32);
@@ -781,11 +1015,22 @@ impl<T> Tooltip<T> {
             rec.kind |= KF_NOHIT;
         }
         m.clip = prev;
-        let k = m.rt.input.tips.len() as u32;
-        m.rt.input.tips.push(Tip { clip: id, rect: r, bubble, inst, label, ti, style: st, alpha: 0.0, fading: false });
+        let view = m.rt.input.mounting_view.unwrap_or(NONE);
+        let tip = Tip { clip: id, rect: r, bubble, inst, label, ti, style: st, alpha: 0.0, fading: false, view };
+        let k = match m.rt.input.tip_free.pop() {
+            Some(k) => {
+                m.rt.input.tips[k as usize] = tip;
+                k
+            }
+            None => {
+                m.rt.input.tips.push(tip);
+                (m.rt.input.tips.len() - 1) as u32
+            }
+        };
+        m.scope.owned.push(Owned::Tip(k));
         m.rt.input.acts[a as usize].tip = k;
-        if let Some(v) = m.rt.input.mounting_view {
-            m.rt.input.views[v as usize].tips.push(k);
+        if view != NONE {
+            m.rt.input.views[view as usize].tips.push(k);
         }
     }
 }
@@ -900,6 +1145,10 @@ impl<V: 'static> Element<V> for TextField<'_, V> {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x46);
+    }
 }
 impl<V: 'static> TextField<'_, V> {
     fn mount_in(self, m: &mut Mounter<'_, V>) {
@@ -927,7 +1176,7 @@ impl<V: 'static> TextField<'_, V> {
         } else {
             inner
         };
-        m.clip = m.rt.scoped_clip(r, clip);
+        m.clip = m.rt.scoped_clip(m.scope, r, clip);
         // the caret wire first: wires run newest first, so it runs after the label's patch
         let lh = (self.size * 1.4).ceil();
         let ty = ((h - 2.0) - lh) * 0.5;
@@ -976,43 +1225,95 @@ impl<V: View> App<V> {
         &mut *self.owner as *mut V as *mut u8
     }
 
-    /// Settle what routes queued and lay out what changed (the end of an input turn).
-    fn settle_input(&mut self) {
-        self.settle_input_once();
-        self.rehover();
+    /// Run route `r` on its receiver. The root is called directly; any other owner is reached along its
+    /// path from the root (`Rt::owner_mut`), and a route whose receiver is gone (its row or entity removed,
+    /// its slot reused by another item) does not run. Returns whether it ran.
+    fn run_route(&mut self, r: Route, e: &Ev) -> bool {
+        let root = self.owner_mut();
+        let o = if r.own.is_root() {
+            root
+        } else {
+            // SAFETY: `root` derives from the unique borrow of the app's owner (the type the runtime was mounted
+            // for), and no other reference into it is live during dispatch.
+            match unsafe { self.rt.owner_mut(root, r.own) } {
+                Some(o) => o,
+                None => return false,
+            }
+        };
+        self.rt.input.stats.routes += 1;
+        self.root_handled |= r.own.is_root();
+        // the handler's receiver describes itself again if the handler changed what its description sees: the
+        // root by its plain bytes and its subscriptions (`grain.rs`, `App::root_dirty`); a row through its
+        // list's edit log; an entity's views with the owner that shows them (`Rt::owner_mut` marked those)
+        // SAFETY: `o` is the live owner `r.own` names, whose type the route's receiver was matched against when
+        // it was lowered (`receiver`), uniquely borrowed (derived from the root's unique borrow).
+        unsafe { r.call(o, e) };
+        true
     }
 
-    fn settle_input_once(&mut self) {
+    /// The pressed act, if its element is still mounted. An element removed while pressed (a re-description
+    /// dropped it, its list row left) ends its press and its drag capture: no route of it runs again.
+    fn pressed_live(&mut self) -> u32 {
+        let pa = self.rt.input.pressed;
+        if pa != 0 && !cfg!(feature = "mutant_route_owner") && self.rt.bough.pos_of(self.rt.input.acts[pa as usize].handle).is_none() {
+            self.rt.input.pressed = 0;
+            self.rt.input.dragging = false;
+            return 0;
+        }
+        pa
+    }
+
+    /// Settle what routes queued and lay out what changed (the end of an input turn). Hover is a function
+    /// of the pointer and of the tree: what the turn moved under a resting pointer (a scroll, a list edit, a
+    /// re-description) is entered and left now, not at the next pointer event.
+    fn settle_input(&mut self) {
+        self.settle_pass();
+        if self.rehover() {
+            self.settle_pass();
+        }
+        self.blur_disabled();
+        self.sync_ring();
+        self.rt.direct_arm();
+    }
+
+    /// A focused record that became disabled (its own flag, or a subtree's) loses focus, as a disabled
+    /// control does.
+    pub(crate) fn blur_disabled(&mut self) {
+        if let Some(h) = self.rt.input.focus {
+            if self.rt.flags_of(h) & crate::flags::Flag::DISABLED.bit() != 0 {
+                self.set_focus(None, false);
+            }
+        }
+    }
+
+    /// Settle, run the `changed` waves, re-describe the owners a handler ran on, lay out.
+    fn settle_pass(&mut self) {
         let owner = &mut *self.owner as *mut V as *const u8;
         // SAFETY: the owner is the mounted view (uniquely borrowed: list patches write their cell); every
         // wire was installed from a `sig!` proof for it.
         unsafe { self.rt.settle(owner) };
-        // an arbitrary handler: `changed` waves, then a re-describing owner describes again (API.md)
         self.effects();
-        self.redescribe();
+        // Only owners whose described state a handler (a route, a `changed`) changed describe again: the root
+        // if its plain bytes or a cell its description read changed, the rows the turn edited. A turn of wires
+        // alone (a hover colour, a wheel, a glide's tick, a keystroke in a field) re-describes nothing.
+        self.redescribe_dirty();
         self.rt.lay_flush();
-        self.sync_ring();
+        self.rt.flags_flush();
     }
 
-    /// Hover is a function of (pointer, tree), not of the last pointer event: after a turn that moved or
-    /// changed records under a still pointer (a scroll, a glide, a list edit, a timer's turn), the chain is
-    /// derived again at the pointer. The hit cell's cache answers in one compare when nothing under the pointer
-    /// changed (`Bough::cell_valid`); a crossing runs the hover routes and settles once more. Not while a drag
-    /// holds the pointer (capture: no hit test). (round 7, platform lane; generalization OVERFIT 8: the row
-    /// that was under the pointer stayed highlighted after a scroll.)
-    pub(crate) fn rehover(&mut self) {
-        let Some((px, py)) = self.rt.input.pointer else { return };
+    /// Bring the hover chain up to date with the tree under a resting pointer (no pointer, or a drag's
+    /// capture: nothing). Returns whether a hover route ran (the caller settles again).
+    pub(crate) fn rehover(&mut self) -> bool {
+        let Some((px, py)) = self.rt.input.pointer else { return false };
         if self.rt.input.pressed != 0 && self.rt.input.dragging {
-            return;
+            return false;
+        }
+        let inp = &self.rt.input;
+        if inp.cell_ok && inp.cell.contains_point(px, py) && self.rt.bough.cell_valid(inp.cell, inp.cell_epoch) {
+            return false;
         }
         let s = self.rt.scale;
-        for _ in 0..4 {
-            if !self.update_hover(px, py, px as f32 / s, py as f32 / s) {
-                return;
-            }
-            // the routes that ran may move things again: settle, and look again (bounded)
-            self.settle_input_once();
-        }
+        self.update_hover(px, py, px as f32 / s, py as f32 / s)
     }
 
     #[inline]
@@ -1028,16 +1329,14 @@ impl<V: View> App<V> {
         self.sync_pub();
         let (px, py) = self.dev(x, y);
         self.rt.input.pointer = Some((px, py));
-        let pa = self.rt.input.pressed;
+        let pa = self.pressed_live();
         if pa != 0 && self.rt.input.dragging {
             if let Some(r) = self.rt.input.acts[pa as usize].drag {
                 let (x0, y0) = self.rt.input.press_at;
                 let e = Ev { dx: x - x0, dy: y - y0, ..Ev::at(x, y) };
-                let o = self.owner_mut();
-                self.rt.input.stats.routes += 1;
-                // SAFETY: the route was lowered for this owner type.
-                unsafe { r.call(o, &e) };
+                self.run_route(r, &e);
                 self.settle_input();
+                self.set_drag_over(Some((px, py)));
                 return;
             }
         }
@@ -1046,8 +1345,8 @@ impl<V: View> App<V> {
         }
     }
 
-    /// Recompute the hover chain at (px, py) unless the hit cell still answers. Returns whether routes or
-    /// styles ran.
+    /// Recompute the hover chain at (px, py) unless the hit cell still answers. Returns whether a hover
+    /// route ran (hover colours and tooltips are paint writes: nothing to settle, nothing to re-describe).
     fn update_hover(&mut self, px: i32, py: i32, x: f32, y: f32) -> bool {
         let inp = &self.rt.input;
         if inp.cell_ok && inp.cell.contains_point(px, py) && self.rt.bough.cell_valid(inp.cell, inp.cell_epoch) {
@@ -1094,37 +1393,25 @@ impl<V: View> App<V> {
         ran
     }
 
-    /// Hover on/off for one record: its hover background (a paint write), tooltip clip and route.
+    /// Hover on/off for one record: its hover background (a paint write), tooltip clip and route. Returns
+    /// whether a route ran.
     fn hover_set(&mut self, h: Handle, on: bool, x: f32, y: f32) -> bool {
         let a = self.rt.input.act_of(h);
         if a == 0 {
             return false;
         }
-        self.rt.input.acts[a as usize].hovered = on;
+        if self.rt.bough.pos_of(h).is_none() {
+            // the element was removed while hovered (a re-description dropped it, its row left): what its act
+            // names (an instance, a tooltip, a route's captures) is no longer its own, so nothing is written or run
+            let act = &mut self.rt.input.acts[a as usize];
+            let hb = crate::flags::Flag::HOVERED.bit();
+            (act.own, act.eff) = (act.own & !hb, act.eff & !(hb & !act.inh));
+            return false;
+        }
+        // the hover colour and every other `HOVERED` variant: a flag write (a paint write, `flags.rs`)
+        self.rt.flags_write(a, crate::flags::Flag::HOVERED.bit(), on, false);
         let act = self.rt.input.acts[a as usize];
         let mut ran = false;
-        if let Some(c) = act.hover_bg {
-            // an element's described colour moves to its cold record while a hover colour shows (the
-            // colour wire writes it there: `ApplyBg` reads the flag)
-            let base = if act.node != NONE { self.rt.mod_of(act.node).color } else { act.base };
-            let new = if on { c } else { base };
-            if act.node != NONE {
-                let n = &mut self.rt.hot[act.node as usize];
-                n.kind = if on { n.kind | crate::rt::NK_HOVERED } else { n.kind & !crate::rt::NK_HOVERED };
-            }
-            let p = self.rt.inst_mut(act.inst);
-            let old = pair(p.color, p.color2);
-            if act.bordered {
-                p.color2 = new;
-            } else {
-                p.color = new;
-            }
-            let now = pair(p.color, p.color2);
-            if old != now {
-                self.rt.paint_write(h, old, now);
-            }
-            ran = true;
-        }
         if act.tip != NONE {
             let k = act.tip as usize;
             let (clip, rect, fade) = {
@@ -1139,17 +1426,74 @@ impl<V: View> App<V> {
                 self.rt.input.tips[k].fading = false;
                 tip_alpha(&mut self.rt, k, if on { 1.0 } else { 0.0 });
             }
-            ran = true;
         }
-        if let Some(r) = act.hover {
+        if let Some(r) = act.hover.filter(|_| act.eff & crate::flags::Flag::DISABLED.bit() == 0) {
             let e = Ev { on, ..Ev::at(x, y) };
-            let o = self.owner_mut();
-            self.rt.input.stats.routes += 1;
-            // SAFETY: the route was lowered for this owner type.
-            unsafe { r.call(o, &e) };
+            self.run_route(r, &e);
             ran = true;
         }
         ran
+    }
+
+    /// `PRESSED` on the records of `chain` and on no other (the press chain: the pressed record and its
+    /// interactive ancestors, as CSS's `:active`).
+    fn set_pressed(&mut self, chain: &[Handle]) {
+        let old = std::mem::take(&mut self.rt.input.pressed_chain);
+        let b = crate::flags::Flag::PRESSED.bit();
+        for h in &old {
+            if !chain.contains(h) {
+                let a = self.rt.input.act_of(*h);
+                if a != 0 {
+                    self.rt.flags_write(a, b, false, false);
+                }
+            }
+        }
+        for h in chain {
+            if !old.contains(h) {
+                let a = self.rt.input.act_of(*h);
+                if a != 0 {
+                    self.rt.flags_write(a, b, true, false);
+                }
+            }
+        }
+        let mut old = old;
+        old.clear();
+        old.extend_from_slice(chain);
+        self.rt.input.pressed_chain = old;
+    }
+
+    /// `DRAG_OVER` on the interactive records under the pointer while a drag holds it (a drop target's
+    /// variant), cleared when the drag ends (`None`).
+    fn set_drag_over(&mut self, at: Option<(i32, i32)>) {
+        let mut chain: Vec<Handle> = Vec::new();
+        if let Some((px, py)) = at {
+            let b = &self.rt.bough;
+            if let Some(t) = b.hit_top(px, py) {
+                let mut c = std::mem::take(&mut self.rt.input.chain);
+                b.flagged_chain(t, KF_INTERACT, &mut c);
+                chain.extend(c.iter().filter_map(|&p| b.handle_at(p)));
+                self.rt.input.chain = c;
+            }
+        }
+        let old = std::mem::take(&mut self.rt.input.drag_over);
+        let bit = crate::flags::Flag::DRAG_OVER.bit();
+        for h in &old {
+            if !chain.contains(h) {
+                let a = self.rt.input.act_of(*h);
+                if a != 0 {
+                    self.rt.flags_write(a, bit, false, false);
+                }
+            }
+        }
+        for h in &chain {
+            if !old.contains(h) {
+                let a = self.rt.input.act_of(*h);
+                if a != 0 {
+                    self.rt.flags_write(a, bit, true, false);
+                }
+            }
+        }
+        self.rt.input.drag_over = chain;
     }
 
     /// A button pressed at (x, y): the hover chain is brought up to date, focus moves to the nearest
@@ -1161,16 +1505,17 @@ impl<V: View> App<V> {
         self.rt.input.pointer = Some((px, py));
         self.update_hover(px, py, x, y);
         let chain = self.rt.input.hover.clone();
-        // nearest focusable in the chain
+        // nearest focusable in the chain (a disabled one takes no focus)
         let mut focus = None;
         for &h in &chain {
             if let Some(p) = self.rt.bough.pos_of(h) {
-                if self.rt.bough.kind_at(p) & KF_FOCUS != 0 {
+                if self.rt.bough.kind_at(p) & KF_FOCUS != 0 && self.rt.flags_of(h) & crate::flags::Flag::DISABLED.bit() == 0 {
                     focus = Some(h);
                     break;
                 }
             }
         }
+        self.set_pressed(&chain);
         if button == Button::Primary {
             self.set_focus(focus, false);
         }
@@ -1178,20 +1523,22 @@ impl<V: View> App<V> {
         self.rt.input.pressed = target;
         self.rt.input.press_at = (x, y);
         self.rt.input.dragging = false;
-        // the press route and drag capture: nearest act in the chain that has one
+        // the press route and drag capture: nearest act in the chain that has one (a disabled record runs none
+        // and stops the search, as a disabled control takes no pointer events)
         for &h in &chain {
             let a = self.rt.input.act_of(h);
             let act = self.rt.input.acts[a as usize];
+            if act.eff & crate::flags::Flag::DISABLED.bit() != 0 {
+                break;
+            }
             if let Some(r) = act.press {
                 let e = Ev { button, ..Ev::at(x, y) };
-                let o = self.owner_mut();
-                self.rt.input.stats.routes += 1;
-                // SAFETY: the route was lowered for this owner type.
-                unsafe { r.call(o, &e) };
+                self.run_route(r, &e);
                 break;
             }
         }
-        if let Some(a) = chain.iter().map(|&h| self.rt.input.act_of(h)).find(|&a| self.rt.input.acts[a as usize].drag.is_some()) {
+        let live = chain.iter().map(|&h| self.rt.input.act_of(h)).take_while(|&a| self.rt.input.acts[a as usize].eff & crate::flags::Flag::DISABLED.bit() == 0);
+        if let Some(a) = live.into_iter().find(|&a| self.rt.input.acts[a as usize].drag.is_some()) {
             self.rt.input.pressed = a;
             self.rt.input.dragging = true;
         }
@@ -1203,17 +1550,18 @@ impl<V: View> App<V> {
     /// its chain that has one).
     pub fn pointer_up(&mut self, x: f32, y: f32, button: Button) {
         self.sync_pub();
-        let pa = std::mem::replace(&mut self.rt.input.pressed, 0);
+        let pa = self.pressed_live();
+        self.rt.input.pressed = 0;
         let dragging = std::mem::replace(&mut self.rt.input.dragging, false);
         let (px, py) = self.dev(x, y);
         self.rt.input.pointer = Some((px, py));
+        self.set_pressed(&[]);
         if dragging {
+            self.set_drag_over(None);
             if let Some(r) = self.rt.input.acts[pa as usize].drag {
                 let (x0, y0) = self.rt.input.press_at;
                 let e = Ev { dx: x - x0, dy: y - y0, on: false, ..Ev::at(x, y) };
-                let o = self.owner_mut();
-                // SAFETY: the route was lowered for this owner type.
-                unsafe { r.call(o, &e) };
+                self.run_route(r, &e);
             }
             self.update_hover(px, py, x, y);
             self.settle_input();
@@ -1226,11 +1574,11 @@ impl<V: View> App<V> {
                 let chain = self.rt.input.hover[i..].to_vec();
                 for h in chain {
                     let a = self.rt.input.act_of(h);
+                    if self.rt.input.acts[a as usize].eff & crate::flags::Flag::DISABLED.bit() != 0 {
+                        break;
+                    }
                     if let Some(r) = self.rt.input.acts[a as usize].click {
-                        let o = self.owner_mut();
-                        self.rt.input.stats.routes += 1;
-                        // SAFETY: the route was lowered for this owner type.
-                        unsafe { r.call(o, &Ev::at(x, y)) };
+                        self.run_route(r, &Ev::at(x, y));
                         break;
                     }
                 }
@@ -1245,10 +1593,13 @@ impl<V: View> App<V> {
         self.rt.input.pointer = None;
         self.rt.input.cell_ok = false;
         let old = std::mem::take(&mut self.rt.input.hover);
+        let mut ran = false;
         for h in old {
-            self.hover_set(h, false, -1.0, -1.0);
+            ran |= self.hover_set(h, false, -1.0, -1.0);
         }
-        self.settle_input();
+        if ran {
+            self.settle_input();
+        }
     }
 
     /// A wheel turned at (x, y) by (dx, dy) lines: the nearest scroller of the chain aims its glide
@@ -1268,7 +1619,7 @@ impl<V: View> App<V> {
             let o = self.owner_mut();
             let s = &mut self.rt.input.scrollers[sc as usize];
             // SAFETY: `off` is the offset_of!-proven offset of a Signal<f32> field of the owner (Wired).
-            let at = **unsafe { &*(o.add(s.off as usize) as *const Signal<f32>) };
+            let at = *unsafe { (*(o.add(s.off as usize) as *const Signal<f32>)).peek() };
             let heading = s.glide.map_or(at, |g| g.to);
             let max = if s.root != NONE { (self.rt.lay.root_height(s.root) / self.rt.scale - s.port_h).max(0.0) } else { s.max };
             let s = &mut self.rt.input.scrollers[sc as usize];
@@ -1393,7 +1744,15 @@ impl<V: View> App<V> {
         self.sync_pub();
         if key == Key::Tab {
             let cur = self.rt.input.focus.and_then(|h| self.rt.bough.pos_of(h));
-            let next = self.rt.bough.next_flagged(cur, KF_FOCUS, mods.shift);
+            // the next tab stop that is not disabled
+            let mut next = self.rt.bough.next_flagged(cur, KF_FOCUS, mods.shift);
+            let first = next;
+            while let Some(p) = next {
+                if self.rt.bough.handle_at(p).is_none_or(|h| self.rt.flags_of(h) & crate::flags::Flag::DISABLED.bit() == 0) {
+                    break;
+                }
+                next = self.rt.bough.next_flagged(Some(p), KF_FOCUS, mods.shift).filter(|&q| Some(q) != first);
+            }
             let h = next.and_then(|p| self.rt.bough.handle_at(p));
             self.set_focus(h, true);
             self.settle_input();
@@ -1414,12 +1773,12 @@ impl<V: View> App<V> {
                 for q in chain {
                     let Some(h) = self.rt.bough.handle_at(q) else { continue };
                     let a = self.rt.input.act_of(h);
+                    if self.rt.input.acts[a as usize].eff & crate::flags::Flag::DISABLED.bit() != 0 {
+                        break;
+                    }
                     if let Some(r) = self.rt.input.acts[a as usize].key {
                         let e = Ev { key: Some(key), mods, ..Ev::at(0.0, 0.0) };
-                        let o = self.owner_mut();
-                        self.rt.input.stats.routes += 1;
-                        // SAFETY: the route was lowered for this owner type.
-                        unsafe { r.call(o, &e) };
+                        self.run_route(r, &e);
                         break;
                     }
                 }
@@ -1502,8 +1861,10 @@ impl<V: View> App<V> {
                 place_caret(&mut self.rt, f);
             }
         }
+        self.focus_flags(false);
         self.rt.input.focus = h;
         self.rt.input.focus_visible = visible;
+        self.focus_flags(true);
         let a = h.map_or(0, |h| self.rt.input.act_of(h));
         self.rt.input.focus_act = a;
         if a != 0 {
@@ -1516,6 +1877,44 @@ impl<V: View> App<V> {
             }
         }
         self.sync_ring();
+    }
+
+    /// `FOCUSED` on the focused record and `FOCUS_WITHIN` on its ancestors that have acts (`on`), or off them
+    /// again (the ancestors are those it had when focus came: kept, so a removed record's are found).
+    fn focus_flags(&mut self, on: bool) {
+        let Some(h) = self.rt.input.focus else { return };
+        let a = self.rt.input.act_of(h);
+        if a != 0 {
+            self.rt.flags_write(a, crate::flags::Flag::FOCUSED.bit(), on, false);
+        }
+        let fw = crate::flags::Flag::FOCUS_WITHIN.bit();
+        if on {
+            let mut anc = std::mem::take(&mut self.rt.input.flag_scratch);
+            anc.clear();
+            if let Some(p) = self.rt.bough.pos_of(h) {
+                self.rt.bough.ancestors(p, &mut anc);
+            }
+            let mut within = std::mem::take(&mut self.rt.input.focus_within);
+            within.clear();
+            for &p in &anc {
+                if let Some(x) = self.rt.bough.handle_at(p) {
+                    let b = self.rt.input.act_of(x);
+                    if b != 0 {
+                        within.push(x);
+                        self.rt.flags_write(b, fw, true, false);
+                    }
+                }
+            }
+            self.rt.input.focus_within = within;
+            self.rt.input.flag_scratch = anc;
+        } else {
+            for x in std::mem::take(&mut self.rt.input.focus_within) {
+                let b = self.rt.input.act_of(x);
+                if b != 0 {
+                    self.rt.flags_write(b, fw, false, false);
+                }
+            }
+        }
     }
 
     /// Keep the focus ring on the focused element (keyboard focus only): one record at the end of the

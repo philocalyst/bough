@@ -131,6 +131,11 @@ impl<T> Signal<T> {
     pub fn into_inner(self) -> T {
         self.value
     }
+    /// The value, read by the runtime (a wire's patch): not a description's plain read (`grain.rs`).
+    #[inline(always)]
+    pub(crate) fn peek(&self) -> &T {
+        &self.value
+    }
     /// Overwrite the value without queueing its wires: for a value the runtime itself just wrote
     /// (a measured list's anchored scroll offset), mirrored back into the owner.
     #[inline]
@@ -140,11 +145,18 @@ impl<T> Signal<T> {
 }
 
 impl<T: PartialEq> Signal<T> {
-    /// Equality cut-off, then mark. Returns whether the value changed.
+    /// Equality cut-off, then mark. Returns whether the value changed. A signal whose one binding is a direct
+    /// wire (`direct.rs`) is applied here: the destination's column takes the value, no settle runs.
     #[inline]
     pub fn set(&mut self, v: T) -> bool {
         if self.value == v {
             return false;
+        }
+        let h = self.head.0.get();
+        // SAFETY: a head is tagged `DIRECT` only for a `Signal<Color>` (`direct::store`'s contract).
+        if h & (crate::direct::DIRECT | HELD) == crate::direct::DIRECT && unsafe { crate::direct::store(h, &self.head.0, &v) } {
+            self.value = v;
+            return true;
         }
         *self.deref_mut() = v;
         true
@@ -153,8 +165,10 @@ impl<T: PartialEq> Signal<T> {
 
 impl<T> Deref for Signal<T> {
     type Target = T;
+    /// A plain read: while an owner describes itself it subscribes the owner to this signal (`grain.rs`).
     #[inline(always)]
     fn deref(&self) -> &T {
+        crate::grain::read(&self.head.0, crate::grain::Dep::Value, crate::grain::wake_root);
         &self.value
     }
 }

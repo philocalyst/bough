@@ -272,9 +272,9 @@ fn lhook_l(v: &ShellL, m: &mut Mounter<'_, ShellL>, ctx: &mut LCtx<'_>) -> LHook
         51 => {
             let (_, rec) = ctx.mount_default(m);
             let a = ctx.act(m, rec);
-            ActOp::<ShellL>::install(Press(|s: &mut ShellL, _: &Ev| s.split0 = *s.split), m, a);
+            ActOp::<ShellL>::install(Press::new(|s: &mut ShellL, _: &Ev| s.split0 = *s.split), m, a);
             ActOp::<ShellL>::install(
-                Drag(|s: &mut ShellL, e: &Ev| {
+                Drag::new(|s: &mut ShellL, e: &Ev| {
                     let p = (s.split0 + e.dy / GROUP_H * 100.0).clamp(10.0, 100.0 - 12.0);
                     s.split.set((p * 10.0).round() / 10.0);
                 }),

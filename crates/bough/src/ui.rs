@@ -243,6 +243,11 @@ impl<V: 'static> Element<V> for ImageBox {
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
     }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x40);
+    }
 }
 
 /// A one-line text input in flow, bound two-way to a `Signal<String>` (`text_input(sig!(self.notes))`).
@@ -274,5 +279,10 @@ impl<V: 'static> Element<V> for TextInput<'_, V> {
     }
     fn update(self, m: &mut Mounter<'_, V>) {
         crate::describe::update_opaque(m);
+    }
+    /// Its re-description steps over it (`update_opaque`): the description has nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x40);
     }
 }

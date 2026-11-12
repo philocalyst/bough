@@ -150,8 +150,20 @@ impl<T> Entities<T> {
         // SAFETY: the slot was live; it is marked free above.
         Some(unsafe { p.read() })
     }
+    /// A plain read while an owner describes itself: inserts and removals do not queue the head, so the
+    /// owner describes itself again after every turn while it reads one plainly (`grain.rs`).
+    #[inline(always)]
+    fn read(&self) {
+        crate::grain::read(&self.head.0, crate::grain::Dep::Always, crate::grain::wake_root);
+    }
     /// A scoped, generation-checked read.
     pub fn get(&self, e: Entity<T>) -> Option<&T> {
+        self.read();
+        self.get_raw(e)
+    }
+    /// `get` for the runtime (an entity view's own mount: not its owner's plain read).
+    #[inline(always)]
+    pub(crate) fn get_raw(&self, e: Entity<T>) -> Option<&T> {
         // SAFETY: a live slot is initialised.
         self.live(e).then(|| unsafe { &*self.ptr(e.idx) })
     }
@@ -174,6 +186,7 @@ impl<T> Entities<T> {
         Some(unsafe { &mut *self.ptr(e.idx) })
     }
     pub fn len(&self) -> usize {
+        self.read();
         self.meta.iter().filter(|&&m| m & LIVE != 0).count()
     }
     pub fn is_empty(&self) -> bool {
@@ -181,6 +194,7 @@ impl<T> Entities<T> {
     }
     /// The entities edited this turn (`changed`).
     pub fn edited(&self) -> impl Iterator<Item = Entity<T>> + '_ {
+        self.read();
         self.edits.iter().map(move |&i| Entity { idx: i, generation: self.meta[i as usize] & GEN, _t: PhantomData })
     }
     pub(crate) fn edits_raw(&self) -> &[u32] {
@@ -204,6 +218,23 @@ impl<T> Entities<T> {
 pub struct EView {
     pub(crate) cls: u32,
     pub(crate) idx: u32,
+    /// The owner whose description mounted the view (the entities are its field at `off`): its path and
+    /// type; and `Entities::edit`, type-erased (`rt::OwnerRef`, `Rt::owner_mut`).
+    pub(crate) own: OwnerRef,
+    pub(crate) own_ty: std::any::TypeId,
+    pub(crate) off: u32,
+    pub(crate) edit: unsafe fn(*mut u8, u32, u32) -> *mut u8,
+}
+
+/// # Safety
+/// `e` points at a live `Entities<T>` reached through a unique borrow of its owner.
+unsafe fn ents_edit<T>(e: *mut u8, idx: u32, generation: u32) -> *mut u8 {
+    // SAFETY: the function contract.
+    let e = unsafe { &mut *(e as *mut Entities<T>) };
+    match e.edit(Entity { idx, generation, _t: PhantomData }) {
+        Some(x) => x as *mut T as *mut u8,
+        None => std::ptr::null_mut(),
+    }
 }
 
 /// # Safety
@@ -261,12 +292,36 @@ impl<'a, T: crate::app::View, V: 'static> Element<V> for EntityView<'a, T, V> {
 /// The entity view as a dynamic item keyed by its entity (`Element::dyn_key`).
 struct Keyed<'a, T, V>(EntityView<'a, T, V>);
 impl<'a, T: crate::app::View, V: 'static> Element<V> for Keyed<'a, T, V> {
+    /// The tape: the counts of an opaque element (records, tape entries, layout children: what a
+    /// re-description steps over when the entity is gone), then the view, then the entity's own entries.
     fn mount(self, m: &mut Mounter<'_, V>) {
         crate::describe::mount_opaque(m, |m| self.0.mount_in(m));
     }
-    /// The same entity: its view is its own state; a re-description steps over it.
+    /// The same entity: its view describes itself again in lockstep, as the entity's own owner (its plain
+    /// fields, its routes' captures). A removed entity's view keeps its last pixels: stepped over.
     fn update(self, m: &mut Mounter<'_, V>) {
-        crate::describe::update_opaque(m);
+        let at = m.ti;
+        let Some(p) = self.0.ents.ents.get_raw(self.0.e) else { return crate::describe::update_opaque(m) };
+        let p = p as *const T;
+        m.ti += 3;
+        let ev = m.tape_next();
+        let cls = m.rt.eviews[ev as usize].cls;
+        let own = OwnerRef::entity(ev, self.0.e.idx, self.0.e.generation);
+        let (pos0, kid0) = (m.pos, m.kid);
+        let recs: *mut Vec<RecordInit> = m.recs;
+        let scope: *mut Scope = m.scope;
+        let (ti, pos, kid) = {
+            // SAFETY: reborrows of the mounter's own buffer and scope for the sub-walk, as in `mount_in`.
+            let mut sub = Mounter { rt: &mut *m.rt, owner: p, recs: unsafe { &mut *recs }, scope: unsafe { &mut *scope }, depth: m.depth, ox: m.ox, oy: m.oy, space: m.space, clip: m.clip, pending_num: None, cls, tape: m.tape, ti: m.ti, pos: m.pos, kid: m.kid, keep: false, own };
+            // SAFETY: `p` is the live entity (checked above; its slab never moves).
+            unsafe { &*p }.view().update(&mut sub);
+            (sub.ti, sub.pos, sub.kid)
+        };
+        (m.ti, m.pos, m.kid) = (ti, pos, kid);
+        // a dynamic part of the entity's view may have grown or shrunk
+        m.tape_set(at, (m.pos - pos0) as u32);
+        m.tape_set(at + 1, (m.ti - at - 3) as u32);
+        m.tape_set(at + 2, (m.kid - kid0) as u32);
     }
     fn dyn_key(&self) -> u64 {
         (self.0.e.idx as u64) << 32 | self.0.e.generation as u64 | 1 << 63
@@ -276,19 +331,22 @@ impl<'a, T: crate::app::View, V: 'static> Element<V> for Keyed<'a, T, V> {
 impl<'a, T: crate::app::View, V: 'static> EntityView<'a, T, V> {
     fn mount_in(self, m: &mut Mounter<'_, V>) {
         let ents = self.ents.ents;
-        let p = ents.get(self.e).expect("entity_view of a removed entity") as *const T;
+        let p = ents.get_raw(self.e).expect("entity_view of a removed entity") as *const T;
         let cls = m.rt.new_class();
         m.rt.class_changed[cls as usize] = Some(crate::changed::changed_shim::<T>);
         let ev = m.rt.eviews.len() as u32;
-        m.rt.eviews.push(EView { cls, idx: self.e.idx });
+        m.rt.eviews.push(EView { cls, idx: self.e.idx, own: m.own, own_ty: std::any::TypeId::of::<V>(), off: self.ents.off, edit: ents_edit::<T> });
+        let own = OwnerRef::entity(ev, self.e.idx, self.e.generation);
+        m.tape_push(ev);
         // SAFETY: `self.ents` is an `offset_of!`-proven `Entities<T>` field of `V`; `patch_entities::<T>` reads one.
         unsafe { m.wire_cell(ents.head(), self.ents.off, patch_entities::<T>, ev, [0; 16]) };
         let recs: *mut Vec<RecordInit> = m.recs;
         let scope: *mut Scope = m.scope;
         {
-            // the entity is the owner of what its view mounts (its own class); resources go to this scope
+            // the entity is the owner of what its view mounts (its own class and path); resources go to this
+            // scope, and in a re-describing owner its entries to this tape
             // SAFETY: reborrows of the mounter's own buffer and scope for the sub-mount.
-            let mut sub = Mounter { rt: &mut *m.rt, owner: p, recs: unsafe { &mut *recs }, scope: unsafe { &mut *scope }, depth: m.depth, ox: m.ox, oy: m.oy, space: m.space, clip: m.clip, pending_num: None, cls, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false };
+            let mut sub = Mounter { rt: &mut *m.rt, owner: p, recs: unsafe { &mut *recs }, scope: unsafe { &mut *scope }, depth: m.depth, ox: m.ox, oy: m.oy, space: m.space, clip: m.clip, pending_num: None, cls, tape: m.tape, ti: 0, pos: 0, kid: 0, keep: false, own };
             // SAFETY: `p` is the live entity (its slab never moves).
             unsafe { &*p }.view().mount(&mut sub);
         }

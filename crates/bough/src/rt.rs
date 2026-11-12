@@ -112,6 +112,33 @@ pub const NK_HOVERED: u8 = 0x80;
 
 pub const NONE: u32 = u32::MAX;
 
+/// Which owner a mounter mounts for, and so which owner a route lowered there runs on (the design's L4): the
+/// app's root, a list row (its region, the item's slot and generation) or an entity (its view, the entity's
+/// generation). It is a **path, not a pointer**: `Rt::owner_mut` walks it from the root through
+/// `List::edit_slot` / `Entities::edit` at dispatch, so every hop is checked against its live parent and a
+/// removed or reused owner answers `None` instead of being dereferenced.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct OwnerRef {
+    /// `NONE`: the root. Else a list region (`Lists::regs`), or with [`OwnerRef::ENT`] an entity view (`Rt::eviews`).
+    pub(crate) k: u32,
+    pub(crate) slot: u32,
+    pub(crate) generation: u32,
+}
+impl OwnerRef {
+    pub(crate) const ENT: u32 = 1 << 31;
+    pub const ROOT: OwnerRef = OwnerRef { k: NONE, slot: 0, generation: 0 };
+    #[inline(always)]
+    pub fn is_root(&self) -> bool {
+        self.k == NONE
+    }
+    pub(crate) fn row(reg: u32, slot: u32, generation: u32) -> OwnerRef {
+        OwnerRef { k: reg, slot, generation }
+    }
+    pub(crate) fn entity(ev: u32, idx: u32, generation: u32) -> OwnerRef {
+        OwnerRef { k: ev | Self::ENT, slot: idx, generation }
+    }
+}
+
 /// The largest window side (device px): the damage planes' 128 tile rows.
 pub const MAX_WINDOW: u32 = 4096;
 
@@ -353,7 +380,7 @@ pub type ChangedFn = unsafe fn(*mut u8, &crate::changed::Pubs, &[usize]);
 unsafe fn nop(_: &mut Rt, _: &Wire, _: *const u8, _: *const u8) {}
 
 /// Index bits of a head (the rest are flags: `QUEUED`, `HELD`).
-pub const HEAD_IDX: u32 = (1 << 30) - 1;
+pub const HEAD_IDX: u32 = (1 << 29) - 1;
 
 /// Everything created while mounting one subtree that must be released when it unmounts.
 #[derive(Default)]
@@ -374,6 +401,20 @@ pub struct Scope {
     pub lregs: Vec<u32>,
     /// Async producers declared in this scope (`reader.rs`), revoked with it.
     pub prods: Vec<u32>,
+    /// What else the scope registered by index in tables outside it (`Owned`): unregistered with it.
+    pub owned: Vec<Owned>,
+}
+
+/// A registration a scope owns besides its nodes, wires and groups; released by `Rt::cut_scope`.
+#[derive(Clone, Copy, Debug)]
+pub enum Owned {
+    /// A scroll view or an anchor (`template.rs`, `Input::views`): its space returns and it leaves the view
+    /// it was nested in.
+    View(u32),
+    /// A clip of its own inside the content of view `.1` (`Rt::scoped_clip`): the clip id returns.
+    Clip(u16, u32),
+    /// A tooltip (`Input::tips`): its fade stops, its clip returns.
+    Tip(u32),
 }
 
 impl Scope {
@@ -429,6 +470,9 @@ pub struct VRegion {
     pub(crate) mount_row: RowMountFn,
     /// The user's `fn(&V, usize, &mut Mounter<V>)`, type-erased (transmuted back by `mount_row`).
     pub(crate) row_fn: usize,
+    /// The owner the region was mounted for (its rows are that owner's): its class and path.
+    pub(crate) cls: u32,
+    pub(crate) own: OwnerRef,
 }
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -529,6 +573,8 @@ pub struct Rt {
     /// Virtual-list regions: crate-private (each holds a type-erased row function its `mount_row` trusts).
     pub(crate) regions: Vec<VRegion>,
     clip_dedupe: Vec<(NRect, u16)>,
+    /// Owned clip ids returned by released scopes and layout nodes (`free_clip`).
+    clip_free: Vec<u16>,
     space_free: Vec<u16>,
     next_space: u16,
     /// Per space: `[a-1, b, c, d-1, pivot x, pivot y, tx, ty]`, what the kernels apply to every instance and
@@ -571,6 +617,13 @@ pub struct Rt {
     /// The mounted owner (boxed by `App`, never moves): what a layout placement hook needs to mount the rows
     /// of a list whose port it moved.
     pub(crate) owner: *const u8,
+    /// A handler ran on the root owner (or on an owner whose views the root's walk re-describes: an entity)
+    /// since the last re-description: an input turn re-describes the root only then (`input.rs`).
+    pub(crate) redesc_root: bool,
+    /// The app re-describes (no `Config::mount_once`): owners mounted later (list rows) record tapes too.
+    pub(crate) describes: bool,
+    /// The root owner's type (a route's receiver is resolved along the owner chain at mount, `input.rs`).
+    pub(crate) root_ty: std::any::TypeId,
     /// Keeps a heap region alive (the GPU region is kept alive by the columns' reference count too).
     _region: Region,
     /// The block the façade's own tables are carved from (`StoreCaps`).
@@ -720,6 +773,7 @@ impl Rt {
             text_free: Vec::new(),
             regions: Vec::new(),
             clip_dedupe: Vec::new(),
+            clip_free: Vec::new(),
             space_free: Vec::new(),
             next_space: 1,
             xforms,
@@ -744,9 +798,29 @@ impl Rt {
             transitions: Default::default(),
             images: Default::default(),
             owner: std::ptr::null(),
+            redesc_root: false,
+            describes: false,
+            root_ty: std::any::TypeId::of::<()>(),
             _region: region,
             _store: store,
         }
+    }
+
+    /// Sizes of the tables a mount registers in by index (tests: a removed subtree returns its entries, a
+    /// re-description installs nothing): `[wires in use, scrollers, acts, views in use, clips in use,
+    /// placement hooks in use, tooltips in use]`.
+    #[doc(hidden)]
+    pub fn table_sizes(&self) -> [usize; 7] {
+        let i = &self.input;
+        [
+            self.wires.len() - 1 - self.wire_free.len(),
+            i.scrollers.len(),
+            i.acts.len() - 1,
+            i.views.len() - i.view_free.len(),
+            self.bough.clip_count() - 1 - self.clip_free.len(),
+            i.lhooks.len() - i.lhook_free.len(),
+            i.tips.len() - i.tip_free.len(),
+        ]
     }
 
     /// The region's first byte (header and frame slots are addressed from it).
@@ -1251,7 +1325,9 @@ impl Rt {
     /// that cell's head, and `patch` monomorphised for the cell's type (and `recipe` holding what it reads).
     pub(crate) unsafe fn add_wire(&mut self, head: &std::cell::Cell<u32>, off: u32, cls: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
         let addr = head as *const _ as usize;
-        let h = head.get();
+        // a second wire on a head that held one direct wire: the head is an ordinary chain again (`direct.rs`)
+        let h = head.get() & !crate::direct::DIRECT;
+        head.set(h);
         let mut first = h & HEAD_IDX;
         // a chain that is not this head's own (moved in from elsewhere) is dropped, never extended
         if first != 0 && self.wires.get(first as usize).is_none_or(|w| w.head != addr) {
@@ -1592,6 +1668,7 @@ impl Rt {
     fn cut_scope(&mut self, s: &mut Scope) {
         for w in s.wires.drain(..) {
             self.wires[w as usize].dead = true;
+            self.input.direct.kill(w);
         }
         for r in s.lroots.drain(..) {
             self.lay_remove_root(r);
@@ -1602,6 +1679,7 @@ impl Rt {
         for p in s.prods.drain(..) {
             self.revoke_producer(p);
         }
+
         // dynamic items are cut now too (their wires may sit on live signals)
         for &d in &s.dyns {
             let mut items = std::mem::take(&mut self.dyns.parts[d as usize]);
@@ -1610,6 +1688,31 @@ impl Rt {
             }
             self.dyns.parts[d as usize] = items;
         }
+        // last: what the scope's own content (its groups, its items) registered in a view is unregistered first
+        for o in s.owned.drain(..).rev() {
+            match o {
+                Owned::View(v) => self.release_view(v),
+                Owned::Clip(id, view) => self.release_scoped_clip(id, view),
+                Owned::Tip(k) => self.release_tip(k),
+            }
+        }
+    }
+
+    /// A clip id of the runtime's own (not a deduplicated shared one): a returned id, or a new one.
+    pub(crate) fn own_clip(&mut self, r: NRect) -> u16 {
+        match self.clip_free.pop() {
+            Some(id) => {
+                self.bough.set_clip_rect(id, r);
+                id
+            }
+            None => self.bough.new_clip(r),
+        }
+    }
+    /// Return an owned clip id whose records are being removed: emptied (the old rect is damaged, which covers
+    /// the visible ink of every record that had it) and free for the next `own_clip`.
+    pub(crate) fn free_clip(&mut self, id: u16) {
+        self.bough.set_clip_rect(id, NRect::EMPTY);
+        self.clip_free.push(id);
     }
 
     /// Return up to about `budget` released nodes to the free lists (see `release_scope`); returns whether

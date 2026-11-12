@@ -338,6 +338,10 @@ impl Bough {
         self.clips.push(r.canon());
         (self.clips.len() - 1) as u16
     }
+    /// Clip ids allocated so far (id 0, the whole domain, included).
+    pub fn clip_count(&self) -> usize {
+        self.clips.len()
+    }
     pub fn clip_rect(&self, id: u16) -> NRect {
         self.clips[id as usize]
     }

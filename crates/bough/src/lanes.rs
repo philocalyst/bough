@@ -73,9 +73,9 @@ fn write_lanes<T, F: Fn(&T, usize) -> Lane>(rt: &mut Rt, node: u32, v: &T, f: F)
 /// Wire contract: `sig` is a `Signal<T>`; the recipe holds an `F`.
 unsafe fn patch_lanes<T: 'static, F: Fn(&T, usize) -> Lane + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _o: *const u8) {
     // SAFETY: the contract.
-    let v = unsafe { &*(sig as *const Signal<T>) };
+    let v = unsafe { (*(sig as *const Signal<T>)).peek() };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
-    let ink = write_lanes(rt, w.node, &**v, f);
+    let ink = write_lanes(rt, w.node, v, f);
     let h = rt.handle(w.node);
     // the lanes changed inside the old union too: old and new ink, even when the union is the same
     rt.bough.touch_handle(h);
@@ -121,5 +121,10 @@ impl<'a, T: 'static, V: 'static, F: Fn(&T, usize) -> Lane + Copy + 'static> Elem
     fn update(self, m: &mut Mounter<'_, V>) {
         m.tape_next();
         m.pos += 1;
+    }
+    /// Its re-description does nothing but step over its record: nothing to compare.
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(0x47);
     }
 }

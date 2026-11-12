@@ -17,6 +17,9 @@ pub struct Pubs {
     ops: Vec<Op>,
     ents: Vec<(usize, u32, u32)>,
     idx: Vec<u32>,
+    /// Set by the default `View::changed` (`Changed::unhandled`): the owner has no effect site, so showing
+    /// it the publications was not a handler and nothing of it needs describing again.
+    pub(crate) unhandled: std::cell::Cell<bool>,
 }
 
 impl Pubs {
@@ -59,6 +62,11 @@ pub struct Changed<'a, V> {
 }
 
 impl<V> Changed<'_, V> {
+    /// The default `View::changed` calls this and nothing else: the owner did not handle the publications.
+    #[doc(hidden)]
+    pub fn unhandled(&self) {
+        self.pubs.unhandled.set(true);
+    }
     pub fn any(&self) -> bool {
         !self.pubs.is_empty() || !self.readers.is_empty()
     }
