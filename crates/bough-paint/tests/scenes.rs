@@ -54,13 +54,15 @@ fn run(name: &str, mut s: Scene, m: Model, script: &[Step]) {
         bad += (d_cpu + d_gpu + d_pick != 0) as usize;
     }
     assert_eq!(bad, 0, "{name}");
-    // negative control: the comparison is live (one node of the plain model nudged by a quarter pixel)
+    // negative control: the comparison is live (every 50th node of the plain model nudged by a quarter
+    // pixel; one node alone may be hidden or off screen)
     let mut m2 = m;
-    let at = m2.nodes.len() / 3;
-    m2.nodes[at].rect[0] -= 64;
-    m2.nodes[at].rect[2] += 64;
+    for n in m2.nodes.iter_mut().step_by(50) {
+        n.rect[0] -= 64;
+        n.rect[2] += 64;
+    }
     let d = diff(&kept, &oracle(&s, &m2, &u, stride, &pool));
-    eprintln!("{name}: a nudged model node differs in {d} words");
+    eprintln!("{name}: nudged model nodes differ in {d} words");
     assert!(d > 0, "{name}: the oracle did not see a changed node");
 }
 
