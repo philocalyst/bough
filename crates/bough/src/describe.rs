@@ -30,7 +30,7 @@ pub struct DynItem {
     /// Handle index of the entry's first record (a dormant-capable part's entries only): a run's leaf, an
     /// item's first box.
     pub head: u32,
-    /// The exposure pass (`Dorms::tick`) that last found the item exposed.
+    /// The exposure pass (`Dorms::tick`) that first found the item unexposed (0: exposed).
     pub seen: u32,
     /// The item's layout was checked against what a run can stand for (`dormant.rs`, `item_ok`).
     pub ok: bool,

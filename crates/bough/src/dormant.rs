@@ -11,7 +11,7 @@
 //!    of its space, layout generation). Otherwise its entries are walked once against the layout: a run
 //!    whose box meets the visible rect (± `Dorms::over` px) becomes a *demand* for the item range the rect
 //!    covers; an item outside the keep margin (`Dorms::keep` px) that was not exposed for `HOLD` passes and
-//!    holds no focus, hover or press becomes a *release*; the measured pitches update the part's estimate.
+//!    holds no focus, hover or press becomes a *release* (hysteresis in space and in time); the measured pitches update the part's estimate.
 //! 2. **Walk**: if anything is demanded or released the owner is re-described once (`describe::redescribe`:
 //!    the walk is cheap, seals step over unchanged items and dormant runs are skipped in the source in O(1)).
 //!    `update_src` splits runs and mounts exactly the demanded items through `describe::mount_item`, and
@@ -48,8 +48,6 @@ use std::iter::TrustedRandomAccessNoCoerce;
 pub const SEED: u32 = 8;
 /// Exposure passes an unexposed item stays realised.
 pub const HOLD: u32 = 3;
-/// Releasable items that force a walk of their own (a release otherwise rides on a walk that realises).
-pub const CAP: usize = 24;
 /// Beyond this distance from the visible rect (device px) an item is released at once, held or not: its
 /// records' inks are absolute `i16` (bough-core `NRect`), so they must stay inside the domain.
 pub const FAR: f32 = 12000.0;
@@ -140,7 +138,21 @@ pub struct Dorm {
     pub(crate) drop: Vec<(u32, f32)>,
     /// An item kept realised whatever its exposure ("realise item i now"), or `NONE`.
     pub pin: u32,
-    pub(crate) key: ScanKey,
+    /// Its slot in the scan columns (`Dorms::live` and the columns beside it).
+    pub(crate) slot: u32,
+    /// The entries as columns, for the exposure test (rebuilt when the layout or the entries changed, read on
+    /// every scroll): each entry's top and bottom along the main axis (container-local device px), its first
+    /// item, the pass that first found it unexposed (0: exposed), and which entries are runs (a bit each).
+    tops: Vec<f32>,
+    bots: Vec<f32>,
+    first: Vec<u32>,
+    since: Vec<u32>,
+    isrun: Vec<u64>,
+    /// `LayStats::computes` the columns were built at (`u64::MAX`: stale), items measured then, and entries
+    /// with a nonzero `since`.
+    col_lay: u64,
+    measured: u32,
+    unseen: u32,
     /// The anchor of the exposure pass `anchor_tick`: (item, its top on screen, device px).
     pub(crate) anchor: Option<(u32, f32)>,
     pub(crate) anchor_tick: u32,
@@ -183,10 +195,32 @@ pub enum Mutant {
     NoAnchor,
 }
 
+impl Dorms {
+    /// Is there a part that mounts by exposure?
+    #[inline(always)]
+    pub fn any(&self) -> bool {
+        !self.live.is_empty()
+    }
+    /// Part state changed in a way the key does not see: its next scan runs whatever the key says.
+    #[inline]
+    pub(crate) fn rescan(&mut self, slot: u32) {
+        if let Some(k) = self.lkey.get_mut(slot as usize) {
+            k.lay = u64::MAX;
+        }
+    }
+}
+
 /// The runtime's dormant parts (`Rt::dorm`).
 pub struct Dorms {
     /// Parts that mount by exposure (`Dyns::dorm[d]` is `Some`), in mount order.
     pub(crate) live: Vec<u32>,
+    /// Per live part, what the per-frame test reads, as columns (no part state is loaded unless the test
+    /// fails): its clip, its space, and what it last scanned against.
+    lclip: Vec<u16>,
+    lspace: Vec<u16>,
+    lkey: Vec<ScanKey>,
+    /// Tombstones in `live` (`NONE`: a cut part), dropped by the next scan.
+    dead: u32,
     /// `Config::eager_parts`: every part mounts everything (the oracle of the exposure gates).
     pub off: bool,
     /// Device px realised beyond the visible rect, and device px an item may be beyond it before it is
@@ -214,7 +248,7 @@ impl Dorms {
             Ok("noanchor") => Mutant::NoAnchor,
             _ => Mutant::None,
         });
-        Dorms { live: Vec::new(), off: false, over: 64.0 * scale, keep: 256.0 * scale, tick: 0, opaque: 0, blur: false, stats: DormStats::default(), mutant, fix: Vec::new(), held: Vec::new() }
+        Dorms { live: Vec::new(), lclip: Vec::new(), lspace: Vec::new(), lkey: Vec::new(), dead: 0, off: false, over: 64.0 * scale, keep: 256.0 * scale, tick: 0, opaque: 0, blur: false, stats: DormStats::default(), mutant, fix: Vec::new(), held: Vec::new() }
     }
 }
 
@@ -419,11 +453,41 @@ impl Rt {
 
     /// Part `d` is going away (its scope was cut): it is scanned no more.
     pub(crate) fn dorm_cut(&mut self, d: u32) {
-        if self.dyns.dorm.get(d as usize).is_some_and(|p| p.is_some()) {
-            if let Some(i) = self.dorm.live.iter().position(|&x| x == d) {
-                self.dorm.live.remove(i);
-            }
+        let Some(p) = self.dyns.dorm.get_mut(d as usize).and_then(|p| p.as_deref_mut()) else { return };
+        let i = p.slot as usize;
+        if p.slot == NONE || self.dorm.live.get(i) != Some(&d) {
+            return;
         }
+        p.slot = NONE;
+        // a tombstone: the columns are compacted by the next scan (a walk may hold another part's state
+        // out of the table right now, so no slot moves here)
+        self.dorm.live[i] = NONE;
+        self.dorm.dead += 1;
+    }
+
+    /// Drop the tombstones of cut parts from the scan columns (the survivors' slots follow).
+    #[cold]
+    fn dorm_compact(&mut self) {
+        let mut k = 0;
+        for i in 0..self.dorm.live.len() {
+            let d = self.dorm.live[i];
+            if d == NONE {
+                continue;
+            }
+            self.dorm.live[k] = d;
+            self.dorm.lclip[k] = self.dorm.lclip[i];
+            self.dorm.lspace[k] = self.dorm.lspace[i];
+            self.dorm.lkey[k] = self.dorm.lkey[i];
+            if let Some(p) = self.dyns.dorm[d as usize].as_deref_mut() {
+                p.slot = k as u32;
+            }
+            k += 1;
+        }
+        self.dorm.live.truncate(k);
+        self.dorm.lclip.truncate(k);
+        self.dorm.lspace.truncate(k);
+        self.dorm.lkey.truncate(k);
+        self.dorm.dead = 0;
     }
 
     /// Size every run's leaf from the part's extent model; queues the container's layout if one changed.
@@ -477,25 +541,26 @@ impl Rt {
     /// Scan every dormant-capable part (see the module docs). Returns whether a walk is needed: some part
     /// has items to realise or to release. Layout may be pending afterwards too (an estimate moved).
     pub(crate) fn dorm_scan(&mut self) -> bool {
+        if self.dorm.dead != 0 {
+            self.dorm_compact();
+        }
         let mut walk = false;
-        let mut li = 0;
-        while li < self.dorm.live.len() {
-            let d = self.dorm.live[li];
-            li += 1;
-            let Some(p) = self.dyns.dorm[d as usize].as_deref() else { continue };
-            let key = ScanKey { vis: self.visible_of(p.clip), org: self.glyphs.spaces[p.space as usize], lay: self.lay.stats.computes };
-            // the per-frame cost of a part whose exposure did not change: this compare
-            if key == p.key || !self.lay.info[p.lid as usize].written {
-                continue;
+        let lay = self.lay.stats.computes;
+        let mut i = 0;
+        // columns: nothing of a part is loaded while its key holds
+        while i < self.dorm.live.len() {
+            let key = ScanKey { vis: self.visible_of(self.dorm.lclip[i]), org: self.glyphs.spaces[self.dorm.lspace[i] as usize], lay };
+            if key != self.dorm.lkey[i] {
+                walk |= self.dorm_scan_part(self.dorm.live[i], key);
             }
-            walk |= self.dorm_scan_part(d, key);
+            i += 1;
         }
         walk
     }
 
     #[inline(never)]
     fn dorm_scan_part(&mut self, d: u32, key: ScanKey) -> bool {
-        let mut p = self.dyns.dorm[d as usize].take().unwrap();
+        let Some(mut p) = self.dyns.dorm[d as usize].take() else { return false };
         let mut old = std::mem::take(&mut self.dyns.parts[d as usize]);
         let walk = self.dorm_scan_entries(&mut p, &mut old, key);
         self.dyns.parts[d as usize] = old;
@@ -503,9 +568,87 @@ impl Rt {
         walk
     }
 
+    /// The part cannot be dormant after all: everything is demanded.
+    #[cold]
+    fn dorm_fall_back(&mut self, p: &mut Dorm) -> bool {
+        if !p.eager {
+            p.eager = true;
+            self.dorm.stats.fell_back += 1;
+        }
+        p.want.clear();
+        p.cand.clear();
+        if p.runs > 0 {
+            p.want.push((0, p.n));
+            self.dorm.rescan(p.slot);
+        }
+        p.runs > 0
+    }
+
+    /// Rebuild the part's entry columns from the layout (once per layout or structure change): tops, bottoms,
+    /// first items, run bits; check new items against what a run can stand for; measure. `None`: an item
+    /// does not qualify. `Some(resize)`: the estimate or the cross size moved.
+    fn dorm_columns(&mut self, p: &mut Dorm, old: &mut [DynItem], lay: u64) -> Option<bool> {
+        let eng = &self.lay.eng;
+        let kids = eng.kids(p.lid);
+        let mut kc = kids.iter().position(|&c| c == old[0].head)?;
+        let n = old.len();
+        p.tops.clear();
+        p.bots.clear();
+        p.first.clear();
+        p.since.clear();
+        p.isrun.clear();
+        p.isrun.resize(n.div_ceil(64), 0);
+        let (mut sum, mut cnt, mut cross, mut unseen, mut i) = (0f64, 0u32, p.cross, 0u32, 0u32);
+        for (j, ent) in old.iter_mut().enumerate() {
+            let nk = ent.nkid as usize;
+            let ks = kids.get(kc..kc + nk).filter(|ks| !ks.is_empty())?;
+            kc += nk;
+            let (top, _, w0) = eng.span(ks[0]);
+            let (_, bot, _) = eng.span(ks[nk - 1]);
+            p.tops.push(top);
+            p.bots.push(bot);
+            p.first.push(i);
+            p.since.push(ent.seen);
+            if ent.run != 0 {
+                p.isrun[j / 64] |= 1 << (j % 64);
+                i += ent.run;
+                continue;
+            }
+            if !ent.ok {
+                if ent.head != ks[0] || !ks.iter().all(|&c| kid_ok(eng.style(c))) {
+                    return None;
+                }
+                ent.ok = true;
+            }
+            unseen += (ent.seen != 0) as u32;
+            sum += (bot - top) as f64;
+            cnt += 1;
+            cross = cross.max(w0);
+            i += 1;
+        }
+        p.col_lay = lay;
+        p.measured = cnt;
+        p.unseen = unseen;
+        // the estimate: the mean measured size, whole px, moved only when it is off by more than an eighth
+        // (every move re-sizes the runs, which moves everything below them)
+        let mut resize = false;
+        if cnt > 0 {
+            let mean = ((sum / cnt as f64) as f32).round().max(1.0);
+            if p.est.is_nan() || (mean - p.est).abs() > p.est * 0.125 {
+                p.est = mean;
+                resize = true;
+            }
+        }
+        if cross != p.cross {
+            p.cross = cross;
+            resize = true;
+        }
+        Some(resize)
+    }
+
     fn dorm_scan_entries(&mut self, p: &mut Dorm, old: &mut [DynItem], key: ScanKey) -> bool {
         self.dorm.stats.scans += 1;
-        p.key = key;
+        self.dorm.lkey[p.slot as usize] = key;
         p.want.clear();
         p.drop.clear();
         p.cand.clear();
@@ -515,120 +658,120 @@ impl Rt {
         let tick = self.dorm.tick;
         let mutant = self.dorm.mutant;
         let lid = p.lid;
-        if !p.eager && !container_ok(self.lay.eng.style(lid)) {
-            p.eager = true;
-            self.dorm.stats.fell_back += 1;
-        }
         let ci = self.lay.info[lid as usize];
-        let eng = &self.lay.eng;
-        let kids = eng.kids(lid);
-        let mut kc = kids.iter().position(|&c| c == old[0].head).unwrap_or(usize::MAX);
-        if kc == usize::MAX && !p.eager {
-            // the first entry does not start at a layout child of the container
-            p.eager = true;
-            self.dorm.stats.fell_back += 1;
+        if !ci.written {
+            // not laid out yet: looked at again after the flush
+            self.dorm.rescan(p.slot);
+            return false;
         }
-        if p.eager {
-            if p.runs > 0 {
-                p.want.push((0, p.n));
+        if p.eager || !container_ok(self.lay.eng.style(lid)) {
+            return self.dorm_fall_back(p);
+        }
+        let mut resize = false;
+        if p.col_lay != key.lay || p.tops.len() != old.len() {
+            match self.dorm_columns(p, old, key.lay) {
+                Some(r) => resize = r,
+                None => return self.dorm_fall_back(p),
             }
-            return p.runs > 0;
         }
         // the visible range along the main axis, container-local
-        let (over, keep) = if mutant == Mutant::Short { (0.0, self.dorm.keep) } else { (self.dorm.over, self.dorm.keep) };
+        let over = if mutant == Mutant::Short { 0.0 } else { self.dorm.over };
+        let keep = self.dorm.keep;
         let (v0, v1) = match self.dorm_local_vis(key.vis, key.org, p.space) {
             Some(v) if v[0] < ci.ax + ci.aw && v[2] > ci.ax => (v[1] - ci.ay, v[3] - ci.ay),
             _ => (f32::INFINITY, f32::NEG_INFINITY),
         };
         let seen_any = v0 < v1;
-        let (mut sum, mut cnt, mut cross) = (0f64, 0u32, p.cross);
-        let mut i = 0u32;
+        let (lo_d, hi_d, lo_k, hi_k) = (v0 - over, v1 + over, v0 - keep, v1 + keep);
         let mut anchor: Option<(u32, f32)> = None;
-        let mut bad = false;
-        for (k, ent) in old.iter_mut().enumerate() {
-            let nk = ent.nkid as usize;
-            let Some(ks) = kids.get(kc..kc + nk).filter(|ks| !ks.is_empty()) else {
-                bad = true;
-                break;
-            };
-            kc += nk;
-            if ent.run != 0 {
-                let c = ent.run;
-                let (top, bot, _) = eng.span(ks[0]);
-                if !p.est.is_nan() && bot > v0 - over && top < v1 + over && bot > top {
-                    let a = p.locate(i, c, (v0 - over - top).max(0.0)).0;
-                    // the last item whose top is above the far edge
-                    let mut b = p.locate(i, c, (v1 + over - top).min(bot - top) - 0.01).0 + 1;
-                    if mutant == Mutant::Short && top > v0 {
-                        b -= 1;
-                    }
-                    match p.want.last_mut() {
-                        _ if a >= b => {}
-                        Some(w) if w.1 == a => w.1 = b,
-                        _ => p.want.push((a, b)),
-                    }
-                    if anchor.is_none() && bot > v0 && top < v1 {
-                        let (ai, at) = p.locate(i, c, (v0 - top).max(0.0));
-                        anchor = Some((ai, top + at));
-                    }
-                }
-                i += c;
-                continue;
+        let mut waiting = false;
+        let n = old.len();
+        let mut j0 = 0;
+        while j0 < n {
+            let m = (n - j0).min(64);
+            // the column test: every entry's box against the three ranges, as bit masks
+            let (t, b) = (&p.tops[j0..j0 + m], &p.bots[j0..j0 + m]);
+            let (mut d, mut k, mut v) = (0u64, 0u64, 0u64);
+            for j in 0..m {
+                d |= (((b[j] > lo_d) & (t[j] < hi_d)) as u64) << j;
+                k |= (((b[j] > lo_k) & (t[j] < hi_k)) as u64) << j;
+                v |= (((b[j] > v0) & (t[j] < v1)) as u64) << j;
             }
-            let (top, _, w0) = eng.span(ks[0]);
-            let (_, bot, _) = eng.span(ks[nk - 1]);
-            if !ent.ok {
-                if ent.head != ks[0] || !ks.iter().all(|&c| kid_ok(eng.style(c))) {
-                    bad = true;
-                    break;
+            let runs = p.isrun[j0 / 64];
+            let all = if m == 64 { u64::MAX } else { (1u64 << m) - 1 };
+            // exposed runs: demands
+            let mut bits = d & runs;
+            while bits != 0 {
+                let j = j0 + bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let (top, bot, i, c) = (p.tops[j], p.bots[j], p.first[j], old[j].run);
+                if p.est.is_nan() || bot <= top {
+                    continue;
                 }
-                ent.ok = true;
+                let a = p.locate(i, c, (lo_d - top).max(0.0)).0;
+                // the last item whose top is above the far edge
+                let mut e = p.locate(i, c, (hi_d - top).min(bot - top) - 0.01).0 + 1;
+                if mutant == Mutant::Short && top > v0 {
+                    e -= 1;
+                }
+                match p.want.last_mut() {
+                    _ if a >= e => {}
+                    Some(w) if w.1 == a => w.1 = e,
+                    _ => p.want.push((a, e)),
+                }
             }
-            let pitch = bot - top;
-            sum += pitch as f64;
-            cnt += 1;
-            cross = cross.max(w0);
-            if (bot > v0 - keep && top < v1 + keep) || i == p.pin {
-                ent.seen = tick;
-                if anchor.is_none() && bot > v0 && top < v1 {
-                    anchor = Some((i, top));
+            // the anchor: the first visible entry
+            if anchor.is_none() && v != 0 {
+                let j = j0 + v.trailing_zeros() as usize;
+                let (top, i) = (p.tops[j], p.first[j]);
+                anchor = Some(if old[j].run != 0 {
+                    let (ai, at) = p.locate(i, old[j].run, (v0 - top).max(0.0));
+                    (ai, top + at)
+                } else {
+                    (i, top)
+                });
+            }
+            // items outside the keep zone: releasable once their hold has passed
+            let mut bits = !k & !runs & all;
+            while bits != 0 {
+                let j = j0 + bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let (top, bot, i) = (p.tops[j], p.bots[j], p.first[j]);
+                if i == p.pin {
+                    continue;
                 }
-            } else {
+                if p.since[j] == 0 {
+                    p.since[j] = tick;
+                    old[j].seen = tick;
+                    p.unseen += 1;
+                }
                 let far = seen_any && (bot < v0 - FAR || top > v1 + FAR);
-                if far || tick.wrapping_sub(ent.seen) >= HOLD {
-                    p.cand.push((i, k as u32, pitch, far));
+                if far || tick.wrapping_sub(p.since[j]) >= HOLD {
+                    p.cand.push((i, j as u32, bot - top, far));
+                } else {
+                    waiting = true;
                 }
             }
-            i += 1;
-        }
-        if bad {
-            p.eager = true;
-            self.dorm.stats.fell_back += 1;
-            p.want.clear();
-            p.cand.clear();
-            p.key.lay = u64::MAX;
-            if p.runs > 0 {
-                p.want.push((0, p.n));
+            // items that came back
+            if p.unseen > 0 {
+                let mut bits = k & !runs;
+                while bits != 0 {
+                    let j = j0 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    if p.since[j] != 0 {
+                        p.since[j] = 0;
+                        old[j].seen = 0;
+                        p.unseen -= 1;
+                    }
+                }
             }
-            return p.runs > 0;
+            j0 += 64;
         }
-        // the estimate: the mean measured pitch, moved only when it is off by more than an eighth (every
-        // move re-sizes the runs, which moves everything below them)
-        let mut resize = false;
-        if cnt > 0 {
-            let mean = ((sum / cnt as f64) as f32).round().max(1.0);
-            if p.est.is_nan() || (mean - p.est).abs() > p.est * 0.125 {
-                p.est = mean;
-                resize = true;
-            }
-        } else if p.est.is_nan() && p.runs > 0 {
+        if p.est.is_nan() && p.runs > 0 && p.measured == 0 {
             // nothing realised to measure: the first items of the first run are the seed
             let c = old.iter().find(|e| e.run != 0).map_or(0, |e| e.run);
+            p.want.clear();
             p.want.push((0, c.min(SEED)));
-        }
-        if cross != p.cross {
-            p.cross = cross;
-            resize = true;
         }
         if p.anchor_tick != tick {
             p.anchor_tick = tick;
@@ -655,12 +798,13 @@ impl Rt {
             self.dorm.held = held;
             if blur {
                 self.dorm.blur = true;
-                p.key.lay = u64::MAX;
+                self.dorm.rescan(p.slot);
             }
-            // a release rides on a walk that realises; alone it waits for enough of them
-            if !p.want.is_empty() || p.cand.len() >= CAP || p.cand.iter().any(|c| c.3) {
-                p.drop.extend(p.cand.iter().map(|c| (c.0, c.2)));
-            }
+            p.drop.extend(p.cand.iter().map(|c| (c.0, c.2)));
+        }
+        if waiting {
+            // unexposed items inside their hold: the next passes look again until they are released
+            self.dorm.rescan(p.slot);
         }
         if resize {
             self.dorm_resize(p, old);
@@ -675,7 +819,7 @@ impl Rt {
             return;
         }
         for &d in &self.dorm.live {
-            let Some(p) = self.dyns.dorm[d as usize].as_deref() else { continue };
+            let Some(p) = self.dyns.dorm.get(d as usize).and_then(|p| p.as_deref()) else { continue };
             let (Some((idx, y0)), true) = (p.anchor, p.anchor_tick == self.dorm.tick && p.view != NONE) else { continue };
             if out.iter().any(|f| f.0 == p.view) {
                 continue;
@@ -748,13 +892,15 @@ impl Rt {
             return false;
         }
         p.pin = i;
-        p.key.lay = u64::MAX;
+        let slot = p.slot;
+        self.dorm.rescan(slot);
         true
     }
     pub fn dorm_unpin(&mut self, part: u32) {
         if let Some(p) = self.dyns.dorm.get_mut(part as usize).and_then(|p| p.as_deref_mut()) {
             p.pin = NONE;
-            p.key.lay = u64::MAX;
+            let slot = p.slot;
+            self.dorm.rescan(slot);
         }
     }
 
@@ -806,7 +952,6 @@ where
     let n = src.count_items() as u32;
     let seed = n.min(SEED);
     let lid = m.rt.lay.cur;
-    let tick = m.rt.dorm.tick;
     let mut out = Vec::with_capacity(seed as usize + 1);
     for i in 0..seed {
         // SAFETY: an indexed source (the caller checked), `i < n`, ascending.
@@ -816,8 +961,7 @@ where
         let mut it = mount_item(m, e, None);
         it.key = key;
         it.head = m.recs.get(r0).map_or(0, |r| r.handle);
-        it.seen = tick;
-        out.push(it);
+                out.push(it);
     }
     let mut runs = 0;
     if n > seed {
@@ -829,11 +973,42 @@ where
     }
     let gap = m.rt.lay.eng.style(lid).gap.height.value();
     let view = m.rt.input.mounting_view.unwrap_or(NONE);
-    let key = ScanKey { vis: NRect::EMPTY, org: [0, 0], lay: u64::MAX };
-    let dorm = Dorm { n, lid, space: m.space, clip: m.clip, view, est: f32::NAN, gap, cross: 0.0, rem: Vec::new(), want: Vec::new(), drop: Vec::new(), pin: NONE, key, anchor: None, anchor_tick: 0, eager: false, runs, resize: false, cand: Vec::new() };
+    let slot = m.rt.dorm.live.len() as u32;
+    let dorm = Dorm {
+        n,
+        lid,
+        space: m.space,
+        clip: m.clip,
+        view,
+        est: f32::NAN,
+        gap,
+        cross: 0.0,
+        rem: Vec::new(),
+        want: Vec::new(),
+        drop: Vec::new(),
+        pin: NONE,
+        slot,
+        tops: Vec::new(),
+        bots: Vec::new(),
+        first: Vec::new(),
+        since: Vec::new(),
+        isrun: Vec::new(),
+        col_lay: u64::MAX,
+        measured: 0,
+        unseen: 0,
+        anchor: None,
+        anchor_tick: 0,
+        eager: false,
+        runs,
+        resize: false,
+        cand: Vec::new(),
+    };
     m.rt.dyns.parts[d as usize] = out;
     m.rt.dyns.dorm[d as usize] = Some(Box::new(dorm));
     m.rt.dorm.live.push(d);
+    m.rt.dorm.lclip.push(m.clip);
+    m.rt.dorm.lspace.push(m.space);
+    m.rt.dorm.lkey.push(ScanKey { vis: NRect::EMPTY, org: [0, 0], lay: u64::MAX });
 }
 
 // =============================================================================== the walk
@@ -846,7 +1021,6 @@ where
 {
     let mut buf: Vec<RecordInit> = Vec::new();
     let mut items = Vec::with_capacity((b - a) as usize);
-    let tick = m.rt.dorm.tick;
     let mut nk = 0usize;
     for idx in a..b {
         let e = match first.take() {
@@ -859,8 +1033,7 @@ where
         let mut it = mount_item(m, e, Some(&mut buf));
         it.key = key;
         it.head = buf.get(r0).map_or(0, |r| r.handle);
-        it.seen = tick;
-        nk += it.nkid as usize;
+                nk += it.nkid as usize;
         items.push(it);
     }
     m.rt.bough.insert_run(m.pos, &buf);
@@ -898,7 +1071,10 @@ where
     let cx = (m.clip, m.space, m.depth, m.ox, m.oy);
     let lid = m.rt.lay.cur;
     let reclip = p.clip != m.clip;
-    p.clip = m.clip;
+    if reclip {
+        p.clip = m.clip;
+        m.rt.dorm.lclip[p.slot as usize] = m.clip;
+    }
     let n_new = src.count_items() as u32;
     let gap = m.rt.lay.eng.style(lid).gap.height.value();
     if gap != p.gap {
@@ -1123,7 +1299,8 @@ where
     if touched {
         m.rt.lay.eng.invalidate(&m.rt.bough, lid);
         m.rt.queue_container(lid);
-        p.key.lay = u64::MAX;
+        p.col_lay = u64::MAX;
+        m.rt.dorm.rescan(p.slot);
     }
     if p.resize {
         m.rt.dorm_resize(&mut p, &old);

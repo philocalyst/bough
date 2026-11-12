@@ -394,7 +394,7 @@ impl<V: View> App<V> {
     /// (`dormant.rs`). Nothing when no such part exists, and one compare per part whose exposure is unchanged.
     #[inline]
     pub(crate) fn expose(&mut self) {
-        if !self.rt.dorm.live.is_empty() {
+        if self.rt.dorm.any() {
             self.expose_parts();
         }
     }
