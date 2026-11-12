@@ -223,6 +223,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-lay"
+version = "0.0.0"
+dependencies = [
+ "bough-expr",
+ "bough-mem",
+ "cephal",
+]
+
+[[package]]
 name = "bough-mem"
 version = "0.0.0"
 
