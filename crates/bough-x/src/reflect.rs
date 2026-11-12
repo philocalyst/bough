@@ -79,6 +79,8 @@ pub struct ColInfo {
     pub ops: &'static [Op],
     /// The column has a pointer handler.
     pub hears: bool,
+    /// Its handlers: the kinds they hear, their type as the compiler writes it.
+    pub on: Option<Hov>,
     /// The store's sites that share the column, in the order of their record bases.
     pub sites: Vec<u32>,
     val: unsafe fn(*const u8, usize, &U) -> Val,
@@ -96,7 +98,7 @@ unsafe fn offset_of<A: Arch>(p: *const u8, u: &U) -> (i32, i32) {
     unsafe { (*(p as *const A)).offset(u) }
 }
 impl ColInfo {
-    fn of<A: Arch>(hears: bool) -> ColInfo {
+    fn of<A: Arch>(on: Option<Hov>) -> ColInfo {
         ColInfo {
             kind: A::NAME,
             ty: core::any::type_name::<A>(),
@@ -104,7 +106,8 @@ impl ColInfo {
             reads: A::READS,
             moves: A::MOVES,
             ops: A::OPS,
-            hears,
+            hears: on.is_some_and(|o| o.kinds & crate::event::kind::POINTER != 0),
+            on,
             sites: Vec::new(),
             val: val_of::<A>,
             changed: changed_of::<A>,
@@ -218,7 +221,7 @@ impl<V> Leaf<V> for LearnLeaf<'_> {
         self.out.sites[k] = Some(SiteInfo { col: s.col, row: self.row, pos, loc: self.loc });
         let c = &mut self.out.cols[s.col as usize];
         if c.is_none() {
-            *c = Some(ColInfo::of::<A>(hov.is_some()));
+            *c = Some(ColInfo::of::<A>(hov));
         }
     }
 }

@@ -18,8 +18,9 @@ pub const U_PTR_Y: usize = 60;
 pub const U_PTR_X: usize = 61;
 pub const U_PICK: usize = 62;
 pub const U_TIME: usize = 63;
-/// The words an application may write.
-pub const APP_WORDS: usize = 60;
+/// The words an application may write. Words 56..59 are the core's (focus, press, the platform's settings, where a
+/// press began: `bough-x`'s `event.rs`), 60..63 the raster's.
+pub const APP_WORDS: usize = 56;
 
 /// The uniform block. The application writes it as plain data; nothing observes a write.
 #[repr(C, align(64))]
