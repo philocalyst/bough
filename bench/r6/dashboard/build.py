@@ -716,6 +716,8 @@ def short_num(v):
 
 def ms_text(us):
     us = float(us)
+    if us >= 1e6:
+        return f"{us / 1e6:.3g} s"
     return f"{us / 1000:.3g} ms" if us >= 1000 else f"{us:.3g} µs"
 
 
