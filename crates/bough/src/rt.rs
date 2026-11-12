@@ -127,6 +127,45 @@ pub struct Caps {
     pub strikes: usize,
 }
 
+/// Capacities of the façade's own (CPU-only) tables, derived from [`Caps`]: every table is a column carved
+/// from one zeroed block (`Rt::new`), so it never moves and never copies what was mounted before (round 6,
+/// lane `store`: type-stable storage). Untouched capacity is not resident.
+#[derive(Clone, Copy, Debug)]
+pub struct StoreCaps {
+    /// Element ids (node id = layout id = record handle index).
+    pub ids: usize,
+    pub texts: usize,
+    pub wires: usize,
+    pub runs: usize,
+    /// Words of the span arena.
+    pub spans: usize,
+}
+
+impl StoreCaps {
+    pub fn of(caps: &Caps) -> StoreCaps {
+        // an id per record the pages can hold, twice over (handles of records not inserted yet, of static
+        // texts, and of removed records whose ids were not reissued yet)
+        let ids = (caps.pages * crate::rt::PAGE_SLOTS * 2).next_power_of_two();
+        StoreCaps { ids, texts: ids, wires: ids * 2, runs: caps.instances, spans: ids * 16 }
+    }
+    fn bytes(&self) -> usize {
+        let a = |n: usize| n.next_multiple_of(256) + 256;
+        a(self.ids * size_of::<Node>())
+            + a(self.ids * 16)
+            + a(self.runs * size_of::<Run>())
+            + a(self.texts * size_of::<crate::text::TextNode>())
+            + a(self.wires * size_of::<Wire>())
+            + a(self.ids * size_of::<crate::layout::LInfo>())
+            + a(self.ids * 16)
+            + a(self.spans * 4)
+            + crate::lay_deep::Deep::column_bytes(self.ids, self.texts)
+            + 4096
+    }
+}
+
+/// Records per core page.
+pub const PAGE_SLOTS: usize = 64;
+
 impl Caps {
     /// Sized for the comparison scenes with headroom (heavy: ~2.6 K records / 2.3 K glyphs; vlist: ~6 K
     /// glyphs mounted). With the direct-Metal presenter these are only minimums: see [`Caps::reserve`].
@@ -165,13 +204,15 @@ impl Caps {
 
     pub fn region_bytes(&self, w: u32, h: u32) -> usize {
         let caps = self.pow2();
+        // one instance per element id after the runs' region (`Rt::ibase`)
+        let instances = (caps.instances + StoreCaps::of(&caps).ids).next_power_of_two();
         // frame slots sized for the tallest window (resize never moves them; 4.3 KB each)
         let sb = Layout::slot_bytes(w, h.max(MAX_WINDOW));
         // every column on a page boundary (`Region::carve_paged`: a column view is whole pages)
         let a = |n: usize| n.next_multiple_of(256) + 256 + bough_mem::vm_page();
         HDR_BYTES
             + 3 * a(sb)
-            + a(caps.instances * size_of::<Instance>())
+            + a(instances * size_of::<Instance>())
             + a(caps.pages * size_of::<Page>())
             // the directory's page ids and inks: twice the page capacity (blocks of 64 with holes)
             + a(2 * caps.pages * 4)
@@ -196,38 +237,60 @@ pub struct Run {
     pub live: bool,
 }
 
-/// Mutable per-element state that wires patch. Quads and text share the struct (cold fields are small).
-pub struct Node {
-    pub handle: Handle,
-    /// Instance run (quads, bars, glyph-instance text), or `NONE`.
-    pub run: u32,
-    pub space: u16,
+/// Per-element state, by element id (round 6, lane `store`).
+///
+/// **One index space**: an element's id is its record handle's index, which is also its layout node id
+/// (`Lay::info`, the engine's nodes) and, for an element that draws one quad, the index of its GPU instance
+/// (`Rt::inst_of`). **Columns by the pass that reads them**: what every wire and every walk reads first is
+/// eight bytes (`Hot`); the handle's generation is its own column; a quad's geometry and colour are the
+/// instance's own fields (the instance is the state: nothing mirrors it); what few elements have (a paint
+/// offset, an opacity, a bar series) is a cold record (`Node`) the hot entry links to.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Hot {
+    /// `NK_*`, with `NK_HOVERED`. 0: no element state at this id.
+    pub kind: u8,
+    /// `HF_*`.
+    pub flags: u8,
     /// bough-core clip id of the element's record.
     pub clip: u16,
-    pub kind: u8,
-    pub live: bool,
+    /// A text element: its text state (`Rt::texts`). With `HF_COLD`: its cold record (`Rt::cold`).
+    pub link: u32,
+}
+const _: () = assert!(size_of::<Hot>() == 8);
+
+/// `Hot::link` is a cold record (bars, lanes, a quad under a paint offset / opacity / hover).
+pub const HF_COLD: u8 = 1;
+/// A quad whose drawn colour or position is not its described one: an opacity or a paint offset is
+/// installed, or it is hovered. Its cold record holds the described colour and position.
+pub const HF_MOD: u8 = 2;
+
+/// The cold record of an element that needs one (`HF_COLD`): bars and lanes (their series and geometry
+/// constants), and a quad under a paint modifier (`HF_MOD`: its described colour, opacity, paint offset and
+/// untranslated position).
+pub struct Node {
+    /// The first instance of a run (bars, lanes).
+    pub inst: u32,
+    /// Its instance run (`Rt::runs`), or `NONE`.
+    pub run: u32,
+    pub space: u16,
     /// Quad: local px x, y(origin), w, h.
     pub x: f32,
     pub y: f32,
-    /// Quad: space-local px y of the element's origin (the `span` operand is relative to it).
+    /// Bars: space-local px y of the element's origin.
     pub y0: f32,
     pub w: f32,
     pub h: f32,
-    pub radius: f32,
     pub color: u32,
     pub margin: f32,
     pub size_px: f32,
     pub line_h: f32,
-    /// Series node (`bars`): memoised samples and the key they were computed for.
-    pub series: Vec<f32>,
+    /// Series node (`bars`): its memoised samples (a span of `Rt::spans`, `series_n` floats) and the key
+    /// they were computed for.
+    pub series: u32,
+    pub series_n: u32,
     pub series_key: u64,
     pub series_ok: bool,
-    /// Text state (`Rt::texts` index), or `NONE`.
-    pub text: u32,
-    /// Layout node (index into `Rt::lay`) of an element laid out by cephal, else `NONE`.
-    pub lnode: u32,
-    /// Allocation serial: tells a reused node from the one an outside table recorded (`select.rs`).
-    pub serial: u32,
     /// Box operands (`boxops.rs`): paint offset (device px) and opacity.
     pub tx: f32,
     pub ty: f32,
@@ -236,33 +299,7 @@ pub struct Node {
 
 impl Node {
     fn blank() -> Node {
-        Node {
-            handle: Handle { idx: 0, generation: 0 },
-            run: NONE,
-            space: 0,
-            clip: 0,
-            kind: 0,
-            live: false,
-            x: 0.0,
-            y: 0.0,
-            y0: 0.0,
-            w: 0.0,
-            h: 0.0,
-            radius: 0.0,
-            color: 0,
-            margin: 0.0,
-            size_px: 0.0,
-            line_h: 0.0,
-            series: Vec::new(),
-            series_key: 0,
-            series_ok: false,
-            text: NONE,
-            lnode: NONE,
-            serial: 0,
-            tx: 0.0,
-            ty: 0.0,
-            alpha: 1.0,
-        }
+        Node { inst: NONE, run: NONE, space: 0, x: 0.0, y: 0.0, y0: 0.0, w: 0.0, h: 0.0, color: 0, margin: 0.0, size_px: 0.0, line_h: 0.0, series: 0, series_n: 0, series_key: 0, series_ok: false, tx: 0.0, ty: 0.0, alpha: 1.0 }
     }
 }
 
@@ -315,9 +352,14 @@ pub const HEAD_IDX: u32 = (1 << 30) - 1;
 /// Everything created while mounting one subtree that must be released when it unmounts.
 #[derive(Default)]
 pub struct Scope {
-    pub nodes: Vec<u32>,
     pub wires: Vec<u32>,
+    /// Text states (`Rt::texts`) of the subtree's text elements.
+    pub texts: Vec<u32>,
+    /// Single instances (a quad's) and instance runs (`Rt::runs`: bars, lanes, glyph-instance text).
+    pub insts: Vec<u32>,
     pub runs: Vec<u32>,
+    /// Bar series' sample spans (`Rt::spans` offset, count).
+    pub series: Vec<(u32, u32)>,
     /// Layout roots (groups) created while mounting; removed from the layout engine on release.
     pub lroots: Vec<u32>,
     /// Dynamic parts of a re-describing owner (`describe.rs`), released with their items.
@@ -331,7 +373,7 @@ pub struct Scope {
 impl Scope {
     /// Heap bytes of the scope's lists (memory ledger).
     pub fn heap_bytes(&self) -> usize {
-        (self.nodes.capacity() + self.wires.capacity() + self.runs.capacity() + self.lroots.capacity() + self.dyns.capacity() + self.lregs.capacity() + self.prods.capacity()) * 4
+        (self.wires.capacity() + self.texts.capacity() + self.insts.capacity() + self.runs.capacity() + self.lroots.capacity() + self.dyns.capacity() + self.lregs.capacity() + self.prods.capacity()) * 4 + self.series.capacity() * 8
     }
 }
 
@@ -439,13 +481,28 @@ pub struct Rt {
     next_fresh: u32,
     free_blocks: [Vec<u32>; 16],
     free_bits: [Vec<u64>; 16],
-    pub runs: Vec<Run>,
+    pub runs: Col<Run>,
     run_free: Vec<u32>,
-    pub nodes: Vec<Node>,
-    node_free: Vec<u32>,
+    /// Per element id: the hot entry, the handle generation, and one float only some kinds use (a raw
+    /// quad's origin y, a decoration's ink margin). See [`Hot`].
+    pub hot: Col<Hot>,
+    pub hgen: Col<u32>,
+    pub aux: Col<f32>,
+    /// Cold records (`HF_COLD`), and the free ones.
+    pub cold: Col<Node>,
+    cold_free: Vec<u32>,
+    /// Index of element id 0's instance: the instance column is `[runs and static quads | one per id]`.
+    pub ibase: u32,
+    /// The highest element id handed out (the per-id columns are touched up to it).
+    max_id: u32,
+    /// Handles of nodes that were allocated and given back before their record was made (an element that
+    /// turned out static): the next `alloc_node` takes one.
+    spare: Vec<Handle>,
+    /// Variable-length element state (bar series, tapes, line windows): one word arena (`store.rs`).
+    pub spans: crate::store::Spans,
     /// The wire arena and the owner offsets of wired signals: crate-private, because `settle` trusts them
     /// (every offset is an `offset_of!`-proven `Signal<_>` field, every recipe the closure its patch reads).
-    pub(crate) wires: Vec<Wire>,
+    pub(crate) wires: Col<Wire>,
     pub(crate) wire_free: Vec<u32>,
     /// Per owner class: the offsets of its wired cells (class 0 is the app's root owner; every list
     /// region adds one class shared by all its rows, `list.rs`).
@@ -461,7 +518,7 @@ pub struct Rt {
     settle_audit: bool,
     /// Per owner class: its `View::changed` (rows and entity views of a `View` type; class 0 is the app's).
     pub(crate) class_changed: Vec<Option<ChangedFn>>,
-    pub texts: Vec<crate::text::TextNode>,
+    pub texts: Col<crate::text::TextNode>,
     text_free: Vec<u32>,
     /// Virtual-list regions: crate-private (each holds a type-erased row function its `mount_row` trusts).
     pub(crate) regions: Vec<VRegion>,
@@ -499,7 +556,6 @@ pub struct Rt {
     pub asy: crate::reader::Async,
     pub(crate) pubs: crate::changed::Pubs,
     pub(crate) selects: crate::select::Selects,
-    next_serial: u32,
     /// Pointer, hover, focus, routes (input.rs).
     pub input: crate::input::Input,
     /// Running transitions and the frame clock (transition.rs).
@@ -511,6 +567,8 @@ pub struct Rt {
     pub(crate) owner: *const u8,
     /// Keeps a heap region alive (the GPU region is kept alive by the columns' reference count too).
     _region: Region,
+    /// The block the façade's own tables are carved from (`StoreCaps`).
+    _store: Region,
 }
 
 impl Rt {
@@ -526,9 +584,12 @@ impl Rt {
         }
         // every GPU-read column starts on a page boundary: a presenter with column views wraps each one's used
         // prefix in its own buffer (bough-metal `Fused::new_views`)
-        let mut inst: Col<Instance> = region.carve_paged("instances", caps.instances);
+        // the instance column: the runs' region (buddy blocks: bars, lanes, glyph text, static quads), then
+        // one instance per element id (lane store: `Rt::ibase`)
+        let icap = (caps.instances + StoreCaps::of(&caps).ids).next_power_of_two();
+        let mut inst: Col<Instance> = region.carve_paged("instances", icap);
         // SAFETY: carved memory is zeroed (fresh mapping / buffer) and all-zero is a valid Instance.
-        unsafe { inst.set_len(caps.instances) };
+        unsafe { inst.set_len(icap) };
         // the directory columns hold twice the page capacity: the core's directory is blocks of 64 entries with
         // holes after the live pages (32 to 64 live per block), so its length runs ahead of the page count; the
         // kernels clamp the directory scan to `2 * (m_page + 1)` entries
@@ -561,7 +622,7 @@ impl Rt {
             xforms_off: xforms.region_offset().unwrap() as u32,
             slot,
             masks: Masks {
-                inst: caps.instances as u32 - 1,
+                inst: icap as u32 - 1,
                 page: caps.pages as u32 - 1,
                 glyph: caps.glyphs as u32 - 1,
                 run: caps.runs as u32 - 1,
@@ -576,7 +637,7 @@ impl Rt {
             use bough_metal::fused::*;
             let d = |off: u32, elem: usize, cap: usize, group: usize| ColumnDesc { off, elem: elem as u32, reserve: (elem * cap) as u32, group: group as u8 };
             let l = &mut layout;
-            l.cols[COL_INST] = d(l.inst_off, size_of::<Instance>(), caps.instances, G_INST);
+            l.cols[COL_INST] = d(l.inst_off, size_of::<Instance>(), icap, G_INST);
             l.cols[COL_SPACES] = d(l.spaces_off, 8, caps.spaces, G_SPACE);
             l.cols[COL_CLIPS] = d(l.clips_off, 8, caps.clips, G_CLIP);
             // a page-group element of a directory column is a pair of entries (the columns hold 2x pages), so
@@ -591,6 +652,28 @@ impl Rt {
             l.cols[COL_XFORMS] = d(l.xforms_off, 32, caps.spaces, G_SPACE);
         }
         let (tx, ty) = (layout.tiles_x() as usize, layout.tiles_y() as usize);
+        let sc = StoreCaps::of(&caps);
+        let mut store = Region::heap(sc.bytes());
+        let mut runs: Col<Run> = store.carve("runs", sc.runs);
+        runs.push(Run::default());
+        let mut hot: Col<Hot> = store.carve("element hot", sc.ids);
+        let mut hgen: Col<u32> = store.carve("element generations", sc.ids);
+        let mut aux: Col<f32> = store.carve("element aux", sc.ids);
+        // SAFETY: mapped memory is zero and all-zero is a valid `Hot` / `u32` / `f32`: the whole id range is
+        // addressable, an untouched id reads as "no element".
+        unsafe {
+            hot.set_len(sc.ids);
+            hgen.set_len(sc.ids);
+            aux.set_len(sc.ids);
+        }
+        let mut cold: Col<Node> = store.carve("element cold", sc.ids);
+        cold.push(Node::blank());
+        let mut wires: Col<Wire> = store.carve("wires", sc.wires);
+        wires.push(Wire { next: 0, dead: true, latest: false, node: 0, head: 0, cls: 0, patch: nop, recipe: [0; 16] });
+        let texts = store.carve("texts", sc.texts);
+        let spans = crate::store::Spans::new(store.carve("spans", sc.spans));
+        let lay = crate::layout::Lay::new(scale, &mut store, &sc);
+        let reflect = crate::reflect::Reflect { types: store.carve("element types", sc.ids) };
         Rt {
             bough,
             glyphs,
@@ -604,11 +687,18 @@ impl Rt {
             next_fresh: 0,
             free_blocks: Default::default(),
             free_bits: Default::default(),
-            runs: vec![Run::default()],
+            runs,
             run_free: Vec::new(),
-            nodes: vec![Node::blank()],
-            node_free: Vec::new(),
-            wires: vec![Wire { next: 0, dead: true, latest: false, node: 0, head: 0, cls: 0, patch: nop, recipe: [0; 16] }],
+            hot,
+            hgen,
+            aux,
+            cold,
+            cold_free: Vec::new(),
+            ibase: caps.instances as u32,
+            max_id: 0,
+            spare: Vec::new(),
+            spans,
+            wires,
             wire_free: Vec::new(),
             classes: vec![Vec::new()],
             class_rank: vec![Vec::new()],
@@ -620,7 +710,7 @@ impl Rt {
             log_epoch: crate::signal::LOG.with(|l| l.epoch.get().wrapping_sub(1)),
             settle_audit: std::env::var_os("BOUGH_SETTLE_AUDIT").is_some(),
             class_changed: vec![None],
-            texts: Vec::new(),
+            texts,
             text_free: Vec::new(),
             regions: Vec::new(),
             clip_dedupe: Vec::new(),
@@ -635,21 +725,21 @@ impl Rt {
             tiles_x: tx,
             tiles_y: ty,
             ctr: Counters::default(),
-            lay: crate::layout::Lay::new(scale),
+            lay,
             lists: Default::default(),
             reclaim_q: Vec::new(),
-            reflect: Default::default(),
+            reflect,
             dyns: Default::default(),
             eviews: Vec::new(),
             asy: Default::default(),
             pubs: Default::default(),
             selects: Default::default(),
-            next_serial: 0,
             input: Default::default(),
             transitions: Default::default(),
             images: Default::default(),
             owner: std::ptr::null(),
             _region: region,
+            _store: store,
         }
     }
 
@@ -669,7 +759,8 @@ impl Rt {
     pub fn column_needs(&self) -> [usize; bough_metal::fused::NGROUPS] {
         let (pages, dir, clips) = self.bough.gpu_extent();
         [
-            self.next_fresh as usize,
+            // the runs' region's high-water mark, and the per-element instances after it (`ibase + id`)
+            (self.next_fresh as usize).max(if self.max_id == 0 { 0 } else { (self.ibase + self.max_id) as usize + 1 }),
             pages.max(dir.div_ceil(2)),
             self.glyphs.x.len().max(self.glyphs.ent.len()),
             self.glyphs.runs.len(),
@@ -691,28 +782,35 @@ impl Rt {
         l.push("region", "header + 3 frame slots", bough_mem::Space::Region, Window, HDR_BYTES + slots, HDR_BYTES + slots, None, None);
         // the instance and transform columns are addressable whole (`set_len(cap)`): what is in use is the
         // allocators' high-water marks
+        // instances: the runs' region's high-water mark, then one per element id (`ibase + id`, lane store)
         let m = self.inst.mem();
-        l.push(G, "instances", bough_mem::Space::Region, Content, self.next_fresh as usize * m.elem, m.cap_bytes(), Some(m.resident), Some(m.dirty));
+        let ids = if self.max_id == 0 { 0 } else { self.max_id as usize + 1 };
+        l.push(G, "instances", bough_mem::Space::Region, Content, (self.next_fresh as usize + ids) * m.elem, m.cap_bytes(), Some(m.resident), Some(m.dirty));
         let m = self.xforms.mem();
         l.push(G, "xforms", bough_mem::Space::Region, Content, self.next_space as usize * m.elem, m.cap_bytes(), Some(m.resident), Some(m.dirty));
         self.bough.ledger(l);
         self.glyphs.ledger(l);
         self.text.ledger(l);
         let sb = Scope::heap_bytes;
-        l.vec(G, "nodes", &self.nodes, self.nodes.capacity(), Content);
-        let series: usize = self.nodes.iter().map(|n| n.series.capacity() * 4).sum();
-        l.many(G, "node series", Content, series, series);
-        l.vec(G, "node free list", &self.node_free, self.node_free.capacity(), Content);
-        l.vec(G, "wires", &self.wires, self.wires.capacity(), Content);
+        // per-element state: columns at the element id, carved from the façade's store block (lane store)
+        l.col(G, &self.hot, Content);
+        l.col(G, &self.hgen, Content);
+        l.col(G, &self.aux, Content);
+        l.col(G, &self.cold, Content);
+        l.vec(G, "cold record free list", &self.cold_free, self.cold_free.capacity(), Content);
+        l.vec(G, "spare handles", &self.spare, self.spare.capacity(), Content);
+        l.col(G, self.spans.column(), Content);
+        l.col(G, &self.wires, Content);
         l.vec(G, "wire free list", &self.wire_free, self.wire_free.capacity(), Content);
         let cl: usize = self.classes.iter().map(|c| c.capacity() * 4).sum::<usize>() + self.classes.capacity() * 24 + self.class_changed.capacity() * 8;
         l.many(G, "owner classes", Content, cl, cl);
-        l.vec(G, "instance runs", &self.runs, self.runs.capacity(), Content);
+        l.col(G, &self.runs, Content);
         let fb: usize = self.free_blocks.iter().map(|v| v.capacity() * 4).sum::<usize>() + self.free_bits.iter().map(|v| v.capacity() * 8).sum::<usize>() + self.run_free.capacity() * 4;
         l.many(G, "instance free lists", Content, fb, fb);
-        l.vec(G, "text nodes", &self.texts, self.texts.capacity(), Content);
+        l.col(G, &self.texts, Content);
+        l.vec(G, "text node free list", &self.text_free, self.text_free.capacity(), Content);
         let (mut strings, mut shapes) = (0usize, 0usize);
-        for t in &self.texts {
+        for t in self.texts.iter() {
             strings += t.text.capacity();
             shapes += match &t.shape {
                 crate::text::TShape::None | crate::text::TShape::Glyphs { .. } => 0,
@@ -733,7 +831,7 @@ impl Rt {
         self.lay.ledger(l);
         self.lists.ledger(l);
         self.dyns.ledger(l);
-        l.vec(G, "reflection type names", &self.reflect.types, self.reflect.types.capacity(), Content);
+        l.col(G, &self.reflect.types, Content);
         self.images.ledger(l);
         self.input.ledger(l);
     }
@@ -993,27 +1091,137 @@ impl Rt {
         }
     }
     // ------------------------------------------------------------------ nodes and wires
+    /// A new element: a record handle, and blank state at its index (the element id).
     pub fn alloc_node(&mut self) -> u32 {
-        let mut n = Node::blank();
-        n.live = true;
-        self.next_serial = self.next_serial.wrapping_add(1);
-        n.serial = self.next_serial;
-        if let Some(i) = self.node_free.pop() {
-            n.series = std::mem::take(&mut self.nodes[i as usize].series);
-            self.nodes[i as usize] = n;
-            i
-        } else {
-            self.nodes.push(n);
-            (self.nodes.len() - 1) as u32
+        let h = match self.spare.pop() {
+            Some(h) => h,
+            None => self.bough.new_handle(),
+        };
+        self.node_at(h)
+    }
+    /// Blank state for the element whose record handle is `h` (the element id is `h.idx`).
+    #[inline]
+    pub fn node_at(&mut self, h: Handle) -> u32 {
+        let i = h.idx as usize;
+        assert!(i < self.hot.len(), "element ids exhausted ({}): raise Caps::pages", self.hot.len());
+        // the id's previous element is gone (its handle was released): so is its cold record
+        self.drop_cold(i);
+        self.hot[i] = Hot::default();
+        self.hgen[i] = h.generation;
+        self.max_id = self.max_id.max(h.idx);
+        h.idx
+    }
+    /// Give back an element whose record will carry no handle (it turned out static): the handle is kept
+    /// for the next `alloc_node`.
+    pub fn drop_node(&mut self, i: u32) {
+        self.drop_cold(i as usize);
+        self.hot[i as usize] = Hot::default();
+        self.spare.push(Handle { idx: i, generation: self.hgen[i as usize] });
+    }
+    #[inline]
+    fn drop_cold(&mut self, i: usize) {
+        let old = self.hot[i];
+        if old.flags & HF_COLD != 0 {
+            self.cold_free.push(old.link);
         }
     }
-    pub fn free_node(&mut self, i: u32) {
-        let t = std::mem::replace(&mut self.nodes[i as usize].text, NONE);
-        if t != NONE {
-            self.free_text(t);
+    /// The record handle of element `i`.
+    #[inline(always)]
+    pub fn handle(&self, i: u32) -> Handle {
+        Handle { idx: i, generation: self.hgen[i as usize] }
+    }
+    /// Is the state at id `i` that of a current element (its handle is the live handle of index `i`)?
+    #[inline]
+    pub fn node_live(&self, i: u32) -> bool {
+        i != 0 && self.hot.get(i as usize).is_some_and(|n| n.kind != 0) && self.bough.handle_live(self.handle(i))
+    }
+    /// `node_live` for an element being mounted (its handle is allocated, its record not inserted yet).
+    #[inline]
+    pub(crate) fn node_pending(&self, i: u32) -> bool {
+        self.node_live(i)
+    }
+    /// The instance of element `i` that draws one quad: its index in the instance column is its id.
+    #[inline(always)]
+    pub fn inst_of(&self, i: u32) -> u32 {
+        self.ibase + i
+    }
+    /// The text state of text element `i`.
+    #[inline(always)]
+    pub fn text_of(&self, i: u32) -> u32 {
+        self.hot[i as usize].link
+    }
+    /// A cold record for element `i` (`HF_COLD`), blank.
+    pub fn alloc_cold(&mut self, i: u32) -> &mut Node {
+        let c = match self.cold_free.pop() {
+            Some(c) => {
+                self.cold[c as usize] = Node::blank();
+                c
+            }
+            None => {
+                self.cold.push(Node::blank());
+                (self.cold.len() - 1) as u32
+            }
+        };
+        let h = &mut self.hot[i as usize];
+        h.flags |= HF_COLD;
+        h.link = c;
+        &mut self.cold[c as usize]
+    }
+    /// The cold record of element `i` (which has one).
+    #[inline]
+    pub fn cold_of(&self, i: u32) -> &Node {
+        let h = self.hot[i as usize];
+        debug_assert!(h.flags & HF_COLD != 0);
+        &self.cold[h.link as usize]
+    }
+    #[inline]
+    pub fn cold_mut(&mut self, i: u32) -> &mut Node {
+        let h = self.hot[i as usize];
+        debug_assert!(h.flags & HF_COLD != 0);
+        &mut self.cold[h.link as usize]
+    }
+    /// The cold record of quad `i` under a paint modifier, made on first use from what the instance holds
+    /// (the instance was the state until now): described colour, position, no offset, full opacity.
+    pub fn mod_of(&mut self, i: u32) -> &mut Node {
+        if self.hot[i as usize].flags & HF_MOD == 0 {
+            let p = self.inst[self.inst_of(i) as usize];
+            let base = if p.kind == KIND_BORDER { p.color2 } else { p.color };
+            let c = self.alloc_cold(i);
+            (c.color, c.x, c.y) = (base, p.pos[0], p.pos[1]);
+            self.hot[i as usize].flags |= HF_MOD;
         }
-        self.nodes[i as usize].live = false;
-        self.node_free.push(i);
+        self.cold_mut(i)
+    }
+    /// The described colour of quad `i` (its fill): the instance's, or under a paint modifier the cold
+    /// record's.
+    pub fn quad_color(&self, i: u32) -> u32 {
+        let h = self.hot[i as usize];
+        if h.flags & HF_MOD != 0 {
+            return self.cold_of(i).color;
+        }
+        let p = &self.inst[self.inst_of(i) as usize];
+        if h.kind & !NK_HOVERED == NK_BORDER { p.color2 } else { p.color }
+    }
+    /// The ink margin of quad `i`: a decoration's own (`aux`), else what its instance's kind draws outside
+    /// its box (anti-aliasing of a rounded or bordered edge: 1 px; a solid: none).
+    #[inline(always)]
+    pub fn margin_of(&self, i: u32, p: &Instance) -> f32 {
+        if self.hot[i as usize].kind & !NK_HOVERED == crate::deco::NK_DECO {
+            self.aux[i as usize]
+        } else if p.kind == KIND_SOLID {
+            0.0
+        } else {
+            1.0
+        }
+    }
+    /// One instance of a static quad (no element state): a block of the instance column.
+    #[inline]
+    pub fn alloc_inst(&mut self) -> u32 {
+        self.alloc_block(0)
+    }
+    #[inline]
+    pub fn free_inst(&mut self, i: u32) {
+        self.free_block(i, 0);
     }
     pub(crate) fn alloc_text(&mut self, t: crate::text::TextNode) -> u32 {
         if let Some(i) = self.text_free.pop() {
@@ -1252,37 +1460,49 @@ impl Rt {
         WRect::new(x0, y0, x1, y1)
     }
 
-    /// Move a quad node's box to `(x, y, w, h)` (space-local px; snapped to the geometry grid here): node,
-    /// instance and record ink are written, and the damage is only the bands around the edges that moved
-    /// (`Bough::set_ink_handle_edges`), not old ∪ new. Edges are compared exactly: on the grid `x + w` is
-    /// exact, so an edge that did not move is bitwise the edge the GPU computes (bough-metal RESULTS Part IV).
+    /// Move quad `node`'s box to `(x, y, w, h)` (space-local px; snapped to the geometry grid here): the
+    /// instance and the record ink are written, and the damage is only the bands around the edges that moved
+    /// (`Bough::set_ink_handle_edges`), not old ∪ new. The instance is compared with, not a mirror of it:
+    /// on the grid `x + w` is exact, so an edge that did not move is bitwise the edge the GPU computes
+    /// (bough-metal RESULTS Part IV).
     #[inline]
     pub fn quad_geom(&mut self, node: u32, x: f32, y: f32, w: f32, h: f32) {
         let (x, y, w, h) = (snap(x), snap(y), snap(w), snap(h));
-        let n = &self.nodes[node as usize];
-        let moved = (n.x != x) as u8 | ((n.y != y) as u8) << 1 | ((n.x + n.w != x + w) as u8) << 2 | ((n.y + n.h != y + h) as u8) << 3;
+        let i = self.inst_of(node) as usize;
+        // a box translation (boxops' `translate` operand) offsets the drawn box, not the laid-out one
+        let (ox, oy, tx, ty) = if self.hot[node as usize].flags & HF_MOD != 0 {
+            let c = self.cold_of(node);
+            (c.x, c.y, c.tx, c.ty)
+        } else {
+            let p = &self.inst[i];
+            (p.pos[0], p.pos[1], 0.0, 0.0)
+        };
+        let p = &self.inst[i];
+        let (ow, oh) = (p.size[0], p.size[1]);
+        let moved = (ox != x) as u8 | ((oy != y) as u8) << 1 | ((ox + ow != x + w) as u8) << 2 | ((oy + oh != y + h) as u8) << 3;
         if moved == 0 {
             return;
         }
-        let (inst, margin, hd, space, tx, ty) = (self.runs[n.run as usize].first, n.margin, n.handle, n.space, n.tx, n.ty);
-        let n = &mut self.nodes[node as usize];
-        (n.x, n.y, n.w, n.h) = (x, y, w, h);
-        // a box translation (boxops' `translate` operand) offsets the drawn box, not the laid-out one
-        let p = self.inst_mut(inst);
+        if self.hot[node as usize].flags & HF_MOD != 0 {
+            let c = self.cold_mut(node);
+            (c.x, c.y) = (x, y);
+        }
+        let p = &mut self.inst[i];
         p.pos = [x + tx, y + ty];
         p.size = [w, h];
-        let band = edge_band_of(p);
-        let ink = self.ink_rect(space, x + tx, y + ty, w, h, margin);
-        self.bough.set_ink_handle_edges_wide(hd, ink, moved, band);
+        let (band, space, p) = (edge_band_of(p), p.space, *p);
+        let ink = self.ink_rect(space, x + tx, y + ty, w, h, self.margin_of(node, &p));
+        self.bough.set_ink_handle_edges_wide(self.handle(node), ink, moved, band);
     }
 
-    /// Re-derive a quad node's ink and write it through: the old and the new ink are damaged even when the
-    /// rounded rects are equal (a sub-pixel change of an edge still changes its anti-aliased pixels).
+    /// Re-derive quad `node`'s ink from its instance and write it through: the old and the new ink are
+    /// damaged even when the rounded rects are equal (a sub-pixel change of an edge still changes its
+    /// anti-aliased pixels).
     #[inline]
     pub fn quad_ink(&mut self, node: u32) {
-        let n = &self.nodes[node as usize];
-        let ink = self.ink_rect(n.space, n.x + n.tx, n.y + n.ty, n.w, n.h, n.margin);
-        let h = n.handle;
+        let p = self.inst[self.inst_of(node) as usize];
+        let ink = self.ink_rect(p.space, p.pos[0], p.pos[1], p.size[0], p.size[1], self.margin_of(node, &p));
+        let h = self.handle(node);
         self.bough.touch_handle(h);
         self.bough.set_ink_handle_wide(h, ink);
     }
@@ -1358,7 +1578,7 @@ impl Rt {
     /// only the cut and bough-core's O(pages) run removal.
     pub fn release_scope(&mut self, mut s: Scope) {
         self.cut_scope(&mut s);
-        if !(s.nodes.is_empty() && s.runs.is_empty() && s.dyns.is_empty()) {
+        if !(s.texts.is_empty() && s.insts.is_empty() && s.series.is_empty() && s.runs.is_empty() && s.dyns.is_empty()) {
             self.reclaim_q.push(s);
         }
     }
@@ -1392,8 +1612,12 @@ impl Rt {
         while budget > 0 {
             let Some(mut s) = self.reclaim_q.pop() else { break };
             while budget > 0 {
-                if let Some(n) = s.nodes.pop() {
-                    self.free_node(n);
+                if let Some(t) = s.texts.pop() {
+                    self.free_text(t);
+                } else if let Some(i) = s.insts.pop() {
+                    self.free_inst(i);
+                } else if let Some((o, n)) = s.series.pop() {
+                    self.spans.free(o, crate::store::class_of(n as usize));
                 } else if let Some(r) = s.runs.pop() {
                     self.free_run(r);
                 } else if let Some(d) = s.dyns.pop() {
@@ -1403,7 +1627,7 @@ impl Rt {
                 }
                 budget -= 1;
             }
-            if !(s.nodes.is_empty() && s.runs.is_empty() && s.dyns.is_empty()) {
+            if !(s.texts.is_empty() && s.insts.is_empty() && s.series.is_empty() && s.runs.is_empty() && s.dyns.is_empty()) {
                 self.reclaim_q.push(s);
             }
         }
@@ -1532,5 +1756,51 @@ impl Rt {
             self.region_mount(reg, owner, new_range.start..surv_start, true);
             self.region_mount(reg, owner, surv_end..new_range.end, false);
         }
+    }
+
+    // ------------------------------------------------------------------ the storage ledger
+    /// The façade's tables as `(name, entries, bytes)`: `size_of` x capacity of each table plus the heap
+    /// capacity of every `Vec` / `Box` reachable from its entries (lane `store`: what one mounted element
+    /// costs beside its 23 B core record). GPU-region columns (instances, pages, glyph slots) are not heap
+    /// and are not listed. Names starting with `col ` are columns carved from the reserved block (not the
+    /// allocator's: the harness adds them to the allocator's live bytes).
+    pub fn store_ledger(&self) -> Vec<(&'static str, usize, usize)> {
+        use std::mem::size_of;
+        // a carved column's bytes are its high-water length (what was touched), not its reservation
+        let mut v: Vec<(&'static str, usize, usize)> = Vec::new();
+        v.push(("core: bough (pages' directory, prefix, htab, planes)", self.bough.len(), self.bough.heap_bytes()));
+        // the per-id columns are addressable whole; what is touched is up to the highest id handed out
+        let ids = self.max_id as usize + 1;
+        v.push(("col rt.hot + hgen (12 B per element id)", ids, ids * 12));
+        v.push(("col rt.cold (bars, lanes, modified quads)", self.cold.len(), self.cold.len() * size_of::<Node>()));
+        v.push(("col rt.spans (series, tapes, line windows)", self.spans.touched(), self.spans.touched() * 4));
+        v.push(("col rt.runs", self.runs.len(), self.runs.len() * size_of::<Run>() + self.run_free.capacity() * 4));
+        v.push(("col rt.wires", self.wires.len(), self.wires.len() * size_of::<Wire>() + self.wire_free.capacity() * 4));
+        let text_heap = |t: &crate::text::TextNode| {
+            t.text.capacity()
+                + match &t.shape {
+                    crate::text::TShape::Label(lb) => size_of::<bough_text::pool::Label>() + lb.text().len().next_power_of_two().max(16) + 16,
+                    crate::text::TShape::Set(_) => size_of::<bough_text::lines::LineSet>(),
+                    crate::text::TShape::Lines { widths, spans, .. } => widths.capacity() * 4 + spans.capacity() * 8,
+                    _ => 0,
+                }
+        };
+        v.push(("col rt.texts", self.texts.len(), self.texts.len() * size_of::<crate::text::TextNode>() + self.texts.iter().map(text_heap).sum::<usize>() + self.text_free.capacity() * 4));
+        v.push(("col lay.info", self.lay.info.len(), self.lay.info.len() * size_of::<crate::layout::LInfo>()));
+        v.extend(self.lay.eng.store_ledger());
+        fn scope_heap(s: &Scope) -> usize {
+            (s.texts.capacity() + s.insts.capacity() + s.wires.capacity() + s.runs.capacity() + s.lroots.capacity() + s.dyns.capacity() + s.lregs.capacity() + s.prods.capacity()) * 4
+        }
+        let (mut items, mut bytes) = (0usize, 0usize);
+        for p in &self.dyns.parts {
+            items += p.len();
+            bytes += p.capacity() * size_of::<crate::describe::DynItem>();
+            bytes += p.iter().map(|i| i.tape.capacity() * 4 + scope_heap(&i.scope)).sum::<usize>();
+        }
+        v.push(("dyns.parts (items, tapes, scopes)", items, bytes));
+        v.push(("dyns.seals", self.dyns.seals.len(), self.dyns.seals.iter().map(|s| s.bytes.capacity()).sum::<usize>()));
+        v.push(("col reflect.types", self.reflect.types.len(), self.reflect.types.len() * 16));
+        v.push(("reclaim_q", self.reclaim_q.len(), self.reclaim_q.capacity() * size_of::<Scope>() + self.reclaim_q.iter().map(scope_heap).sum::<usize>()));
+        v
     }
 }

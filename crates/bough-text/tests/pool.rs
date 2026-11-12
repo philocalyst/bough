@@ -253,3 +253,41 @@ fn refused_text_leaves_label_untouched() {
     w.set(&mut l, "office \u{e9}t\u{e9} fluff");
     w.set(&mut l, "office");
 }
+
+/// `GlyphPool::move_label` (round 6, lane `store`: a layout write-back moves a one-line text by its
+/// origin): after a move, every update path must behave as for a label allocated at the new origin: the
+/// instances are a fresh shape's at that origin, and a digit patch's marks (which read the label's cached
+/// pens and tile spans) contain the oracle's. A move that forgot the pens would mark the old columns.
+#[test]
+fn moved_label_patches_as_one_allocated_there() {
+    let mut w = World::new();
+    let mut st = 0x1234_5678_9abc_def1u64;
+    let mut l = w.label(13.0, [20.25, 40.0], [3, 5], 1);
+    w.set(&mut l, "12345");
+    let mut patched = 0;
+    for step in 0..400 {
+        let r = xorshift(&mut st);
+        // origins across tile columns and rows, fractional in x
+        let origin = [(r % 900) as f32 + ((r >> 12) % 4) as f32 * 0.25, ((r >> 20) % 500) as f32];
+        w.pool.move_label(&mut l.lb, origin);
+        l.origin = origin;
+        // the moved label draws what a fresh shape at the new origin draws
+        let mut fresh = vec![];
+        let text = String::from_utf8(l.lb.text().to_vec()).unwrap();
+        assert!(w.sh.shape_into(&text, l.size, &mut w.run));
+        let strike = w.cache.strike(l.size);
+        w.cache.instances(strike, &w.run, origin[0], origin[1], l.color, &mut fresh);
+        for i in &mut fresh {
+            i.space = 1; // the reference writer knows no space
+        }
+        assert_eq!(instances(&w, &l), fresh, "step {step}: moved label at {origin:?}");
+        // then a digit tick (the class patch: cached pens and tile spans), a length change and a tick again
+        let v = (r >> 32) % 100_000;
+        patched += w.set(&mut l, &format!("{v:05}")) as u32;
+        if step % 7 == 0 {
+            w.set(&mut l, &format!("{}", v % 1000));
+            w.set(&mut l, &format!("{v:05}"));
+        }
+    }
+    assert!(patched > 300, "the digit patch path was exercised after moves ({patched})");
+}

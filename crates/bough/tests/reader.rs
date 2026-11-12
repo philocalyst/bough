@@ -53,7 +53,7 @@ fn num(s: &str, p: &str) -> Option<u32> {
 }
 fn shown(a: &App<S>) -> Shown {
     let mut o = Shown::default();
-    for t in &a.rt.texts {
+    for t in a.rt.texts.iter() {
         let owned = String::from_utf8_lossy(t.bytes()).into_owned();
         let s = owned.as_str();
         if let Some(n) = num(s, "story ") {

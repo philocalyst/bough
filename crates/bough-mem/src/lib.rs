@@ -89,6 +89,8 @@ pub struct Region {
 impl Region {
     /// `len` bytes of zeroed memory, backed lazily: an anonymous private `mmap` (a page costs nothing until
     /// it is written), so a region can reserve its columns' largest capacities as address space.
+    /// (Before round 6 it was `alloc_zeroed` with a 16 KiB alignment, which is `posix_memalign` + `bzero` of the
+    /// whole block: lane `store` measured 39 M instructions for a 50 MB region at every `App::new`.)
     pub fn heap(len: usize) -> Region {
         let len = len.next_multiple_of(PAGE).max(PAGE);
         #[cfg(unix)]
@@ -595,6 +597,24 @@ impl<T> Default for Col<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Region::heap` is a mapping: zero when first read, writable at both ends, column-aligned, and far
+    /// larger than what is touched without anything being cleared up front (a 4 GiB region is made and
+    /// dropped here; an allocator's zeroed block of that size would be written whole).
+    #[test]
+    fn heap_region_is_zero_aligned_and_lazy() {
+        let mut r = Region::heap(4 << 30);
+        assert_eq!(r.base() as usize % COL_ALIGN, 0);
+        assert!(r.len() >= 4 << 30);
+        let mut c: Col<u64> = r.carve("probe", (4usize << 30) / 8 - 4096);
+        // SAFETY: mapped memory reads as zero and all-zero is a valid u64.
+        unsafe { c.set_len(c.capacity()) };
+        let last = c.len() - 1;
+        assert_eq!((c[0], c[last / 2], c[last]), (0, 0, 0));
+        c[0] = 7;
+        c[last] = 9;
+        assert_eq!((c[0], c[last]), (7, 9));
+    }
 
     #[test]
     fn owned_grows_like_vec() {

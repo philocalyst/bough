@@ -386,12 +386,13 @@ impl Input {
 
 /// Make the first record `m` pushed since `before` interactive: give it a handle (if it has none), flag
 /// it, and return its act. A quad's node and instance are found so interaction styles can write it.
-fn act_for<V>(m: &mut Mounter<'_, V>, before: usize, nodes_before: usize, flags: u8) -> u32 {
+fn act_for<V>(m: &mut Mounter<'_, V>, before: usize, flags: u8) -> u32 {
     assert!(m.recs.len() > before, "an interactive element mounts a record");
     let rec = m.recs[before];
-    let node = m.scope.nodes[nodes_before..].iter().copied().find(|&n| m.rt.nodes[n as usize].handle.idx == rec.handle && rec.handle != 0).unwrap_or(NONE);
+    // a node's index is its record's handle index
+    let node = if m.rt.node_pending(rec.handle) { rec.handle } else { NONE };
     let h = if node != NONE {
-        m.rt.nodes[node as usize].handle
+        m.rt.handle(node)
     } else if rec.handle != 0 {
         m.rt.bough.handle_gen(rec.handle)
     } else {
@@ -415,9 +416,9 @@ fn act_for<V>(m: &mut Mounter<'_, V>, before: usize, nodes_before: usize, flags:
 /// is the most recent node mounted with that handle.
 pub fn act_at<V>(m: &mut Mounter<'_, V>, rec: usize) -> u32 {
     let r = m.recs[rec];
-    let node = if r.handle != 0 { m.scope.nodes.iter().rev().take(64).copied().find(|&n| m.rt.nodes[n as usize].handle.idx == r.handle) } else { None };
+    let node = m.rt.node_pending(r.handle).then_some(r.handle);
     let h = match node {
-        Some(n) => m.rt.nodes[n as usize].handle,
+        Some(n) => m.rt.handle(n),
         None if r.handle != 0 => m.rt.bough.handle_gen(r.handle),
         None => {
             let h = m.rt.bough.new_handle();
@@ -458,9 +459,9 @@ pub struct On<E, O>(pub E, pub O);
 
 impl<V, E: Element<V>, O: ActOp<V>> Element<V> for On<E, O> {
     fn mount(self, m: &mut Mounter<'_, V>) {
-        let (before, nodes_before) = (m.recs.len(), m.scope.nodes.len());
+        let before = m.recs.len();
         self.0.mount(m);
-        let a = act_for(m, before, nodes_before, O::FLAGS);
+        let a = act_for(m, before, O::FLAGS);
         self.1.install(m, a);
     }
     /// The interaction stays installed on the element's first record; the element re-describes.
@@ -751,9 +752,9 @@ impl<T> Tooltip<T> {
         T: Element<V>,
     {
         use crate::elem::{quad, text};
-        let (before, nodes_before) = (m.recs.len(), m.scope.nodes.len());
+        let before = m.recs.len();
         self.trigger.mount(m);
-        let a = act_for(m, before, nodes_before, 0);
+        let a = act_for(m, before, 0);
         let s = m.rt.scale;
         let id = m.rt.bough.new_clip(NRect::EMPTY);
         let [x, y, w, h] = self.rect;
@@ -765,16 +766,16 @@ impl<T> Tooltip<T> {
         // the bubble and its label, transparent until shown; both get handles (their paint is written)
         let b = m.recs.len();
         quad(x, y, w, h).bg(Color(with_alpha(st.bg.0, 0.0))).rounded(st.radius).border(1.0, Color(with_alpha(st.border.0, 0.0))).mount(m);
-        let bubble = m.rt.bough.new_handle();
+        // the element's own handle when it has one (a re-describing owner's quad is a node already)
+        let bubble = if m.recs[b].handle != 0 { m.rt.bough.handle_gen(m.recs[b].handle) } else { m.rt.bough.new_handle() };
         m.recs[b].handle = bubble.idx;
         let inst = m.recs[b].payload;
         let t = m.recs.len();
-        let tn = m.scope.nodes.len();
         let lh = (st.size * 1.4).ceil();
         text(self.text).at(x + 8.0, y + (h - lh) * 0.5).size(st.size).line_height(lh).color(Color(with_alpha(st.fg.0, 0.0))).mount(m);
-        let label = m.rt.bough.new_handle();
+        let label = if m.recs[t].handle != 0 { m.rt.bough.handle_gen(m.recs[t].handle) } else { m.rt.bough.new_handle() };
         m.recs[t].handle = label.idx;
-        let ti = m.scope.nodes[tn..].iter().map(|&n| m.rt.nodes[n as usize].text).find(|&t| t != NONE).expect("tooltip label");
+        let ti = *m.scope.texts.last().expect("tooltip label");
         m.rt.texts[ti as usize].handle = label;
         for rec in &mut m.recs[b..] {
             rec.kind |= KF_NOHIT;
@@ -867,15 +868,16 @@ fn place_caret(rt: &mut Rt, f: u32) {
         _ => 0,
     };
     let x = bough_text::pool::pen_px(units, scale, ox + 0.5) as f32;
-    let n = &mut rt.nodes[cn as usize];
+    // the caret quad's state is its instance
+    let (inst, h) = (rt.inst_of(cn), rt.handle(cn));
+    let p = &mut rt.inst[inst as usize];
     let want = if focused { color } else { color & 0x00ff_ffff };
-    let (moved, recolor) = (n.x != x, n.color != want);
+    let (moved, recolor) = (p.pos[0] != x, p.color != want);
     if !moved && !recolor {
         return;
     }
-    let (inst, h, old, (y, w, hh)) = (rt.runs[n.run as usize].first, n.handle, n.color, (n.y, n.w, n.h));
-    n.color = want;
-    rt.inst_mut(inst).color = want;
+    let (old, (y, w, hh)) = (p.color, (p.pos[1], p.size[0], p.size[1]));
+    p.color = want;
     if moved {
         // a recoloured caret changes everywhere it is: old and new ink; a moved one only near its edges
         if recolor {
@@ -904,11 +906,11 @@ impl<V: 'static> TextField<'_, V> {
         use crate::elem::{quad, text};
         root_owner_only(m, "text_field");
         let [x, y, w, h] = self.rect;
-        let (before, nodes_before) = (m.recs.len(), m.scope.nodes.len());
+        let before = m.recs.len();
         let s = m.rt.scale;
         // the box (a node with a handle: the caret colour and focus need it addressable)
         quad(x, y, w, h).bg(self.bg).rounded(self.radius).border(1.0, self.border).children(()).mount(m);
-        let a = act_for(m, before, nodes_before, KF_FOCUS);
+        let a = act_for(m, before, KF_FOCUS);
         let f = m.rt.input.fields.len() as u32;
         m.rt.input.fields.push(Field { off: self.sig.off, ti: NONE, caret_node: NONE, caret: 0, caret_color: self.color.0, focused: false, lit: true });
         m.rt.input.acts[a as usize].field = f;
@@ -931,14 +933,12 @@ impl<V: 'static> TextField<'_, V> {
         let ty = ((h - 2.0) - lh) * 0.5;
         let caret_h = lh;
         let cb = m.recs.len();
-        let cn_before = m.scope.nodes.len();
         no_hit(quad(self.pad, ty, 1.0, caret_h).bg(sig_caret(self.sig, f, self.color))).mount(m);
-        let cnode = m.scope.nodes[cn_before..].iter().copied().find(|&n| m.rt.nodes[n as usize].handle.idx == m.recs[cb].handle).expect("caret node");
+        let cnode = m.recs[cb].handle;
+        assert!(m.rt.node_pending(cnode), "caret node");
         m.rt.input.fields[f as usize].caret_node = cnode;
-        let tn_before = m.scope.nodes.len();
         text(self.sig).at(self.pad, ty).size(self.size).line_height(lh).color(self.color).mount(m);
-        let tnode = m.scope.nodes[tn_before..].iter().copied().find(|&n| m.rt.nodes[n as usize].text != NONE).expect("label node");
-        m.rt.input.fields[f as usize].ti = m.rt.nodes[tnode as usize].text;
+        m.rt.input.fields[f as usize].ti = *m.scope.texts.last().expect("label text");
         let len = m.rt.texts[m.rt.input.fields[f as usize].ti as usize].bytes().len();
         m.rt.input.fields[f as usize].caret = len;
         (m.ox, m.oy, m.depth, m.clip) = (ox, oy, depth, clip);
@@ -1078,11 +1078,12 @@ impl<V: View> App<V> {
         let act = self.rt.input.acts[a as usize];
         let mut ran = false;
         if let Some(c) = act.hover_bg {
-            let base = if act.node != NONE { self.rt.nodes[act.node as usize].color } else { act.base };
+            // an element's described colour moves to its cold record while a hover colour shows (the
+            // colour wire writes it there: `ApplyBg` reads the flag)
+            let base = if act.node != NONE { self.rt.mod_of(act.node).color } else { act.base };
             let new = if on { c } else { base };
             if act.node != NONE {
-                // while hovered the base colour wire writes `n.color` only (ApplyBg reads the flag)
-                let n = &mut self.rt.nodes[act.node as usize];
+                let n = &mut self.rt.hot[act.node as usize];
                 n.kind = if on { n.kind | crate::rt::NK_HOVERED } else { n.kind & !crate::rt::NK_HOVERED };
             }
             let p = self.rt.inst_mut(act.inst);
@@ -1513,9 +1514,7 @@ impl<V: View> App<V> {
                 if want.is_empty() {
                     return;
                 }
-                let run = self.rt.alloc_run(1);
-                self.rt.runs[run as usize].len = 1;
-                let inst = self.rt.runs[run as usize].first;
+                let inst = self.rt.alloc_inst();
                 let s = self.rt.scale;
                 *self.rt.inst_mut(inst) = bough_metal::instance::Instance {
                     kind: KIND_BORDER,

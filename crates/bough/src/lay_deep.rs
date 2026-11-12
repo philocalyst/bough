@@ -31,6 +31,7 @@ use cephal::{AvailableSpace, Size, Style};
 use std::collections::HashMap;
 
 
+#[derive(Clone)]
 struct DNode {
     style: u32,
     flags: u8,
@@ -38,7 +39,13 @@ struct DNode {
     root: bool,
     hgen: u32,
     nkids: u32,
-    kids: Vec<u32>,
+    /// The node's layout children: `nkids` element ids in flow order, a span of `Deep::spans` of
+    /// `1 << kclass` words at `kids` (0: none yet). An array, not a chain through the nodes: a container's
+    /// children are read by independent loads from contiguous words (measured at 4,096 children, per child:
+    /// chain 3.4 ns in mount order and 6.6 ns after churn, array 1.2 and 1.0), and no container owns a heap
+    /// object (the spans are words of one arena that never moves).
+    kids: u32,
+    kclass: u8,
     touched: u32,
     layout: Layout,
     cache: NodeCache,
@@ -50,12 +57,12 @@ const NOCTX: u32 = u32::MAX;
 
 impl DNode {
     fn blank() -> DNode {
-        DNode { style: 0, flags: 0, live: false, root: false, hgen: 0, nkids: 0, kids: Vec::new(), touched: 0, layout: Layout::ZERO, cache: NodeCache::default(), ctx: NOCTX }
+        DNode { style: 0, flags: 0, live: false, root: false, hgen: 0, nkids: 0, kids: 0, kclass: 0, touched: 0, layout: Layout::ZERO, cache: NodeCache::default(), ctx: NOCTX }
     }
 }
 
 pub struct Deep {
-    n: Vec<DNode>,
+    n: bough_mem::Col<DNode>,
     styles: StyleTable,
     spec_ids: HashMap<SpecKey, u32, FxBuild>,
     generation: u32,
@@ -69,8 +76,10 @@ pub struct Deep {
     pub orphans: Vec<u32>,
     pub recycled: Vec<u32>,
     /// Text states of measured / sized text leaves, by index (`DNode::ctx`), and the free indices.
-    ctxs: Vec<LeafCtx>,
+    ctxs: bough_mem::Col<LeafCtx>,
     ctx_free: Vec<u32>,
+    /// The containers' children arrays (`DNode::kids`).
+    spans: crate::store::Spans,
 }
 
 #[inline(always)]
@@ -90,15 +99,15 @@ fn meta_bits(styles: &StyleTable, style: u32, measured: bool) -> u8 {
 }
 
 impl Deep {
-    /// The engine's columns as memory-ledger lines: nodes (style index, layout, answer cache pointer, kids),
+    /// The engine's columns as memory-ledger lines: nodes (style index, layout, answer cache pointer, kids span),
     /// the boxed answer caches, the text leaves' states (shaped run, text, wraps, paragraph halves), the
     /// interned styles and the maps.
     pub fn ledger(&self, l: &mut bough_mem::Ledger) {
         use bough_mem::Scales::Content;
         const G: &str = "layout";
-        l.vec(G, "layout nodes (DNode)", &self.n, self.n.capacity(), Content);
-        let kids: usize = self.n.iter().map(|d| d.kids.capacity() * 4).sum();
-        l.many(G, "layout node child lists", Content, kids, kids);
+        // nodes, text states and child arrays are columns carved from the façade's store block (lane store)
+        l.col(G, &self.n, Content);
+        l.col(G, self.spans.column(), Content);
         // cephal's cache box is private: its size is measured once through the counting allocator (when
         // the binary installs it; otherwise only the count is reported). Spill boxes (> 3 entries) are not
         // counted here (they fall in the ledger's residual).
@@ -116,9 +125,9 @@ impl Deep {
         };
         let cb = caches * per;
         l.many(G, format!("layout answer caches ({caches} boxed, {per} B each)"), Content, cb, cb);
-        l.vec(G, "text leaf states (LeafCtx)", &self.ctxs, self.ctxs.capacity(), Content);
+        l.col(G, &self.ctxs, Content);
         let (mut run, mut text, mut hot, mut cold) = (0usize, 0usize, 0usize, 0usize);
-        for c in &self.ctxs {
+        for c in self.ctxs.iter() {
             run += c.run.gid.capacity() * 2 + c.run.x.capacity() * 4 + c.run.cluster.capacity() * 4;
             text += c.text.capacity() + c.starts.capacity() * 4;
             let (h, k) = c.para.heap_bytes();
@@ -136,9 +145,16 @@ impl Deep {
         let st = self.styles.len() * (size_of::<Style>() + 24);
         l.many(G, format!("interned styles ({})", self.styles.len()), Content, st, st);
     }
-    pub fn new() -> Deep {
+    /// Bytes `new` carves for `ids` nodes and `texts` text states.
+    pub fn column_bytes(ids: usize, texts: usize) -> usize {
+        let a = |n: usize| n.next_multiple_of(256) + 256;
+        a(ids * size_of::<DNode>()) + a(texts * size_of::<LeafCtx>()) + a(ids * 4 * 4)
+    }
+
+    /// The engine over columns carved from `store` (type-stable: a node never moves).
+    pub fn new(store: &mut bough_mem::Region, ids: usize, texts: usize) -> Deep {
         Deep {
-            n: Vec::new(),
+            n: store.carve("layout nodes", ids),
             styles: StyleTable::new(),
             spec_ids: HashMap::default(),
             generation: 1,
@@ -146,8 +162,9 @@ impl Deep {
             last_root: None,
             changed: Vec::new(),
             abs: HashMap::default(),
-            ctxs: Vec::new(),
+            ctxs: store.carve("text leaf states", texts),
             ctx_free: Vec::new(),
+            spans: crate::store::Spans::new(store.carve("layout children", ids * 4)),
             orphans: Vec::new(),
             recycled: Vec::new(),
         }
@@ -206,8 +223,8 @@ impl Deep {
 
     pub fn add(&mut self, hd: Handle, spec: &Spec, scale: f32, ctx: Option<LeafCtx>) -> u32 {
         let i = hd.idx;
-        if self.n.len() <= i as usize {
-            self.n.resize_with(i as usize + 1, DNode::blank);
+        while self.n.len() <= i as usize {
+            self.n.push(DNode::blank());
         }
         let style = self.style_id(spec, scale);
         let flags = meta_bits(&self.styles, style, ctx.as_ref().is_some_and(|c| c.user.is_none()));
@@ -234,7 +251,7 @@ impl Deep {
         nd.root = false;
         nd.hgen = hd.generation;
         nd.nkids = 0;
-        nd.kids.clear();
+        let (ko, kc) = (std::mem::take(&mut nd.kids), nd.kclass);
         nd.touched = 0;
         nd.layout = Layout::ZERO;
         nd.cache.clear();
@@ -242,6 +259,7 @@ impl Deep {
         if old != NOCTX {
             self.orphans.push(old);
         }
+        self.spans.free(ko, kc);
         i
     }
 
@@ -253,8 +271,8 @@ impl Deep {
     /// `add` with an interned style id instead of a `Spec` (layout templates, `ltemplate.rs`).
     pub fn add_style(&mut self, hd: Handle, style: u32, ctx: Option<LeafCtx>) -> u32 {
         let i = hd.idx;
-        if self.n.len() <= i as usize {
-            self.n.resize_with(i as usize + 1, DNode::blank);
+        while self.n.len() <= i as usize {
+            self.n.push(DNode::blank());
         }
         let flags = meta_bits(&self.styles, style, ctx.as_ref().is_some_and(|c| c.user.is_none()));
         let ci = match ctx {
@@ -277,7 +295,7 @@ impl Deep {
         nd.root = false;
         nd.hgen = hd.generation;
         nd.nkids = 0;
-        nd.kids.clear();
+        let (ko, kc) = (std::mem::take(&mut nd.kids), nd.kclass);
         nd.touched = 0;
         nd.layout = Layout::ZERO;
         nd.cache.clear();
@@ -285,6 +303,7 @@ impl Deep {
         if old != NOCTX {
             self.orphans.push(old);
         }
+        self.spans.free(ko, kc);
         i
     }
 
@@ -306,42 +325,87 @@ impl Deep {
         self.n[n as usize].root = true;
     }
 
+    /// Append `child` to `parent`'s children.
+    #[inline]
     pub fn append(&mut self, parent: u32, child: u32) {
         let p = &mut self.n[parent as usize];
+        let n = p.nkids as usize;
+        if p.kids == 0 {
+            // four children to start with (a row of a few cells never grows)
+            (p.kids, p.kclass) = (self.spans.alloc(2), 2);
+        } else if n == 1usize << p.kclass {
+            self.grow_kids(parent);
+        }
+        let p = &mut self.n[parent as usize];
+        self.spans.words_mut(p.kids, n + 1)[n] = child;
         p.nkids += 1;
-        p.kids.push(child);
+    }
+    /// Double the children span of `parent` (its children move to a span of the next class; the old one
+    /// goes back to its class's list).
+    #[cold]
+    fn grow_kids(&mut self, parent: u32) {
+        let p = &self.n[parent as usize];
+        let (old, class, n) = (p.kids, p.kclass, p.nkids as usize);
+        let new = self.spans.alloc(class + 1);
+        // one arena: copy through a split at the higher span (the two never overlap)
+        for i in 0..n {
+            let v = self.spans.words(old, n)[i];
+            self.spans.words_mut(new, n)[i] = v;
+        }
+        self.spans.free(old, class);
+        let p = &mut self.n[parent as usize];
+        (p.kids, p.kclass) = (new, class + 1);
     }
 
     /// Number of children of container `n`.
+    #[inline]
     pub fn kid_count(&self, n: u32) -> usize {
-        self.n[n as usize].kids.len()
+        self.n[n as usize].nkids as usize
     }
     /// The children of `n` (mount order = flow order).
+    #[inline(always)]
     pub fn kids(&self, n: u32) -> &[u32] {
-        &self.n[n as usize].kids
+        let nd = &self.n[n as usize];
+        self.spans.words(nd.kids, nd.nkids as usize)
     }
-    /// Structural edit of container `n`'s children (a list region's rows): `kids[at..at+del]` becomes `ins`;
-    /// the container is invalidated (its algorithm reruns over its children at the next layout).
-    pub fn splice_kids(&mut self, b: &Bough, n: u32, at: usize, del: usize, ins: &[u32]) {
-        {
-            let nd = &mut self.n[n as usize];
-            nd.kids.splice(at..at + del, ins.iter().copied());
-            nd.nkids = nd.kids.len() as u32;
-        }
+    /// Structural edit of container `n`'s children (a removed item's boxes): `kids[at..at+del]` are taken
+    /// out; the container is invalidated (its algorithm reruns over its children at the next layout).
+    pub fn splice_kids(&mut self, b: &Bough, n: u32, at: usize, del: usize) {
+        let nd = &mut self.n[n as usize];
+        let len = nd.nkids as usize;
+        self.spans.words_mut(nd.kids, len).copy_within(at + del..len, at);
+        nd.nkids = (len - del) as u32;
         self.invalidate(b, n);
     }
-    /// Rotate the last `k` children of `n` to index `at` (rows mounted at the end, then placed).
+    /// Rotate the last `k` children of `n` to index `at` (items mounted at the end, then placed).
     pub fn place_tail_kids(&mut self, n: u32, at: usize, k: usize) {
-        let kids = &mut self.n[n as usize].kids;
-        let len = kids.len();
+        let nd = &self.n[n as usize];
+        let len = nd.nkids as usize;
         if k > 0 && at + k < len {
-            kids[at..].rotate_right(k);
+            self.spans.words_mut(nd.kids, len)[at..].rotate_right(k);
         }
     }
-    /// Overwrite `kids[at..at+new.len()]` (a permutation of them) and invalidate `n`.
-    pub fn permute_kids(&mut self, b: &Bough, n: u32, at: usize, new: &[u32]) {
-        self.n[n as usize].kids[at..at + new.len()].copy_from_slice(new);
-        self.invalidate(b, n);
+
+    /// Give node `n` a text state after the fact (a label whose text left the label kernel's coverage
+    /// becomes a shaped leaf); its meta bits follow.
+    pub fn set_ctx(&mut self, n: u32, ctx: LeafCtx) {
+        let measured = ctx.user.is_none();
+        let ci = match self.ctx_free.pop() {
+            Some(ci) => {
+                self.ctxs[ci as usize] = ctx;
+                ci
+            }
+            None => {
+                self.ctxs.push(ctx);
+                (self.ctxs.len() - 1) as u32
+            }
+        };
+        let nd = &mut self.n[n as usize];
+        let old = std::mem::replace(&mut nd.ctx, ci);
+        nd.flags = meta_bits(&self.styles, nd.style, measured) | (nd.flags & !META_MASK);
+        if old != NOCTX {
+            self.orphans.push(old);
+        }
     }
 
     pub fn ctx_mut(&mut self, n: u32) -> Option<&mut LeafCtx> {
@@ -368,9 +432,7 @@ impl Deep {
             nd.live = false;
             nd.flags &= META_MASK;
             nd.cache.clear();
-            stack.extend_from_slice(&nd.kids);
-            nd.kids.clear();
-            nd.nkids = 0;
+            let (ko, kc, kn) = (std::mem::take(&mut nd.kids), nd.kclass, std::mem::take(&mut nd.nkids) as usize);
             let c = std::mem::replace(&mut nd.ctx, NOCTX);
             if c != NOCTX {
                 self.orphans.push(c);
@@ -378,6 +440,8 @@ impl Deep {
             if abs {
                 self.abs.remove(&i);
             }
+            stack.extend_from_slice(self.spans.words(ko, kn));
+            self.spans.free(ko, kc);
         }
     }
 
@@ -392,8 +456,9 @@ impl Deep {
             if c != NOCTX {
                 self.orphans.push(c);
             }
-            nd.kids.clear();
+            let (ko, kc) = (std::mem::take(&mut nd.kids), nd.kclass);
             nd.nkids = 0;
+            self.spans.free(ko, kc);
             if !self.abs.is_empty() {
                 self.abs.remove(&i);
             }
@@ -429,31 +494,57 @@ impl Deep {
         self.changed.get(i).copied()
     }
 
-    pub fn children_into(&self, b: &Bough, n: u32, out: &mut Vec<u32>) {
-        let v = DViewRef { d: self, b };
-        out.extend(v.kids(n).map(|c| c.raw() as u32));
+    pub fn children_into(&self, _b: &Bough, n: u32, out: &mut Vec<u32>) {
+        out.extend_from_slice(self.kids(n));
+    }
+
+    /// The engine's tables as `(name, entries, bytes)` (`Rt::store_ledger`). A node's answer cache is one
+    /// word until its first store, then a boxed block (counted at `size_of` of what the word points at when
+    /// it is set).
+    pub fn store_ledger(&self) -> Vec<(&'static str, usize, usize)> {
+        use std::mem::size_of;
+        // SAFETY: `NodeCache` is `Option<Box<_>>`: one word, null when nothing was stored (asserted).
+        const _: () = assert!(size_of::<NodeCache>() == 8);
+        let set = |c: &NodeCache| unsafe { *(c as *const NodeCache as *const usize) } != 0;
+        // cephal's boxed `Inner` (three inline size entries and the final entry): 360 B (STORE-R6)
+        let ncache = self.n.iter().filter(|x| set(&x.cache)).count();
+        let caches = ncache * 360;
+        let ctx_heap = |c: &LeafCtx| {
+            c.run.gid.capacity() * 2 + c.run.x.capacity() * 4 + c.run.cluster.capacity() * 4 + c.text.capacity() + c.starts.capacity() * 4 + c.para.text.capacity() + c.para.words.capacity() * size_of::<bough_text::para::Word>()
+        };
+        vec![
+            ("col lay.eng.n (DNode)", self.n.len(), self.n.len() * size_of::<DNode>()),
+            ("lay.eng.n caches (boxed on first store)", ncache, caches),
+            ("col lay.eng.ctxs (LeafCtx)", self.ctxs.len(), self.ctxs.len() * size_of::<LeafCtx>()),
+            ("lay.eng.ctxs heap (runs, text, word tables)", self.ctxs.len(), self.ctxs.iter().map(ctx_heap).sum::<usize>()),
+            ("col lay.eng children (id arrays)", self.spans.touched(), self.spans.touched() * 4),
+            ("lay.eng misc (changed, orphans, recycled, free)", 0, (self.changed.capacity() + self.orphans.capacity() + self.recycled.capacity() + self.ctx_free.capacity()) * 4),
+        ]
     }
 
     /// Test support: a copy with no layout state, laid out cold.
     pub fn cold_rects(&self, b: &Bough, root: u32, avail: Size<AvailableSpace>) -> Vec<(u32, (f32, f32, f32, f32))> {
         let mut cold = Deep {
-            n: self
-                .n
-                .iter()
-                .map(|x| DNode {
+            n: {
+                let mut c = bough_mem::Col::owned("cold layout nodes");
+                for x in self.n.iter() {
+                    c.push(DNode {
                     style: x.style,
                     flags: x.flags & META_MASK,
                     live: x.live,
                     root: x.root,
                     hgen: x.hgen,
                     nkids: x.nkids,
-                    kids: x.kids.clone(),
+                    kids: x.kids,
+                    kclass: x.kclass,
                     touched: 0,
                     layout: Layout::ZERO,
                     cache: NodeCache::default(),
                     ctx: x.ctx,
-                })
-                .collect(),
+                    });
+                }
+                c
+            },
             styles: self.styles.clone(),
             spec_ids: HashMap::default(),
             generation: 1,
@@ -461,10 +552,17 @@ impl Deep {
             last_root: None,
             changed: Vec::new(),
             abs: HashMap::default(),
-            ctxs: self.ctxs.clone(),
+            ctxs: {
+                let mut c = bough_mem::Col::owned("cold text leaf states");
+                for x in self.ctxs.iter() {
+                    c.push(x.clone());
+                }
+                c
+            },
             ctx_free: Vec::new(),
             orphans: Vec::new(),
             recycled: Vec::new(),
+            spans: self.spans.clone_owned(),
         };
         cold.layout(b, root, avail);
         let mut out = Vec::new();
@@ -475,12 +573,6 @@ impl Deep {
         }
         out.sort_by_key(|e| e.0);
         out
-    }
-}
-
-impl Default for Deep {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -495,7 +587,7 @@ struct DViewRef<'a> {
 struct Kids<'a>(std::slice::Iter<'a, u32>);
 impl Iterator for Kids<'_> {
     type Item = NodeId;
-    #[inline]
+    #[inline(always)]
     fn next(&mut self) -> Option<NodeId> {
         self.0.next().map(|&i| nid(i))
     }
@@ -505,9 +597,6 @@ impl<'a> DViewRef<'a> {
     #[inline]
     fn pos(&self, i: u32) -> usize {
         self.b.pos_of(Handle { idx: i, generation: self.d.n[i as usize].hgen }).expect("layout node is in the Bough")
-    }
-    fn kids(&self, i: u32) -> Kids<'a> {
-        Kids(self.d.n[i as usize].kids.iter())
     }
 }
 
@@ -540,7 +629,7 @@ impl LayoutTree for DView<'_> {
 
     #[inline]
     fn children(&self, node: NodeId) -> Kids<'_> {
-        Kids(self.d.n[ix(node)].kids.iter())
+        Kids(self.d.kids(ix(node) as u32).iter())
     }
     #[inline]
     fn child_count(&self, node: NodeId) -> usize {

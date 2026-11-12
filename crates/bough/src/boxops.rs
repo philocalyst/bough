@@ -34,12 +34,15 @@ pub struct ApplyOpacity;
 impl Apply for ApplyOpacity {
     type P = f32;
     fn apply(rt: &mut Rt, node: u32, v: &f32) {
-        let n = &mut rt.nodes[node as usize];
+        let bordered = rt.hot[node as usize].kind & !NK_HOVERED == NK_BORDER;
+        let (h, inst) = (rt.handle(node), rt.inst_of(node));
+        // an opacity makes the drawn colour differ from the described one: the cold record holds the latter
+        let n = rt.mod_of(node);
         if n.alpha == *v {
             return;
         }
         let old_a = std::mem::replace(&mut n.alpha, *v);
-        let (h, inst, bordered, base) = (n.handle, rt.runs[n.run as usize].first, n.kind == NK_BORDER, n.color);
+        let base = n.color;
         let p = rt.inst_mut(inst);
         if bordered {
             p.color2 = mul_alpha(base, *v);
@@ -61,14 +64,14 @@ impl Apply for ApplyTranslate {
     type P = (f32, f32);
     fn apply(rt: &mut Rt, node: u32, v: &(f32, f32)) {
         let s = rt.scale;
-        let n = &mut rt.nodes[node as usize];
+        let inst = rt.inst_of(node);
+        let n = rt.mod_of(node);
         let (tx, ty) = (v.0 * s, v.1 * s);
         if n.tx == tx && n.ty == ty {
             return;
         }
         n.tx = tx;
         n.ty = ty;
-        let inst = rt.runs[n.run as usize].first;
         let (x, y) = (n.x + tx, n.y + ty);
         rt.inst_mut(inst).pos = [x, y];
         rt.quad_ink(node);
@@ -166,7 +169,7 @@ impl<V, P: IntoProp<(f32, f32), V>> BoxOps<V> for Translate<P> {
     fn install(self, m: &mut Mounter<'_, V>, _lid: u32, node: u32, _: &mut Spec) {
         let v = self.0.lower::<ApplyTranslate>(m, node);
         let s = m.rt.scale;
-        let n = &mut m.rt.nodes[node as usize];
+        let n = m.rt.mod_of(node);
         (n.tx, n.ty) = (v.0 * s, v.1 * s);
     }
     fn refresh(self, rt: &mut Rt, _lid: u32, node: u32) {
@@ -200,16 +203,15 @@ pub struct ApplyTextColor;
 impl Apply for ApplyTextColor {
     type P = crate::color::Color;
     fn apply(rt: &mut Rt, node: u32, v: &crate::color::Color) {
-        let (ti, h) = (rt.nodes[node as usize].text, rt.nodes[node as usize].handle);
-        if ti == NONE {
-            return; // mounting: the node's text is created after its operands are lowered
+        if rt.hot[node as usize].kind == 0 {
+            return; // mounting: the element's text is created after its operands are lowered
         }
+        let (ti, h) = (rt.text_of(node), rt.handle(node));
         let old = rt.texts[ti as usize].color;
         if old == v.0 {
             return;
         }
         rt.texts[ti as usize].color = v.0;
-        rt.nodes[node as usize].color = v.0;
         match &rt.texts[ti as usize].shape {
             crate::text::TShape::Lines { first, cap, .. } => {
                 let (first, cap) = (*first, *cap);

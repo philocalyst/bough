@@ -8,6 +8,39 @@
 use bough::prelude::*;
 use bough::raw::{App, Caps, Config};
 use bough_metal::perf::tinstr;
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
+/// Live heap bytes and allocation calls (`HEAP=1`). The counters are a load and a store each (not an atomic
+/// add: the measuring thread is the only one allocating while a cell runs), so the other modes pay six
+/// instructions per allocator call for it.
+struct Counting;
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+static CALLS: AtomicUsize = AtomicUsize::new(0);
+// SAFETY: forwards to `System` unchanged; the counters are not part of the allocation contract.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        LIVE.store(LIVE.load(Relaxed) + l.size(), Relaxed);
+        CALLS.store(CALLS.load(Relaxed) + 1, Relaxed);
+        unsafe { System.alloc(l) }
+    }
+    unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
+        LIVE.store(LIVE.load(Relaxed) + l.size(), Relaxed);
+        CALLS.store(CALLS.load(Relaxed) + 1, Relaxed);
+        unsafe { System.alloc_zeroed(l) }
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        LIVE.store(LIVE.load(Relaxed).wrapping_sub(l.size()), Relaxed);
+        unsafe { System.dealloc(p, l) }
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
+        LIVE.store(LIVE.load(Relaxed).wrapping_sub(l.size()) + n, Relaxed);
+        CALLS.store(CALLS.load(Relaxed) + 1, Relaxed);
+        unsafe { System.realloc(p, l, n) }
+    }
+}
+#[global_allocator]
+static ALLOC: Counting = Counting;
 
 struct Table<const K: u32> {
     rows: Vec<(u32, String)>,
@@ -111,8 +144,15 @@ where
         let rows: Vec<(u32, String)> = (0..n as u32).map(|i| (i, format!("Row label {i}"))).collect();
         let t0 = tinstr();
         let mut a = App::new(Table::<K> { rows, selected: u32::MAX }, cfg, false);
+        let t1 = tinstr();
         a.turn(|_| {});
         let d = tinstr() - t0;
+        if std::env::var_os("PHASES").is_some() && n > 1 {
+            // `BOUGH_LPROF=1` adds the layout engine's and the write-back's shares of `App::new`
+            let p = a.rt.lay.prof.acc;
+            let k = n as u64;
+            eprintln!("  shape {K}, {n} rows, per row: App::new {} (of which layout compute {}, write-back {}), first turn {}", (t1 - t0) / k, p[bough::layout::LP_COMPUTE] / k, p[bough::layout::LP_WRITE] / k, (d - (t1 - t0)) / k);
+        }
         if std::env::var_os("SPIN").is_none() {
             std::mem::forget(a); // teardown is measured apart
         }
@@ -126,7 +166,90 @@ where
     f.saturating_sub(z)
 }
 
+/// Live heap bytes, allocator calls and the façade's per-table bytes after mounting `n` application rows
+/// (`App::new` + the first turn), against the same for 0 rows. The GPU region (instances, pages, glyph slots)
+/// is one allocation of fixed size and cancels in the difference.
+fn heap(n: usize) {
+    let font = std::fs::read(std::env::var("ZGX_FONT_FILE").unwrap_or_else(|_| "/System/Library/Fonts/Supplemental/Arial.ttf".into())).unwrap();
+    let one = |n: usize| {
+        let mut cfg = Config::new(1280.0, 800.0, 1.0, font.clone());
+        cfg.caps = Caps { instances: 1 << 17, pages: 1 << 13, glyphs: 1 << 20, runs: 1 << 17, spaces: 1 << 12, clips: 1 << 12, strikes: 16 };
+        let rows: Vec<(u32, String)> = (0..n as u32).map(|i| (i, format!("Row label {i}"))).collect();
+        let (l0, c0) = (LIVE.load(Relaxed), CALLS.load(Relaxed));
+        let mut a = App::new(Table::<0> { rows, selected: u32::MAX }, cfg, false);
+        let (l1, c1) = (LIVE.load(Relaxed), CALLS.load(Relaxed));
+        a.turn(|_| {});
+        let (l2, c2) = (LIVE.load(Relaxed), CALLS.load(Relaxed));
+        let ledger = a.rt.store_ledger();
+        std::mem::forget(a);
+        ([l1 - l0, l2 - l0], [c1 - c0, c2 - c0], ledger)
+    };
+    one(1);
+    let (z, f) = (one(0), one(n));
+    let k = n as f64;
+    println!("rows {n}: live heap per row {:.0} B after App::new, {:.0} B after the first turn; allocator calls per row {:.2} / {:.2}", (f.0[0] - z.0[0]) as f64 / k, (f.0[1] - z.0[1]) as f64 / k, (f.1[0] - z.1[0]) as f64 / k, (f.1[1] - z.1[1]) as f64 / k);
+    println!("  {:<52} {:>9} {:>12} {:>9}", "table", "entries", "bytes", "B/row");
+    let mut sum = 0.0;
+    for (i, (name, entries, bytes)) in f.2.iter().enumerate() {
+        let per = (*bytes as f64 - z.2[i].2 as f64) / k;
+        sum += per;
+        println!("  {name:<52} {entries:>9} {bytes:>12} {per:>9.1}");
+    }
+    println!("  {:<52} {:>9} {:>12} {sum:>9.1}", "sum of the tables", "", "");
+    // columns carved from the reserved block are not the allocator's: their touched bytes are added
+    let cols: f64 = f.2.iter().enumerate().filter(|(_, e)| e.0.starts_with("col ")).map(|(i, e)| (e.2 as f64 - z.2[i].2 as f64) / k).sum();
+    println!("  bytes per row, allocator live + carved columns touched: {:.0}", (f.0[1] - z.0[1]) as f64 / k + cols);
+}
+
+/// The appliers a wire calls, alone (`APPLIERS=1`): instructions per call of a colour write on a painted
+/// box and of a digit tick on a laid-out label, with nothing of the turn around them (no settle, no
+/// re-description, no layout flush). The node is found by its kind; the two values alternate so every call
+/// writes.
+fn appliers() {
+    use bough::elem::{Apply, ApplyBg};
+    let font = std::fs::read(std::env::var("ZGX_FONT_FILE").unwrap_or_else(|_| "/System/Library/Fonts/Supplemental/Arial.ttf".into())).unwrap();
+    let cfg = Config::new(1280.0, 800.0, 1.0, font);
+    let rows = (0..8u32).map(|i| (i, format!("Row label {i}"))).collect();
+    let mut a = App::new(Table::<0> { rows, selected: u32::MAX }, cfg, false);
+    a.turn(|_| {});
+    let rt = &mut a.rt;
+    let n = 4096u32;
+    let quad = (1..n).rev().find(|&i| rt.node_live(i) && rt.hot[i as usize].kind == bough::rt::NK_QUAD).expect("a painted box");
+    let label = (1..n).rev().find(|&i| rt.node_live(i) && rt.hot[i as usize].kind == bough::rt::NK_LTEXT).expect("a label");
+    let slope = |run: &mut dyn FnMut(u32) -> u64| {
+        run(64);
+        let (lo, hi) = (run(1000), run(3000));
+        (hi - lo) / 2000
+    };
+    let colour = slope(&mut |reps| {
+        let t0 = tinstr();
+        for k in 0..reps {
+            ApplyBg::apply(rt, quad, &Color(0xff00_0000 | (k & 1) * 0x0101_01));
+        }
+        tinstr() - t0
+    });
+    let number = slope(&mut |reps| {
+        let t0 = tinstr();
+        for k in 0..reps {
+            rt.lay_text_changed(label, if k & 1 == 0 { "Row label 3" } else { "Row label 8" });
+        }
+        tinstr() - t0
+    });
+    println!("applier,instructions_per_call");
+    println!("colour (ApplyBg on a painted box),{colour}");
+    println!("digit tick (lay_text_changed on a label),{number}");
+}
+
 fn main() {
+    if std::env::var_os("APPLIERS").is_some() {
+        return appliers();
+    }
+    if std::env::var_os("HEAP").is_some() {
+        for n in std::env::args().skip(1).filter_map(|s| s.parse::<usize>().ok()) {
+            heap(n);
+        }
+        return;
+    }
     if std::env::var_os("MOUNT").is_some() {
         println!("rows,owned_mount,per_row,static_mount,per_row,bare_mount,per_row");
         for n in std::env::args().skip(1).filter_map(|s| s.parse::<usize>().ok()) {

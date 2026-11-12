@@ -114,6 +114,8 @@ pub enum Justify {
 /// recognised by comparing the new spec's bytes with the retained ones, with no hash and no style lookup.
 #[derive(Default)]
 pub struct SpecTable {
+    /// The two most recently interned indices (`intern`).
+    recent: [u32; 2],
     specs: Vec<Spec>,
     ids: std::collections::HashMap<SpecKey, u32, FxBuild>,
 }
@@ -123,8 +125,28 @@ impl SpecTable {
         // NONE (never described) indexes past the end
         self.specs.get(ix as usize).is_some_and(|r| r.same(s))
     }
-    #[cold]
+    /// The spec at index `ix` (`None`: never described).
+    #[inline(always)]
+    pub fn get(&self, ix: u32) -> Option<&Spec> {
+        self.specs.get(ix as usize)
+    }
     pub fn intern(&mut self, s: &Spec) -> u32 {
+        // the specs of one call site are one spec, and a row alternates between a few: the two most
+        // recent indices are compared as bytes before anything is hashed
+        let [a, b] = self.recent;
+        if self.is(a, s) {
+            return a;
+        }
+        if self.is(b, s) {
+            self.recent = [b, a];
+            return b;
+        }
+        let i = self.intern_cold(s);
+        self.recent = [i, a];
+        i
+    }
+    #[cold]
+    fn intern_cold(&mut self, s: &Spec) -> u32 {
         if let Some(&i) = self.ids.get(&SpecKey(*s)) {
             return i;
         }
@@ -537,6 +559,20 @@ impl Clone for LeafCtx {
     }
 }
 
+/// The spec a one-line label of size `(w, h)` device px is laid out with: the user's, with its auto width
+/// and height set to the label's size, and no shrinking (a measured label's automatic minimum is its width).
+pub fn sized(user: &Spec, w: f32, h: f32) -> Spec {
+    let mut s = *user;
+    if s.w == Dim::Auto {
+        s.w = Dim::Px(w);
+        s.shrink = 0.0;
+    }
+    if s.h == Dim::Auto {
+        s.h = Dim::Px(h);
+    }
+    s
+}
+
 impl LeafCtx {
     /// The leaf's text (the paragraph's bytes on the fast path, the leaf's own copy on the slow one).
     #[inline]
@@ -719,19 +755,10 @@ impl LeafCtx {
     pub fn label_size(&self) -> (f32, f32) {
         (self.line_width() as f32 * self.k().max(1e-6), self.lh_px)
     }
-    /// The spec a one-line label is laid out with: the user's, with its auto width and height set to the
-    /// label's size, and no shrinking (a measured label's automatic minimum is its width).
+    /// The spec a one-line label is laid out with (`sized`).
     pub fn sized_spec(&self, user: &Spec) -> Spec {
         let (w, h) = self.label_size();
-        let mut s = *user;
-        if s.w == Dim::Auto {
-            s.w = Dim::Px(w);
-            s.shrink = 0.0;
-        }
-        if s.h == Dim::Auto {
-            s.h = Dim::Px(h);
-        }
-        s
+        sized(user, w, h)
     }
 
     fn line_width(&self) -> i32 {
@@ -818,8 +845,6 @@ impl LeafCtx {
 
 #[derive(Clone, Copy)]
 pub struct LInfo {
-    /// `Rt::nodes` index of the drawable (quad / text), or NONE for a paint-less box.
-    pub rtn: u32,
     pub parent: u32,
     pub space: u16,
     pub clip: u16,
@@ -854,7 +879,6 @@ pub struct LInfo {
 impl LInfo {
     const fn blank() -> LInfo {
         LInfo {
-            rtn: NONE,
             parent: NONE,
             space: 0,
             clip: 0,
@@ -928,7 +952,7 @@ impl LProf {
 pub struct Lay {
     pub eng: Eng,
     pub prof: LProf,
-    pub info: Vec<LInfo>,
+    pub info: bough_mem::Col<LInfo>,
     /// Layout parent while a subtree is being mounted (NONE: the next box is a group root).
     pub cur: u32,
     /// Available space (px) a group root created now gets; height `NaN` = max-content.
@@ -956,21 +980,22 @@ impl Lay {
         use bough_mem::Scales::Content;
         const G: &str = "layout";
         self.eng.ledger(l);
-        l.vec(G, "layout node info (LInfo)", &self.info, self.info.capacity(), Content);
+        l.col(G, &self.info, Content);
         let q = (self.pending.capacity() + self.ready.capacity() + self.dirty.capacity() + self.kids.capacity() + self.stack_ids.capacity()) * 4 + self.stack.capacity() * 16;
         l.many(G, "layout queues and stacks", Content, q, q);
         let sp = self.specs.capacity() * (size_of::<(u32, Spec)>() + 1);
         l.many(G, "size-operand specs (map)", Content, self.specs.len() * size_of::<(u32, Spec)>(), sp);
     }
-    pub fn new(scale: f32) -> Lay {
+    /// `store`: the block the façade's tables are carved from (`rt::StoreCaps`).
+    pub fn new(scale: f32, store: &mut bough_mem::Region, sc: &crate::rt::StoreCaps) -> Lay {
         let mut prof = LProf { on: false, acc: [0; 8], last: 0, ovh: 0 };
         if std::env::var_os("BOUGH_LPROF").is_some() {
             prof.enable();
         }
         Lay {
-            eng: Eng::new(),
+            info: store.carve("layout info", sc.ids),
+            eng: Eng::new(store, sc.ids, sc.texts),
             prof,
-            info: Vec::new(),
             cur: NONE,
             last_box: NONE,
             mount_avail: (0.0, f32::NAN),
@@ -1048,8 +1073,34 @@ impl Rt {
 
     /// The text of layout text node `n` changed (reactive operand): re-shape into the leaf, invalidate it.
     pub fn lay_text_changed(&mut self, n: u32, text: &str) {
-        let lid = self.nodes[n as usize].lnode;
-        let ti = self.nodes[n as usize].text;
+        let lid = n;
+        let ti = self.text_of(n);
+        if matches!(self.texts[ti as usize].shape, TShape::Label(_)) {
+            // a one-line text is a retained label: it patches itself, and layout runs only if its width
+            // changed (its box is sized by its text)
+            let resized = self.label_set(ti, text, self.lay.info[lid as usize].written);
+            if resized == Some(false) {
+                return;
+            }
+            let user = *self.lay.descs.get(self.lay.info[lid as usize].spec_ix).expect("a label's described spec");
+            match resized {
+                Some(_) => {
+                    let (w, h) = self.label_px(ti).unwrap();
+                    restyle(self, lid, &sized(&user, w, h));
+                    return;
+                }
+                None => {
+                    // the label kernel does not cover the new text: the general representation (a shaped
+                    // leaf state, placed as line windows or glyph instances by the write-back)
+                    let old = std::mem::take(&mut self.texts[ti as usize].shape);
+                    crate::text::release(self, TextNode { shape: old, ..Default::default() });
+                    let (size_px, lh) = (self.texts[ti as usize].size_px, self.texts[ti as usize].line_h);
+                    let mut ctx = self.lay.eng.fresh_ctx(size_px, lh, false);
+                    ctx.user = Some(user);
+                    self.lay.eng.set_ctx(lid, ctx);
+                }
+            }
+        }
         {
             let t = &mut self.texts[ti as usize];
             t.text.clear();
@@ -1144,7 +1195,6 @@ impl Rt {
     /// siblings are never visited.
     fn lay_writeback(&mut self) {
         let mut stack = std::mem::take(&mut self.lay.stack);
-        let mut kids = std::mem::take(&mut self.lay.kids);
         let mut dirty = std::mem::take(&mut self.lay.dirty);
         stack.clear();
         for &r in &self.lay.ready {
@@ -1199,10 +1249,8 @@ impl Rt {
                 l.desc = false;
                 l.tdirty = false;
             }
-            kids.clear();
-            self.lay.eng.children_into(&self.bough, n, &mut kids);
             let fc = force || moved;
-            for &c in &kids {
+            for &c in self.lay.eng.kids(n) {
                 // only what moved (a moved parent moves everything below it) or is flagged is visited
                 let ci = &self.lay.info[c as usize];
                 if fc || ci.needs || ci.desc || !ci.written || ci.tdirty {
@@ -1211,14 +1259,11 @@ impl Rt {
             }
         }
         self.lay.stack = stack;
-        self.lay.kids = kids;
     }
 
     fn place_quad(&mut self, lid: u32, x: f32, y: f32, w: f32, h: f32) {
         // the bands around the edges that moved (exact on the geometry grid), not old ∪ new
-        let li = self.lay.info[lid as usize];
-        debug_assert_eq!(self.nodes[li.rtn as usize].space, li.space);
-        self.quad_geom(li.rtn, x, y, w, h);
+        self.quad_geom(lid, x, y, w, h);
     }
 
     /// Place a laid-out text node's lines in its box at (x, y) of width `w`: the fast path points one run
@@ -1226,14 +1271,16 @@ impl Rt {
     /// glyph instances. Damage: the old and the new ink.
     fn place_text(&mut self, lid: u32, x: f32, y: f32, w: f32, _h: f32, _reflow: bool) {
         self.lay.stats.text_placed += 1;
-        let li = self.lay.info[lid as usize];
-        let node = li.rtn;
-        let ti = self.nodes[node as usize].text;
-        let hd = self.nodes[node as usize].handle;
+        let node = lid;
+        let ti = self.text_of(node);
+        let hd = self.handle(node);
         let (size_px, lh) = {
             let t = &self.texts[ti as usize];
             (t.size_px, t.line_h)
         };
+        if matches!(self.texts[ti as usize].shape, TShape::Label(_)) {
+            return self.place_label(ti, x, y);
+        }
         let strike = self.texts[ti as usize].strike as bough_text::atlas::StrikeId;
         let base_off = self.text.baseline_of(strike, size_px, lh);
         let ctx = self.lay.eng.ctx_mut(lid).expect("text leaf has a context");
@@ -1306,7 +1353,7 @@ impl Rt {
                 let t = &mut self.texts[ti as usize];
                 t.ink = ink;
                 t.shape = TShape::Glyphs { run };
-                self.nodes[node as usize].run = run;
+
                 self.bough.set_payload_handle(hd, pay_irun(first, cnt.max(1) as u32));
             }
         }
@@ -1474,27 +1521,14 @@ where
         assert!(!X::PAINT || self.draw, "opacity/translate need a painted box (bg, rounded or border)");
         let mut qnode = NONE;
         if self.draw {
-            let node = m.rt.alloc_node();
+            let node = m.rt.node_at(hd);
             let bg = self.bg.lower::<ApplyBg>(m, node);
             let (ins, _kind, margin) = quad_instance(bg, snap(self.radius * s), self.border, s, m.space);
-            let run = m.rt.alloc_run(1);
-            m.rt.runs[run as usize].len = 1;
-            let inst = m.rt.runs[run as usize].first;
+            // the box's state is its instance (at its own id) and eight hot bytes
+            let inst = m.rt.inst_of(node);
             *m.rt.inst_mut(inst) = ins;
-            {
-                let n = &mut m.rt.nodes[node as usize];
-                n.handle = hd;
-                n.run = run;
-                n.space = m.space;
-                n.clip = m.clip;
-                n.kind = if self.border.is_some() { NK_BORDER } else { NK_QUAD };
-                n.color = bg.0;
-                n.margin = margin;
-                n.lnode = lid;
-            }
-            m.scope.nodes.push(node);
-            m.scope.runs.push(run);
-            m.rt.lay.info[lid as usize].rtn = node;
+            let _ = margin;
+            m.rt.hot[node as usize] = Hot { kind: if self.border.is_some() { NK_BORDER } else { NK_QUAD }, flags: 0, clip: m.clip, link: 0 };
             m.rt.lay.info[lid as usize].kind = 1;
             m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_QUAD, payload: inst, handle: hd.idx, clip: m.clip });
             qnode = node;
@@ -1538,26 +1572,28 @@ where
         }
         let li = m.rt.lay.info[lid as usize];
         assert_eq!(self.draw, li.kind == 1, "a re-description cannot add or drop a box's paint (bg/rounded/border)");
-        self.x.refresh(m.rt, lid, li.rtn);
+        self.x.refresh(m.rt, lid, if li.kind == 1 { lid } else { NONE });
         if li.clip != m.clip {
             m.rt.bough.set_clip_run(m.pos, 1, m.clip);
             m.rt.lay.info[lid as usize].clip = m.clip;
         }
         if self.draw {
-            let node = li.rtn;
+            let node = lid;
             let bg = self.bg.value();
             let s = m.rt.scale;
             let (ins, _kind, margin) = quad_instance(bg, self.radius * s, self.border, s, m.space);
-            let inst = m.rt.runs[m.rt.nodes[node as usize].run as usize].first;
+            let _ = margin;
+            let inst = m.rt.inst_of(node);
             let old = *m.rt.inst_mut(inst);
             if old.radius != ins.radius || old.kind != ins.kind || old.bw != ins.bw || (self.border.is_some() && old.color != ins.color) {
                 let p = m.rt.inst_mut(inst);
                 let (pos, size) = (p.pos, p.size);
                 *p = Instance { pos, size, ..ins };
-                let n = &mut m.rt.nodes[node as usize];
-                n.margin = margin;
-                n.color = bg.0;
-                n.kind = if self.border.is_some() { NK_BORDER } else { NK_QUAD };
+                let h = &mut m.rt.hot[node as usize];
+                h.kind = if self.border.is_some() { NK_BORDER } else { NK_QUAD } | (h.kind & NK_HOVERED);
+                if h.flags & HF_MOD != 0 {
+                    m.rt.cold_mut(node).color = bg.0;
+                }
                 m.rt.quad_ink(node);
             } else {
                 <ApplyBg as crate::elem::Apply>::apply(m.rt, node, &bg);
@@ -1663,23 +1699,8 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
         let size_px = self.size * s;
         let lh_px = self.lh * s;
         let strike = m.rt.text.strike(size_px);
-        let mut ctx = m.rt.lay.eng.fresh_ctx(size_px, lh_px, self.wrap);
-        m.rt.lay.prof.reset();
-        {
-            let Rt { text, glyphs, .. } = &mut *m.rt;
-            ctx.set_text(text, glyphs, &init);
-        }
-        m.rt.lay.prof.mark(LP_TEXT_SET);
-        let hd = m.rt.bough.new_handle();
+        let hd = m.rt.handle(node);
         m.rt.reflect.elem(hd.idx, std::any::type_name::<Self>());
-        let spec = if self.wrap {
-            self.spec
-        } else {
-            ctx.user = Some(self.spec);
-            ctx.sized_spec(&self.spec)
-        };
-        let lid = m.rt.lay.eng.add(hd, &spec, s, Some(ctx));
-        let _parent = attach(m, lid);
         let ti = m.rt.alloc_text(TextNode {
             text: init,
             strike: strike as u32,
@@ -1694,25 +1715,49 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
             shape: TShape::None,
             per_glyph: false,
             num,
+            base_off: 0.0,
+            paint_key: 0,
         });
-        {
-            let n = &mut m.rt.nodes[node as usize];
-            n.text = ti;
-            n.space = m.space;
-            n.clip = m.clip;
-            n.kind = NK_LTEXT;
-            n.color = color.0;
-            n.size_px = size_px;
-            n.line_h = lh_px;
-            n.handle = hd;
-            n.lnode = lid;
+        m.rt.lay.prof.reset();
+        // One line: a retained label (`text.rs`), the representation every one-line text has: its box is
+        // sized by its text, a write-back moves its origin, a new value patches it. Wrapped text, and one
+        // line the label kernel does not cover, is a shaped leaf state (`LeafCtx`) the layout measures.
+        let label = if self.wrap { None } else { m.rt.build_label(ti) };
+        let (spec, ctx, payload) = match label {
+            Some(payload) => {
+                m.rt.texts[ti as usize].base_off = m.rt.text.baseline(size_px, lh_px);
+                let (w, h) = m.rt.label_px(ti).unwrap();
+                (sized(&self.spec, w, h), None, payload)
+            }
+            None => {
+                let mut ctx = m.rt.lay.eng.fresh_ctx(size_px, lh_px, self.wrap);
+                {
+                    let Rt { text, glyphs, texts, .. } = &mut *m.rt;
+                    ctx.set_text(text, glyphs, &texts[ti as usize].text);
+                }
+                let spec = if self.wrap {
+                    self.spec
+                } else {
+                    ctx.user = Some(self.spec);
+                    ctx.sized_spec(&self.spec)
+                };
+                (spec, Some(ctx), 0)
+            }
+        };
+        m.rt.lay.prof.mark(LP_TEXT_SET);
+        let lid = m.rt.lay.eng.add(hd, &spec, s, ctx);
+        let _parent = attach(m, lid);
+        if payload != 0 {
+            // the described spec is kept (by index): the label's box is re-sized from it when its text changes
+            m.rt.lay.info[lid as usize].spec_ix = m.rt.lay.descs.intern(&self.spec);
         }
-        m.rt.lay.info[lid as usize].rtn = node;
+        m.rt.hot[node as usize] = Hot { kind: NK_LTEXT, flags: 0, clip: m.clip, link: ti };
+        debug_assert_eq!(node, lid);
         m.rt.lay.info[lid as usize].kind = 2;
-        m.scope.nodes.push(node);
+        m.scope.texts.push(ti);
         m.tape_push(lid);
-        // provisional: empty ink (never drawn) until the first write-back points the lines at the block
-        m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_TEXT, payload: 0, handle: hd.idx, clip: m.clip });
+        // provisional: empty ink (never drawn) until the first write-back places the text
+        m.recs.push(RecordInit { depth: m.depth, ink: NRect::EMPTY, kind: REC_TEXT, payload, handle: hd.idx, clip: m.clip });
     }
 
     fn update(self, m: &mut Mounter<'_, V>) {
@@ -1720,8 +1765,10 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
         if !m.rt.lay.descs.is(m.rt.lay.info[lid as usize].spec_ix, &self.spec) {
             // the described spec changed (or this is the node's first re-description). A label's sized spec
             // follows its text through `lay_text_changed`, so an unchanged description needs nothing here.
-            let spec = match m.rt.lay.eng.ctx_mut(lid) {
-                Some(ctx) if ctx.user.is_some() => {
+            let label = m.rt.label_px(m.rt.text_of(lid));
+            let spec = match (label, m.rt.lay.eng.ctx_mut(lid)) {
+                (Some((w, h)), _) => sized(&self.spec, w, h),
+                (None, Some(ctx)) if ctx.user.is_some() => {
                     ctx.user = Some(self.spec);
                     ctx.sized_spec(&self.spec)
                 }
@@ -1730,8 +1777,8 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
             restyle(m.rt, lid, &spec);
             m.rt.lay.info[lid as usize].spec_ix = m.rt.lay.descs.intern(&self.spec);
         }
-        let node = m.rt.lay.info[lid as usize].rtn;
-        let ti = m.rt.nodes[node as usize].text;
+        let node = lid;
+        let ti = m.rt.text_of(node);
         let s = m.rt.scale;
         {
             let t = &m.rt.texts[ti as usize];
@@ -1743,7 +1790,8 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
         }
         // compared in place: a source that is already a string allocates nothing
         self.s.with_str(|text| {
-            if m.rt.texts[ti as usize].text != text {
+            // a label holds its own bytes
+            if m.rt.texts[ti as usize].bytes() != text.as_bytes() {
                 m.rt.lay_text_changed(node, text);
             }
         });
