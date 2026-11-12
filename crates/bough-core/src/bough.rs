@@ -3022,24 +3022,42 @@ impl Bough {
     }
     /// `project_paint` onto a plane of the caller's (tests compare it with marks made one record at a time).
     pub fn project_paint_onto(&mut self, out: &mut Plane) -> bool {
-        let (htab, clips, win) = (&self.htab, &self.clips, self.ring.window);
+        let (htab, clips, d_ink, win) = (&self.htab, &self.clips, &self.d_ink, self.ring.window);
+        let wth = Thresh::of_rect(win);
         let mut any = false;
+        // The page of the last record looked at, and whether anything of it can be in the window (its
+        // directory ink, the union of its records, meets it): records marked together are mostly neighbours,
+        // so a page that is out of sight costs its records one compare each. `full`: every tile of the window
+        // is already marked (a theme switch): nothing more can be added, the rest is only cleared.
+        let (mut last, mut last_in, mut full) = (core::ptr::null_mut::<Page>(), false, false);
+        let all_rows = out.n;
         self.dirty.drain(crate::dirty::PAINT, |base, mut m| {
+            if !full && any && base & 0xfff == 0 {
+                full = out.covers(win, all_rows);
+            }
             while m != 0 {
                 let idx = base + m.trailing_zeros();
                 m &= m - 1;
                 // SAFETY: a marked index was a handle index (`mark_paint`'s callers pass handles of this
                 // Bough), so it is below `htab.len()`.
                 let e = unsafe { htab.get_unchecked(idx as usize) };
-                if e.page.is_null() {
+                if e.page != last {
+                    if e.page.is_null() {
+                        continue;
+                    }
+                    last = e.page;
+                    // SAFETY: a bound entry points at a live page (exclusive through `&mut self`), whose
+                    // `dir` is its directory index. The page's seal moves: a record of it paints differently.
+                    last_in = unsafe {
+                        (*last).wgen = (*last).wgen.wrapping_add(1);
+                        wth.matches(*d_ink.get_unchecked((*last).dir as usize))
+                    };
+                }
+                if !last_in || full {
                     continue;
                 }
-                // SAFETY: a bound entry points at a live page (exclusive through `&mut self`); its slot is
-                // below CAP. The page's seal moves: one of its records paints differently.
-                let p = unsafe {
-                    (*e.page).wgen = (*e.page).wgen.wrapping_add(1);
-                    &*e.page
-                };
+                // SAFETY: as above; the slot is below CAP.
+                let p = unsafe { &*e.page };
                 let s = e.slot as usize & (CAP - 1);
                 let r = p.ink[s];
                 if r.0[0] == crate::nrect::MAXC {

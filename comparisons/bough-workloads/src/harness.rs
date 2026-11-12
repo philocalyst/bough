@@ -185,6 +185,16 @@ fn row(scene: &str, phase: &str, m: &Meter, steps: &[Step]) {
         peak
     );
     println!("{line}");
+    // core lane's attribution spans (feature `attr`): where the phase's instructions went, per step
+    #[cfg(feature = "attr")]
+    {
+        let ovh = bough_metal::perf::tinstr_overhead();
+        let t = bough::attr::on::take();
+        let names = ["handler", "settle", "", "", "epoch advance", "paint projection", "", "pick", "", "repair rows", "copy plan", "slot write", "", "", "", ""];
+        let n = steps.len().max(1) as u64;
+        let parts: Vec<String> = (0..names.len()).filter(|&i| !names[i].is_empty() && t[i].1 != 0).map(|i| format!("{} {}", names[i], t[i].0.saturating_sub(t[i].1 * ovh) / n)).collect();
+        println!("#attr\t{scene}\t{phase}\t{}", parts.join("; "));
+    }
 }
 
 /// The resize sweep's sizes: a triangle wave between 60 % and 125 % of `base`, `n` steps, x and y out of phase.

@@ -196,6 +196,17 @@ impl Plane {
         self.test_span(tx0, ty0, tx1, ty1)
     }
 
+    /// Is every tile of `window` (a window of `rows` tile rows starting at the origin) set?
+    pub fn covers(&self, window: NRect, rows: u32) -> bool {
+        if self.y0 != 0 || self.y1 < rows {
+            return false;
+        }
+        let [_, _, x1, _] = window.to_xyxy();
+        let tw = ((x1 + TILE - 1) >> TILE_SHIFT) as u32;
+        let all = if tw >= 128 { u128::MAX } else { (1u128 << tw) - 1 };
+        self.rows[..rows as usize].iter().all(|&r| r & all == all)
+    }
+
     /// Clear the occupied rows only.
     #[inline]
     pub fn clear(&mut self) {

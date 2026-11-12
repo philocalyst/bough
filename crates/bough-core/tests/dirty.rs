@@ -122,3 +122,36 @@ fn a_page_seal_moves_with_its_page_only() {
     let s3 = seals(&b);
     assert_eq!((0..s2.len()).filter(|&i| s2[i].1 != s3[i].1).count(), 1);
 }
+
+/// The projection's two shortcuts are exact: a page out of the window marks nothing (as its records one by
+/// one would), and once every tile of the window is marked the rest of the plane is cleared without a look.
+#[test]
+fn projection_of_everything_and_of_offscreen_pages() {
+    let mut b = Bough::new(W, H);
+    let mut hs = Vec::new();
+    let mut recs = Vec::new();
+    // 4,000 rows of 32 px: most pages are far below the window
+    for i in 0..4000 {
+        let h = b.new_handle();
+        hs.push(h);
+        recs.push(RecordInit { depth: 1, ink: NRect::new(0, (i * 32).min(30000), W, (i * 32 + 32).min(30032)), kind: 1, payload: i as u32, handle: h.idx, clip: 0 });
+    }
+    b.insert_run(0, &recs);
+    // off-screen only
+    for h in &hs[200..] {
+        b.mark_paint(h.idx);
+    }
+    let mut got = DamageRing::new(W, H);
+    assert!(!b.project_paint_onto(got.cur_mut()));
+    assert!(got.plane(0).is_clear() && !b.paint_pending());
+    // everything: the window ends up wholly marked, and equal to the one-by-one marks
+    let (mut got, mut want) = (DamageRing::new(W, H), DamageRing::new(W, H));
+    for h in &hs {
+        b.mark_paint(h.idx);
+        mark_now(&b, &mut want, *h);
+    }
+    assert!(b.project_paint_onto(got.cur_mut()));
+    assert_eq!(got.plane(0).rows, want.plane(0).rows);
+    assert!(got.plane(0).covers(NRect::new(0, 0, W, H), 25));
+    assert!(!b.paint_pending());
+}
