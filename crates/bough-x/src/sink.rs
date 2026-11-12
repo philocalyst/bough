@@ -34,10 +34,16 @@ pub trait ScopeOf<'r, V, Implied = &'r Self> {
 pub trait Sink<V>: Sized + for<'r> ScopeOf<'r, V> {
     /// A row of the fixed shape: its layout (one rect per record, in order) and its operands. The closure is
     /// only called by a sink that wants the row; after a turn that changed no opaque state, none does.
+    ///
+    /// Every method is `#[track_caller]`: the reflecting sink records where in the view a row, a scope or a list
+    /// is described; every other sink ignores the location, and after inlining it is not there.
+    #[track_caller]
     fn row<R: Row<V>, L: AsRef<[Rect]>, F: FnOnce() -> (L, R)>(&mut self, f: F);
     /// A child with its own coordinate space (a clip, a scroll offset read from the block).
+    #[track_caller]
     fn scope<F: for<'r> FnOnce(&mut <Self as ScopeOf<'r, V>>::Scope)>(&mut self, space: Space, f: F);
     /// The rows of a relation, one under another. Only exposed rows are asked for.
+    #[track_caller]
     fn list<R: Row<V>, F: FnMut(usize) -> R>(&mut self, l: &List<'_>, f: F);
 }
 

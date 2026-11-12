@@ -185,8 +185,27 @@ impl<A> Page<A> {
     }
 }
 
+/// One operand of an archetype, as data: its name, its expression's code, its stage, the block words it reads,
+/// and where its words are in the record. Read only by the tools that look at records from outside the kernels
+/// (inspector, accessibility, tests); a constant nobody names is not emitted.
+#[derive(Debug)]
+pub struct Op {
+    pub name: &'static str,
+    pub code: &'static crate::expr::Code,
+    /// The operand's expression type, written out by the compiler (`Map<fill, (Un<Theme>, Rec<u32>)>`, with
+    /// paths): the names of the lenses and functions it was built from.
+    pub ty: fn() -> &'static str,
+    pub stage: StageId,
+    pub reads: u64,
+    /// First record word of the operand, and how many.
+    pub word: u16,
+    pub words: u16,
+}
+
 /// An archetype: a paint kind applied to expression types. The value is one record's constants.
 pub trait Arch: Words {
+    /// The operands, in record order (empty for an archetype that does not describe itself).
+    const OPS: &'static [Op] = &[];
     /// The words of the block whose change can change what a record of this archetype shows.
     const READS: u64;
     /// The record's place on screen depends on the block (a Frame-stage transform).
@@ -210,6 +229,12 @@ pub trait Arch: Words {
     }
     /// Hand the column to the backend method for this paint kind.
     fn paint<B: Backend>(b: &mut B, col: ColRef<'_, Self>, u: &U);
+    /// The value of operand `op` (an index into [`Arch::OPS`]) under block `u`. Read by reflection only, so it
+    /// is instantiated only in a program that reflects.
+    #[inline]
+    fn val(&self, _op: usize, _u: &U) -> crate::reflect::Val {
+        crate::reflect::Val::None
+    }
 }
 
 /// What a raster implements: one generic method per paint kind, monomorphised per archetype.
@@ -364,6 +389,13 @@ impl RawCol {
     #[inline(always)]
     unsafe fn all<A>(&self) -> &[Page<A>] {
         unsafe { core::slice::from_raw_parts(self.pages as *const Page<A>, self.npages as usize) }
+    }
+    /// Page `pg` as bytes: four rect lanes of 64 `i32` each, then the records (`desc.rec_off`, `desc.rec_size`).
+    #[inline]
+    pub fn raw_page(&self, pg: u32) -> *const u8 {
+        assert!(pg < self.npages);
+        // SAFETY: in bounds of the page array by the assert.
+        unsafe { self.pages.add(pg as usize * self.desc.page.size()) }
     }
     /// The constants of record `rec`, untyped (for a handler that knows the type).
     pub fn rec_ptr(&self, rec: u32) -> *const u8 {

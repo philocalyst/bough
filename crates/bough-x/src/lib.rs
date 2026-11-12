@@ -6,11 +6,13 @@
 //! * [`kinds`]: the paint kinds, generic over their operands' expressions.
 //! * [`sink`]: `view` drives a sink; rows of a list are plain tuples; relations carry their own journal.
 //! * [`world`]: the driver.
+//! * [`reflect`]: the typed walk every tool reads (tests, theming, accessibility, events, an inspector).
 //! * [`soft`]: a reference raster and an immediate-mode sink, both oracles.
 //!
 //! Nothing here depends on the façade's runtime.
 pub use bough_expr as expr;
 pub mod kinds;
+pub mod reflect;
 pub mod sink;
 pub mod soft;
 pub mod store;
