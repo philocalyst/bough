@@ -11,8 +11,9 @@ it and nobody replayed it; "verified by the lead" is said where it applies.
 * **Integrated (`round6`, head `b6860109e1`):** exact-rect inks end to end, the core lane's coordinate contract
   and prefix fix, the write log and wired seals (`4f4c469ef5`), and the memory lane's `a1873e83fa` (ledger, region
   views, CPU repair backend switched off by default). Tests: `bough` + `bough-suite` with the settle audit on,
-  65 passed, 0 failed, on the merge before memory's. The whole-workspace run on the current head was still
-  building when this was written: **the current `round6` head is not verified.**
+  65 passed, 0 failed, on the merge before memory's. Addendum: the whole-workspace run on `b6860109e1`
+  (`BOUGH_SETTLE_AUDIT=1 cargo test --release --workspace`, GPU mode) finished after this was written: 242 passed,
+  0 failed, one run.
 * **Built on lane branches, not integrated:** per-id columns (store), the gapped directory, state planes and
   vector translate (core), exposure-driven mounting (dormant), owner grain, flags and direct wires (surface-api),
   the overflow cut in cephal (layout), reflection as a walk plus the testing API and agent socket (composition),
@@ -30,7 +31,7 @@ it and nobody replayed it; "verified by the lead" is said where it applies.
 
 | lane | branch | head | in `round6` | tree | last gate the lane ran on its head |
 |---|---|---|---|---|---|
-| integration | `round6` | `b6860109e1` | n/a | clean | workspace run in progress |
+| integration | `round6` | `b6860109e1` | n/a | clean | whole workspace, audit on: 242 passed, 0 failed (one run) |
 | lead | `lead/core-r6` | `4f4c469ef5` (+ this file) | yes | clean | bough + bough-suite, audit on: 0 failed |
 | core | `lane/core/round6` | `2c77f0a1ed` | only `e8f29816ad`, `ffe1b961d5` | clean | `cargo test -p bough-core`; no façade or pixel suite ever |
 | store | `lane/store/round6` | `fea9e15453` (code `281f6c3c6d`) | no | clean | workspace check; `-p bough` with audit (15 binaries); comparison suites never |
@@ -134,7 +135,6 @@ profile for any 1 % threshold:
 
 ## 6. Defects and unverified claims to clear
 
-* `round6` head not verified by a completed workspace run.
 * CPU repair backend: 22 pixel failures, whole-colour differences. Suspects: held/paint-only surfaces assuming a
   GPU frame; CPU-written IOSurface used as a GPU copy source without coherence. One command names the cause:
   `BOUGH_CPU_VERIFY=1 cargo test --release -p bough-scenes --test correctness blink` on memory's WIP.
