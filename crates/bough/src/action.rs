@@ -210,8 +210,6 @@ impl<I, O> ActionCell for Action<I, O> {
 pub(crate) struct ActSlot {
     pub cell: *mut dyn ActionCell,
     pub aid: AId,
-    pub owner: usize,
-    pub cls: u32,
     /// The struct holding the action (its overlay's cell is a field of it).
     pub parent: *mut u8,
 }
@@ -346,7 +344,7 @@ pub(crate) fn mount_actions<V: 'static>(m: &mut Mounter<'_, V>) {
         m.rt.async_on = true;
         let aid = m.rt.asks.engine.add_action(Box::new(ALand { cell, parent, owner: owner as usize, cls: m.cls }));
         let node = m.rt.asks.acts.len() as u32;
-        m.rt.asks.acts.push(ActSlot { cell, aid, owner: owner as usize, cls: m.cls, parent });
+        m.rt.asks.acts.push(ActSlot { cell, aid, parent });
         // SAFETY: the action's head is its first field (`#[repr(C)]`), at a compiler-given offset of `V`;
         // `patch_action` reaches the action through the slot, not through `sig`.
         let head = unsafe { &*(at as *const std::cell::Cell<u32>) };

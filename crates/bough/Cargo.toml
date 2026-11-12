@@ -34,6 +34,8 @@ block2 = "0.6"
 dispatch2 = "0.3"
 
 [features]
+# Instruction counts at the end of each phase of a turn (src/phase.rs; examples/async_phases.rs).
+phase_cost = []
 # The presenter on the vendored wgpu-hal with wgsl-rs kernels (crates/bough-gpu) instead of direct Metal.
 wgpu = ["dep:bough-gpu"]
 # Gate sabotage (RESULTS §15): the scroll copy reads one pixel off; every scroll pixel gate must fail with it.
@@ -47,3 +49,7 @@ sabotage_blend = []
 [dev-dependencies]
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }
 zgx-workload = { git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }
+
+[[example]]
+name = "async_phases"
+required-features = ["phase_cost"]

@@ -712,15 +712,22 @@ fn exhaustive() {
     eprintln!("exhaustive: {runs} schedules of depth {depth} (shard {shard}/{shards})");
 }
 
+/// Answer every pending gate until none is left (bounded: a mutant that keeps asking fails instead of hanging).
+fn first_answers(h: &mut Harness) {
+    for _ in 0..256 {
+        let Some(&i) = pending_gates().first() else { return };
+        resolve(i);
+        h.idle_turn();
+    }
+    panic!("first answers never settle (a question keeps asking)");
+}
+
 /// Deterministic cases from DESIGN.md, named.
 #[test]
 fn cascade_holds_the_selection_until_the_author_lands() {
     let mut h = Harness::new();
     // first answers
-    while let Some(&i) = pending_gates().first() {
-        resolve(i);
-        h.idle_turn();
-    }
+    first_answers(&mut h);
     h.check("loaded");
     assert_eq!((h.w.shown(D1), h.w.shown(D3)), (Some(1), Some(13)));
     h.turn(|w| w.write(A, Some(2)));
@@ -750,10 +757,7 @@ fn cascade_holds_the_selection_until_the_author_lands() {
 #[test]
 fn netting_back_cancels_and_releases() {
     let mut h = Harness::new();
-    while let Some(&i) = pending_gates().first() {
-        resolve(i);
-        h.idle_turn();
-    }
+    first_answers(&mut h);
     h.turn(|w| w.write(A, Some(1)));
     assert!(h.w.held.contains(&A));
     let asked = GATES.with(|g| g.borrow().len());

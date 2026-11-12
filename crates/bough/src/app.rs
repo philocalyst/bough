@@ -516,12 +516,16 @@ impl<V: View> App<V> {
             return self.turn_async(f);
         }
         // an app that never mounted a question, an action or a producer: the turn as it always was
+        crate::phase::mark("turn start");
         f(&mut self.owner);
+        crate::phase::mark("handler");
         let owner = &mut *self.owner as *mut V as *const u8;
         // SAFETY: the owner is the mounted view; every wire was installed from a `sig!` proof for it.
         unsafe { self.rt.settle(owner) };
+        crate::phase::mark("settle");
         self.effects();
         self.redescribe();
+        crate::phase::mark("effects, redescribe");
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
         self.prof.mark(PH_TEXT);
@@ -531,9 +535,12 @@ impl<V: View> App<V> {
     #[inline(never)]
     fn turn_async(&mut self, f: impl FnOnce(&mut V)) {
         let owner = &mut *self.owner as *mut V as *const u8;
+        crate::phase::mark("turn start");
         // SAFETY: as in `turn`.
         unsafe { self.rt.admit_async(owner) };
+        crate::phase::mark("admit");
         f(&mut self.owner);
+        crate::phase::mark("handler");
         self.after_handler_async();
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
@@ -592,11 +599,15 @@ impl<V: View> App<V> {
         }
         // the boundaries it retried (`catch`): their content mounts again at this turn's description
         self.rt.take_retries();
+        crate::phase::mark("refreshes, retries");
         // SAFETY: as in `turn`.
         unsafe { self.rt.settle(owner) };
+        crate::phase::mark("settle");
         unsafe { self.rt.finish_async(owner) };
+        crate::phase::mark("finish (close group, ask, pump)");
         self.effects();
         self.redescribe();
+        crate::phase::mark("effects, redescribe");
         if self.rt.async_on {
             // a description mounts and releases questions (scopes): what that made ready lands now, before the frame
             for _ in 0..4 {

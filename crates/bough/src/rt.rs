@@ -519,6 +519,9 @@ pub struct Rt {
     pub input: crate::input::Input,
     /// Running transitions and the frame clock (transition.rs).
     pub transitions: crate::transition::Transitions,
+    /// Switch transitions of dynamic parts (switch.rs), and the switch a part being described is inside.
+    pub switches: crate::switch::Switches,
+    pub(crate) switching: Option<crate::switch::SwitchCtx>,
     /// Icons, rotated images and gradient ramps (deco.rs), uploaded before a frame that wrote them.
     pub images: crate::deco::Images,
     /// The mounted owner (boxed by `App`, never moves): what a layout placement hook needs to mount the rows
@@ -659,6 +662,8 @@ impl Rt {
             next_serial: 0,
             input: Default::default(),
             transitions: Default::default(),
+            switches: Default::default(),
+            switching: None,
             images: Default::default(),
             owner: std::ptr::null(),
             _region: region,
@@ -1414,6 +1419,14 @@ impl Rt {
                 self.cut_scope(&mut it.scope);
             }
             self.dyns.parts[d as usize] = items;
+            // and the items leaving its slots (switch.rs)
+            if self.switches.any() {
+                let mut sc = crate::switch::leaving_scopes(self, d);
+                for x in &mut sc {
+                    self.cut_scope(x);
+                }
+                crate::switch::restore_scopes(self, d, sc);
+            }
         }
     }
 

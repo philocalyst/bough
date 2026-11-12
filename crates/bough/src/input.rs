@@ -1326,7 +1326,7 @@ impl<V: View> App<V> {
 
     /// Is a glide (or any input animation) running?
     pub fn animating(&self) -> bool {
-        self.rt.input.scrollers.iter().any(|s| s.glide.is_some()) || self.rt.input.tips.iter().any(|t| t.fading) || self.rt.transitions.running() || self.rt.lists.animating()
+        self.rt.input.scrollers.iter().any(|s| s.glide.is_some()) || self.rt.input.tips.iter().any(|t| t.fading) || self.rt.transitions.running() || self.rt.lists.animating() || self.rt.switches.running()
     }
 
     /// Advance input animations by `dt` seconds (glides write their scroll signals). Returns whether any
@@ -1342,8 +1342,20 @@ impl<V: View> App<V> {
             return blinked;
         }
         self.sync_pub();
+        // only parameters move (transitions, switch transitions): no handler ran, so no turn either
+        let params_only = !blinked && !self.rt.input.scrollers.iter().any(|s| s.glide.is_some()) && !self.rt.input.tips.iter().any(|t| t.fading) && !self.rt.lists.animating();
         // transitions: every running one applies its value through its property's applier
         self.rt.step_transitions(dt);
+        // switch transitions (switch.rs): their parameters at the clock; one that ended has its leaving records
+        // removed by one description (the only description a switch transition causes)
+        if self.rt.step_switches().1 {
+            self.redescribe();
+        }
+        if params_only {
+            self.rt.lay_flush();
+            self.sync_ring();
+            return true;
+        }
         let o = self.owner_mut();
         for s in &mut self.rt.input.scrollers {
             let Some(g) = s.glide.as_mut() else { continue };

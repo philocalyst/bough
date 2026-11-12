@@ -138,6 +138,30 @@ fn calls(name: &str) -> Vec<(String, bool)> {
     server::history(name)
 }
 
+/// The alpha (0..=255) the text `t` is drawn with (the first record showing it).
+fn alpha<V: View>(a: &App<V>, t: &str) -> Option<u32> {
+    a.reflect_records().into_iter().find(|r| r.text.as_deref() == Some(t)).and_then(|r| r.color).map(|c| c >> 24)
+}
+
+/// Present frames at 60 Hz until nothing animates; returns the frames presented.
+fn play<V: View>(a: &mut App<V>) -> u32 {
+    let mut n = 0;
+    while a.animating() && n < 600 {
+        a.tick(1.0 / 60.0);
+        a.frame();
+        n += 1;
+    }
+    n
+}
+
+/// Present `n` frames at 60 Hz.
+fn frames<V: View>(a: &mut App<V>, n: u32) {
+    for _ in 0..n {
+        a.tick(1.0 / 60.0);
+        a.frame();
+    }
+}
+
 // =============================================================================== 1 search
 
 fn search_snap(v: &p01::Search) -> p01::Search {
@@ -562,13 +586,26 @@ fn p07_the_old_screen_stays_until_the_new_one_is_ready() {
     server::answer("inbox", "", vec!["mail 1".to_string(), "mail 2".to_string()]);
     settle(&mut a);
     assert!(has(&a, "mail 2"));
+    play(&mut a);
     oracle(&mut a, "inbox", mail_snap);
     act(&mut a, |v| v.go(p07::Route::Thread(7)));
     assert!(has(&a, "mail 2") && a.owner.route.pending(), "the inbox stays while the thread loads");
     oracle(&mut a, "loading thread", mail_snap);
     server::answer("thread", "7", vec!["msg a".to_string()]);
     settle(&mut a);
-    assert!(has(&a, "msg a") && !has(&a, "mail 2"), "{:?}", texts(&a));
+    // the release starts the cross-fade: both screens are drawn, the old one opaque, the new one transparent
+    assert!(has(&a, "msg a") && has(&a, "mail 2"), "{:?}", texts(&a));
+    assert_eq!((alpha(&a, "mail 2"), alpha(&a, "msg a")), (Some(255), Some(0)));
+    let (walks, steps) = (a.rt.switches.walks, a.rt.switches.steps);
+    frames(&mut a, 7);
+    let (old, new) = (alpha(&a, "mail 2").unwrap(), alpha(&a, "msg a").unwrap());
+    assert!(old < 255 && new > 0 && old + new > 200, "mid-fade: old {old}, new {new}");
+    assert_eq!(a.rt.switches.walks, walks, "no description while it plays");
+    let n = play(&mut a);
+    assert!(n >= 7 && a.rt.switches.steps > steps);
+    assert_eq!(a.rt.switches.walks, walks + 1, "one description at the end (it removes the old screen)");
+    assert!(has(&a, "msg a") && !has(&a, "mail 2") && alpha(&a, "msg a") == Some(255), "{:?}", texts(&a));
+    assert_eq!(a.rt.switches.leaving(), 0);
     oracle(&mut a, "thread", mail_snap);
     // Settings, then Inbox before Settings arrives: Settings is dropped
     act(&mut a, |v| v.go(p07::Route::Prefs));
@@ -577,6 +614,7 @@ fn p07_the_old_screen_stays_until_the_new_one_is_ready() {
     assert!(has(&a, "msg a"));
     server::answer("inbox", "", vec!["mail 3".to_string()]);
     settle(&mut a);
+    play(&mut a);
     assert!(has(&a, "mail 3") && !has(&a, "msg a"));
     oracle(&mut a, "inbox again", mail_snap);
 }
@@ -791,4 +829,190 @@ fn p09b_errors_reach_the_boundary_and_retry_remounts() {
     server::answer("try_user", "1", Ok::<_, api::Error>(api::User { id: 1, name: "Ada".into() }));
     settle(&mut a);
     assert!(has(&a, "Ada (#1)") && !has(&a, "Retry"), "{:?}", texts(&a));
+}
+
+// =============================================================================== 13 skeleton morph, 14 interrupted slide
+
+#[test]
+fn p13_the_skeleton_morphs_into_the_content() {
+    let mut a = start(p13::Card::new(1));
+    let grey = |a: &App<p13::Card>| a.reflect_records().iter().filter(|r| r.color == Some(0xffeae6e3) || r.color == Some(0xffe3e6ea)).count();
+    let g0 = grey(&a);
+    assert!(g0 >= 3, "three placeholders: {g0}");
+    server::answer("profile", "1", (api::User { id: 1, name: "Ada".into() }, vec!["Writes".to_string(), "notes".to_string()]));
+    settle(&mut a);
+    assert!(has(&a, "Ada") && grey(&a) == g0, "both states are drawn: {:?}", texts(&a));
+    let walks = a.rt.switches.walks;
+    // first frame: the content parts sit on their placeholders' boxes (the name is scaled to the bar's)
+    frames(&mut a, 1);
+    let name = a.rt.switches.tag_shown(2).expect("the name has a morph track");
+    assert!((name[0] - 1.0).abs() > 0.05 || name[2].abs() > 0.5 || name[3].abs() > 0.5, "the name starts on the bar: {name:?}");
+    frames(&mut a, 8);
+    let mid = a.rt.switches.tag_shown(2).unwrap();
+    assert!((mid[0] - 1.0).abs() < (name[0] - 1.0).abs() + 1e-6 && mid[2].abs() <= name[2].abs() + 1e-3, "it moves toward its own box: {name:?} -> {mid:?}");
+    assert_eq!(a.rt.switches.walks, walks, "no description while it plays");
+    play(&mut a);
+    assert_eq!(a.rt.switches.walks, walks + 1);
+    assert_eq!(grey(&a), 0, "the placeholders are released at the end");
+    assert!(has(&a, "Ada") && alpha(&a, "Ada") == Some(255));
+    assert_eq!(a.rt.switches.leaving(), 0);
+}
+
+#[test]
+fn p14_an_interrupted_slide_reverses_from_where_it_is() {
+    let mut a = start(p14::Tabs::new());
+    server::answer("thread", "1", vec!["inbox 1".to_string(), "inbox 2".to_string()]);
+    settle(&mut a);
+    play(&mut a);
+    assert!(has(&a, "inbox 2"));
+    // Sent: held until its page arrives, then the slide starts
+    act(&mut a, |v| v.go(p14::Tab::Sent));
+    assert!(has(&a, "inbox 2") && !has(&a, "sent 1") && a.rt.switches.leaving() == 0, "held: {:?}", texts(&a));
+    server::answer("thread", "2", vec!["sent 1".to_string()]);
+    settle(&mut a);
+    assert!(has(&a, "inbox 2") && has(&a, "sent 1") && a.rt.switches.leaving() == 1);
+    frames(&mut a, 7);
+    let before = a.rt.switches.slide_shown();
+    assert_eq!(before.len(), 2, "{before:?}");
+    assert!(before[0] > 0.0 && before[1] < 0.0, "Sent comes in from the right, Inbox goes left: {before:?}");
+    let a_inbox = alpha(&a, "inbox 2").unwrap();
+    // 120 ms in, back to Inbox: it is revived (not mounted again) and the slide reverses from where it is
+    let walks = a.rt.switches.walks;
+    act(&mut a, |v| v.go(p14::Tab::Inbox));
+    assert_eq!(a.rt.switches.walks, walks + 1);
+    let after = a.rt.switches.slide_shown();
+    assert_eq!(after.len(), 2, "{after:?}");
+    // the revived Inbox continues from its offset, Sent from its own: no jump
+    assert!(after.iter().any(|x| (x - before[1]).abs() < 1e-3) && after.iter().any(|x| (x - before[0]).abs() < 1e-3), "{before:?} -> {after:?}");
+    assert_eq!(alpha(&a, "inbox 2"), Some(a_inbox), "its alpha continues too");
+    assert_eq!(server::history("thread").iter().filter(|c| c.0 == "1").count(), 1, "Inbox was not loaded again");
+    frames(&mut a, 3);
+    let later = a.rt.switches.slide_shown();
+    assert!(later.iter().any(|x| *x > before[0]), "Sent goes back out to the right: {later:?}");
+    play(&mut a);
+    assert!(has(&a, "inbox 2") && !has(&a, "sent 1") && alpha(&a, "inbox 2") == Some(255), "{:?}", texts(&a));
+    assert_eq!(a.rt.switches.leaving(), 0);
+}
+
+// ------------------------------------------------------------------------------- the same, drawn by the GPU
+
+/// The first differing pixels of two BGRA frames `w` px wide (empty: identical).
+fn pixel_diff(a: &[u8], b: &[u8], w: usize) -> Vec<(usize, usize)> {
+    a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate().filter(|(_, (x, y))| x != y).take(4).map(|(i, _)| (i % w, i / w)).collect()
+}
+
+/// Play the transition on the GPU: every presented frame (drawn from its damage) equals a full redraw of the same
+/// state, and the frames in between differ from both ends. Returns the frames presented.
+fn play_drawn<V: View>(a: &mut App<V>, what: &str) -> usize {
+    let first = a.presented_pixels();
+    let mut shots = vec![first];
+    let mut n = 0;
+    while a.animating() && n < 600 {
+        a.tick(1.0 / 60.0);
+        a.frame();
+        let p = a.presented_pixels();
+        let d = pixel_diff(&p, &a.reference_pixels(), 480);
+        assert!(d.is_empty(), "{what}: frame {n} differs from a full redraw at {d:?} (damage missed)");
+        shots.push(p);
+        n += 1;
+    }
+    let (s0, s1, mid) = (&shots[0], &shots[shots.len() - 1], &shots[shots.len() / 2]);
+    assert!(s0 != s1, "{what}: the transition changed the screen");
+    assert!(mid != s0 && mid != s1, "{what}: a frame in between shows neither end");
+    n
+}
+
+fn start_gpu<V: View>(v: V) -> App<V> {
+    server::reset();
+    let mut a = App::new(v, cfg(), true);
+    a.use_fake_clock();
+    a.frame();
+    a
+}
+
+#[test]
+fn transitions_drawn_by_the_gpu_repair_exactly() {
+    // p07: a cross-fade
+    let mut a = start_gpu(p07::Mail::new());
+    server::answer("inbox", "", vec!["mail 1".to_string(), "mail 2".to_string()]);
+    settle(&mut a);
+    play(&mut a);
+    act(&mut a, |v| v.go(p07::Route::Thread(7)));
+    server::answer("thread", "7", vec!["msg a".to_string()]);
+    settle(&mut a);
+    assert!(play_drawn(&mut a, "p07 crossfade") >= 10);
+    // p13: the skeleton's parts move and scale onto the content's (transformed spaces)
+    let mut a = start_gpu(p13::Card::new(1));
+    server::answer("profile", "1", (api::User { id: 1, name: "Ada".into() }, vec!["Writes".to_string(), "notes".to_string()]));
+    settle(&mut a);
+    assert!(play_drawn(&mut a, "p13 morph") >= 10);
+    // p14: a slide, interrupted and reversed
+    let mut a = start_gpu(p14::Tabs::new());
+    server::answer("thread", "1", vec!["inbox 1".to_string(), "inbox 2".to_string()]);
+    settle(&mut a);
+    play(&mut a);
+    act(&mut a, |v| v.go(p14::Tab::Sent));
+    server::answer("thread", "2", vec!["sent 1".to_string()]);
+    settle(&mut a);
+    for i in 0..7 {
+        a.tick(1.0 / 60.0);
+        a.frame();
+        let p = a.presented_pixels();
+        let d = pixel_diff(&p, &a.reference_pixels(), 480);
+        assert!(d.is_empty(), "p14 slide frame {i}: {d:?} shown {:?}", a.rt.switches.slide_shown());
+    }
+    act(&mut a, |v| v.go(p14::Tab::Inbox));
+    let p = a.presented_pixels();
+    assert!(pixel_diff(&p, &a.reference_pixels(), 480).is_empty(), "p14 at the reversal");
+    assert!(play_drawn(&mut a, "p14 reversed slide") >= 10);
+}
+
+mod mover {
+    //! A tagged box that moves far between the two arms of a morph: the path it travels is damaged by its affine
+    //! alone (neither end's alpha covers it).
+    use bough::prelude::*;
+    pub struct Mover {
+        pub right: Signal<bool>,
+    }
+    const BLUE: Color = rgb(0x2f6bff);
+    impl View for Mover {
+        fn view(&self) -> impl Element<Self> + '_ {
+            div().p(8.0).child(morph(
+                Curve::linear(0.3),
+                if *self.right {
+                    Arm2::B(div().layout(Flex::row()).child((block(300.0, 10.0), block(40.0, 40.0).bg(BLUE).rounded(8.0).tag(1))))
+                } else {
+                    Arm2::A(div().layout(Flex::row()).child((block(40.0, 40.0).bg(BLUE).rounded(8.0).tag(1),)))
+                },
+            ))
+        }
+    }
+}
+
+#[test]
+fn a_morph_moves_a_part_and_damages_its_path() {
+    let mut a = start_gpu(mover::Mover { right: Signal::new(false) });
+    let px = |p: &[u8], x: usize, y: usize| -> [u8; 4] { p[(y * 480 + x) * 4..][..4].try_into().unwrap() };
+    let bg = px(&a.presented_pixels(), 240, 300);
+    // the path's middle: empty at both ends
+    let (mx, my) = (8 + 150 + 20, 8 + 20);
+    assert_eq!(px(&a.presented_pixels(), mx, my), bg);
+    act(&mut a, |v| *v.right = true);
+    let mut seen = 0;
+    for i in 0..18 {
+        a.tick(1.0 / 60.0);
+        a.frame();
+        let p = a.presented_pixels();
+        let d = pixel_diff(&p, &a.reference_pixels(), 480);
+        assert!(d.is_empty(), "frame {i}: {d:?} (damage missed)");
+        if px(&p, mx, my) != bg {
+            seen += 1;
+        }
+    }
+    assert!(seen >= 3, "the box passed through the middle of its path ({seen} frames)");
+    play(&mut a);
+    let p = a.presented_pixels();
+    assert_eq!(px(&p, mx, my), bg);
+    assert_ne!(px(&p, 8 + 300 + 20, 8 + 20), bg, "it rests at its own box");
+    assert_eq!(a.rt.switches.leaving(), 0);
 }

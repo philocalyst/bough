@@ -38,8 +38,6 @@ pub struct Asks {
     pub inert: bool,
     /// This runtime's identity in the thread's pre-image table.
     pub(crate) id: u64,
-    /// A pre-image may have been kept this turn (set by settle from the write log).
-    pub(crate) kept_turn: bool,
     /// Scratch for the engine's decisions (kept across turns: applying them allocates nothing).
     scratch: [Vec<usize>; 3],
     /// `catch` boundaries (`catch.rs`), the ones open while mounting, and per question the boundary it raises to.
@@ -57,7 +55,7 @@ fn next_id() -> u64 {
 
 impl Default for Asks {
     fn default() -> Self {
-        Asks { engine: Engine::new(), q_cells: Vec::new(), cells: HashMap::default(), acts: Vec::new(), fake: None, start: Instant::now(), inert: false, id: next_id(), kept_turn: false, scratch: Default::default(), catches: Vec::new(), catching: Vec::new(), q_catch: Vec::new(), overlaid: Vec::new() }
+        Asks { engine: Engine::new(), q_cells: Vec::new(), cells: HashMap::default(), acts: Vec::new(), fake: None, start: Instant::now(), inert: false, id: next_id(), scratch: Default::default(), catches: Vec::new(), catching: Vec::new(), q_catch: Vec::new(), overlaid: Vec::new() }
     }
 }
 
@@ -175,26 +173,38 @@ impl Rt {
     pub(crate) unsafe fn pump_async(&mut self, root: *const u8) -> bool {
         let mut any = false;
         for _ in 0..1024 {
-            match self.asks.engine.step() {
+            let st = self.asks.engine.step();
+            crate::phase::mark("pump: engine step (land)");
+            match st {
                 Step::Idle => return any,
                 Step::Landed => {
                     any = true;
                     self.take_raised();
                     self.apply_async();
+                    crate::phase::mark("pump: apply");
                     unsafe { self.settle_async(root) };
+                    crate::phase::mark("pump: settle");
                 }
                 Step::Committing(p) => {
                     any = true;
                     self.take_raised();
                     self.apply_async();
+                    crate::phase::mark("pump: apply");
                     unsafe { self.settle_async(root) };
+                    crate::phase::mark("pump: settle");
                     while self.asks.engine.end_commit(p) {
+                        crate::phase::mark("pump: end commit");
                         self.take_raised();
                         self.apply_async();
+                        crate::phase::mark("pump: apply (release)");
                         unsafe { self.settle_async(root) };
+                        crate::phase::mark("pump: settle (released sinks)");
                     }
+                    crate::phase::mark("pump: end commit");
                     self.apply_async();
+                    crate::phase::mark("pump: apply (release)");
                     unsafe { self.settle_async(root) };
+                    crate::phase::mark("pump: settle (released sinks)");
                 }
             }
         }
@@ -212,8 +222,11 @@ impl Rt {
             return false;
         }
         let now = self.asks.now();
-        if self.asks.engine.poll(now) {
+        let ready = self.asks.engine.poll(now);
+        crate::phase::mark("admit: poll the rung flights");
+        if ready {
             self.apply_async();
+            crate::phase::mark("admit: apply status");
             return unsafe { self.pump_async(root) };
         }
         self.apply_async();
@@ -238,6 +251,7 @@ impl Rt {
             return false;
         }
         self.asks.engine.close_group();
+        crate::phase::mark("finish: close group (asks start, first polls)");
         if !self.asks.engine.has_work() {
             return false;
         }

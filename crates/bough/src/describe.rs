@@ -24,6 +24,28 @@ pub struct DynItem {
     pub tape: Vec<u32>,
     /// Its seal in the part's arena (`seal.rs`): offset and length; length 0 = none yet.
     pub seal: (u32, u32),
+    /// Records of items leaving its slot under a switch (`switch.rs`), before and after its own; 0 elsewhere.
+    pub lead: u32,
+    pub trail: u32,
+    /// Its switch effects (`switch.rs`: its own space, its tags), or `NONE`.
+    pub fx: u32,
+}
+
+impl DynItem {
+    pub(crate) fn empty(key: u64) -> DynItem {
+        DynItem { key, nrec: 0, nkid: 0, scope: Scope::default(), tape: Vec::new(), seal: (0, 0), lead: 0, trail: 0, fx: NONE }
+    }
+    /// Records of its slot: its own and those of the items leaving it.
+    #[inline(always)]
+    pub(crate) fn slot(&self) -> usize {
+        (self.lead + self.nrec + self.trail) as usize
+    }
+}
+
+impl Seals {
+    pub(crate) fn note_dead(&mut self, n: u32) {
+        self.dead += n;
+    }
 }
 
 /// The seals of one dynamic part's items, contiguous in item order as far as updates allow.
@@ -84,13 +106,24 @@ impl Rt {
     pub(crate) fn release_dyn(&mut self, d: u32) {
         let items = std::mem::take(&mut self.dyns.parts[d as usize]);
         self.dyns.seals[d as usize] = Seals::default();
+        if self.switches.any() {
+            crate::switch::drop_part(self, d);
+        }
         for it in items {
-            self.release_scope(it.scope);
+            self.release_item(it);
         }
         self.dyns.free.push(d);
     }
 
-    fn queue_container(&mut self, lid: u32) {
+    /// Release an item: what it owns, and its switch effects.
+    pub(crate) fn release_item(&mut self, it: DynItem) {
+        if it.fx != NONE {
+            crate::switch::free_fx(self, it.fx);
+        }
+        self.release_scope(it.scope);
+    }
+
+    pub(crate) fn queue_container(&mut self, lid: u32) {
         if lid == NONE {
             return;
         }
@@ -122,6 +155,8 @@ impl Rt {
 /// Mount the items of a dynamic part. A fixed owner mounts them inline (no tape, no per-item scope); a
 /// re-describing one gives each item its own scope and tape and records the part on the owner's tape.
 pub(crate) fn mount_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl Iterator<Item = E>) {
+    // a switch around this part (`switch.rs`): its items are mounted with their effects; parts nested in them are not
+    let sw = m.rt.switching.take();
     if !m.taping() {
         for e in items {
             e.mount(m);
@@ -134,7 +169,10 @@ pub(crate) fn mount_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl It
     let mut out = Vec::new();
     for e in items {
         let key = e.dyn_key();
-        let mut it = mount_item(m, e, None);
+        let mut it = match sw {
+            Some(s) => crate::switch::mount_item_fx(m, s, e, None),
+            None => mount_item(m, e, None),
+        };
         it.key = key;
         out.push(it);
     }
@@ -143,7 +181,7 @@ pub(crate) fn mount_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl It
 
 /// Mount one item. `into`: a separate records buffer (an item added by a re-description, inserted at
 /// `m.pos` afterwards); `None`: the mounter's own buffer (a first mount).
-fn mount_item<V, E: Element<V>>(m: &mut Mounter<'_, V>, e: E, into: Option<&mut Vec<RecordInit>>) -> DynItem {
+pub(crate) fn mount_item<V, E: Element<V>>(m: &mut Mounter<'_, V>, e: E, into: Option<&mut Vec<RecordInit>>) -> DynItem {
     let mut scope = Scope::default();
     let mut tape = Vec::new();
     let lid = m.rt.lay.cur;
@@ -165,13 +203,19 @@ fn mount_item<V, E: Element<V>>(m: &mut Mounter<'_, V>, e: E, into: Option<&mut 
         }
     };
     let nkid = if lid == NONE { 0 } else { m.rt.lay.eng.kid_count(lid) - k0 };
-    DynItem { key: 0, nrec: nrec as u32, nkid: nkid as u32, scope, tape, seal: (0, 0) }
+    DynItem { key: 0, nrec: nrec as u32, nkid: nkid as u32, scope, tape, seal: (0, 0), lead: 0, trail: 0, fx: NONE }
 }
 
 /// Re-describe a dynamic part: item `k` updates retained item `k`, new items are mounted as one run at the
 /// end of the part, surplus items are removed as one run.
 pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl Iterator<Item = E>) {
+    let sw = m.rt.switching.take();
     let d = m.tape_next();
+    // items of this part with leaving items in their slots (`switch.rs`): no shift detection, expiry first
+    let fading = m.rt.switches.any() && crate::switch::has_part(m.rt, d);
+    if sw.is_some() {
+        m.rt.switches.walks += 1;
+    }
     let mut old = std::mem::take(&mut m.rt.dyns.parts[d as usize]);
     let mut seals = std::mem::take(&mut m.rt.dyns.seals[d as usize]);
     let mut scratch: Vec<u8> = Vec::new();
@@ -185,10 +229,17 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
     // one item of look-ahead (insertion detection below)
     let mut pending: Option<E> = None;
     while let Some(e) = pending.take().or_else(|| items.next()) {
-        if k < old.len() && old[k].key != e.dyn_key() {
+        if fading && k < old.len() {
+            crate::switch::expire(m, d, k as u32, &mut old[k], lid);
+        }
+        if k < old.len() && old[k].key != e.dyn_key() && let Some(s) = sw {
+            // under a switch: the item leaves (or a leaving one with this key comes back) with a transition
+            let key = e.dyn_key();
+            crate::switch::replace(m, s, d, k as u32, &mut old[k], &mut seals, e, key, lid);
+        } else if k < old.len() && old[k].key != e.dyn_key() {
             // a keyed item that changed identity: replaced in place (its run out, the new one in)
             let key = e.dyn_key();
-            let gone = std::mem::replace(&mut old[k], DynItem { key, nrec: 0, nkid: 0, scope: Scope::default(), tape: Vec::new(), seal: (0, 0) });
+            let gone = std::mem::replace(&mut old[k], DynItem::empty(key));
             seals.dead += gone.seal.1;
             if lid != NONE && gone.nkid > 0 {
                 for i in 0..gone.nkid as usize {
@@ -197,8 +248,11 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
                 }
                 m.rt.lay.eng.splice_kids(&m.rt.bough, lid, m.kid, gone.nkid as usize, &[]);
             }
-            m.rt.bough.remove_run(m.pos, gone.nrec as usize);
-            m.rt.release_scope(gone.scope);
+            m.rt.bough.remove_run(m.pos, gone.slot());
+            if gone.lead + gone.trail != 0 {
+                crate::switch::drop_item(m.rt, d, k as u32);
+            }
+            m.rt.release_item(gone);
             let mut buf = Vec::new();
             let mut it = mount_item(m, e, Some(&mut buf));
             it.key = key;
@@ -215,7 +269,7 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
             let (same, shape) = sealed_as(&old[k], &e, &seals, &m.rt.lay.descs, cx);
             if same {
                 // described exactly as before, in the same context: its records stand
-                m.pos += old[k].nrec as usize;
+                m.pos += old[k].slot();
                 m.kid += old[k].nkid as usize;
                 k += 1;
                 continue;
@@ -229,12 +283,12 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
             // is a write, not a reason to reshape a row's text). Seals are the operands themselves, so the
             // match is exact, and only items that seal (no state of their own) can match: after the splice
             // the item is updated the ordinary way, which leaves what a fresh mount would.
-            if !shape && old[k].seal.1 != 0 {
+            if !shape && old[k].seal.1 != 0 && !fading {
                 if k + 1 < old.len() && sealed_as(&old[k + 1], &e, &seals, &m.rt.lay.descs, cx).1 {
                     let gone = old.remove(k);
                     seals.dead += gone.seal.1;
                     remove_items(m, lid, gone.nrec as usize, gone.nkid as usize);
-                    m.rt.release_scope(gone.scope);
+                    m.rt.release_item(gone);
                     pending = Some(e); // against the retained item now at `k`
                     continue;
                 }
@@ -274,6 +328,7 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
                     scratch.clear();
                 }
             }
+            m.pos += it.lead as usize;
             let (p0, k0) = (m.pos, m.kid);
             let recs: *mut Vec<RecordInit> = m.recs;
             {
@@ -287,6 +342,13 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
             }
             it.nrec = (m.pos - p0) as u32;
             it.nkid = (m.kid - k0) as u32;
+            m.pos += it.trail as usize;
+            if it.fx != NONE {
+                crate::switch::resized(m.rt, it.fx, it.nrec);
+            }
+            if fading {
+                crate::switch::reapply(m.rt, d, k as u32);
+            }
             if !seals.refused {
                 if scratch.len() <= it.seal.1 as usize {
                     // fits where the old one was
@@ -306,7 +368,10 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
                 fresh_kid.set(m.kid);
             }
             let key = e.dyn_key();
-            let mut it = mount_item(m, e, Some(&mut fresh));
+            let mut it = match sw {
+                Some(s) => crate::switch::mount_item_fx(m, s, e, Some(&mut fresh)),
+                None => mount_item(m, e, Some(&mut fresh)),
+            };
             it.key = key;
             added.push(it);
         }
@@ -323,11 +388,35 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
         }
         m.pos += fresh.len();
         m.kid += nkid;
+        if let Some(s) = sw {
+            // items that appear under a switch come in with its transition
+            let k0 = old.len() as u32;
+            for (i, it) in added.iter().enumerate() {
+                crate::switch::enter(m.rt, s, d, k0 + i as u32, it, lid);
+            }
+        }
         old.extend(added);
+    } else if k < old.len() && let Some(s) = sw {
+        // items no longer described leave with the switch's transition: each stays as an empty item holding its
+        // leaving records (a ghost) until the transition ends; ghosts whose transition ended go
+        let mut j = k;
+        while j < old.len() {
+            if fading {
+                crate::switch::expire(m, d, j as u32, &mut old[j], lid);
+            }
+            if old[j].key == crate::switch::GHOST && old[j].slot() == 0 {
+                let g = old.remove(j);
+                m.rt.release_item(g);
+                crate::switch::shift_items(m.rt, d, j as u32);
+                continue;
+            }
+            crate::switch::vanish(m, s, d, j as u32, &mut old[j], &mut seals, lid);
+            j += 1;
+        }
     } else if k < old.len() {
         let gone: Vec<DynItem> = old.drain(k..).collect();
         seals.dead += gone.iter().map(|i| i.seal.1).sum::<u32>();
-        let nrec: usize = gone.iter().map(|i| i.nrec as usize).sum();
+        let nrec: usize = gone.iter().map(|i| i.slot()).sum();
         let nkid: usize = gone.iter().map(|i| i.nkid as usize).sum();
         if lid != NONE && nkid > 0 {
             for i in 0..nkid {
@@ -338,8 +427,11 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
             m.rt.queue_container(lid);
         }
         m.rt.bough.remove_run(m.pos, nrec);
-        for it in gone {
-            m.rt.release_scope(it.scope);
+        for (i, it) in gone.into_iter().enumerate() {
+            if it.lead + it.trail != 0 {
+                crate::switch::drop_item(m.rt, d, (k + i) as u32);
+            }
+            m.rt.release_item(it);
         }
     }
     if seals.dead as usize > seals.bytes.len() / 2 && seals.dead > 4096 {
