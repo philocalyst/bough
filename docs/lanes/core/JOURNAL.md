@@ -674,3 +674,33 @@ cells touches about 210 MiB for the first time (zero-fill faults). So the mount 
 this order: **layout (about half), memory touched (a fifth to a third at scale, and the source of the
 run-to-run spread), labels (an eighth)**. Element storage, records and wires, which is what a template and a
 shared page image address, are about a seventh.
+
+## Handed to the layout lane (not measured by this lane beyond what is said)
+
+**The sheet's resize steps at 14x (bench E6).** Not investigated with a build; what the numbers already say:
+the two expensive steps of the 24-step sweep are step 7 (window 1184 -> 1115 points wide) and step 18
+(1115 -> 1184). The sheet's content is 56 + 10 x 110 = 1,156 points wide, and those are exactly the two steps
+that cross it. Narrower than the content, the rows' cells (fixed `w`, default `flex-shrink: 1`) start to
+shrink; wider, they return to their width. So a first hypothesis is that the 14x steps are every cell changing
+size once, at about 16.7 K instructions per cell, which is the cost of laying a cell out cold with its label
+measured again. It does not explain why the steps *between* 7 and 18, where the width keeps changing below
+the content's, cost only 22 M (steps 13 to 22): if cells shrank continuously those would be expensive too. So
+either the cells stop at a minimum after the first shrink, or the crossing changes the sizing mode the
+engine's per-node cache is keyed by (definite against max-content) and what is expensive is the cache being
+refilled once. One run with the engine's cache hit counters at steps 6, 7, 8 separates the two. The ordinary
+step (22 M to 36 M at 30,000 cells, about 1 K per cell) is every row being re-run because a stretched row's
+own width follows the window, although nothing inside a row changes.
+
+**The string write that grows with rows** (6,700 at 1 to 64 rows, 10,000 at 256; bench E4). From the code
+(`Rt::lay_text_changed`): a label whose box is sized by its text and whose width changed is restyled, which
+invalidates it and queues its root; the engine then marks up through the row (fixed size, but not a layout
+boundary to a CSS engine) and re-runs the root column over all its cached children, a per-child cost the store
+lane measured at about 58 instructions. 256 rows x ~13 extra instructions per row is the growth. The number
+write does not grow because its label keeps its width (tabular digits) or has an explicit one. The fix is the
+layout lane's overflow cut (a definite-size box stops the mark), which is on `lane/layout/round6`.
+
+**The layout half of mount.** 11,300 instructions per sheet cell of 21,000 are the engine's cold pass over two
+nodes per cell (4,700 a node). The sheet's rows are identical in everything a layout reads except the measured
+width of each number, and with tabular digits there are a handful of those. A memo inside the engine's
+per-node compute, keyed by the subtree's style ids and leaf sizes plus the inputs the parent passes, hits at
+the level of the cell; the row's own algorithm still runs over twelve cached children.
