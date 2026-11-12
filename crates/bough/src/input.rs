@@ -978,6 +978,11 @@ impl<V: View> App<V> {
 
     /// Settle what routes queued and lay out what changed (the end of an input turn).
     fn settle_input(&mut self) {
+        self.settle_input_once();
+        self.rehover();
+    }
+
+    fn settle_input_once(&mut self) {
         let owner = &mut *self.owner as *mut V as *const u8;
         // SAFETY: the owner is the mounted view (uniquely borrowed: list patches write their cell); every
         // wire was installed from a `sig!` proof for it.
@@ -987,6 +992,27 @@ impl<V: View> App<V> {
         self.redescribe();
         self.rt.lay_flush();
         self.sync_ring();
+    }
+
+    /// Hover is a function of (pointer, tree), not of the last pointer event: after a turn that moved or
+    /// changed records under a still pointer (a scroll, a glide, a list edit, a timer's turn), the chain is
+    /// derived again at the pointer. The hit cell's cache answers in one compare when nothing under the pointer
+    /// changed (`Bough::cell_valid`); a crossing runs the hover routes and settles once more. Not while a drag
+    /// holds the pointer (capture: no hit test). (round 7, platform lane; generalization OVERFIT 8: the row
+    /// that was under the pointer stayed highlighted after a scroll.)
+    pub(crate) fn rehover(&mut self) {
+        let Some((px, py)) = self.rt.input.pointer else { return };
+        if self.rt.input.pressed != 0 && self.rt.input.dragging {
+            return;
+        }
+        let s = self.rt.scale;
+        for _ in 0..4 {
+            if !self.update_hover(px, py, px as f32 / s, py as f32 / s) {
+                return;
+            }
+            // the routes that ran may move things again: settle, and look again (bounded)
+            self.settle_input_once();
+        }
     }
 
     #[inline]

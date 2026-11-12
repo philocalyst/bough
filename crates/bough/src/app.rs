@@ -502,6 +502,7 @@ impl<V: View> App<V> {
         self.redescribe();
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
+        self.rehover();
         self.prof.mark(PH_TEXT);
     }
 
@@ -529,6 +530,7 @@ impl<V: View> App<V> {
         self.effects();
         self.redescribe();
         self.rt.lay_flush();
+        self.rehover();
     }
 
     /// A turn with no handler: admit async completions (a committed cohort's wires run in this turn).
