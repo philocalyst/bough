@@ -112,6 +112,18 @@ fn turn_kind(e: &NSEvent) -> u64 {
 #[cfg(feature = "framelog")]
 thread_local! {
     static HARNESS: RefCell<Option<Box<dyn FnOnce(&bough_metal::app::Host)>>> = const { RefCell::new(None) };
+    static EXIT_REPORT: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+/// A harness's exit (feature `framelog`): the exit report of the interactive window's app (`BOUGH_STATS`,
+/// `BOUGH_CHECK`: the surface on screen against a full redraw, `BOUGH_DUMP`) and the frame log.
+#[cfg(feature = "framelog")]
+pub fn harness_exit_report() {
+    EXIT_REPORT.with(|e| {
+        if let Some(f) = e.borrow().as_ref() {
+            f();
+        }
+    });
 }
 
 /// A measurement harness (feature `framelog`): `f` runs once on the main thread when an interactive window
@@ -867,6 +879,14 @@ pub fn run_interactive<V: View>(
             start(host, app.clone());
             #[cfg(feature = "framelog")]
             if let Some(h) = HARNESS.with(|h| h.borrow_mut().take()) {
+                let app = app.clone();
+                EXIT_REPORT.with(|e| {
+                    *e.borrow_mut() = Some(Box::new(move || {
+                        if let Ok(mut a) = app.try_borrow_mut() {
+                            report_exit(&mut a);
+                        }
+                    }))
+                });
                 h(host);
             }
             link.setPaused(true);

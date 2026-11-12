@@ -201,6 +201,11 @@ fn main() {
     let what = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "dashboard".into());
+    // the window: borderless, never key, mouse-transparent and outside every display unless BOUGH_ONSCREEN
+    if std::env::var_os("BOUGH_ONSCREEN").is_none() {
+        // SAFETY: single-threaded here (no other thread exists yet).
+        unsafe { std::env::set_var("BOUGH_OFFSCREEN", "1") };
+    }
     drive::no_app_nap();
     match what.as_str() {
         "dashboard" => {

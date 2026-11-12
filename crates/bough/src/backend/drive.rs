@@ -216,15 +216,12 @@ pub fn no_app_nap() {
     std::mem::forget(token);
 }
 
-/// Float the window above normal windows (it still never becomes key or active): a covered window is
-/// throttled by the window server, which would invalidate the run (the AWAGY harness rejects such runs).
-///
-/// The window also ignores the user's real mouse (click-through): only events posted to this process reach
-/// the app, and the user's pointer passes to whatever is beneath.
+/// Keep the probe's window out of the user's way: borderless, never key, mouse-transparent (`BOUGH_OFFSCREEN`,
+/// set by the probe before the window exists, places it outside every display; see bough-metal `app.rs`). Only
+/// events posted to this process reach the app. Without `BOUGH_OFFSCREEN` the window is only made
+/// mouse-transparent.
 pub fn float(host: &bough_metal::app::Host) {
     host.window.setIgnoresMouseEvents(true);
-    host.window.setLevel(objc2_app_kit::NSFloatingWindowLevel);
-    host.window.orderFrontRegardless();
 }
 
 /// Is any part of the window visible (`NSWindowOcclusionStateVisible`)?
@@ -241,7 +238,8 @@ pub fn exit_after(host: &bough_metal::app::Host, secs: f64) {
     let host = host.clone();
     let blk = RcBlock::new(move |_t: std::ptr::NonNull<NSTimer>| {
         bough_metal::framelog::note(bough_metal::framelog::N_OCCLUSION, visible(&host) as u64, 1);
-        super::host::dump_framelog();
+        // the app's exit report (BOUGH_CHECK: presented == full redraw) and the frame log
+        super::host::harness_exit_report();
         host.close();
         std::process::exit(0);
     });

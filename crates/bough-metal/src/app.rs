@@ -99,17 +99,35 @@ pub fn run_sized(title: &str, w: f64, h: f64, f: impl FnMut(&Host, &CADisplayLin
     let mtm = MainThreadMarker::new().expect("main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory); // no Dock icon, no focus steal
-    let rect = NSRect::new(NSPoint::new(120.0, 120.0), NSSize::new(w, h));
+    // `BOUGH_OFFSCREEN`: measurement windows sit entirely outside every display (beyond the union of all screens'
+    // frames), borderless and mouse-transparent, so a run never covers or takes input from the user's work
+    let offscreen = std::env::var_os("BOUGH_OFFSCREEN").is_some();
+    let origin = if offscreen {
+        let screens = NSScreen::screens(mtm);
+        let (mut x1, mut y1) = (0.0f64, 0.0f64);
+        for s in screens.iter() {
+            let f = s.frame();
+            x1 = x1.max(f.origin.x + f.size.width);
+            y1 = y1.max(f.origin.y + f.size.height);
+        }
+        NSPoint::new(x1 + 400.0, y1 + 400.0)
+    } else {
+        NSPoint::new(120.0, 120.0)
+    };
+    let rect = NSRect::new(origin, NSSize::new(w, h));
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
             rect,
-            if std::env::var_os("BOUGH_BORDERLESS").is_some() { NSWindowStyleMask::Borderless } else { NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable },
+            if offscreen || std::env::var_os("BOUGH_BORDERLESS").is_some() { NSWindowStyleMask::Borderless } else { NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable },
             NSBackingStoreType::Buffered,
             false,
         )
     };
     unsafe { window.setReleasedWhenClosed(false) };
+    if offscreen {
+        window.setIgnoresMouseEvents(true);
+    }
     window.setTitle(&NSString::from_str(title));
     let view = window.contentView().expect("content view");
     let root = CALayer::new();
