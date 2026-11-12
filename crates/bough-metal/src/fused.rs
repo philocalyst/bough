@@ -582,6 +582,31 @@ pub struct Fused {
     /// `BOUGH_AB` set: time the kernels against the oracle's at draws 60, 120 and 180 (`ab_probe`).
     ab: bool,
     ab_draw: u32,
+    /// `BOUGH_LAT[=gap_us]`: every frame's release -> pixels-exist time (measured by spinning on the event's
+    /// value, then an optional pause so the next frame finds the GPU idle, as at a display's cadence).
+    lat: Option<Box<LatLog>>,
+}
+
+/// Release -> done times of the frames drawn (us); prints its percentiles when dropped and every 2,000 frames.
+struct LatLog {
+    us: Vec<f32>,
+    gap: std::time::Duration,
+}
+impl LatLog {
+    fn report(&mut self) {
+        if self.us.is_empty() {
+            return;
+        }
+        let mut v = self.us.clone();
+        v.sort_by(f32::total_cmp);
+        let at = |q: f64| v[((v.len() - 1) as f64 * q).round() as usize];
+        eprintln!("BOUGH_LAT frames={} gap_us={} release_to_done_us p50={:.0} p90={:.0} p99={:.0} max={:.0} mean={:.0}", v.len(), self.gap.as_micros(), at(0.5), at(0.9), at(0.99), at(1.0), v.iter().sum::<f32>() / v.len() as f32);
+    }
+}
+impl Drop for LatLog {
+    fn drop(&mut self) {
+        self.report();
+    }
 }
 
 /// Byte offset of the bind table in the region header (`FBind` in shader.metal).
@@ -781,6 +806,7 @@ impl Fused {
             oracle: None,
             ab: std::env::var_os("BOUGH_AB").is_some(),
             ab_draw: 0,
+            lat: std::env::var("BOUGH_LAT").ok().map(|v| Box::new(LatLog { us: Vec::new(), gap: std::time::Duration::from_micros(v.parse().unwrap_or(0)) })),
         };
         // the residency set is what makes the bind table's resources reachable (encoders bind nothing else)
         {
@@ -1197,7 +1223,11 @@ impl Fused {
             self.ab_probe(target, rows, full, n_dir, copy);
         }
         let (nt, _) = self.write_slot(k, target as u32, rows, full, copy);
+        let t0 = self.lat.is_some().then(std::time::Instant::now);
         self.release(k, nt);
+        if let Some(t0) = t0 {
+            self.lat_frame(t0);
+        }
         if self.publish {
             if PACED {
                 self.pending = Some(target);
@@ -1430,6 +1460,22 @@ impl Fused {
         // SAFETY: as above; the GPU is idle again.
         unsafe { (*(self.pool_ptr as *mut FHdr)).debug = 0 };
         (cmd.GPUEndTime() - cmd.GPUStartTime()) * 1e3 / reps as f64
+    }
+
+    #[cold]
+    fn lat_frame(&mut self, t0: std::time::Instant) {
+        while !self.released_done() {
+            std::hint::spin_loop();
+        }
+        let us = t0.elapsed().as_secs_f32() * 1e6;
+        let l = self.lat.as_mut().unwrap();
+        l.us.push(us);
+        if l.us.len() % 2000 == 0 {
+            l.report();
+        }
+        if !l.gap.is_zero() {
+            std::thread::sleep(l.gap);
+        }
     }
 
     /// Kernel A/B on the frame about to be drawn (`BOUGH_AB`, draws 60 / 120 / 180): the presenter's kernels

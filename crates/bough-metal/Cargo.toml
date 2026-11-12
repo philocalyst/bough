@@ -54,3 +54,5 @@ name = "runs_check"
 name = "wake"
 [[example]]
 name = "fprobe"
+[[example]]
+name = "frameprobe"

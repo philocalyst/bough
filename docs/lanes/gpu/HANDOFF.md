@@ -1,115 +1,262 @@
-# GPU round 6 handoff — 2026-11-11
+# GPU lane handoff, round 6 (2026-11-12, Claude Fable session; replaces the Astra handoff of 2026-11-11)
 
-Stopped at the lead's explicit request, before measurements. **No renderer optimization was implemented, no GPU-time loss was reproduced in this session, and no candidate is gated or accepted.** The research state is **CARD; performance conclusions UNKNOWN**. The original assignment's stop for design review still applies on continuation: collect the decomposition, write `DESIGN-R6.md`, then settle the implementation card with the lead.
+## State
 
-## 1. What is built, and where
+* Branch `lane/gpu/round6` in the lane's worktree. Head: the commit that adds this file (on top of `82b83dd072`).
+  Nothing of this lane is merged into `round6`; nothing was pushed.
+* `82b83dd072` is GATED on this machine by the session that built it (not replayed by anyone else): row
+  certificates for the scroll copy, the survivor-stepped tile loop, 256-entry windows, prefix-expanded bin runs,
+  the original-kernel raster oracle, the kernel A/B probe.
+* The head commit adds measurement tooling only (`examples/frameprobe.rs`, `BOUGH_LAT` in `fused.rs`): the four
+  headless drivers and `micro_bench` build and run with it; **the pixel gates were not rerun after it**.
+* All kernel work is hand-written MSL (`crates/bough-metal/src/shader.metal`). The wgsl-rs kernels
+  (`crates/bough-gpu`) are untouched and still have the round-4 structure. This is against the direction received
+  after the work was done; see "Next".
+* Private state: `runtime/lanes/gpu/STATE.md`; every raw result is under `runtime/lanes/gpu/r/`.
 
-Branch: `lane/gpu/round6`. Code predecessor: `aa9943e7ae50595f6af026773ee82b46a4b85ae0` (round-6 base). Toolchain: nightly-2026-10-17; Cargo reported `1.101.0-nightly (3960fa69b 2026-10-12)`. Builds used `dist`, default features, direct Metal, four jobs, this lane's own targets. Hardware read from the host: Apple M3 Pro, 11 CPU cores, 38,654,705,664 bytes RAM (36 GiB), macOS 15.7.4 / 24G517.
+## Numbers
 
-Public work:
+Machine: M3 Pro, macOS 15.7.4, runtime-compiled MSL, other lanes building throughout. Loads are 1-minute
+averages. Scripts named below live in the ignored `runtime/lanes/gpu/` (they are 30-60 lines each; `ab.py`,
+`e2e.py`, `instr.py`, `lat.py`, `locked.py`); the instruments they drive are committed (`BOUGH_AB`, `BOUGH_LAT`,
+`BOUGH_MSL`, `bench/floor/gputime.c`, `docs/lanes/gpu/tools/instrument.py`).
 
-| Artifact | Purpose / status |
-|---|---|
-| [Frozen card](cards/2026-11-11-r6-decomposition.md) | Frozen before builds; initial commit `0f3f59fd6e`. Later notes are explicitly pre-measurement refinements. |
-| [instrument.py](tools/instrument.py) | Reproducible **measurement-only overlay** on `bough-metal/src/fused.rs`, and on `shader.metal` for counters. Applies to the predecessor, not an already instrumented tree. |
-| [run_measurements.py](tools/run_measurements.py) | Uses the existing `gpu_slope`, `gpu_pairs`, and CPU `slope` implementations. Retains every subprocess result and load snapshot; rejects nonzero exit, missing GPU accounting, and observed compiler/benchmark overlap. Requires the GPU lane to own the measurement lock. |
-| [summarize.py](tools/summarize.py) | Generates path-free CSVs for all pairs, timings, differences, and per-tile distributions. Not exercised on real measurement output. Old counter output without pixel-uniform data is explicitly `not_measured`, never zero. |
-| [lockfile-source.patch](tools/lockfile-source.patch) | Three missing zgx git-source identities needed by the checked-in lockfile. A proposal for coordinator integration, not an edit left in the root lockfile. No version upgrades. |
+### Decomposition before any change (µs per frame, saturated GPU; overlay `tools/instrument.py timing`, 2 runs x 5 alternating cycles, load 26-115; verified by two runs)
 
-Private, ignored artifacts remain under `runtime/lanes/gpu/` in this worktree:
+| cell (tiles repaired) | whole | bin | tile dispatch | pixel writes | scan + stage | shading | scroll copy (write-only / dispatch-only) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| heavy stream 2560x1600 (1120) | 197-204 | 24 | 8 | 41 | 38 | 86 | none |
+| heavy scroll (90) | 75-87 | 15 | 1.5 | 3.5 | 5 | 20-25 | 26-27 (22 / 5) |
+| heavy both (1196) | 272-333 | 25-28 | 7 | 46-60 | 41-43 | 92-112 | 31 (28 / 5) |
+| lab stream 960x720 (156) | 74 | 11.6 | 1.7 | 6.5 | 7.9 | 46 | none |
+| lab scroll (60) | 35.5 | 5.8 | 1.2 | 3.2 | 2.9 | 11.7 | 11.7 (10.3 / 3.1) |
+| lab both (216) | 89-101 | 13-14 | 2.2 | 8.6 | 9.7 | 44-59 | 12.4 (11.0 / 3.1) |
+| animate 1920x1440 (122) | 32-40 | 5 | 2 | 7-13 | 2-5 | 13-28 | none |
+| vlist scroll 1440x1600 (90) | 191-244 | 6-11 | 1.4 | 4-5 | 3-4 | 1-17 | 167-201 (67-77 / 9-11) |
+| vlist fling (105) | 188-213 | 7-12 | 1.4 | 4-6 | 4-5 | 3-14 | 161-167 (66-69 / 8.7) |
+| vlist jump (90) | 197-201 | 8-11 | 1.5 | 4 | 4-5 | 8-15 | 161-166 (68-71 / 8.7) |
 
-- `baseline/`: unchanged `heavy_headless`, `lab_headless`, `animate_headless`, `vlist_headless`, and existing `kernel_bench` binaries.
-- `timing/`: four scene drivers with a diagnostic hook in `Fused::draw`; **the original MSL shader**. At draw calls 60, 120, and 180, the hook invokes `bench_frames` for whole frame, repair without copy, cull/stage without shading, bin only, copy only, and empty dispatches. Five forward/reverse orders, 100 back-to-back repetitions per case. The copy-only case retains the real damaged-row exclusions while dispatching no bin/tile groups. It restores the intended pixels before normal submission.
-- `stats/`: four drivers with the **first counter overlay**. Built, never executed. Counters record row entries scanned, staged hits, alpha-positive sample layers before and after the existing opaque-floor skip, conservative top-solid-cover certification, and valid pixels. Counter runs keep the original accumulator/output code and compare the sampled retained image against a full redraw.
-- **Important version distinction:** the latest `instrument.py` additionally computes actual BGRA-uniform tiles and checks that each conservative certificate implies actual uniform pixels. That refinement was **not built**. The existing `stats/` binaries lack `pixel_uniform`. The planned `stats-v1/` rename/final rebuild never started.
-- `zgx/`: all four pinned competitor drivers: `heavy_headless`, `workload_headless`, `animation_headless`, `vlist_headless`.
-- `zgx-ref/`: scratch checkout at exactly `06debe9df86dbcb0a82d6074d01f98ace98a65b3`; the existing `bench/zgx/vlist_headless.rs` was copied into its examples. The shared reference checkout was not edited. Its current HEAD lacked the pinned object, so the exact commit was fetched into this scratch clone.
-- `original/`: predecessor `fused.rs` and `shader.metal`. Production files were restored and compared byte for byte at handoff.
-- `Cargo.lock`: original checked-in lockfile. `resolved-Cargo.lock`: local build resolution with the three source lines. The root lockfile was restored to the original at handoff.
-- `timing.patch`, `stats.patch`, build/fetch logs, `artifacts-initial.json` (binary SHA-256 inventory), `hardware.txt`, and `font-sha256.txt` preserve provenance. `heavy-disassembly.txt`, `quad_geom.asm`, `paint.asm`, and `apply_bg.asm` preserve assembly inspection. `representation-notes.md` contains earlier private analysis; the substantive findings are expanded below.
-- `STATE.md`: canonical continuation state.
+The inherited "bin scanning is 47-64 % of GPU time" is false on this tree: scan + stage 11-19 %, bin pass 12-16 %,
+shading 44-62 %, and on vlist the scroll copy is 75-85 %. Per-tile counters (overlay `stats`, one run, retained ==
+full redraw asserted): 4-12 % of scanned entries hit (lab stream repair: 173 scanned / 10 hit, median); a global
+last-opaque-cover floor removes 0.00-0.01 layers per pixel beyond the per-batch floor in every cell; whole tiles
+certified uniform in the repair set 0-0.6 % (heavy, lab), 10-54 % (vlist); of the 32x4 px blocks the vlist copy
+moves, 67-79 % are one colour.
 
-The pinned checkout and shared reference DejaVu Sans files are byte-identical: SHA-256 `7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954`.
+### Kernels after / before (`BOUGH_AB=6 <scene>_headless`: kernels vs `oracle.metal` in one process, 100 back-to-back frames, alternating; 3 runs x draws 60/120/180, n = 9, load ~50; pixels identical in every run)
 
-The queued final preparation job was canceled at handoff. **No owned build, benchmark, or lock-wait job should remain. This lane never acquired the measurement lock.** The shared lock was still owned by `core`; it was not changed or removed.
+| cell | after µs | before µs | ratio median [min..max] |
+|---|---:|---:|---|
+| heavy stream | 143.6 | 186.5 | 0.77 [0.77..0.79] |
+| heavy scroll | 53.9 | 66.1 | 0.82 [0.81..0.82] |
+| heavy both | 191.0 | 236.6 | 0.81 [0.80..0.82] |
+| lab stream | 36.1 | 70.8 | 0.51 [0.51..0.51] |
+| lab scroll | 27.6 | 33.2 | 0.83 [0.83..0.88] |
+| lab both | 55.6 | 85.2 | 0.65 [0.65..0.65] |
+| animate | 25.4 | 27.9 | 0.89 [0.86..0.92] |
+| vlist scroll | 82.9 | 188.0 | 0.44 [0.42..0.46] |
+| vlist fling | 81.4 | 185.1 | 0.42 [0.38..0.47] |
+| vlist jump | 79.6 | 183.9 | 0.43 [0.41..0.44] |
+| signal write (`micro_bench` SCENE=state, 2 tiles; 3 runs, load 35) | 16.0 | 17.6 | 0.91 |
 
-## 2. Numbers and verification — exact scope
+Losses inside it: the repair part of some vlist frames is up to 1.17 (short lists pay the 256-window's extra
+barriers); the copy itself is slower on small rects (lab ~9.4 -> 10.4 µs, heavy ~23 -> 29): the new `fs_copy` has
+a floor of ~26-30 ns per tile whatever it skips. lab scroll (0.83) and lab both (0.65) miss the 0.6 target.
 
-There are **no new performance measurements**. The old lab ~2.2×, vlist ~1.6×, 47–64% scan/staging figures, and windowed animate figures remain inherited claims, not this session's results.
+### Process GPU time by slope (`e2e.py`: gputime.dylib, 600 vs 3000 ticks, vlist 3600; 5 interleaved pairs, one run, load 41-44)
 
-| Preregistered cell | GPU slope | Five ABAB pairs against pinned zgx | Kernel split | Tile statistics | R0 / R1 instructions |
-|---|---|---|---|---|---|
-| heavy stream | Not measured | Not measured | Not measured | Not measured | Not measured |
-| heavy scroll | Not measured | Not measured | Not measured | Not measured | Not measured |
-| heavy both | Not measured | Not measured | Not measured | Not measured | Not measured |
-| lab stream | Not measured | Not measured | Not measured | Not measured | Not measured |
-| lab scroll | Not measured | Not measured | Not measured | Not measured | Not measured |
-| lab both | Not measured | Not measured | Not measured | Not measured | Not measured |
-| animate | Not measured | Not measured | Not measured | Not measured | Not measured |
-| vlist scroll | Not measured | Not measured | Not measured | Not measured | Not measured |
-| vlist fling | Not measured | Not measured | Not measured | Not measured | Not measured |
-| vlist jump | Not measured | Not measured | Not measured | Not measured | Not measured |
+After/before in Kcycles: heavy 0.78 / 0.87 / 0.78, lab 0.60 / 0.91 / 0.65, animate 0.93, vlist 0.65 / 0.67 / 0.80
+(spreads up to [0.45..0.97]). **In milliseconds: heavy stream 1.02, heavy both 0.96, lab 0.75 / 0.91 / 0.90, animate
+0.93, vlist 1.03 / 1.03 / 1.10**: the GPU clocks down when it has less to do, so removed cycles do not become
+removed milliseconds end to end.
 
-Build observations, **not benchmark results**: Cargo reported 3m12s for the baseline build, 1m15s for the timing overlay, 1m27s for the first counter overlay, and 8m59s for the successful pinned zgx build. These ran amid other builds and establish neither compile-time performance nor renderer performance. Binary sizes and hashes are preserved privately; no shipping-size comparison was conducted.
+### Latency, release -> pixels exist (`lat.py`: `BOUGH_LAT=<gap_us>`, spin on the event; before = `BOUGH_MSL=oracle.metal`; 3 interleaved runs, one session, load 70-100)
 
-Failures retained:
+Back to back (1,500 frames): p50 after/before 0.69-0.94 on nine cells (heavy scroll 296 -> 203 µs, vlist jump 352
+-> 259, lab stream 206 -> 169, signal 152 -> 143); heavy stream 1.03-1.24 (two sessions disagree: not resolved);
+p99 is 3-20 ms in every cell, before and after: scheduler noise at this load, not kernels.
+At a 4 ms cadence (300 frames): p50 is 460-870 µs for every cell including the 2-tile signal frame (463 before, 470
+after); ratios 0.90-1.02 except vlist 1.07-1.17 (n = 300 x 3, not resolved). **At a display's cadence the round
+trip is the GPU's wake and the driver thread's scheduling; the kernels' cycles are a minor part of it.**
 
-1. Baseline `--locked` build failed because the root lockfile omitted the source identities for `zgx-workload`, `zgx-cosmic-text`, and `zgx-harfrust`.
-2. An attempt to use Cargo's `--lockfile-path` failed: this pinned Cargo does not accept that argument. Local resolution then added only the three git-source lines, and the build passed.
-3. First pinned zgx build, offline, failed on missing `fixed_decimal` registry data. `cargo fetch --locked` filled the cache; the second locked/offline build passed. No dependency upgrades were used as a workaround.
-4. Xcode's Metal compiler was absent. The bough builds used the repository's existing runtime-MSL fallback. Successful Rust builds therefore **do not prove the diagnostic MSL compiles or runs**.
+### CPU (`instr.py`: 600 vs 3600 ticks, median of 5, interleaved, one run)
 
-Checks actually completed: Python syntax compilation of the three tools; `git diff --check`; byte-for-byte restoration checks of the Metal sources; successful baseline/diagnostic/competitor Rust builds. Assembly was inspected from the unchanged heavy binary with `otool`.
+R0 after/before 0.993-1.007 and R1 0.947-1.007 on every non-idle cell (base vs `82b83dd072`'s Rust). The idle cells
+are 200-1,000 instructions per frame with spreads from -22 to 2,767: not resolved. Signal-write frame
+(`micro_bench` SCENE=state, slope OPS 2000 -> 8000, 5 reps): 3.7 K instructions per op at RENDER=0, 107.5 K at
+RENDER=1 (committed build only).
 
-Not run: the full workspace/all-targets check; release crate tests; heavy/lab/animate/blink/micro/vlist/present/gpu_bounds pixel gates; `sabotage_copy`; diagnostic runtime checks; GPU accounting smoke test; any shader counter validation or independent replay. The lead's immediate-stop instruction superseded finishing those tasks, and the shared measurement lock was still occupied. Do not turn these successful builds into a green-gate claim.
+### The frame path, call by call (`cargo build --profile dist -p bough-metal --example frameprobe`; `frameprobe 1500 2000`: one nop-kernel frame every 2 ms; one run per configuration, load 53-77)
 
-## 3. Findings, hypotheses, and my provisional structural judgment
+| mechanism | process instr / frame (the 2 ms sleep's 18 K included) | calling thread, per call | other threads |
+|---|---:|---|---|
+| command buffer + encoder + commit per frame | 189 K | new encoder 17.7 K, commit 11.5 K, dispatch 3.9 K, command buffer 2.8 K, wait 2.6 K | two driver threads, 70 K + 62 K |
+| the presenter's stream (16 armed ahead, event-released, signal per frame) | 109 K | **new compute encoder 16.6 K**, `setSignaledValue` 5.9 K, dispatch 3.0 K, encodeSignal 2.5 K, encodeWait 0.6 K, endEncoding 0.55 K, setPSO 0.14 K, setBuffer 0.13 K, command buffer + commit 0.3 K amortised | one driver thread, 56 K |
+| the same without the per-frame signal (completion read from a word the kernel writes) | 91 K | as above without encodeSignal | 38.7 K |
 
-**The first distinction is locality versus reuse.** `fs_bin` builds one list per damaged tile row. `fs_tile` then scans that same list independently for every damaged tile in the row. Retaining an unchanged *row* list removes its construction, but leaves the repeated scan intact. If the inherited decomposition holds, the principal win requires finer spatial selectivity, regardless of whether the lists are persistent. Do not label all of the earlier 47–64% figure “the bin kernel”; much of it was inside the tile kernel.
+So an on-demand frame costs ~72-90 K instructions whatever it draws: ~39 K is the driver's segment submission when
+the event is released, ~17 K the driver's handling of the completion signal, 16.6 K creating the compute encoder
+(one per frame, because an event wait is a command-buffer operation and cannot sit inside an encoder), ~6 K the
+release. The real signal frame (104 K above RENDER=0) is ~14 K above that floor. Back to back, awaiting the
+previous frame by yielding on the memory word instead of the event cost 700 K per frame (rejected as a wait).
 
-**My provisional first implementation experiment is stable, parallel 2D binning on the GPU, with no CPU membership maintenance.** This is a sequencing judgment from source and inherited evidence, not a measured selection. It preserves the mutation path and attacks the repeated scan directly. I would start with an explicit ordered-entry contract and measure tile versus small column-chunk bins. Each expanded entry has its current paint ordinal; each destination receives a stable subsequence of those ordinals. Count/prefix/scatter must preserve that order. An atomic append that happens to finish in a different order is incorrect, even when every entry appears exactly once.
+### Gates and negative controls of `82b83dd072` (one run each)
 
-A straightforward reference implementation can derive the 2D lists from the existing row-bin output. That isolates the spatial representation from glyph expansion and transform arithmetic. It also introduces extra passes and temporary storage, which may lose flat scenes. If its cost is too high, the next question is whether ordered block counts/prefixes and scatter can be fused with row-bin production, not whether to resurrect v7's serial scan by one thread per tile. Do not claim this fusion is already designed, free, or built. The flat-cell gate decides whether the extra work is acceptable.
+`cargo test --release -p bough-heavy -p bough-scenes -p bough-vlist`: 31 passed, 1 ignored. With
+`--features bough/sabotage_copy`: 18 failed (all 6 vlist scroll gates). `bough/mutant_cert_skip`: 18 failed;
+`bough/mutant_cert_stale`: 16; `bough/mutant_cert_tile`: 18. Bin mutants as shader variants through the oracle
+probe: items appended in reverse caught on lab, heavy, vlist; one item dropped caught on lab, heavy, animate, not on
+vlist's three sampled frames. `cargo check --workspace --all-targets` passes.
 
-I would **not** commit to “CPU-patched per-world-tile linked lists” as the foundation yet. The promising retained architecture is instead a two-level index: retained page/run-local spatial data, plus a world-space index of page coverage. Query in current paint order; read current paint values through references. That makes whole-page translation potentially cheap without rewriting every glyph entry. But its validity witnesses and ordering costs need to be explicit first. The following are real obligations, not implementation details to wave away:
+## Not verified / known broken
 
-1. **Damage is not membership.** `quad_geom` uses edge-band damage; the rectangle interior can remain occupied while only changed edge bands are marked. OR-ed damage rows also discard the identity of the writer. The mutation site may know old/new ink, but the existing plane is not an invertible record-to-tile journal. CPU patching needs an identity-bearing coverage delta or another authority. It cannot simply consume damage bits and infer entries to remove.
-2. **Paint and coverage have different invalidation laws.** A color-only write need not alter a spatial index. Opacity changes can invalidate opaque/uniform certificates even while membership remains unchanged. Keep references to current paint; either recheck opacity at use or invalidate the certificate. Do not turn every color write into a per-covered-tile update.
-3. **Glyph updates bypass a simple page-version certificate.** `CoreMarks` receives geometric marks from text operations; glyph token and run-window writes can alter coverage without changing a run's outer bounding box or structural page version. `Page::wgen` exists, but it is not by itself a complete generation for every external glyph-pool spatial input. A retained expansion needs a text-specific witness, a complete mutation journal, or conservative rebuild. “Ink unchanged” is not “glyph coverage unchanged.”
-4. **A rank table does not repair list ordering.** After a page splice, looking up a new rank changes how two entries compare; it does not reorder an old linked/contiguous tile list. Per-page buckets with a merge in current directory order can solve this, but the merge must be charged. Alternatives are relinking all affected lists or sorting candidates at query time. A small rank indirection alone is insufficient.
-5. **Page-relative coordinates do not discover a moved page.** Its local bins may remain valid after translation, but a world tile that previously did not intersect it still needs to find it. The outer page-coverage index must change, or queries must traverse a retained hierarchy whose bounds move. Page-local entries are useful only with this second level. Also distinguish the page's ink affine from the space transform used to shade the actual instance.
-6. **Slots are not permanent identities.** Within-page insert/remove shifts slots; page splits, merges, and recycling invalidate `(page, slot)` references. An entry needs the relevant generation and expansion ordinal, and structural changes must rebuild or retire its bucket. Publication must never expose a mixture of old identities and new record data.
-7. **The square coverage pyramid has a thin-rectangle counterexample.** A one-tile-high strip spanning N tiles needs N square leaves. It does not become one aligned square. Dyadic rectangular products can reduce this replication, at the cost of up to logarithmic products of query paths and more ordered merges. Neither “one entry per large rect” nor “only a few levels” follows for arbitrary shapes. Count broad backgrounds, narrow borders, clipping, and transformed bounds separately.
-8. **Fixed inline storage plus overflow is not a constant-cost update proof.** Deletion needs an entry handle/backlink or a scan. Overflow chains can make GPU traversal pointer-bound. Slab exhaustion must withhold publication, grow safely, update residency, drain pre-armed commands where needed, and replay. Bound every loop and preserve the existing overflow/redraw semantics. A growable CSR-style arena may be a better GPU representation than a chain even if it means cold relocation.
+* Pixel gates not rerun on the head commit (tooling only: a cold `BOUGH_LAT` branch in `Fused::draw`).
+* wgsl-rs / wgpu-hal presenter: not touched, not run. Windowed GPU time and windowed latency: not measured.
+* **Lane memory's CPU repair backend will break the certificates when merged**: anything that writes a surface's
+  pixels without the kernels must zero that surface's `FCert` entries for the tiles it wrote (or the whole plane).
+  No hook exists yet; `Fused::prepare_target` shows the zeroing.
+* Horizontal scroll: a dx that is not a multiple of 32 keeps no certificates (all MOVE, plus the floor). Correct
+  by the existing gates only; no scene scrolls horizontally.
+* The certificate plane is 72 B per tile per touched surface (~160 KB at 1440x1600, in the residency set):
+  resident-memory effect not measured.
+* `reference_pixels` panics if the kernels' full redraw differs from `oracle.metal`. The first pixel-changing
+  experiment (bit-exactness against the old shader is no longer required) must turn that into a report.
+* My first "dropped bin entry" mutant left the slot unwritten and was NOT caught: the stale entry from the previous
+  render was the right one. A probe that re-renders the same frame cannot see writes that are skipped.
+* The pre-armed stream is untouched: the `kIOGPUCommandBufferCallbackErrorTimeout` after a process suspend
+  (lane memory) is still there.
+* No generated shader code was read (no Metal compiler on this machine to dump it).
+* Not replayed by `independent-review`.
 
-**There is an opaque-floor opportunity, but its size is unknown.** In `fs_tile`, `k0` is recomputed inside each 128-entry batch. A later opaque cover does not prevent earlier batches from having been shaded. A global last-opaque-cover index could remove that work. Conversely, the existing floor already eliminates many opaque layers, so raw scene overdraw exaggerates the remaining opportunity. This is why the counter overlay counts both raw alpha-positive layers and layers after the existing floor. It is not enough to count bounding boxes that overlap a tile.
+## Experiments (all same-bytes unless marked "floor")
 
-**A visibility pass can preserve exactness only if it preserves the surviving arithmetic sequence.** Find which lower contributions are hidden by a truly opaque cover, then shade the surviving suffix in the original back-to-front order using the existing half arithmetic. Switching to front-to-back accumulation changes association/rounding and is not justified by the mathematical equivalence of alpha compositing. Keep transformed glyph sampling, clip conventions, SDF edge form, premultiplication, and atlas accesses unchanged while testing the index.
+| tried | result | verdict |
+|---|---|---|
+| copy without its per-thread binary search; through half textures; through sample-access textures | vlist whole 0.99-1.01 each | the copy is memory-bound; dropped |
+| band (32x4) certificates without row masks | vlist scroll/jump 0.46-0.49 but fling 0.90, lab/heavy scroll 1.06-1.07 | certificates erode under any dy % 4 != 0; replaced by row masks |
+| copy decision by every thread | heavy scroll 1.17, vlist 0.66 | rejected |
+| ... by each band's first thread, shared through simd reductions | heavy scroll 1.20, vlist 0.66 | rejected (a block run by one lane costs the simdgroup) |
+| ... by one thread for all 8 bands + barrier | heavy scroll 1.31-1.43, vlist 0.73-0.79 | rejected |
+| ... by 8 lanes of one simdgroup + barrier | vlist 0.39-0.46, lab scroll 0.83, heavy scroll 0.91 | kept |
+| f_shade through a generic inline call | lab stream 0.87 | superseded |
+| glyph loop inline, `sh = pm * cov` | lab stream 0.60 but 35 pixels of animate differ (contracted to an fma) | kept with `sh` assigned in the branch: exact |
+| per-thread survivor bit sets walked with ctz | lab stream 0.76 -> 0.62 | kept |
+| survivor sets as AND of per-row and per-column sets built by 32 threads | heavy stream 0.90 -> 0.98, lab 0.62 -> 0.67 | rejected |
+| 256-entry windows, hits compacted before staging | lab stream 0.62 -> 0.55 | kept (short lists pay: vlist repair up to 1.17) |
+| one scalar mask word per 32 records | heavy stream 0.90 -> 0.86 | kept |
+| 64-entry batches | heavy stream 1.07, lab 0.75 | rejected: steps cost |
+| 8 KB more threadgroup memory | no change | occupancy is not bound by threadgroup memory |
+| one barrier fewer per step (alternating count arrays), bin and tile | no change | rejected |
+| bin: hits -> segments -> items by prefix sums | heavy stream 0.86 -> 0.77, lab 0.54 -> 0.51, animate 0.86 -> 0.89 | kept |
+| floors: no atlas read; no glyph records; reject test only | lab stream 0.79; 0.47; 0.29 | located the cost |
+| floors of the final tile kernel on heavy stream (160 µs): empty list 86, ink test + compaction 15, staging 17, masks 12, walk 29 | | the fixed part is now more than half |
+| bin pass alone: fixed 5.1 / 2.4 / 3.0 µs (heavy / lab / animate), cull 1.2 / 1.9 / 1.2, instance append 4.8 / 0.4 / 1.1, run expansion 16.8 / 7.5 / 0 | | led to the prefix expansion |
+| gputime slopes at 300 / 600 ticks | negative slopes in some pairs | use 600 / 3000 and the in-process A/B |
+| a command buffer with no work | reports 1-170 µs | unusable as a zero |
 
-**Uniformity has two meanings.** The counter's conservative certificate means the last staged touching entry is an untransformed opaque solid covering every tile pixel centre. Actual output bytes can be uniform for additional reasons: transparent entries above it, same-colored pieces, or other flat interiors. The latest tool distinguishes these. A uniform optimization should derive its tag during necessary list construction and keep fallback overhead visible. Adding a separate classifier and assuming it is free repeats the archive's flat-scene failure. Even an extra header load/branch is a cost until measured.
+Working cost model that predicted the kept results and none of the rejected ones in advance: these kernels are
+bound by instructions per simdgroup execution (a block one lane needs is paid by the whole simdgroup, per
+simdgroup), not by loads, barriers or threadgroup memory; large copies are bound by memory traffic.
 
-**Vlist may need a different next step than lab.** If actual scroll-copy cost dominates, removing all bin work still cannot meet the target by itself. Compare whole, no-copy repair, and isolated copy with the real excluded tiles. Do not call isolated-copy time a rigorous additive lower bound if scheduling/overlap makes the components non-additive. A copied surface is also a different retained object from a retained geometry index; improving one need not improve the other.
+## Underexplored and exotic avenues
 
-A further hypothesis I had not implemented: **retain per-surface constant-tile certificates alongside pixels**, then specialize the general SKIP/MOVE/PAINT decision. For an integral MOVE, a destination tile can intersect up to four source tiles. If every intersecting source portion is certified the same constant and the target tile is already certified that constant, skip the copy. If the source is constant but the target differs, fill rather than read-and-copy. Otherwise retain the existing MOVE/PAINT behavior. This could eliminate bandwidth on blank interiors rather than merely accelerating list construction. It requires exact certificate maintenance for copy, repaint, resize, surface reuse, clipping, partial tiles, and arbitrary ring ages. It is **not an implemented optimization or a predicted speedup**. There may be too few certified tiles to matter.
+1. **The signal-write frame without the GPU (two executors).** Mechanism: lane memory's CPU repair backend draws
+   the damaged tiles when there are few; the GPU is not kicked. Buys: the 72-90 K-instruction floor above and
+   the ~0.5 ms round trip at cadence, for 15-46 K (Opus: 7.5-23 K per tile on a CPU) and microseconds. Cost: two
+   rasters that must not show a seam; certificates must be zeroed or written by the CPU side. Cheapest test:
+   `BOUGH_REPAIR=auto` on lane memory's branch with `micro_bench` SCENE=state, instructions and `BOUGH_LAT`.
+   Depends on: lane memory (raster, cost model), core (damaged-tile count is known before the frame).
+2. **Fewer encoders: the frame as data in an encoder that already exists.** An encoder per frame exists only to
+   put an event wait between frames. If K frames are released together (a frame's indirect arguments are zero
+   until its slot is written, so unreleased frames in the same segment are no-ops), one release serves the
+   frames that arrive within a window; the cost is a wasted no-op dispatch per unused frame. Buys at most the
+   16.6 K encoder + part of the 39 K submission per coalesced frame; nothing for a lone frame. Kill: frameprobe
+   mode with N encoders per wait.
+3. **Completion without the event signal.** The tile pass's last threadgroup writes the frame number to a
+   shared word; `sync` reads it (free at cadence) and falls back to short sleeps when it must block. Measured
+   potential: 109 K -> 91 K per frame; the windowed publisher still needs a wake (poll with a 50 µs sleep, or keep
+   the signal only when a publisher is waiting). Kill: windowed p99 gets worse.
+4. **Skip the copy dispatch's and plan's fixed cost with a dense plan pass.** One thread per band, 32 bands
+   per simdgroup, writes a plan byte per band (in `FCert`); `fs_copy` threads read one byte and return. Indirect
+   arguments fit in the 24 spare bytes of the header. Predicted: vlist 83 -> ~50 µs, lab and heavy scroll under
+   0.65; kill at vlist > 65. Then compact the tile list so all-SKIP tiles launch no threadgroup.
+5. **Tile fingerprints (IDEAS-OPUS 3).** Hash the staged records of a tile in paint order; equal to the target
+   surface's stored hash -> no shading, no write. Opus measured lab stream shading 448 tiles for 43 changed
+   (ring 1). Predicted lab stream 36 -> ~15 µs. The hash must cover the atlas content a glyph reads. Kill: add
+   hash + counter only to the A/B probe; drop if under 25 % match at ring 4.
+6. **Per-run row test in the bin's segment step.** One compare where a segment's item count is computed (run
+   origin y +- the strike's ascent/descent) makes a paragraph record cost its lines in the row, not all its lines.
+   Needs the strike's vertical bound in GPU-visible data (text lane). Kill: bin pass alone on lab does not drop 30 %.
+7. **Text as one entry per run with a per-column glyph index** (IDEAS-OPUS 7b): the tile reads its glyph range in
+   O(1); the scan of 170-210 entries per tile becomes ~10. Now worth less than it looked: ink test + compaction is
+   15 of 160 µs on heavy, 3 of 38 on lab.
+8. **Glyph coverage resolved per pixel, not per record.** A band's pixels are covered by at most 2-3 glyph boxes;
+   the floor is one atlas read per pixel (~800 simd instructions per tile against ~3,000 now). Shape: per run, a
+   pen-sorted column index, each pixel block binary-searches its glyph. Predicted lab stream shading 7 -> ~3 µs.
+9. **SDF experiments (none started).** (a) Analytic merged coverage: stage a tile's solid rects into one
+   coverage evaluation per pixel by sorting edges per tile row (predict: heavy stream walk 29 -> 15 µs; kill if
+   staging grows more than it saves). (b) Glyphs as distance bands: store per glyph a small set of line
+   segments or a 1-D distance per scanline instead of atlas texels; coverage from distance needs no texture read
+   and scales under transforms (predict: glyph step -30 %; kill on visible difference above one 8-bit step at
+   1x, images required). (c) One distance evaluation for rounded rect + border + shadow of the same box (a card is
+   three records over the same geometry): predict heavy stream staged records -30 %; kill if the merged record's
+   path is paid by plain rects.
+10. **GPU-side damage.** The tile pass already knows, per band, whether it wrote one colour; with fingerprints it
+    knows whether a tile changed at all. A per-frame "changed tiles" bitmap written by the GPU would let the
+    presenter hand the compositor a dirty rect (CALayer `setNeedsDisplayInRect:` has no IOSurface equivalent, but a
+    second small surface could carry only changed bands), and would give core an oracle for over-damage (lab
+    stream: 90 % of shaded tiles unchanged) without CPU cost.
+11. **Phase-split encode on workers.** Encoding is 16.6 K + ~10 K per frame on whichever thread arms the stream;
+    it already runs off the input thread when windowed (publisher). Splitting disjoint tile bands across encoders
+    would add an encoder (16.6 K) per band: negative under this cost model. What can be split is the CPU work that
+    feeds the slot (row records) and, with a CPU executor, the tiles themselves (disjoint by construction).
+12. **Metal-specific paths worth keeping reachable from wgsl-rs** (each behind a capability type, none measured
+    here): bindless resource ids and GPU addresses in a buffer (the bind table: the reason a pre-armed frame names
+    no surface); shared events; residency sets; `simd_*` reductions and `thread_index_in_simdgroup`; indirect
+    dispatch from a buffer the CPU writes; IOSurface-backed textures. Tile shaders / imageblocks, framebuffer
+    fetch and memoryless targets belong to render passes, which the presenter does not use (RESULTS: a render pass
+    costs a tiler parameter buffer; Opus K3 rejected them); they would matter only for a render-pass executor.
+    Indirect command buffers cover draws and concurrent dispatch, executed through an encoder: they do not remove
+    the encoder.
+13. **wgsl-rs gaps known from reading, not from porting**: the vendored wgsl-rs has `subgroup_exclusive_add`,
+    `subgroup_add`, `subgroup_max`, `subgroup_ballot`; this lane's kernels also need `subgroup_min`, count
+    trailing zeros, `as_type` reinterpretation between half4 and u32x2 (WGSL has no f16 without the extension:
+    the accumulator is half), byte-addressed stores into a struct array (`FCert.m[8]` as u8: WGSL has no u8), 64-bit
+    GPU addresses and resource ids in a buffer (the bind table), `texture.write` to one of four textures chosen at
+    run time, preprocessor defines for mutants, and control over contraction (the fma that changed 35 pixels).
+14. **Windows over 4096 px** (Opus E7: panic at 5,184 px): the 128-bit tile row runs through bough-core's damage
+    plane, `FRow.bits`, the tile pass's k-th-set-bit select and `fs_copy`. Shape: rows of 64-bit words with a
+    summary word; the slot's row record becomes variable length. Depends on core.
+15. **Atlas dirty-band upload** (Opus: 1.14 M instructions per new glyph vs 36.8 K for a 16-row band):
+    `Fused::sync_atlas` takes a `dirty` flag; it needs a row range from bough-text.
+16. **Certificates beyond the copy.** A band certified one colour needs no shading when the tile is repainted and
+    its inputs for that band are unchanged (a fingerprint per band); a full redraw of a certified-constant window
+    (theme change) is fills. And the compositor could be told a surface is opaque-constant in a region.
+17. **Heavy stream's real lever is outside the kernels**: 1,120 tiles a frame (28 % of the window) are repaired
+    and 41 µs of the frame is writing their pixels at memory bandwidth; Opus measured 34 % of them unchanged.
 
-To evaluate that hypothesis, extend the planned statistics to include the full current viewport as well as the repair subset. The existing full-reference render can supply those counts after the sampled repair. **Current tools report only the repair subset.** In vlist, the tiles being copied are precisely the population that this omits; repair-only uniformity cannot establish copy-skip opportunity. This refinement was identified late and deliberately left unimplemented at stop.
+## Where I think the lead or the plan is wrong
 
-SKIP must mean the chosen *target surface* already has the current pixels. MOVE must have an integral displacement and a witness for the final composited content, including static occluders and all overlaid regions. Different motions through one tile generally require PAINT or an exact disjoint partition. A toroidal cache followed by a full-window resolve still reads and writes the output; it is not zero-pixel scrolling. Compositor-side scrolling avoids materialization but is a different presentation contract and needs its own safety/tearing evidence.
+* "Under 10 K instructions for a GPU frame" is not reachable in Metal by encoder or call tuning: the driver's
+  submission on release (39 K) and the encoder (16.6 K) are not ours to remove, and earlier rounds already removed
+  what was (RESULTS 14.2). The order of magnitude is in not kicking the GPU for small frames; that is lane
+  memory's backend, and it should be the default the moment its cost model exists.
+* GPU time in Kcycles is the wrong headline for anything a user sees. At a display's cadence the round trip is
+  ~0.5 ms whatever the kernels do, and in milliseconds the end-to-end cells barely moved. Kernel cycles matter for
+  energy and for frames that are large; latency is decided by the wake and the driver thread.
+* The brief's candidates (2D binning, floors, retained index) were written from a decomposition nobody had
+  measured. An hour of floors first would have saved the previous session's whole plan.
+* Porting to wgsl-rs before the kernels settle doubles every experiment's cost; the experiments above took
+  seconds each only because MSL compiles at run time. Port once, after fingerprints and the plan pass, unless
+  wgsl-rs gets the same edit-and-run loop.
+* Bit-exactness against the old shader was dropped, but it is what caught the fma contraction, a wrong barrier
+  and both bin-order mutants in seconds. Keep an oracle per executor, with a stated tolerance, not none.
 
-**CPU cost:** no instruction-per-write benchmark was run. The unchanged heavy binary's `ApplyBg::apply` contains a 32-bit instance-color store, but also a node-state write, bounds checks, `visible_ink_handle`, damage-row ORs, paint-log work, and saved registers. `quad_geom` uses paired NEON grid snapping and four-lane edge comparisons, with cold bounds-panic branches and a direct continuation into edge damage. This supports preserving those paths; it does not price an added retained-index update. A GPU-only spatial-list change can add zero source-level operations per mutation, while still adding frame-submission cost to R1. Both R0 and R1 must be measured; do not advertise “four bytes” as “four instructions.” No hot-loop fix was made during this inspection.
+## Next (in order, with predictions)
 
-## 4. Next steps and traps for continuation
-
-1. Read the frozen card and `STATE.md`; do not restart the reference survey. Apply the three-line lockfile patch locally if needed. Put rustup proxies first, clear `RUSTC_WRAPPER`, keep four jobs and lane-local targets.
-2. Wait for the shared measurement lock before heavy work, according to the round protocol. Do not delete another lane's lock. The canceled preparation job will not resume itself.
-3. Preserve existing `stats/` as `stats-v1/`, build the latest stats overlay, then restore original Metal sources. The script is an overlay, **not** a renderer implementation. It asserts unique replacement anchors; do not apply twice. Keep the sources fixed until each build is complete. Save new binary hashes.
-4. Compile `bench/floor/gputime.c` into this lane's `target/floor-tools/gputime.dylib`. This was not done. The defaults in the old floor scripts point at historical target layouts: explicitly set `FLOOR_TOOLS`, `BOUGH_DIST`, `BOUGH_REF`, `ZGX_DIST`, and `ZGX_HEADLESS` to the frozen artifacts. `ZGX_DIST` and `ZGX_HEADLESS` can both name private `zgx/` here. Set `A=zgx`, `B=bough`. `R6_TIMING` and `R6_STATS` choose the diagnostic binaries. Never read CPU instructions from a dylib-injected run.
-5. Acquire the coordinator lock for GPU execution. The wrapper expects an `owner` file whose first line is `gpu`; the round's other lanes used a `lane` file. Create the required ownership record only after successful `mkdir`, and clean up only the records you own. Let already-running heavy work drain. The wrapper checks before/after each child; it is **not continuous proof** of isolation. Use fresh output directories on a retry so rejected output survives.
-6. Smoke-test diagnostic MSL and accounting before launching the matrix. Check positive GPU seconds/client count/MHz, command completion, counter sanity, and retained/full equality. Run the baseline pixel gates and sabotage control. Build the mandatory workspace/all-targets check when permitted. Nothing here substitutes for them.
-7. Run all ten cells, including losses. The pair script reports both ms and rough Kcycles; the clock is whole-GPU residency, not a per-command frequency meter. A same-binary A/A control would be useful if desktop load or DVFS makes the paired spread large. It is an addition to preregister, not a control already run.
-8. Preserve dimensions and workload differences. Lab's ordinary headless default is scale 1; existing `kernel_bench` uses scale 2/ring 2. Do not silently combine those populations. Diagnostic samples are **draw-call counts**, not necessarily workload tick numbers. Sparse/held frames can make these differ.
-9. The timing differences are marginal kernel-disable experiments: `tile = repair − bin`, `cull/stage/store = stage − bin`, `shading = repair − stage`; the stage variant still writes pixels. Retain negative differences and spread. There is no headless GPU “present kernel”; CA and WindowServer presentation are outside this table. These runs cannot reproduce the old windowed animate claim.
-10. For a future optimization, retain an independent original-kernel raster oracle. Comparing candidate retained output only with candidate full redraw cannot detect a bug that drops the same glyph in both. Proposed mutants: drop a scatter entry, reverse two translucent overlapping entries, keep a stale page/run generation, or retain an opaque certificate after an alpha change. The existing `sabotage_copy` must still fail the vlist gates. Exercise every ring age, overflow/replay, transforms, clips, run windows, structural edits, and resize.
-11. Write `DESIGN-R6.md` **after** the measurements decide between these hypotheses. The original thresholds remain every scene GPU after/before ≤1.0, target ≤0.6 on lab and vlist, every R0/R1 cell ≤1.02, exact pixels. Neither the retained design nor RT2 is accepted by this handoff. Stop for the lead's design review before building the optimization; port to wgsl-rs only after the MSL result.
-
-The most valuable unanswered question is narrow: **how much time is spent rebuilding candidate lists, rescanning them, shading surviving layers, and moving already-rendered pixels on this exact tree?** The artifacts above are preparation to answer it. They are not the answer.
+1. Certificate hook for CPU-written tiles + `BOUGH_REPAIR=auto` measured on the signal frame with `frameprobe`
+   and `BOUGH_LAT`: predicted 107 K -> 20-40 K instructions and p50 470 -> under 50 µs at cadence.
+2. Dense plan pass + short-list path (a list of at most 128 entries keeps the old two-barrier step): predicted
+   vlist 83 -> ~50 µs, lab scroll 0.83 -> ~0.65, vlist repair back under 1.0; with a rect-area x dy sweep.
+3. Tile fingerprints: predicted lab stream 36 -> ~15 µs (0.2 of the original), heavy stream 144 -> ~110.
+   Then the wgsl-rs port of the settled kernels, listing every gap as it is hit.
