@@ -109,6 +109,8 @@ fn window_config(scale: f32) -> Config {
     let (w, h, font) = WINDOW.get().expect("Application::run sets the window first");
     let mut cfg = Config::new(*w, *h, scale, font.clone());
     cfg.caps = APP_CAPS;
+    // the most surfaces the window may draw (default 4, as contention needs): measurement knob, read once
+    cfg.ring = std::env::var("BOUGH_RING").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     cfg
 }
 

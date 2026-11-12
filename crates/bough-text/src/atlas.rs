@@ -230,6 +230,12 @@ impl GlyphCache {
         l.col(G, &self.toks, Content);
     }
 
+    /// Strike token tables made so far (the token column's high-water mark).
+    #[inline]
+    pub fn strike_tables(&self) -> usize {
+        self.toks.len()
+    }
+
     /// Region offset of strike 0's token table (`None` when not carved).
     pub fn tok_offset(&self) -> Option<usize> {
         self.toks.region_offset()

@@ -91,8 +91,48 @@ pub struct Layout {
     /// Capacity masks (capacity - 1, every column's capacity a power of two): the kernels AND every index
     /// they read from region data with its column's mask, so no value in the region can make the GPU read
     /// outside the column (bough-metal RESULTS Part IV). `Layout::default()` (probes: empty scene) masks to 0.
+    /// With column views (`Fused::new_views`) the masks the kernels see are the views' committed capacities.
     pub masks: Masks,
+    /// The GPU-read columns (order `COL_*`): where each starts, its element size, its mask group and the bytes
+    /// the region reserves for it. A presenter with column views wraps each one's used prefix.
+    pub cols: [ColumnDesc; NCOLS],
 }
+
+/// One GPU-read column of the region (`Layout::cols`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ColumnDesc {
+    /// Byte offset in the region (a VM page boundary when the presenter makes views).
+    pub off: u32,
+    pub elem: u32,
+    /// Bytes reserved for the column (its carved capacity).
+    pub reserve: u32,
+    /// Mask group (`G_*`): the columns indexed by one index share one mask and so one capacity.
+    pub group: u8,
+}
+
+/// The column table's order (`FCols` in shader.metal).
+pub const COL_INST: usize = 0;
+pub const COL_SPACES: usize = 1;
+pub const COL_CLIPS: usize = 2;
+pub const COL_DIR_ID: usize = 3;
+pub const COL_DIR_INK: usize = 4;
+pub const COL_PAGES: usize = 5;
+pub const COL_GX: usize = 6;
+pub const COL_GENT: usize = 7;
+pub const COL_RUNS: usize = 8;
+pub const COL_TOKS: usize = 9;
+pub const COL_XFORMS: usize = 10;
+pub const NCOLS: usize = 11;
+/// Mask groups, in `Masks` order: an index read from region data is ANDed with its group's mask, so every
+/// column of a group must hold the group's capacity.
+pub const G_INST: usize = 0;
+pub const G_PAGE: usize = 1;
+pub const G_GLYPH: usize = 2;
+pub const G_RUN: usize = 3;
+pub const G_SPACE: usize = 4;
+pub const G_CLIP: usize = 5;
+pub const G_STRIKE: usize = 6;
+pub const NGROUPS: usize = 7;
 
 /// Power-of-two capacity minus one, per GPU-read column.
 #[derive(Clone, Copy, Debug, Default)]
@@ -163,9 +203,15 @@ struct FHdr {
     masks: [u32; 7],
     xforms_off: u32,
 }
-/// Bytes reserved for the header at the start of the region.
-pub const HDR_BYTES: usize = 256;
+/// Bytes reserved for the header at the start of the region: `FHdr` @0, the bind table @`FBIND_OFF`, the
+/// column table @`FCOL_OFF`.
+pub const HDR_BYTES: usize = 512;
 const _: () = assert!(size_of::<FHdr>() <= HDR_BYTES);
+/// Byte offset of the column table (`FCols` in shader.metal): each GPU-read column's GPU address. The
+/// kernels read every column through it (round 6, lane memory): a column is either a range of the one region
+/// buffer (`Fused::new`, `new_on`) or its own no-copy view of the region's memory (`new_views`).
+pub const FCOL_OFF: usize = 256;
+const _: () = assert!(FCOL_OFF + 8 * NCOLS <= HDR_BYTES);
 const _: () = assert!(size_of::<Instance>() == 48);
 
 pub struct Surface {
@@ -544,6 +590,18 @@ pub struct Fused {
     pending: Option<usize>,
     /// The surface the last calling-thread commit put on screen.
     last_main: usize,
+    /// Column views (`new_views`): `None` when every column is a range of the one region buffer.
+    views: Option<Views>,
+}
+
+/// The GPU's views of the region's columns: per column a no-copy buffer over its used prefix, per mask group
+/// the committed capacity (a power of two of elements; 0 before the first frame).
+#[derive(Default)]
+struct Views {
+    bufs: [Option<Retained<ProtocolObject<dyn MTLBuffer>>>; NCOLS],
+    cap: [u32; NGROUPS],
+    /// Views made so far (growth steps).
+    growths: u32,
 }
 
 /// Byte offset of the bind table in the region header (`FBind` in shader.metal).
@@ -654,6 +712,9 @@ fn take_prep() -> GpuPrep {
 pub enum PoolSrc {
     Alloc(usize),
     Wrap { ptr: *mut u8, len: usize, keep: Box<dyn std::any::Any> },
+    /// The region is `len` bytes at `ptr`; the GPU buffer bound to the encoders covers its first `base` bytes
+    /// (header and frame slots) and each column gets its own view (`ensure_columns`).
+    Views { ptr: *mut u8, len: usize, keep: Box<dyn std::any::Any>, base: usize },
 }
 
 impl Fused {
@@ -675,13 +736,39 @@ impl Fused {
         (Self::with_pool(prep, PoolSrc::Wrap { ptr, len, keep }, w, h, scale, surfaces, bin_cap), i, ns)
     }
 
+    /// A presenter over a region whose columns the GPU sees through views of their used prefixes (round 6,
+    /// lane memory): the buffer bound to the encoders wraps the region's first `base` bytes (header and frame
+    /// slots), and `ensure_columns` wraps, before each frame, as much of each column as its mask group's
+    /// high-water mark needs (a power of two of elements, page-rounded). Pages of the region outside every view
+    /// are never wired: a column's capacity is address space. Returns the preparation thread's instructions
+    /// and ns.
+    ///
+    /// # Safety
+    /// As `new_on`; and every column named by the layout later passed to `set_layout` lies inside the
+    /// region, starts on a VM page boundary, and is followed by unused region bytes up to the next page.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn new_views(ptr: *mut u8, len: usize, keep: Box<dyn std::any::Any>, base: usize, w: usize, h: usize, scale: f64, surfaces: usize, bin_cap: u32) -> (Fused, u64, u64) {
+        let prep = take_prep();
+        let (i, ns) = (prep.instructions, prep.nanos);
+        (Self::with_pool(prep, PoolSrc::Views { ptr, len, keep, base }, w, h, scale, surfaces, bin_cap), i, ns)
+    }
+
     fn with_pool(prep: GpuPrep, src: PoolSrc, w: usize, h: usize, scale: f64, surfaces: usize, bin_cap: u32) -> Fused {
         let GpuPrep { device, queue, aux, pso_bin, pso_tile, pso_copy, res, .. } = prep;
+        let mut views = None;
         let (pool, region_len, pool_keep) = match src {
             PoolSrc::Alloc(len) => (device.newBufferWithLength_options(len, MTLResourceOptions::StorageModeShared).expect("region buffer"), len, None),
             PoolSrc::Wrap { ptr, len, keep } => {
                 // SAFETY: the caller's contract (page-aligned, `len` bytes, alive while `keep` is; no deallocator).
                 let b = unsafe { device.newBufferWithBytesNoCopy_length_options_deallocator(NonNull::new(ptr as *mut _).unwrap(), len, MTLResourceOptions::StorageModeShared, None) }.expect("wrapped region buffer");
+                (b, len, Some(keep))
+            }
+            PoolSrc::Views { ptr, len, keep, base } => {
+                let base = base.next_multiple_of(vm_page()).min(len);
+                // SAFETY: the caller's contract (page-aligned, `len` >= `base` bytes, alive while `keep` is): the
+                // buffer is the region's first `base` bytes (header and frame slots), no deallocator.
+                let b = unsafe { device.newBufferWithBytesNoCopy_length_options_deallocator(NonNull::new(ptr as *mut _).unwrap(), base, MTLResourceOptions::StorageModeShared, None) }.expect("region base buffer");
+                views = Some(Views::default());
                 (b, len, Some(keep))
             }
         };
@@ -748,6 +835,7 @@ impl Fused {
             img: None,
             pending: None,
             last_main: NONE_SURF,
+            views,
         };
         // the residency set is what makes the bind table's resources reachable (encoders bind nothing else)
         {
@@ -817,9 +905,14 @@ impl Fused {
         (self.pool_ptr, self.pool_len, self.pool.clone())
     }
 
-    /// Write the kernels' header (offsets of every column, window size, bin capacity).
+    /// Write the kernels' header (offsets of every column, window size, bin capacity) and the column table.
     pub fn set_layout(&mut self, l: Layout) {
         self.lay = l;
+        // with column views the kernels' masks are the views' committed capacities, not the reservations
+        let masks = match &self.views {
+            Some(v) => view_masks(&v.cap),
+            None => [l.masks.inst, l.masks.page, l.masks.glyph, l.masks.run, l.masks.space, l.masks.clip, l.masks.strike],
+        };
         let h = FHdr {
             viewport: [l.w as f32, l.h as f32],
             tiles_x: l.tiles_x(),
@@ -838,16 +931,117 @@ impl Fused {
             tok_stride: l.tok_stride,
             bin_cap: self.bin_cap,
             debug: 0,
-            masks: [l.masks.inst, l.masks.page, l.masks.glyph, l.masks.run, l.masks.space, l.masks.clip, l.masks.strike],
+            masks,
             xforms_off: l.xforms_off,
         };
         // SAFETY: the region starts with HDR_BYTES reserved for the header; no GPU work reads it now.
         unsafe { (self.pool_ptr as *mut FHdr).write(h) };
+        self.write_cols();
         for (k, &o) in l.slot.iter().enumerate() {
             self.kern.slots[k].store(o, Relaxed);
         }
         self.write_binds();
         self.kern.ensure(self.released + 1);
+    }
+
+    /// Write the column table: each column's GPU address (its view's, or the region buffer's address plus the
+    /// column's offset; 0 for a column without a view yet, which no frame reads: views are made before a frame).
+    fn write_cols(&mut self) {
+        let mut t = [0u64; NCOLS];
+        let base = self.pool.gpuAddress();
+        let l = self.lay;
+        let offs = [l.inst_off, l.spaces_off, l.clips_off, l.dir_id_off, l.dir_ink_off, l.pages_off, l.gx_off, l.gent_off, l.runs_off, l.toks_off, l.xforms_off];
+        for (k, a) in t.iter_mut().enumerate() {
+            *a = match &self.views {
+                Some(v) => v.bufs[k].as_ref().map_or(0, |b| b.gpuAddress()),
+                None => base + offs[k] as u64,
+            };
+        }
+        // SAFETY: the column table lies inside the reserved header (const-asserted); the GPU is idle.
+        unsafe { (self.pool_ptr.add(FCOL_OFF) as *mut [u64; NCOLS]).write(t) };
+    }
+
+    /// Make the GPU's views of the region's columns hold at least `need[g]` elements of every column of mask
+    /// group `g` (column views only; a no-op for a one-buffer region). The common case is seven compares;
+    /// a group past its committed capacity gets views of the next power of two (at least double), page-rounded,
+    /// a new column table and masks, and the residency set's update (which drains the pre-armed frames, as a bin
+    /// growth does). The CPU's addresses never move. Call before a frame is drawn (`App::draw`).
+    #[inline]
+    pub fn ensure_columns(&mut self, need: &[usize; NGROUPS]) {
+        let Some(v) = &self.views else { return };
+        if (0..NGROUPS).all(|g| need[g] <= v.cap[g] as usize && v.cap[g] != 0) {
+            return;
+        }
+        self.grow_views(need);
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn grow_views(&mut self, need: &[usize; NGROUPS]) {
+        self.sync();
+        let page = vm_page();
+        let l = self.lay;
+        let v = self.views.as_mut().unwrap();
+        let mut cap = v.cap;
+        let mut changed = [false; NGROUPS];
+        for g in 0..NGROUPS {
+            // the largest capacity every column of the group can hold (its reservation, a power of two)
+            let limit = l.cols.iter().filter(|c| c.group as usize == g && c.elem > 0).map(|c| (c.reserve / c.elem) as usize).min().unwrap_or(0);
+            let want = need[g].max(1).next_power_of_two();
+            if cap[g] != 0 && want <= cap[g] as usize {
+                continue;
+            }
+            // the gates' sabotage: views never grow past their first size (the capacity test must fail)
+            #[cfg(feature = "sabotage_views")]
+            if cap[g] != 0 {
+                continue;
+            }
+            // at least double (a mount that grows one row at a time makes log2 views, not one per row), but
+            // start from one page's worth
+            let first = |c: &ColumnDesc| (page / c.elem.max(1) as usize).max(1);
+            let floor = l.cols.iter().filter(|c| c.group as usize == g && c.elem > 0).map(first).min().unwrap_or(1).next_power_of_two() / 2;
+            let new = want.max(cap[g] as usize * 2).max(floor.max(1)).min(limit.max(1));
+            if new as u32 != cap[g] {
+                cap[g] = new as u32;
+                changed[g] = true;
+            }
+        }
+        let mut old = Vec::new();
+        for (k, c) in l.cols.iter().enumerate() {
+            let g = c.group as usize;
+            if !changed[g] || c.elem == 0 {
+                continue;
+            }
+            let bytes = (cap[g] as usize * c.elem as usize).next_multiple_of(page).min((c.reserve as usize).next_multiple_of(page)).min(self.pool_len - c.off as usize);
+            debug_assert!(c.off as usize % page == 0, "column {k} is not on a page boundary");
+            // SAFETY: `[off, off + bytes)` lies inside the region (clamped to its length), starts on a page
+            // boundary and is a whole number of pages (`new_views`' contract); the region outlives the view (the
+            // presenter holds its keep-alive); no deallocator.
+            let b = unsafe {
+                self.device.newBufferWithBytesNoCopy_length_options_deallocator(NonNull::new(self.pool_ptr.add(c.off as usize) as *mut _).unwrap(), bytes, MTLResourceOptions::StorageModeShared, None)
+            }
+            .expect("column view");
+            if let Some(r) = &self.resid {
+                r.addAllocation(ProtocolObject::from_ref(&*b));
+            }
+            if let Some(o) = v.bufs[k].replace(b) {
+                old.push(o);
+            }
+        }
+        if let Some(r) = &self.resid {
+            for o in &old {
+                r.removeAllocation(ProtocolObject::from_ref(&**o));
+            }
+            r.commit();
+        }
+        v.cap = cap;
+        v.growths += 1;
+        let masks = view_masks(&cap);
+        // SAFETY: header field `masks`; the GPU is idle (synced above).
+        unsafe { (*(self.pool_ptr as *mut FHdr)).masks = masks };
+        self.write_cols();
+        self.residency_changed();
+        drop(old);
     }
 
     /// Write the bind table (resource ids of the surfaces and the atlas, GPU addresses of bins and counts).
@@ -941,6 +1135,19 @@ impl Fused {
     pub fn reset_bins(&mut self, cap: u32) {
         self.sync();
         self.replace_bins(cap);
+    }
+
+    /// Why surface `i` is in use (diagnostics, the cold path of a ring growth): bit 0 the publisher is
+    /// committing it, 1 it is queued for the publisher, 2 the publisher's last commit put it on screen, 3 the
+    /// calling thread's last commit or a paced frame holds it, 4 `IOSurfaceIsInUse` (the compositor).
+    pub fn in_use_why(&self, i: usize) -> u8 {
+        let p = self.publisher.as_ref();
+        let b = |c: bool, k: u8| if c { 1u8 << k } else { 0 };
+        b(p.is_some_and(|p| p.sh.in_flight.load(Relaxed) == i), 0)
+            | b(p.is_some_and(|p| p.sh.queued.load(Relaxed) == i), 1)
+            | b(p.is_some_and(|p| p.sh.last.load(Relaxed) == i), 2)
+            | b(self.last_main == i || self.pending == Some(i), 3)
+            | b(self.surfs[i].io.is_in_use(), 4)
     }
 
     /// In use by the compositor, or held by the publisher (queued, being committed, or committed last).
@@ -1366,6 +1573,8 @@ impl Fused {
             counts: MTLResource::allocatedSize(&*self.counts),
             warm: self.warm.as_ref().map_or(0, |w| MTLResource::allocatedSize(&*w.tiny)),
             device_allocated: self.device.currentAllocatedSize(),
+            views: self.views.as_ref().map(|v| (v.bufs.iter().flatten().map(|b| b.length()).sum(), v.growths, v.cap)),
+            base_len: self.pool.length(),
         }
     }
 }
@@ -1389,6 +1598,25 @@ pub struct GpuMem {
     pub warm: usize,
     /// `MTLDevice.currentAllocatedSize`: every allocation the device made for this process.
     pub device_allocated: usize,
+    /// Column views (`new_views`): bytes wrapped, growth steps, committed capacity per mask group.
+    pub views: Option<(usize, u32, [u32; NGROUPS])>,
+    /// Bytes of the buffer bound to the encoders (the whole region, or its header and slots with views).
+    pub base_len: usize,
+}
+
+/// The kernels' masks for committed capacities (`cap - 1`; a group with no view yet masks to 0).
+fn view_masks(cap: &[u32; NGROUPS]) -> [u32; 7] {
+    let mut m = [0u32; 7];
+    for g in 0..NGROUPS {
+        m[g] = cap[g].saturating_sub(1);
+    }
+    m
+}
+
+/// The VM page size (no-copy buffers are whole pages at page-aligned addresses).
+fn vm_page() -> usize {
+    // SAFETY: sysconf has no preconditions.
+    (unsafe { libc::sysconf(libc::_SC_PAGESIZE) }) as usize
 }
 
 /// Copy the OR-ed tile rows (`rows[ty]`, bit tx = tile) into frame slot `k` as damaged-row records (see the

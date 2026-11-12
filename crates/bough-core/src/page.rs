@@ -479,6 +479,11 @@ impl PagePool {
     pub fn heap_bytes(&self) -> usize {
         self.pages.capacity() * 8 + self.pages.len() * core::mem::size_of::<Page>() + self.free.capacity() * 4
     }
+    /// Pages created so far (free ones included): the arena's high-water mark.
+    #[inline]
+    pub fn created(&self) -> usize {
+        self.pages.len()
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

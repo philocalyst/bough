@@ -113,12 +113,25 @@ struct Steady {
 
 use bough::backend::host::timer;
 
+/// Tiles repaired by the drive's GPU frames (the residual a tile-granular present would have to hold).
+static TILES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn drive<V: View>(app: Rc<RefCell<App<V>>>, active: f64, step: impl Fn(&mut App<V>, u64) + 'static, steady: Rc<Cell<Steady>>) {
+    // `LEDGER_BATCH=k`: frames per pre-armed command buffer (default 16), to price the stream's own memory
+    if let Some(k) = std::env::var("LEDGER_BATCH").ok().and_then(|v| v.parse().ok()) {
+        app.borrow_mut().stream(k);
+    }
     let t0 = std::time::Instant::now();
     let tick = Rc::new(Cell::new(0u64));
     let done = Rc::new(Cell::new(false));
+    let g0 = Rc::new(Cell::new(0u64));
+    let tiles = Rc::new(Cell::new(0u64));
     {
-        let (app, tick, done, steady) = (app.clone(), tick.clone(), done.clone(), steady.clone());
+        let tiles = tiles.clone();
+        timer(active + 0.5, false, move || TILES.store(tiles.get(), Relaxed));
+    }
+    {
+        let (app, tick, done, steady, g0, tiles) = (app.clone(), tick.clone(), done.clone(), steady.clone(), g0.clone(), tiles.clone());
         timer(1.0 / 120.0, true, move || {
             if done.get() {
                 return;
@@ -142,7 +155,10 @@ fn drive<V: View>(app: Rc<RefCell<App<V>>>, active: f64, step: impl Fn(&mut App<
                 TRACE.store(std::env::var_os("LEDGER_TRACE").is_some(), Relaxed);
             }
             step(&mut a, k);
-            a.frame();
+            if a.frame() && a.surf_stats.gpu > g0.get() {
+                g0.set(a.surf_stats.gpu);
+                tiles.set(tiles.get() + a.repaired_tiles as u64);
+            }
             tick.set(k + 1);
         });
     }
@@ -177,6 +193,16 @@ fn report<V: View>(steady: &Rc<Cell<Steady>>) -> impl FnOnce(&mut App<V>) + 'sta
             p.phys_footprint,
             p.phys_footprint_peak
         );
+        let tl = a.rt.layout;
+        eprintln!(
+            "ledger-harness: surfaces {:?}; GPU frames {} repaired tiles {} (mean {:.1} of {} per frame); instructions {}",
+            a.surf_stats,
+            a.surf_stats.gpu,
+            TILES.load(Relaxed),
+            TILES.load(Relaxed) as f64 / a.surf_stats.gpu.max(1) as f64,
+            tl.tiles_x() * tl.tiles_y(),
+            bough_metal_instructions()
+        );
         if let Ok(t) = TRACES.lock() {
             let mut t = t.clone();
             t.sort_by(|a, b| b.1.cmp(&a.1));
@@ -185,6 +211,24 @@ fn report<V: View>(steady: &Rc<Cell<Steady>>) -> impl FnOnce(&mut App<V>) + 'sta
             }
         }
     }
+}
+
+/// The process's retired instructions (proc_pid_rusage).
+fn bough_metal_instructions() -> u64 {
+    #[repr(C)]
+    struct V4 {
+        f: [u64; 2],
+        rest: [u64; 37],
+    }
+    unsafe extern "C" {
+        fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut V4) -> i32;
+        fn getpid() -> i32;
+    }
+    let mut r = V4 { f: [0; 2], rest: [0; 37] };
+    // SAFETY: flavor 4 fills a rusage_info_v4 (16-byte uuid + 35 u64 = 296 bytes <= the 312 given);
+    // ri_instructions is field 29 after the uuid (bough-metal `perf::RusageInfoV4`).
+    unsafe { proc_pid_rusage(getpid(), 4, &mut r) };
+    r.rest[29]
 }
 
 fn main() {

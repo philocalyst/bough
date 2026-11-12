@@ -216,6 +216,12 @@ impl Bough {
     pub fn pool(&self) -> &PagePool {
         &self.pool
     }
+    /// High-water marks of the GPU-read columns: (pages ever created, clip ids ever made). A presenter whose
+    /// GPU view of a column is its used prefix must cover these (bough-metal `Fused::ensure_columns`).
+    #[inline]
+    pub fn gpu_extent(&self) -> (usize, usize) {
+        (self.pool.created().max(self.d_ptr.len()), self.clips.len())
+    }
     /// Every column and table this Bough holds, as memory-ledger lines (diagnostics; never on a frame path).
     pub fn ledger(&self, l: &mut bough_mem::Ledger) {
         use bough_mem::Scales::{Content, Window};
