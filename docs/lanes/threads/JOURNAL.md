@@ -257,3 +257,15 @@ the hand-over note at the end of this journal.
    on mothership.
 4. Products and their landing (design 3.4), with the chat scene; T4.
 5. `hot.sh -x` once, to close M1; kernel-mode counts for the start-up cells on ilo-prod (root).
+
+## 9. Hand-over note (2026-11-12, at the first report to the lead)
+
+* Head of `r8/threads`: see `git log`; the tree is clean; every test of `bough-x` passes on the Mac at it
+  (anim 2, image 4, publish 2, sheet 4) and passed on ilo-prod at `81da84ea75`.
+* **Not merged: `r8/expr` `054b83c929`**, which has its own flat column table (`ColEnt`), `World.root` boxed,
+  `store::SHAPE`, `APP_WORDS = 56`. This branch has the same thing as `arena::Entry` in a half. One of the two
+  has to go; `docs/r8/ARENA.md` is the proposal. The merge will conflict in `store.rs`, `world.rs`, `sink.rs`.
+* Remote jobs of this lane: on ilo-prod a flamegraph run (`job2.sh`, output `/root/work/r8/threads/out/flame`,
+  log `job2.log`) was still building inferno through nix when this was written; nothing else is running.
+  The first run's stuck script was stopped by PID. mothership: nothing running; `target` and `target-base`
+  under `/home/miles/work/r8/threads` are about 100 MB together.
