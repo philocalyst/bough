@@ -183,18 +183,21 @@ impl Fn<'_> {
         self.n += 1;
         format!("{p}{}", self.n)
     }
-    /// The layers of `p` blended into `a`, in paint order.
-    fn shade(&mut self, p: &PCode, base: usize, clip: &str, hide: Option<&str>) {
+    /// The layers of `p` blended, in paint order, into each pixel of `px` (accumulator, x, y, coverage
+    /// byte). A layer is staged once and shaded at every pixel: a GPU thread owns a 2 x 2 block.
+    fn shade(&mut self, p: &PCode, base: usize, clip: &str, hide: Option<&str>, px: &[[&str; 4]]) {
         match p {
             PCode::Prim { mk, p, args, glyph, .. } => {
                 let c = self.fresh("c");
                 self.decl(T::Cmd, &c, &staged(mk, args, base, clip, 'u'), false);
-                let call = if *glyph { format!("{p}({c}, x, y, cov8)") } else { format!("{p}({c}, x, y)") };
-                match hide {
-                    Some(h) => writeln!(self.out, "    if (!x_in({h}, x, y)) {{ a = x_over(a, {call}); }}"),
-                    None => writeln!(self.out, "    a = x_over(a, {call});"),
+                for [a, x, y, cov] in px {
+                    let call = if *glyph { format!("{p}({c}, {x}, {y}, {cov})") } else { format!("{p}({c}, {x}, {y})") };
+                    match hide {
+                        Some(h) => writeln!(self.out, "    if (!x_in({h}, {x}, {y})) {{ {a} = x_over({a}, {call}); }}"),
+                        None => writeln!(self.out, "    {a} = x_over({a}, {call});"),
+                    }
+                    .unwrap();
                 }
-                .unwrap();
             }
             PCode::Over { a, b, cut } => {
                 let wa = pwords(a);
@@ -202,20 +205,20 @@ impl Fn<'_> {
                     // the upper layer's opaque core replaces whatever the lower layers put there
                     let h = self.fresh("h");
                     self.decl(T::V4i, &h, &cover(b, base + wa, clip), false);
-                    self.shade(a, base, clip, Some(&h));
+                    self.shade(a, base, clip, Some(&h), px);
                 } else {
-                    self.shade(a, base, clip, hide);
+                    self.shade(a, base, clip, hide, px);
                 }
-                self.shade(b, base + wa, clip, hide);
+                self.shade(b, base + wa, clip, hide, px);
             }
             PCode::Clip { p, k } => {
                 let mut kb = base + pwords(p);
                 let kx = expr(k, &mut kb, 'u');
                 let kn = self.fresh("k");
                 self.decl(T::V4i, &kn, &format!("x_and({clip}, {kx})"), false);
-                self.shade(p, base, &kn, hide);
+                self.shade(p, base, &kn, hide, px);
             }
-            PCode::Hit { p, .. } => self.shade(p, base, clip, hide),
+            PCode::Hit { p, .. } => self.shade(p, base, clip, hide, px),
         }
     }
     fn win(&mut self, p: &PCode, base: usize, clip: &str) {
@@ -335,8 +338,19 @@ pub fn archetype(lang: Lang, k: usize, d: &Desc, out: &mut String) {
     header(lang, out, T::V4u, &format!("a{k}_shade"), &ps);
     let mut f = Fn { lang, out, n: 0 };
     f.decl(T::V4u, "a", "acc", true);
-    f.shade(p, 0, NO_CLIP, None);
+    f.shade(p, 0, NO_CLIP, None, &[["a", "x", "y", "cov8"]]);
     writeln!(out, "    return a;\n}}").unwrap();
+    if lang == Lang::Msl {
+        // the 2 x 2 block a GPU thread owns: every layer staged once, shaded four times
+        let mut ps: Vec<String> = (0..4).map(|i| format!("thread metal::uint4& a{i}")).collect();
+        ps.extend(["metal::int4 rect".to_string(), "int x".into(), "int y".into()]);
+        ps.extend((0..4).map(|i| format!("uint cov{i}")));
+        ps.extend(ws.iter().chain(us.iter()).map(|(_, n)| format!("uint {n}")));
+        writeln!(out, "static void a{k}_shade4({}) {{", ps.join(", ")).unwrap();
+        let mut f = Fn { lang, out, n: 0 };
+        f.shade(p, 0, NO_CLIP, None, &[["a0", "x", "y", "cov0"], ["a1", "x + 1", "y", "cov1"], ["a2", "x", "y + 1", "cov2"], ["a3", "x + 1", "y + 1", "cov3"]]);
+        writeln!(out, "}}").unwrap();
+    }
 
     let mut ps = vec![rect.clone()];
     ps.extend(xy.iter().cloned());

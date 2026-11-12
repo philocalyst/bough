@@ -21,6 +21,7 @@ wgsl-rs = { git = "https://github.com/schell/wgsl-rs", rev = "b2de16a1b81e67d76b
 naga = { version = "29.0.4", features = ["wgsl-in", "msl-out"] }
 
 [dev-dependencies]
+bough-mem = { path = "../bough-mem" }
 naga = { version = "29.0.4", features = ["wgsl-in", "msl-out"] }
 # the `#[wgsl]` macro's generated `__validate_wgsl` tests (naga validation of each module); tests only
 wgsl-rs = { git = "https://github.com/schell/wgsl-rs", rev = "b2de16a1b81e67d76bc265c296184f882864badb", default-features = false, features = ["validation"] }
@@ -35,3 +36,5 @@ mutant_cut = []
 mutant_flat = []
 # the static cut inside a composed paint hides one column too many
 mutant_hide = []
+# the pixel-grain occlusion mask of the tile rasteriser is one column too wide
+mutant_mask = []

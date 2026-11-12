@@ -243,6 +243,7 @@ version = "0.0.0"
 dependencies = [
  "bough-expr",
  "bough-kernel",
+ "bough-mem",
  "naga",
  "objc2",
  "objc2-foundation",

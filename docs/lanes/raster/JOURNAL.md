@@ -53,4 +53,53 @@ rows, one core and the pool; its Metal executor), plus the façade's workloads w
 
 ## 2. What the type system can and cannot carry to the GPU
 
-(filled in below as measured)
+**R2 confirmed** (`crates/bough-paint/src/probe.rs`, held by a test). wgsl-rs transpiles tokens. A trait
+with a static method, implemented for a concrete type and reached through a generic function with a
+turbofish, is monomorphised into WGSL (`shade_Hover` calling `Hover_eval`). A generic impl
+(`impl<C: Ex> Ex for Twice<C>`) compiles and runs as Rust and is silently absent from the WGSL: the call to
+`Twice_eval` is emitted and the function is not. No proc macro can do better, because trait resolution
+happens after macros run. So nested combinators do not reach the GPU through wgsl-rs's generics.
+
+**What does work, and is built** (R3 confirmed):
+
+* *Leaves are concrete.* `src/ops.rs` is one `#[wgsl]` module of pure integer functions over the round-7
+  kernel's arithmetic (which I split, unchanged, into a module of its own, `bough_kernel::km`, so both
+  crates import one definition). These are the only function bodies in the system.
+* *A combinator is a leaf's name.* `op!(Eq = x_eq(a: A: u32, b: B: u32) -> u32)` emits a `repr(C)` struct of
+  its operands whose `eval` calls `ops::x_eq` on the operands' values and whose `CODE` is
+  `&Code::Call("x_eq", &[A::CODE, B::CODE])`: a static tree in rodata mirroring the type (a reference to an
+  associated constant of a generic parameter is a promoted constant). `prim!` does the same for a primitive
+  from its stager leaf and its shade leaf. Neither face has a body of its own, so CPU and GPU cannot
+  disagree about a combinator.
+* *The GPU function is the tree rendered.* `src/emit.rs` walks `Paint::CODE` and writes six pure functions
+  per archetype (`shade`, `texel`, `win`, `cover`, `chg`, `pick`) of (rect, record words, block words,
+  pixel). Rendered expressions are calls on parameter names and `123u` literals: valid WGSL and valid MSL
+  unchanged; only declarations differ. The leaves go through wgsl-rs and naga once, in this crate's
+  `build.rs`. At run time the application's part of the shader is text assembled from constants; naga is
+  not linked.
+* Gates: the WGSL of every archetype validates under naga; every leaf a tree names exists under that name
+  in naga's MSL (it renames identifiers that end in a digit, so leaves called from generated code do not).
+
+**What the type system carries:** the tree of an expression and of a paint; the record layout (the value of
+the type is the record: zero-sized block reads and constants, one word per `Rec`, depth-first order); the
+stage; the block words read (`READS`) and those that move a window (`GEOM_READS`); whether a colour is
+provably opaque (`OPAQUE`: a constant with alpha 255, `Pmo`, a select or mix of opaque operands) and so
+whether a paint covers (`OPAQUE_CORE`) and where the cut between a record's own layers is (`Over` with an
+opaque top hides its core from the layers beneath: decided when the archetype is compiled, no alpha is
+inspected at run time); the cost class; the kind of every primitive call (a paint drives a `Sink` by
+continuation, and each sink method is one kind, so no kernel tests a kind).
+
+**What it cannot carry:**
+
+* A Rust closure. It has no tree, so it is `Turn` stage: evaluated on the CPU into a record word
+  (`bough_expr::Map`, `Code::Cpu`). Only named leaves are `Frame`. `emit.rs` refuses `Code::Cpu` and
+  `Code::UAt` in a paint operand for now (the store must materialise the first; the second needs the block as
+  an array parameter).
+* The whole application's archetype list, under description by continuation: no type mirrors the view tree
+  (SEAM 6.2). A store's row type gives a constant list; the whole-application half of the plan is folded at
+  start-up by the same `const fn`.
+* SPIR-V. Text can be assembled from constants; a binary module cannot. Vulkan needs naga at start-up or an
+  application build step. Not built.
+* Sharing an operand between layers of a composed paint except through the rect lanes: `Over<Shadow<B, ..>,
+  RRect<B, ..>>` holds `B`'s record words twice (the canvas's animated node holds its phase and period three
+  times). A `Let` combinator, or operands hoisted into a paint struct by a macro, would fix it. Not built.

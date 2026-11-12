@@ -116,7 +116,14 @@ kernel void k_shade(const device uint* COLS [[buffer(0)]], const device uint* ME
     int x = int(ux), y = int(uy);
     uint off = TILES[2u * t], n = TILES[2u * t + 1u] & 0x7FFFFFFFu;
     metal::uint4 a0 = metal::uint4(0u), a1 = metal::uint4(0u), a2 = metal::uint4(0u), a3 = metal::uint4(0u);
-    for (uint i = 0u; i < n; i++) {
+    // the occlusion cut at pixel grain: start at the topmost entry whose opaque cover holds this 2 x 2 block
+    uint start = 0u;
+    for (uint i = n; i > 0u; i--) {
+        uint z = LIST[off + i - 1u];
+        metal::int4 c = unpack_win(WINS[4u * z + 2u], WINS[4u * z + 3u]);
+        if (c.x <= x && c.y <= y && c.z >= x + 2 && c.w >= y + 2) { start = i - 1u; break; }
+    }
+    for (uint i = start; i < n; i++) {
         uint z = LIST[off + i];
         metal::int4 wn = unpack_win(WINS[4u * z], WINS[4u * z + 1u]);
         if (x + 1 < wn.x || x >= wn.z || y + 1 < wn.y || y >= wn.w) { continue; }
@@ -127,10 +134,8 @@ kernel void k_shade(const device uint* COLS [[buffer(0)]], const device uint* ME
     for (k, d) in descs.iter().enumerate() {
         write!(s, "        case {k}u: {{ {}", record(k, &lays[k])).unwrap();
         let (w, u) = (loads(d), unis(d, 'u'));
-        for (i, (dx, dy)) in [(0, 0), (1, 0), (0, 1), (1, 1)].iter().enumerate() {
-            let cov = if emit::has_glyph(d.code) { format!("atlas_at(ATLAS, a{k}_texel(rect, x + {dx}, y + {dy}, aw{w}{u}), alim)") } else { "0u".into() };
-            writeln!(s, "            a{i} = a{k}_shade(a{i}, rect, x + {dx}, y + {dy}, {cov}{w}{u});").unwrap();
-        }
+        let covs: Vec<String> = [(0, 0), (1, 0), (0, 1), (1, 1)].iter().map(|(dx, dy)| if emit::has_glyph(d.code) { format!("atlas_at(ATLAS, a{k}_texel(rect, x + {dx}, y + {dy}, aw{w}{u}), alim)") } else { "0u".into() }).collect();
+        writeln!(s, "            a{k}_shade4(a0, a1, a2, a3, rect, x, y, {}{w}{u});", covs.join(", ")).unwrap();
         s.push_str("        } break;\n");
     }
     s.push_str(
@@ -460,6 +465,19 @@ impl Gpu {
     /// list of dispatches, wait. Returns the times and the pick (the id under the pointer in the frame the
     /// surface showed; `u[U_PICK]` is ignored and replaced by it).
     pub fn frame(&mut self, u: &U, pointer: Option<(i32, i32)>, stride: usize) -> (GpuTime, u32) {
+        self.run(u, pointer, stride, true)
+    }
+    /// Bring the resident lanes and bins to block `u` without drawing: for a surface that already shows
+    /// `u` because the CPU kernel drew the frames in between (it writes the same words).
+    pub fn catch_up(&mut self, u: &U, stride: usize) {
+        let mut u = *u;
+        let pick = u.w[U_PICK];
+        // `run` keeps the previous pick word; the block being caught up to carries its own
+        self.prev.w[U_PICK] = pick;
+        u.w[U_PICK] = pick;
+        self.run(&u, None, stride, false);
+    }
+    fn run(&mut self, u: &U, pointer: Option<(i32, i32)>, stride: usize, shade: bool) -> (GpuTime, u32) {
         let first = self.first;
         let mut new = *u;
         new.w[U_PICK] = self.prev.w[U_PICK];
@@ -507,9 +525,11 @@ impl Gpu {
         }
         enc.setComputePipelineState(&self.compact);
         enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: 1, height: 1, depth: 1 }, MTLSize { width: 1, height: 1, depth: 1 });
-        enc.setComputePipelineState(&self.shade);
-        // SAFETY: buffer 6 starts with the three dispatch counts `k_compact` writes earlier in this encoder.
-        unsafe { enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(self.bufs[6].as_ref().unwrap(), 0, MTLSize { width: 16, height: 16, depth: 1 }) };
+        if shade {
+            enc.setComputePipelineState(&self.shade);
+            // SAFETY: buffer 6 starts with the three dispatch counts `k_compact` writes earlier in this encoder.
+            unsafe { enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(self.bufs[6].as_ref().unwrap(), 0, MTLSize { width: 16, height: 16, depth: 1 }) };
+        }
         enc.endEncoding();
         cmd.commit();
         cmd.waitUntilCompleted();
@@ -521,9 +541,21 @@ impl Gpu {
         self.first = false;
         (time, pick)
     }
+    /// Forget what the surface shows: the next frame redraws everything.
+    pub fn invalidate(&mut self) {
+        let nz = self.nz;
+        self.words_mut(3)[..nz * 4].fill(0);
+        self.first = true;
+    }
     /// Tiles the last frame shaded, and tiles whose slab overflowed in its bin pass.
     pub fn last(&self) -> (u32, u32) {
         (self.words(6)[3], self.words(10)[1])
+    }
+    /// The tiles whose slab overflowed in the last bin pass (their lists are truncated: the CPU redraws them).
+    pub fn overflowed(&self, out: &mut Vec<u32>) {
+        out.clear();
+        let th = self.words(4);
+        out.extend((0..self.nt as u32).filter(|&t| th[2 * t as usize + 1] >> 31 != 0));
     }
     pub fn tile_list(&self) -> &[u32] {
         let n = self.words(6)[3] as usize;

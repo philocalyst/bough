@@ -8,6 +8,8 @@
 //! * `tile.rs`: the CPU tile rasteriser as sinks, monomorphised per archetype.
 //! * `scene.rs`: columns (the GPU's buffers), paint order, the window lane, bins, the CPU frame.
 pub mod expr;
+#[cfg(target_os = "macos")]
+pub mod driver;
 pub mod emit;
 #[cfg(target_os = "macos")]
 pub mod metal;

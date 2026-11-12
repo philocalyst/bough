@@ -28,6 +28,11 @@ pub struct Tile<'a> {
     need: u32,
     /// Pixels an opaque upper layer of the current record will replace (window coordinates).
     hide: Vec4i,
+    /// Per entry of the tile's list: the pixels (a bit per column, a word per row) that opaque covers of
+    /// *later* entries replace. An entry never shades them: the occlusion cut at pixel grain.
+    masks: Vec<[u32; 32]>,
+    /// The entry being shaded.
+    pub cur: usize,
     pub atlas: &'a [u8],
     pub aw: usize,
     pub st: Stats,
@@ -39,6 +44,10 @@ pub struct Stats {
     pub entries: u64,
     pub rows_shaded: u64,
     pub rows_copied: u64,
+    /// Shadow pixels given a coverage from the two profiles, and those at corners that went through the
+    /// kernel's per-pixel integral.
+    pub px_shadow: u64,
+    pub px_corner: u64,
 }
 impl Stats {
     pub fn add(&mut self, o: &Stats) {
@@ -46,6 +55,26 @@ impl Stats {
         self.entries += o.entries;
         self.rows_shaded += o.rows_shaded;
         self.rows_copied += o.rows_copied;
+        self.px_shadow += o.px_shadow;
+        self.px_corner += o.px_corner;
+    }
+}
+
+/// Maximal runs of set bits, as [a, b) column ranges.
+#[derive(Clone, Copy)]
+struct Runs(u32);
+impl Iterator for Runs {
+    type Item = (i32, i32);
+    #[inline(always)]
+    fn next(&mut self) -> Option<(i32, i32)> {
+        let v = self.0;
+        if v == 0 {
+            return None;
+        }
+        let a = v.trailing_zeros();
+        let n = (!(v >> a)).trailing_zeros();
+        self.0 = if a + n >= 32 { 0 } else { v & !(((1u32 << n) - 1) << a) };
+        Some((a as i32, (a + n) as i32))
     }
 }
 
@@ -74,7 +103,7 @@ fn over(row: &mut [[u16; 4]], sh: Vec4u) {
 
 impl<'a> Tile<'a> {
     pub fn new(atlas: &'a [u8], aw: u32) -> Tile<'a> {
-        Tile { acc: Box::new([[0; 4]; 1024]), ox: 0, oy: 0, cols: 0, all: 0, same: 0, need: 0, hide: EMPTY, atlas, aw: aw as usize, st: Stats::default() }
+        Tile { acc: Box::new([[0; 4]; 1024]), ox: 0, oy: 0, cols: 0, all: 0, same: 0, need: 0, hide: EMPTY, masks: Vec::new(), cur: 0, atlas, aw: aw as usize, st: Stats::default() }
     }
     /// Start a tile at (ox, oy) with `cols` x `nrows` pixels inside the frame.
     pub fn begin(&mut self, ox: i32, oy: i32, cols: usize, nrows: usize, flat: bool) {
@@ -83,6 +112,29 @@ impl<'a> Tile<'a> {
         // row 0 has no row above it in the tile
         self.same = if flat { self.all & !1 } else { 0 };
         self.hide = EMPTY;
+    }
+    /// The occlusion masks for this tile's list (paint-order keys, back to front) from the cover lane: walk
+    /// the list from the top, handing each entry the union of the covers above it.
+    pub fn cover_masks(&mut self, list: &[u32], cover: &[[i16; 4]], on: bool) {
+        self.masks.clear();
+        self.masks.resize(list.len(), [0; 32]);
+        if !on {
+            return;
+        }
+        let mut run = [0u32; 32];
+        for j in (0..list.len()).rev() {
+            self.masks[j] = run;
+            let c = cover[list[j] as usize];
+            if c[0] < c[2] {
+                let x1 = if cfg!(feature = "mutant_mask") { c[2] as i32 + 1 } else { c[2] as i32 };
+                let bits = rows(c[0] as i32 - self.ox, x1 - self.ox);
+                let mut m = rows(c[1] as i32 - self.oy, c[3] as i32 - self.oy);
+                while m != 0 {
+                    run[m.trailing_zeros() as usize] |= bits;
+                    m &= m - 1;
+                }
+            }
+        }
     }
     /// After the flat pass: decide the rows to shade and clear them.
     pub fn prepare(&mut self) {
@@ -128,17 +180,16 @@ impl<'a> Tile<'a> {
     fn span(&self, c: &Cmd) -> (i32, i32, u32) {
         ((c.win.x - self.ox).max(0), (c.win.z - self.ox).min(self.cols), rows(c.win.y - self.oy, c.win.w - self.oy) & self.need)
     }
-    /// [x0, x1) of row `gy` less the hidden rect: at most two pieces.
+    /// The columns of [x0, x1) on tile row `y` that this entry must shade: not under a later entry's opaque
+    /// cover, not under its own record's opaque upper layer. As maximal runs.
     #[inline(always)]
-    fn segs(&self, gy: i32, x0: i32, x1: i32) -> [(i32, i32); 2] {
-        let h = self.hide;
+    fn runs(&self, y: i32, x0: i32, x1: i32) -> Runs {
+        let mut vis = rows(x0, x1) & !self.masks[self.cur][y as usize];
+        let (h, gy) = (self.hide, self.oy + y);
         if gy >= h.y && gy < h.w {
-            let (a, b) = ((h.x - self.ox).clamp(x0, x1), (h.z - self.ox).clamp(x0, x1));
-            if a < b {
-                return [(x0, a), (b, x1)];
-            }
+            vis &= !rows(h.x - self.ox, h.z - self.ox);
         }
-        [(x0, x1), (x1, x1)]
+        Runs(vis)
     }
     #[inline(always)]
     fn core_x(&self, c: &Cmd) -> (i32, i32) {
@@ -164,7 +215,7 @@ impl<'a> Tile<'a> {
             m &= m - 1;
             let gy = oy + y;
             let cy = gy * 256 + 128;
-            for (s0, s1) in self.segs(gy, x0, x1) {
+            for (s0, s1) in self.runs(y, x0, x1) {
                 if s0 >= s1 {
                     continue;
                 }
@@ -293,7 +344,7 @@ impl Sink for Shade<'_, '_> {
         while m != 0 {
             let y = m.trailing_zeros() as i32;
             m &= m - 1;
-            for (a, b) in t.segs(t.oy + y, x0, x1) {
+            for (a, b) in t.runs(y, x0, x1) {
                 if a < b {
                     over(&mut t.acc[(y * 32 + a) as usize..(y * 32 + b) as usize], c.pm);
                 }
@@ -328,7 +379,7 @@ impl Sink for Shade<'_, '_> {
             let gy = oy + y;
             let cy = gy * 256 + 128;
             let core_row = gy >= c.core.y && gy < c.core.w && kx0 < kx1;
-            for (s0, s1) in t.segs(gy, x0, x1) {
+            for (s0, s1) in t.runs(y, x0, x1) {
                 if s0 >= s1 {
                     continue;
                 }
@@ -352,9 +403,11 @@ impl Sink for Shade<'_, '_> {
                     }
                     let (n, i0) = ((eb - ea) as usize, (ea - x0) as usize);
                     simd::scale_row(&sx[i0..i0 + n], sy, &mut cov[..n]);
+                    t.st.px_shadow += n as u64;
                     if zone_y {
                         // the corner corrections: the kernel, pixel by pixel, where a corner is in reach
                         let mut zm = (zone_x >> i0) & (u32::MAX >> (32 - n));
+                        t.st.px_corner += zm.count_ones() as u64;
                         while zm != 0 {
                             let i = zm.trailing_zeros() as usize;
                             zm &= zm - 1;
@@ -384,7 +437,7 @@ impl Sink for Shade<'_, '_> {
             let gy = oy + y;
             let cy = gy * 256 + 128;
             let core_row = gy >= c.core.y && gy < c.core.w && kx0 < kx1;
-            for (s0, s1) in t.segs(gy, x0, x1) {
+            for (s0, s1) in t.runs(y, x0, x1) {
                 if s0 >= s1 {
                     continue;
                 }
@@ -452,7 +505,9 @@ impl Sink for Shade<'_, '_> {
                     }
                 }
             }
-            simd::blend_cov(&mut t.acc[(y * 32 + xa) as usize..(y * 32 + xb) as usize], pm, &cov[..n]);
+            for (a, b) in t.runs(y, xa, xb) {
+                simd::blend_cov(&mut t.acc[(y * 32 + a) as usize..(y * 32 + b) as usize], pm, &cov[(a - xa) as usize..(b - xa) as usize]);
+            }
         }
     }
 }

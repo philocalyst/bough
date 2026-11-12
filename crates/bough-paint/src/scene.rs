@@ -124,7 +124,8 @@ pub struct Desc {
     /// cover moved.
     pub window: fn(ColView, old: &U, new: &U, mask: u64, first: bool, win: &mut [[i16; 4]], cover: &mut [[i16; 4]], dmg: &mut Damage) -> bool,
     pub flat: fn(ColView, zs: &[u32], order: &[u32], u: &U, t: &mut Tile),
-    pub shade: fn(ColView, zs: &[u32], order: &[u32], u: &U, t: &mut Tile),
+    /// `first`: the index of `zs[0]` in the tile's list (its occlusion mask).
+    pub shade: fn(ColView, zs: &[u32], first: usize, order: &[u32], u: &U, t: &mut Tile),
     /// The specification at one pixel: (blended accumulator, some layer inked the pixel).
     pub spec: fn(ColView, i: u32, u: &U, x: i32, y: i32, acc: Vec4u, atlas: &[u8], aw: u32) -> (Vec4u, bool),
     /// The record as the generic kernel's commands.
@@ -177,8 +178,9 @@ fn flat_run<P: Paint>(c: ColView, zs: &[u32], order: &[u32], u: &U, t: &mut Tile
         unsafe { c.rec::<P>(i) }.paint(&Cx { u, rect: c.rect(i) }, NO_CLIP, &mut Flat(t));
     }
 }
-fn shade_run<P: Paint>(c: ColView, zs: &[u32], order: &[u32], u: &U, t: &mut Tile) {
-    for &z in zs {
+fn shade_run<P: Paint>(c: ColView, zs: &[u32], first: usize, order: &[u32], u: &U, t: &mut Tile) {
+    for (j, &z) in zs.iter().enumerate() {
+        t.cur = first + j;
         let i = order[z as usize] & IDX_MASK;
         // SAFETY: as `flat_run`.
         unsafe { c.rec::<P>(i) }.paint(&Cx { u, rect: c.rect(i) }, NO_CLIP, &mut Shade(t));
@@ -386,6 +388,11 @@ pub struct Scene {
     tiles: Vec<u32>,
 }
 
+/// `BOUGH_PAINT_PROF=1`: nanoseconds and tile entries per column, accumulated by `shade` (a measurement
+/// build's switch: it times every run, so the totals are for proportions, never for a result).
+pub static PROF: std::sync::Mutex<[(u64, u64); 32]> = std::sync::Mutex::new([(0, 0); 32]);
+static PROF_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 struct OutPtr(*mut u32);
 // SAFETY: workers write disjoint tiles through it (`Scene::shade`).
 unsafe impl Sync for OutPtr {}
@@ -496,6 +503,7 @@ impl Scene {
     pub fn shade(&self, u: &U, tiles: &[u32], out: &mut [u32], stride: usize, pool: &Pool, extra: usize) -> Stats {
         assert!(out.len() >= (self.fh as usize - 1) * stride + self.fw as usize);
         let optr = OutPtr(out.as_mut_ptr());
+        let prof = *PROF_ON.get_or_init(|| std::env::var("BOUGH_PAINT_PROF").is_ok());
         let next = AtomicUsize::new(0);
         const CHUNK: usize = 8;
         let total = std::sync::Mutex::new(Stats::default());
@@ -513,10 +521,21 @@ impl Scene {
                     let list = self.bins.tile(ti as usize);
                     t.begin(ox, oy, cols, nrows, self.flat);
                     if self.flat {
-                        self.runs(list, |c, zs| (self.cols[c].desc.flat)(self.view(c), zs, &self.order, u, &mut t));
+                        self.runs(list, |c, _, zs| (self.cols[c].desc.flat)(self.view(c), zs, &self.order, u, &mut t));
                     }
+                    t.cover_masks(list, &self.cover, self.cut && list.len() > 1);
                     t.prepare();
-                    self.runs(list, |c, zs| (self.cols[c].desc.shade)(self.view(c), zs, &self.order, u, &mut t));
+                    if prof {
+                        self.runs(list, |c, first, zs| {
+                            let t0 = std::time::Instant::now();
+                            (self.cols[c].desc.shade)(self.view(c), zs, first, &self.order, u, &mut t);
+                            let mut p = PROF.lock().unwrap();
+                            p[c].0 += t0.elapsed().as_nanos() as u64;
+                            p[c].1 += zs.len() as u64;
+                        });
+                    } else {
+                        self.runs(list, |c, first, zs| (self.cols[c].desc.shade)(self.view(c), zs, first, &self.order, u, &mut t));
+                    }
                     t.st.entries += list.len() as u64;
                     let at = oy as usize * stride + ox as usize;
                     // SAFETY: the tile's rows [oy, oy + nrows) x columns [ox, ox + cols) lie inside `out`
@@ -533,7 +552,7 @@ impl Scene {
     }
     /// Maximal runs of one column in a tile's list.
     #[inline(always)]
-    fn runs(&self, list: &[u32], mut f: impl FnMut(usize, &[u32])) {
+    fn runs(&self, list: &[u32], mut f: impl FnMut(usize, usize, &[u32])) {
         let mut a = 0;
         while a < list.len() {
             let c = self.order[list[a] as usize] >> IDX_BITS;
@@ -541,7 +560,7 @@ impl Scene {
             while b < list.len() && self.order[list[b] as usize] >> IDX_BITS == c {
                 b += 1;
             }
-            f(c as usize, &list[a..b]);
+            f(c as usize, a, &list[a..b]);
             a = b;
         }
     }
@@ -556,6 +575,10 @@ impl Scene {
         fs.raster = self.shade(u, &tiles, out, stride, pool, extra);
         self.tiles = tiles;
         fs
+    }
+    /// The tiles the last `frame` shaded.
+    pub fn last_tiles(&self) -> &[u32] {
+        &self.tiles
     }
     /// Forget what the surface shows: the next frame redraws everything.
     pub fn invalidate(&mut self) {

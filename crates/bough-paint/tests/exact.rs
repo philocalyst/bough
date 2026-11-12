@@ -292,7 +292,8 @@ fn gpu_mutants_are_caught() {
     let good = source(&descs, &lays);
     let mutants = [
         ("rounding", good.replacen("constant uint HALF = 16384u;", "constant uint HALF = 16383u;", 1)),
-        ("dropped layer", good.replacen("    a = x_over(a, p_rrect(", "    // a = x_over(a, p_rrect(", 1)),
+        ("dropped layer", good.replacen("    a0 = x_over(a0, p_rrect(", "    // a0 = x_over(a0, p_rrect(", 1)),
+        ("pixel cut one too wide", good.replacen("c.z >= x + 2 && c.w >= y + 2", "c.z >= x + 1 && c.w >= y + 2", 1)),
         ("dropped damage", good.replace("} else if (a", "} else if (false && a")),
     ];
     for (name, src) in mutants {
