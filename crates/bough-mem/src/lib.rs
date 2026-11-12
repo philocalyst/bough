@@ -173,10 +173,9 @@ impl Region {
     fn carve_aligned<T>(&mut self, name: &'static str, cap: usize, align: usize) -> Col<T> {
         let bytes = cap.checked_mul(size_of::<T>()).expect("column size");
         let off = self.reserve(bytes, align);
-        assert!(off <= u32::MAX as usize, "region offsets are u32");
         // SAFETY: off + bytes <= len (checked in `reserve`), base is valid for len bytes.
         let ptr = unsafe { NonNull::new_unchecked(self.inner.base.as_ptr().add(off) as *mut T) };
-        Col { ptr, len: 0, cap, off: off as u32, name, region: Some(self.inner.clone()), _t: PhantomData }
+        Col { ptr, len: 0, cap, off, name, region: Some(self.inner.clone()), _t: PhantomData }
     }
 }
 
@@ -185,8 +184,10 @@ pub struct Col<T> {
     ptr: NonNull<T>,
     len: usize,
     cap: usize,
-    /// Byte offset of element 0 in its region (`u32::MAX` when owned).
-    off: u32,
+    /// Byte offset of element 0 in its region (`usize::MAX` when owned). A region the GPU addresses keeps
+    /// its offsets below 2^32 (its user checks, bough `rt::gpu_off`); a CPU-only region (the façade's store
+    /// block) may be larger.
+    off: usize,
     name: &'static str,
     /// `None` = owned (heap, growable).
     region: Option<Rc<RegionInner>>,
@@ -196,7 +197,7 @@ pub struct Col<T> {
 impl<T> Col<T> {
     /// An empty owned column (grows like a `Vec`; never seen by the GPU).
     pub fn owned(name: &'static str) -> Col<T> {
-        Col { ptr: NonNull::dangling(), len: 0, cap: if size_of::<T>() == 0 { usize::MAX } else { 0 }, off: u32::MAX, name, region: None, _t: PhantomData }
+        Col { ptr: NonNull::dangling(), len: 0, cap: if size_of::<T>() == 0 { usize::MAX } else { 0 }, off: usize::MAX, name, region: None, _t: PhantomData }
     }
     pub fn owned_with_capacity(name: &'static str, cap: usize) -> Col<T> {
         let mut c = Col::owned(name);
@@ -217,7 +218,7 @@ impl<T> Col<T> {
     }
     /// Byte offset of element 0 in the region (`None` for an owned column).
     pub fn region_offset(&self) -> Option<usize> {
-        self.region.as_ref().map(|_| self.off as usize)
+        self.region.as_ref().map(|_| self.off)
     }
     pub fn is_carved(&self) -> bool {
         self.region.is_some()

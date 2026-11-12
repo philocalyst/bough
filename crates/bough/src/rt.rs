@@ -166,6 +166,12 @@ impl StoreCaps {
 /// Records per core page.
 pub const PAGE_SLOTS: usize = 64;
 
+/// A GPU-read column's offset in the region: the kernels address the region with 32-bit offsets (`FHdr`), so
+/// every column the GPU reads must start below 4 GiB (the façade's CPU-only store block may be larger).
+fn gpu_off(o: usize) -> u32 {
+    u32::try_from(o).expect("GPU region offsets are u32: the kernels address the region with 32-bit offsets")
+}
+
 impl Caps {
     /// Sized for the comparison scenes with headroom (heavy: ~2.6 K records / 2.3 K glyphs; vlist: ~6 K
     /// glyphs mounted). With the direct-Metal presenter these are only minimums: see [`Caps::reserve`].
@@ -608,18 +614,18 @@ impl Rt {
         let layout = Layout {
             w: win_w as u32,
             h: win_h as u32,
-            inst_off: inst.region_offset().unwrap() as u32,
-            spaces_off: glyphs.spaces.region_offset().unwrap() as u32,
-            clips_off: o[3] as u32,
-            dir_id_off: o[1] as u32,
-            dir_ink_off: o[2] as u32,
-            pages_off: o[0] as u32,
-            gx_off: glyphs.x.region_offset().unwrap() as u32,
-            gent_off: glyphs.ent.region_offset().unwrap() as u32,
-            runs_off: glyphs.runs.region_offset().unwrap() as u32,
-            toks_off: text.cache.tok_offset().unwrap() as u32,
+            inst_off: gpu_off(inst.region_offset().unwrap()),
+            spaces_off: gpu_off(glyphs.spaces.region_offset().unwrap()),
+            clips_off: gpu_off(o[3]),
+            dir_id_off: gpu_off(o[1]),
+            dir_ink_off: gpu_off(o[2]),
+            pages_off: gpu_off(o[0]),
+            gx_off: gpu_off(glyphs.x.region_offset().unwrap()),
+            gent_off: gpu_off(glyphs.ent.region_offset().unwrap()),
+            runs_off: gpu_off(glyphs.runs.region_offset().unwrap()),
+            toks_off: gpu_off(text.cache.tok_offset().unwrap()),
             tok_stride: size_of::<TokStrike>() as u32,
-            xforms_off: xforms.region_offset().unwrap() as u32,
+            xforms_off: gpu_off(xforms.region_offset().unwrap()),
             slot,
             masks: Masks {
                 inst: icap as u32 - 1,
@@ -635,7 +641,7 @@ impl Rt {
         let mut layout = layout;
         {
             use bough_metal::fused::*;
-            let d = |off: u32, elem: usize, cap: usize, group: usize| ColumnDesc { off, elem: elem as u32, reserve: (elem * cap) as u32, group: group as u8 };
+            let d = |off: u32, elem: usize, cap: usize, group: usize| ColumnDesc { off, elem: elem as u32, reserve: u32::try_from(elem * cap).expect("a GPU column's reservation fits 32 bits"), group: group as u8 };
             let l = &mut layout;
             l.cols[COL_INST] = d(l.inst_off, size_of::<Instance>(), icap, G_INST);
             l.cols[COL_SPACES] = d(l.spaces_off, 8, caps.spaces, G_SPACE);
