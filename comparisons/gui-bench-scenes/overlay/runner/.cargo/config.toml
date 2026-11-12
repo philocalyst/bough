@@ -1,0 +1,6 @@
+# Local fakeland checkout next to this gui-bench (as gui-bench's README describes; the file is git-ignored there).
+[patch."https://github.com/zortax/fakeland"]
+fakeland = { path = "../../fakeland/crates/fakeland" }
+fakeland-bench = { path = "../../fakeland/crates/fakeland-bench" }
+fakeland-trace = { path = "../../fakeland/crates/fakeland-trace" }
+fakeland-types = { path = "../../fakeland/crates/fakeland-types" }

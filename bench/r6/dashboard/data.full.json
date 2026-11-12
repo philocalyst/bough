@@ -1,0 +1,1165 @@
+{
+  "updated": "2026-11-11",
+  "series": [
+    {
+      "id": "redescribe_app_row",
+      "group": "Re-description",
+      "title": "Re-describing one plain row (box + integer label + string label)",
+      "unit": "instructions / row / turn",
+      "lower_is_better": true,
+      "note": "crates/bough/examples/redescribe_cost.rs, 1,000 rows, one plain field changed, calling-thread instruction counter",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 2742,
+          "kind": "measured"
+        },
+        {
+          "label": "seals + byte specs (lead/core-r6)",
+          "value": 574,
+          "kind": "measured"
+        }
+      ]
+    },
+    {
+      "id": "redescribe_two_static_labels",
+      "group": "Re-description",
+      "title": "Re-describing one row with two static labels",
+      "unit": "instructions / row / turn",
+      "lower_is_better": true,
+      "note": "Same method as the app-row series: crates/bough/examples/redescribe_cost.rs, 1,000 rows, calling-thread instruction counter",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 2313,
+          "kind": "measured"
+        },
+        {
+          "label": "seals + byte specs (lead/core-r6)",
+          "value": 522,
+          "kind": "measured"
+        }
+      ]
+    },
+    {
+      "id": "redescribe_box_alone",
+      "group": "Re-description",
+      "title": "Re-describing one box alone",
+      "unit": "instructions / row / turn",
+      "lower_is_better": true,
+      "note": "Same method as the app-row series: crates/bough/examples/redescribe_cost.rs, 1,000 rows, calling-thread instruction counter",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 465,
+          "kind": "measured"
+        },
+        {
+          "label": "seals + byte specs (lead/core-r6)",
+          "value": 148,
+          "kind": "measured"
+        }
+      ]
+    },
+    {
+      "id": "table_select",
+      "group": "gui-bench table, coarse (plain Vec)",
+      "title": "Select",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "Lane generalization on the base. Points are labelled by N (rows). Reported, not yet replayed.",
+      "points": [
+        {
+          "label": "N=1000",
+          "value": 6567603,
+          "kind": "reported"
+        },
+        {
+          "label": "N=5000",
+          "value": 32874375,
+          "kind": "reported"
+        }
+      ]
+    },
+    {
+      "id": "table_update_every_10th",
+      "group": "gui-bench table, coarse (plain Vec)",
+      "title": "Update every 10th row",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "Lane generalization on the base. Points are labelled by N (rows). Reported, not yet replayed.",
+      "points": [
+        {
+          "label": "N=1000",
+          "value": 4662665,
+          "kind": "reported"
+        },
+        {
+          "label": "N=5000",
+          "value": 23336384,
+          "kind": "reported"
+        }
+      ]
+    },
+    {
+      "id": "table_swap",
+      "group": "gui-bench table, coarse (plain Vec)",
+      "title": "Swap",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "Lane generalization on the base. Points are labelled by N (rows). Reported, not yet replayed.",
+      "points": [
+        {
+          "label": "N=1000",
+          "value": 3311480,
+          "kind": "reported"
+        },
+        {
+          "label": "N=5000",
+          "value": 16465534,
+          "kind": "reported"
+        }
+      ]
+    },
+    {
+      "id": "table_remove",
+      "group": "gui-bench table, coarse (plain Vec)",
+      "title": "Remove",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "Lane generalization on the base. Only N=5000 was reported. Reported, not yet replayed.",
+      "points": [
+        {
+          "label": "N=5000",
+          "value": 116538216,
+          "kind": "reported"
+        }
+      ]
+    },
+    {
+      "id": "memory_footprint",
+      "group": "Memory (base)",
+      "title": "Footprint, active at t=3 s",
+      "unit": "MiB",
+      "lower_is_better": true,
+      "note": "Lane memory, base, M3 Pro 2x. Points are labelled by scene. Reported, not yet replayed.",
+      "points": [
+        {
+          "label": "counter",
+          "value": 122.5,
+          "kind": "reported"
+        },
+        {
+          "label": "dashboard",
+          "value": 166.2,
+          "kind": "reported"
+        },
+        {
+          "label": "scroll 100 rows",
+          "value": 151.4,
+          "kind": "reported"
+        },
+        {
+          "label": "scroll 1K",
+          "value": 153.6,
+          "kind": "reported"
+        },
+        {
+          "label": "scroll 7K",
+          "value": 164.6,
+          "kind": "reported"
+        },
+        {
+          "label": "heavy",
+          "value": 145.9,
+          "kind": "reported"
+        }
+      ]
+    },
+    {
+      "id": "memory_resident",
+      "group": "Memory (base)",
+      "title": "Resident, active at t=3 s",
+      "unit": "MiB",
+      "lower_is_better": true,
+      "note": "Lane memory, base, M3 Pro 2x. Points are labelled by scene. Reported, not yet replayed.",
+      "points": [
+        {
+          "label": "counter",
+          "value": 39.8,
+          "kind": "reported"
+        },
+        {
+          "label": "dashboard",
+          "value": 54.2,
+          "kind": "reported"
+        },
+        {
+          "label": "scroll 100 rows",
+          "value": 40.2,
+          "kind": "reported"
+        },
+        {
+          "label": "scroll 1K",
+          "value": 42.7,
+          "kind": "reported"
+        },
+        {
+          "label": "scroll 7K",
+          "value": 60.8,
+          "kind": "reported"
+        },
+        {
+          "label": "heavy",
+          "value": 38.2,
+          "kind": "reported"
+        }
+      ]
+    },
+    {
+      "id": "memory_holders_counter",
+      "group": "Memory (base)",
+      "title": "Where the counter example's footprint is",
+      "unit": "MiB",
+      "lower_is_better": true,
+      "note": "Counter example on the base. These are holders of the footprint, not a sequence of versions. Reported, not yet replayed.",
+      "points": [
+        {
+          "label": "GPU driver unmapped",
+          "value": 68.0,
+          "kind": "reported"
+        },
+        {
+          "label": "IOAccelerator+IOKit unmapped",
+          "value": 8.0,
+          "kind": "reported"
+        },
+        {
+          "label": "region buffer",
+          "value": 20.0,
+          "kind": "reported"
+        },
+        {
+          "label": "IOSurfaces drawn",
+          "value": 4.7,
+          "kind": "reported"
+        },
+        {
+          "label": "malloc dirty",
+          "value": 12.4,
+          "kind": "reported"
+        },
+        {
+          "label": "other GPU objects",
+          "value": 0.8,
+          "kind": "reported"
+        },
+        {
+          "label": "rest",
+          "value": 5.8,
+          "kind": "reported"
+        }
+      ]
+    },
+    {
+      "id": "tests_failing",
+      "group": "Correctness",
+      "title": "Workspace tests failing",
+      "unit": "tests failing",
+      "lower_is_better": true,
+      "note": "main bd9978c: 5 failing of 225, and the tree did not build with all targets. lane/verification fixes: 0 for bough-suite's 32 tests only; the whole workspace has not been rerun on the fixed tree.",
+      "points": [
+        {
+          "label": "main bd9978c",
+          "value": 5,
+          "kind": "measured"
+        },
+        {
+          "label": "lane/verification fixes",
+          "value": 0,
+          "kind": "measured"
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-plain-select-n1000",
+      "group": "gui-bench: table",
+      "title": "coarse / plain select N=1000",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 6567603,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 4258832,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.648 (improved). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-plain-select-n100",
+      "group": "gui-bench: table",
+      "title": "coarse / plain select N=100",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 667431,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 433899,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.650 (improved). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-plain-swap-n1000",
+      "group": "gui-bench: table",
+      "title": "coarse / plain swap N=1000",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 3311480,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 2165518,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.654 (improved). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-plain-select-n10",
+      "group": "gui-bench: table",
+      "title": "coarse / plain select N=10",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 76597,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 51531,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.673 (improved). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-plain-swap-n100",
+      "group": "gui-bench: table",
+      "title": "coarse / plain swap N=100",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 366536,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 249504,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.681 (improved). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-plain-update10-n100",
+      "group": "gui-bench: table",
+      "title": "coarse / plain update10 N=100",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 471495,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 354273,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.751 (improved). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-plain-update10-n1000",
+      "group": "gui-bench: table",
+      "title": "coarse / plain update10 N=1000",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 4662665,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 3510245,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.753 (improved). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-plain-update10-n10",
+      "group": "gui-bench: table",
+      "title": "coarse / plain update10 N=10",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 53095,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 40944,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.771 (improved). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-plain-swap-n10",
+      "group": "gui-bench: table",
+      "title": "coarse / plain swap N=10",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 70664,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 58057,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.822 (improved). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-fine-plain-select-n10",
+      "group": "gui-bench: table",
+      "title": "fine / plain select N=10",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 12132,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 10475,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 0.863 (improved). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-fine-normal-insert-n10",
+      "group": "gui-bench: table",
+      "title": "fine / normal insert N=10",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 59494,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 61497,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.034 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-fine-plain-swap-n100",
+      "group": "gui-bench: table",
+      "title": "fine / plain swap N=100",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 54119,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 55730,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.030 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-fine-plain-clear-n100",
+      "group": "gui-bench: table",
+      "title": "fine / plain clear N=100",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 564069,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 579311,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.027 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-fine-normal-insert-n1000",
+      "group": "gui-bench: table",
+      "title": "fine / normal insert N=1000",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 83295,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 85473,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.026 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-replace-select-n100",
+      "group": "gui-bench: table",
+      "title": "coarse / normal replace-select N=100",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 95949,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 93539,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.975 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-remove-n1000",
+      "group": "gui-bench: table",
+      "title": "coarse / normal remove N=1000",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 28967,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 28075,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.969 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-clear-n10",
+      "group": "gui-bench: table",
+      "title": "coarse / normal clear N=10",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 28545,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 27648,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.969 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-remove-n100",
+      "group": "gui-bench: table",
+      "title": "coarse / normal remove N=100",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 21552,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 20725,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.962 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-replace-n10",
+      "group": "gui-bench: table",
+      "title": "coarse / normal replace N=10",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 22263,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 21390,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.961 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-remove-n10",
+      "group": "gui-bench: table",
+      "title": "coarse / normal remove N=10",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 20467,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 19600,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.958 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-insert-n10",
+      "group": "gui-bench: table",
+      "title": "coarse / normal insert N=10",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 20456,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 19584,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.957 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-insert-n1000",
+      "group": "gui-bench: table",
+      "title": "coarse / normal insert N=1000",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 17106,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 16294,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.953 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-update10-n100",
+      "group": "gui-bench: table",
+      "title": "coarse / normal update10 N=100",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 12458,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 11618,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.933 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-insert-n100",
+      "group": "gui-bench: table",
+      "title": "coarse / normal insert N=100",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 9861,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 9074,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.920 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-replace-select-n10",
+      "group": "gui-bench: table",
+      "title": "coarse / normal replace-select N=10",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 19844,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 17554,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.885 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-select-n100",
+      "group": "gui-bench: table",
+      "title": "coarse / normal select N=100",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 8786,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 7691,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.875 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-plain-replace-select-n10",
+      "group": "gui-bench: table",
+      "title": "coarse / plain replace-select N=10",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 190535,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 160362,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.842 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-update10-n10",
+      "group": "gui-bench: table",
+      "title": "coarse / normal update10 N=10",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 5068,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 4227,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.834 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-plain-replace-select-n100",
+      "group": "gui-bench: table",
+      "title": "coarse / plain replace-select N=100",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 1717245,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 1429548,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.832 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-plain-replace-select-n1000",
+      "group": "gui-bench: table",
+      "title": "coarse / plain replace-select N=1000",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 17083654,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 14169408,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.829 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-swap-n1000",
+      "group": "gui-bench: table",
+      "title": "coarse / normal swap N=1000",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 4764,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 3928,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.825 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-select-n1000",
+      "group": "gui-bench: table",
+      "title": "coarse / normal select N=1000",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 9612,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 7833,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.815 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-swap-n100",
+      "group": "gui-bench: table",
+      "title": "coarse / normal swap N=100",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 4346,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 3509,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.807 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-swap-n10",
+      "group": "gui-bench: table",
+      "title": "coarse / normal swap N=10",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 4302,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 3465,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.805 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-table-coarse-normal-select-n10",
+      "group": "gui-bench: table",
+      "title": "coarse / normal select N=10",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 8724,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 6962,
+          "kind": "measured",
+          "note": "sweep.py run-1 (table.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 0.798 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-rows-fine-scroll-n100",
+      "group": "gui-bench: rows",
+      "title": "fine scroll N=100",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 9390,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 11895,
+          "kind": "measured",
+          "note": "sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 1.267 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-rows-fine-scroll-n1000",
+      "group": "gui-bench: rows",
+      "title": "fine scroll N=1000",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 17782,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates FAIL."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 20288,
+          "kind": "measured",
+          "note": "sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now FAIL (rings 4,1). Ratio 1.141 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-rows-fine-hover-n10",
+      "group": "gui-bench: rows",
+      "title": "fine hover N=10",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 4240,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 4384,
+          "kind": "measured",
+          "note": "sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.034 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-rows-fine-hover-n100",
+      "group": "gui-bench: rows",
+      "title": "fine hover N=100",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 4326,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 4470,
+          "kind": "measured",
+          "note": "sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.033 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    },
+    {
+      "id": "gb6-rows-fine-hover-n1000",
+      "group": "gui-bench: rows",
+      "title": "fine hover N=1000",
+      "unit": "instructions / operation",
+      "lower_is_better": true,
+      "note": "",
+      "points": [
+        {
+          "label": "base aa9943e",
+          "value": 4781,
+          "kind": "reported",
+          "note": "Read, not measured: comparisons/bough-guibench lane TABLE-CELLS.json cells[].R0.median; its provenance head is 16542882 not aa9943e. Base gates pass."
+        },
+        {
+          "label": "round6 42c514cc",
+          "value": 4925,
+          "kind": "measured",
+          "note": "sweep.py run-1 (rest.json), R0 median, headless calling-thread instructions. Gates now pass (rings 4,1). Ratio 1.030 (regression). Tree integ @ 42c514ccbe."
+        }
+      ]
+    }
+  ]
+}

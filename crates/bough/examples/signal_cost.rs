@@ -57,30 +57,51 @@ fn app(n: usize, once: bool) -> App<Rows> {
     a
 }
 
-fn slope(mut run: impl FnMut(u32) -> u64) -> u64 {
-    run(8);
-    let (lo, hi) = (run(64), run(192));
-    (hi - lo) / 128
+/// The measurement as it was (default) or stable (`SC_STABLE=1`, bench lane round 7). The default warms with 8
+/// turns and takes one slope between 64 and 192 turns, writing `k % 1000`: the first write to each row's label
+/// then lands inside the measured batches (at 64 rows `hi - lo` is negative; at 256 rows the first-touch work is
+/// the slope), and a label's digit count changes at different rates in the two batches. Stable: warm with
+/// `3 n + 8` turns (every row written), write `1000 + k % 9000` (always four digits), and report the median of
+/// five slopes. `SC_WARM=k` overrides the warm-up alone.
+fn stable() -> bool {
+    std::env::var("SC_STABLE").is_ok_and(|v| v == "1")
 }
 
-fn cells(n: usize, once: bool) -> [u64; 6] {
+fn slope(n: usize, mut run: impl FnMut(u32) -> u64) -> i64 {
+    let warm = if stable() { 3 * n as u32 + 8 } else { 8 };
+    run(std::env::var("SC_WARM").ok().and_then(|v| v.parse().ok()).unwrap_or(warm));
+    let mut v: Vec<i64> = (0..if stable() { 5 } else { 1 })
+        .map(|_| {
+            let (lo, hi) = (run(64), run(192));
+            (hi as i64 - lo as i64) / 128
+        })
+        .collect();
+    v.sort();
+    v[v.len() / 2]
+}
+
+fn cells(n: usize, once: bool) -> [i64; 6] {
     let mut a = app(n, once);
     let mut k = 0u32;
+    let val = |k: u32| if stable() { 1000 + k % 9000 } else { k % 1000 };
     let mut cell = |a: &mut App<Rows>, which: u8| {
-        slope(|reps| {
+        slope(n, |reps| {
             let t0 = tinstr();
             for _ in 0..reps {
                 k = k.wrapping_add(1);
                 let i = (k as usize * 7) % n;
                 match which {
                     0 => a.turn(|r| drop(r.tint[i].set(Color(0xff00_0000 | (k & 0xff_ffff))))),
-                    1 => a.turn(|r| drop(r.count[i].set(k % 1000))),
-                    2 => a.turn(|r| drop(r.name[i].set(k % 1000))),
+                    1 => a.turn(|r| drop(r.count[i].set(val(k)))),
+                    2 => a.turn(|r| drop(r.name[i].set(val(k)))),
                     3 => a.turn(|_| {}),
-                    // round 7: the same turns with their frame (headless: up to the tile list), so that work
-                    // moved from the write to the frame is counted
+                    // core lane, round 7: the same turns with their frame (headless: up to the tile list), so
+                    // that work moved from the write to the frame is counted. The colour goes to a row inside
+                    // the window (the first 24 of an 800 px window): a write to a row that is not visible
+                    // damages nothing and its frame returns at once.
                     4 => {
-                        a.turn(|r| drop(r.tint[i].set(Color(0xff00_0000 | (k & 0xff_ffff)))));
+                        let v = (k as usize * 7) % n.min(24);
+                        a.turn(|r| drop(r.tint[v].set(Color(0xff00_0000 | (k & 0xff_ffff)))));
                         a.frame();
                     }
                     _ => {
@@ -98,40 +119,10 @@ fn cells(n: usize, once: bool) -> [u64; 6] {
     [c[0], c[1], c[2], c[3], cell(&mut a, 4), cell(&mut a, 5)]
 }
 
-/// Feature `attr`: where the instructions of a colour-write turn and its frame go (instrumented build).
-#[cfg(feature = "attr")]
-fn attribute() {
-    let ovh = bough_metal::perf::tinstr_overhead();
-    let names = ["handler (the write)", "settle (all)", "run_head", "patch (applier)", "epoch advance", "paint_resolve", "(empty span: calibration)", "pick", "", "repair_rows", "copy_plan", "write_slot", "draw: before repair_rows", "draw: between copy_plan and the slot", "plane(0).is_clear"];
-    for n in [1usize, 256] {
-        let mut a = app(n, true);
-        let reps = 4000u64;
-        for with_frame in [false, true] {
-            bough::attr::on::take();
-            for k in 0..reps as u32 {
-                let i = (k as usize * 7) % n;
-                a.turn(|r| drop(r.tint[i].set(Color(0xff00_0000 | (k & 0xff_ffff)))));
-                if with_frame {
-                    a.frame();
-                }
-            }
-            let t = bough::attr::on::take();
-            println!("rows {n}, frame {with_frame}:");
-            for (i, name) in names.iter().enumerate() {
-                if t[i].1 != 0 {
-                    println!("  {name:24} {:6} per turn ({} spans)", (t[i].0.saturating_sub(t[i].1 * ovh)) / reps, t[i].1 / reps);
-                }
-            }
-            a.frame();
-        }
-    }
-}
-
+// `--features hotpath` (or `hotpath-alloc`): hotpath's report of the measured phases at exit; the cells it prints
+// are then instrumented numbers (MEASUREMENT.md), never release results.
+#[cfg_attr(feature = "hotpath", hotpath::main(allocator = bough_mem::count::Counting))]
 fn main() {
-    #[cfg(feature = "attr")]
-    if std::env::var_os("ATTR").is_some() {
-        return attribute();
-    }
     if let Some(reps) = std::env::var("SPIN").ok().and_then(|v| v.parse::<u32>().ok()) {
         // profiling: idle turns of a re-describing owner, nothing else
         let mut a = app(MAX, false);
@@ -150,4 +141,7 @@ fn main() {
             println!("{n},{name},{},{},{},{},{},{}", c[0], c[1], c[2], c[3], c[4], c[5]);
         }
     }
+    // hotpath-alloc nests bough_mem's counting allocator inside its own: both see every allocation
+    #[cfg(feature = "hotpath-alloc")]
+    eprintln!("bough_mem::count under hotpath: {} allocations, {} frees, peak {} bytes", bough_mem::count::allocs(), bough_mem::count::frees(), bough_mem::count::peak());
 }

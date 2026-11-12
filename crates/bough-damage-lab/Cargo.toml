@@ -7,6 +7,10 @@ publish = false
 
 [dependencies]
 
+# Linux: the counters behind `measure::counters` (perf_event_open on the calling thread).
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+bough-mem = { path = "../bough-mem" }
+
 [[bin]]
 name = "lab"
 path = "src/bin/lab.rs"

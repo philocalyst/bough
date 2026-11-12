@@ -1,0 +1,12 @@
+# host=mileswirht os=Darwin 24.6.0 arch=arm64
+# cpu=Apple M3 Pro cores=11 mem=36GiB
+# load=3.53 3.25 3.64
+# commit=13253be95f date=2026-11-12T11:32:10Z rustc=1.101.0-nightly_5d8fec066_2026-10-16
+# binary=workload profile=dist sha256=7ff39d188a09f130 bytes=6255840
+## sheet
+  Wall Time    315.9 ms  ±     5.2 ms     306.9 ms  …   326.2 ms
+  Memory       335.4 MiB ±     8.9 MiB    320.0 MiB …   345.1 MiB
+        0.33 real         0.22 user         0.06 sys
+           352976896  maximum resident set size
+          3959083205  instructions retired
+           388581888  peak memory footprint

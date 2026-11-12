@@ -1,0 +1,62 @@
+# host=mileswirht os=Darwin 24.6.0 arch=arm64
+# cpu=Apple M3 Pro cores=11 mem=36GiB
+# load=15.85 23.77 26.68
+# commit=6deab7e4e7 dirty date=2026-11-12T10:05:19Z rustc=1.101.0-nightly_5d8fec066_2026-10-16
+# binary=workload profile=dist sha256=01e6f3cc7d0cdb9d bytes=6255760
+# env MODE=once RENDER=0 REPS=32 SCENE_SCALE=1
+scene	phase	steps	instr_p50	instr_p95	cycles_p50	wall_us_p50	wall_us_p95	wall_us_max	allocs_per_step	footprint_mib	peak_mib
+# scene=sheet model="10000 rows x 10 columns = 100000 cells" fanout=10000 scene_scale=1 mode=once render=0 device_scale=2 window=1280x800 reps=32
+# records=240055 since_exec_ms=401.4 build_ms=0.4
+sheet	mount	1	3606896865	3606896865	1073766770	384199.3	384199.3	384199.3	-	280.1	342.1
+sheet	first_frame	1	10559	10559	15092	4.8	4.8	4.8	-	280.1	342.1
+sheet	steady	32	11149	84577	4936	2.4	22.2	54.1	-	280.3	342.4
+sheet	hover	32	15531073	15762256	15745249	5706.1	7827.2	8769.6	-	292.1	354.2
+sheet	theme	32	57539590	57693952	11778134	4529.0	6684.0	7256.4	-	292.1	354.2
+sheet	resize	32	119584391	2125434765	71076372	21774.7	185827.8	211931.8	-	298.0	360.1
+sheet	resize_anim	32	73526723	2118648565	51596050	20673.6	113431.5	184655.4	-	298.0	360.1
+sheet	anim	32	128	128	0	0.3	0.5	3.9	-	298.0	360.2
+sheet	idle	32	241	241	0	0.3	0.3	0.6	-	298.0	360.2
+# scene=ide model="12 tabs, 2000 tree entries, 3000 editor lines (14585 token spans, 4312 identifier spans, 2189 occurrences of `value`), minimap 3000 blocks, terminal 400+128 lines; ~114901 glyphs, ~20133 text nodes" fanout=4312 scene_scale=1 mode=once render=0 device_scale=2 window=1280x800 reps=32
+# records=30166 since_exec_ms=51.5 build_ms=0.4
+ide	mount	1	337734094	337734094	108748955	35537.4	35537.4	35537.4	-	43.2	61.3
+ide	first_frame	1	10486	10486	16548	5.0	5.0	5.0	-	43.2	61.3
+ide	steady	32	357681	1491067	54522	15.5	76.4	146.2	-	43.2	61.3
+ide	hover	32	764513	764577	280532	78.8	97.5	968.1	-	43.2	61.4
+ide	theme	32	6565541	6635535	1365383	382.2	1660.4	2367.0	-	43.3	61.4
+ide	resize	32	57544430	81289985	20185519	5756.9	11993.5	14310.2	-	46.5	64.6
+ide	resize_anim	32	99015518	470470236	35299238	12852.5	44441.1	51910.2	-	47.2	65.4
+ide	anim	32	41910253	42500175	9160106	3197.1	8392.2	15416.5	-	47.3	65.5
+ide	idle	32	242	242	44	0.3	0.3	1.6	-	47.3	65.5
+# scene=dash model="200 cards in 40 rows of 5: 40 bars, 40 sparklines (40 quads), 40 trends (2 x 18 dots), 40 gauges, 40 stacked bars; 3484 series marks on the highlight" fanout=3484 scene_scale=1 mode=once render=0 device_scale=2 window=1280x800 reps=32
+# records=8188 since_exec_ms=27.3 build_ms=0.0
+dash	mount	1	66501612	66501612	22923947	7439.3	7439.3	7439.3	-	17.7	21.2
+dash	first_frame	1	10580	10580	13752	4.5	4.5	4.5	-	17.7	21.2
+dash	steady	32	1361307	5303416	347697	97.6	355.8	409.9	-	19.4	22.9
+dash	hover	32	709486	719754	147048	41.6	105.2	275.8	-	19.4	22.9
+dash	theme	32	1289024	1299353	376570	149.9	239.0	257.3	-	19.4	22.9
+dash	resize	32	10289610	13184358	2264649	641.9	1626.4	2525.3	-	20.1	23.8
+dash	resize_anim	32	11066238	11362301	2231324	624.5	1911.1	2853.6	-	21.8	25.5
+dash	anim	32	850775	884649	302577	115.5	173.9	434.0	-	22.3	26.0
+dash	idle	32	250	250	89	0.5	0.6	1.4	-	22.3	26.0
+# scene=canvas model="20 frames, 5000 nodes (1000 component instances, 60 movable, 50 animated, 60 cross-fading), 505 layer rows, ~8137 instances" fanout=1000 scene_scale=1 mode=once render=0 device_scale=2 window=1280x800 reps=32
+# records=10856 since_exec_ms=18.0 build_ms=0.2
+canvas	mount	1	60443705	60443705	18944344	5298.0	5298.0	5298.0	-	19.4	25.0
+canvas	first_frame	1	10495	10495	12708	4.1	4.1	4.1	-	19.4	25.0
+canvas	steady	32	11856	166225	2898	1.1	19.1	46.6	-	19.4	25.1
+canvas	hover	32	198817	199992	65019	18.5	21.8	54.6	-	19.4	25.1
+canvas	theme	32	544787	563258	121619	34.4	120.7	193.8	-	19.4	25.1
+canvas	resize	32	3141395	4112597	713651	200.6	504.4	637.2	-	20.1	25.8
+canvas	resize_anim	32	3167029	4136290	574404	161.0	207.1	305.2	-	20.3	26.0
+canvas	anim	32	81870	82351	15317	4.6	5.2	9.3	-	20.3	26.0
+canvas	idle	32	248	248	38	0.3	0.3	0.7	-	20.3	26.0
+# scene=chat model="2000 messages from 12 participants (200 images over 8 distinct PNGs, 274 quotes, 840 reaction pills, 436280 chars), 200 conversations, arrivals in a List" fanout=830 scene_scale=1 mode=once render=0 device_scale=2 window=1280x800 reps=32
+# records=23593 since_exec_ms=123.9 build_ms=20.0
+chat	mount	1	887242656	887242656	298124176	89545.5	89545.5	89545.5	-	60.2	72.9
+chat	first_frame	1	10592	10592	21279	8.6	8.6	8.6	-	60.2	72.9
+chat	steady	32	734943	1369272	410257	165.0	668.7	873.2	-	62.6	75.3
+chat	hover	32	119482	130084	55902	21.8	56.2	165.5	-	62.6	75.3
+chat	theme	32	3064408	3102704	2240701	870.4	1302.2	1664.4	-	62.6	75.3
+chat	resize	32	181231462	207443705	56438060	29872.3	56974.1	86378.5	-	64.6	77.5
+chat	resize_anim	32	163552680	209404959	52808346	26547.9	45701.6	138658.9	-	64.7	77.6
+chat	anim	32	723330	2089329	225540	118.9	538.1	1035.1	-	64.9	77.8
+chat	idle	32	245	245	0	0.3	0.6	160.2	-	64.9	77.8
