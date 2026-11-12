@@ -1,6 +1,6 @@
 # The text lane's seams (round 8)
 
-Status: **v0, 2026-11-12, with revision 1 at the end** (what the first measurements changed: read it with
+Status: **v0, 2026-11-12, with revisions 1 and 2 at the end** (what the first measurements changed: read it with
 parts A1 and B2). Part A answers the layout lane's proposal (`wt/r8-layout/docs/r8/LAYOUT-SEAM.md`
 section 5): accepted, with five amendments. Part B is the text lane's proposal to the raster lane for the
 glyph-instance column, the glyph coverage paint and the atlas. Part C is the seam with the surface lane
@@ -266,3 +266,69 @@ strike's generation in the memo key.
 * **B2, `Digits`.** `.tabular()` is a definition (digits on the cell, no kerning among digits, point and
   minus), because faces kern digits (Arial: "11"). The arithmetic equals the shaper only where the face does
   not. Leaves measured at 19 instructions per glyph.
+
+## Revision 2 (2026-11-12): the contract for a line of text, as built (`crates/bough-face`, `bough-x/src/text.rs`)
+
+This is the text to hold the raster lane to, and the text it may object to. It is built and gated on the CPU
+oracle (`bough-x/tests/text.rs`); nothing of it runs on a GPU yet.
+
+**1. What the raster reads.** All of it read-only during a frame, all integers.
+
+* *Faces*: a table `&[Face]`. A face is a byte image (rodata, or mapped), layout in
+  `crates/bough-face/src/face.rs`: 256 glyph slots `{ coverage offset: u32, left: i8, top: i8, w: u8, h: u8 }`,
+  the coverage bytes (8 bits, linear, rows top to bottom), a scale in Q32 pixels per font unit, ascent and
+  descent in font units, and the digit cell (advance of a digit, of the point, of the minus).
+* *Lanes*: two arrays shared by every line of the window, `slot: [u16]` and `x: [i32]`: per glyph its slot in
+  its face and its pen in font units from the start of its run. 6 bytes per glyph. Append-only between
+  clears; what was appended since the last frame is the upload.
+* *A line record*: rect lanes = the line's box. Record words: `g0: u32` (first glyph in the lanes),
+  `n_face: u32` (glyph count in the low 16 bits, face index in the high 16), then the words of its colour
+  expression. Archetype `Line<C>`; its stage is `C`'s (the run is a Mount-stage operand).
+* *A number record*: rect lanes = its box. Record words: those of its value expression (an `i32` scaled by
+  `10^D`) and of its colour expression; `D` (decimals) and `P` (least digits) are constants of the archetype
+  `Digits<D, P, V, C>`. No lanes. Face 0.
+
+**2. What a kernel must compute.** For a line record with box `r` (in screen coordinates: the store's origin
+added), cut `k` (the space's clip, the tile, the frame) and colour `c`:
+
+```text
+baseline = r.y0 + (r.h - (px(ascent) + px(descent))).div_euclid(2) + px(ascent)
+for i in g0 .. g0 + n, in this order:
+    s  = face.slots[slot[i]]
+    gx = r.x0 + px(x[i]) + s.left          px(u) = (u * scale + 2^31) >> 32
+    gy = baseline + s.top
+    for every pixel p in [gx, gx + s.w) x [gy, gy + s.h) that is also in r and in k:
+        p = over(c, coverage[s.off + (p.y - gy) * s.w + (p.x - gx)])       // the raster's p_glyph leaf
+```
+
+For a number record with value `v`: the same with glyph `j` from the right (`j < count`) at pen
+`width - (advances of glyphs j..0)`, its slot the ASCII byte of digit `(|v| / 10^q) % 10`, of the point or of
+the minus (`bough_face::num::Num`: `count`, `glyph`, `pen`, all integer, no table but ten powers of ten).
+
+A line's ink is cut to its box. So its window is its rect, its outset is 0, `Flow` lists may hold it, and its
+damage is its rect like a fill's: nothing about damage is special to text.
+
+**3. What this asks of a per-archetype kernel**, and the fallback if it is refused.
+
+* The record's kernel contains a loop whose length is data (`n`, typically 4 to 40, at most 65,535). There is
+  no dispatch in it: the body is the slot load, one multiply and `p_glyph`. On the CPU span raster that is all.
+* On the GPU a pixel thread must not walk a whole line. Pens of a left-to-right run are non-decreasing, so
+  binning can cut a line record into per-tile entries `(record, first, count)` by two binary searches on `x`
+  with the face's widest box as slack; a pixel thread then loops over the few glyphs of its tile. A run whose
+  pens are not monotone (bidi, when the full shaper produces it) is flagged in `n_face` and binned whole.
+* **If a per-line record over shared lanes does not fit the raster's archetypes**, the fallback needs nothing
+  new from it: at mount the store expands a line into the raster's existing `Glyph<B, T, C>` records, one per
+  glyph (box, texel = the face's base in the atlas buffer plus the slot's coverage offset, the colour
+  operand). `Face::slot`, `Face::px` and the lanes are everything that expansion reads. It costs 20 bytes and
+  about 30 instructions per glyph at every mount (journal G1) instead of two words per line, which is why it is
+  the fallback and not the proposal.
+* The atlas binding: the faces' images, concatenated (or just their coverage sections); a texel index is
+  `face base + slot.off + row * w + column`. There is no packing and no atlas to grow for prepared faces.
+
+**4. Exactness.** Every step above is integer arithmetic on values both executors hold bit for bit. The gate to
+add when a second executor exists: its pixels equal `bough_x::text::TextCx::line` / `::num` through the oracle
+raster on `scenes/rows.rs` and `scenes/search.rs` over the scripts of `tests/text.rs`.
+
+**5. Not in this contract yet**: quarter-pixel pen variants (the pen is rounded to a whole pixel, as the
+façade does), faces that are not prepared (the full shaper's glyphs need a slot table that grows, with the
+same record), decorations, selection, per-glyph style indices, text larger than a 255-pixel glyph box.
