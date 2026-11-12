@@ -107,3 +107,85 @@ fn nothing_unexposed_is_shaped() {
     assert!(g.shaped <= 2 + 26, "{} lines shaped at mount", g.shaped);
     assert!(g.bytes() < 16 * 1024, "{} bytes of text state for 100,000 rows", g.bytes());
 }
+
+// ---- the search field -------------------------------------------------------------------------------------
+
+#[path = "../scenes/search.rs"]
+mod search;
+use search::Search;
+
+fn soft_s(v: &Search) -> Soft {
+    let mut s = Soft::new(search::W, search::H);
+    s.text = Some(SoftText { faces: &search::FACES, glyphs: v.glyphs.clone() });
+    s
+}
+
+/// Typing, deleting and moving the caret in the field, with the list filtered under it: retained == full
+/// redraw == immediate after every key, through the real event path (press to focus, text and keys to the
+/// focused record).
+#[test]
+fn typing_and_filtering() {
+    let (w, h) = (search::W, search::H);
+    let mut v = Search::new(3_000);
+    let mut world = World::<Soft>::new(w, h, search::NWORDS);
+    world.mount(&v);
+    let mut retained = soft_s(&v);
+    world.paint(&mut retained);
+    world.tiles.clear();
+    let d = world.click(&mut v, search::FIELD.x0 + 20, search::FIELD.y0 + 10);
+    assert!(d.consumed || world.focused().is_some(), "the field takes focus");
+    world.settle(&v);
+    let mut r = Rng(0x5ea7c4);
+    let keys = [Key::Backspace, Key::Left, Key::Right, Key::Home, Key::End];
+    for step in 0..400 {
+        if r.below(3) != 0 && v.query.get(0).len() < 24 {
+            let t = ["a", "e", "r", "o", " ", "fl", "qu", "\u{e9}"][r.below(8)];
+            assert!(world.text(&mut v, t).consumed, "step {step}: text reaches the field");
+        } else {
+            world.key_down(&mut v, keys[r.below(5)], Mods::default());
+        }
+        world.settle(&v);
+        retained.repair(&world.tiles, |s| world.paint(s));
+        world.tiles.clear();
+        let mut full = soft_s(&v);
+        world.paint(&mut full);
+        assert!(retained.px == full.px, "step {step} ({:?}): retained != full redraw ({} pixels)", v.query.get(0), diff(&retained.px, &full.px));
+        let mut now = soft_s(&v);
+        v.view(&mut Immediate::new(&mut now, &world.shown));
+        assert!(full.px == now.px, "step {step}: stores != immediate ({} pixels)", diff(&full.px, &now.px));
+    }
+}
+
+/// Rows that enter the result again shape nothing: their labels are in the memo. And a caret move shapes
+/// nothing and describes no row.
+#[test]
+fn reentry_and_caret_moves_shape_nothing() {
+    let mut v = Search::new(3_000);
+    let mut world = World::<Soft>::new(search::W, search::H, search::NWORDS);
+    world.mount(&v);
+    world.click(&mut v, search::FIELD.x0 + 20, search::FIELD.y0 + 10);
+    world.settle(&v);
+    // narrow, then widen again: every row on screen after the widening was on screen at mount
+    for t in ["q", "u"] {
+        world.text(&mut v, t);
+        world.settle(&v);
+    }
+    let before = v.glyphs.borrow().shaped;
+    for _ in 0..2 {
+        world.key_down(&mut v, Key::Backspace, Mods::default());
+        world.settle(&v);
+    }
+    // the two shorter queries are the only new lines ("q" was shaped on the way in; "" is new)
+    let after = v.glyphs.borrow().shaped;
+    assert!(after - before <= 1, "{} lines shaped while rows re-entered the result", after - before);
+    world.text(&mut v, "river");
+    world.settle(&v);
+    let (shaped, found) = (v.glyphs.borrow().shaped, v.glyphs.borrow().found);
+    for k in [Key::Left, Key::Left, Key::Home, Key::Right, Key::End] {
+        world.key_down(&mut v, k, Mods::default());
+        world.settle(&v);
+        assert!(world.tiles.any(), "the caret's move is damage");
+        world.tiles.clear();
+    }
+    assert_eq!((v.glyphs.borrow().shaped, v.glyphs.borrow().found), (shaped, found), "a caret move asks the memo nothing");
+}
