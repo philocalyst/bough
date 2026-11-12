@@ -468,6 +468,45 @@ impl GlyphPool {
         }
     }
 
+    /// Move a label's pen origin to `origin` (pixels relative to its space; `origin[1]` integral): the run
+    /// header, the label's snapped pens (they are `pen_px` of the slots at the origin) and its cached tile
+    /// spans (stale: recomputed by the next digit patch). No slot is rewritten and nothing is marked: the
+    /// caller damages the line's old and new extents (it holds both inks). What a layout write-back does
+    /// to a one-line text whose box moved.
+    pub fn move_label(&mut self, lb: &mut Label, origin: [f32; 2]) {
+        debug_assert_eq!(origin[1], origin[1].floor(), "baseline must be integral");
+        let h = &mut self.runs[lb.run as usize];
+        h.origin = origin;
+        let (base, len) = (h.base as usize, h.len as usize);
+        lb.oxh = origin[0] + 0.5;
+        lb.oy = origin[1] as i32;
+        // pens are maintained only while the text fits 16 slots (`window`, `replace`)
+        if len <= 16 {
+            for k in 0..len {
+                lb.pen[k] = pen_px(self.x[base + k], lb.scale, lb.oxh) as i16;
+            }
+        }
+        lb.tspace = [i32::MIN, i32::MIN];
+    }
+
+    /// The label's width on one line with trailing spaces excluded (font units): the pen at its first
+    /// trailing space, or its end pen (as `Para::line_width`; a label whose slots are not its bytes, a
+    /// ligature or Latin-1 text, answers its whole width).
+    pub fn label_line_width(&self, lb: &Label) -> i32 {
+        let t = lb.text();
+        let mut e = t.len();
+        while e > 0 && t[e - 1] == b' ' {
+            e -= 1;
+        }
+        if e == t.len() || !lb.is_identity() {
+            lb.width
+        } else if e == 0 {
+            0
+        } else {
+            self.x[self.runs[lb.run as usize].base as usize + e]
+        }
+    }
+
     /// Release a label's block, marking the whole line (O(1)).
     pub fn free_label<P: Marks + ?Sized>(&mut self, lb: Label, plane: &mut P) {
         let h = self.runs[lb.run as usize];
