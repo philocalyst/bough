@@ -3,7 +3,7 @@ use crate::event::{Button, Dispatch, ENV_REDUCED_MOTION, Ev, Event, Key, Mods, N
 use crate::expr::{APP_WORDS, HOT, U, U_PICK, U_PTR_X, U_PTR_Y, U_TIME};
 use crate::sink::{Cx, Patch, REL_EPOCH, View, Write};
 use core::sync::atomic::Ordering;
-use crate::store::{Backend, Path, Space, Store, Tiles};
+use crate::store::{Backend, ColEnt, Path, SHAPE, Space, Store, Tiles};
 use core::marker::PhantomData;
 
 /// A held button: where it went down, the record it went down on, and the record whose drag handler captured
@@ -26,7 +26,8 @@ struct Focused {
 }
 
 pub struct World<B> {
-    pub root: Store,
+    /// Boxed: the column table points into the tree, and the world itself may be moved.
+    pub root: Box<Store>,
     /// The block as of the last settle: what the pixels on screen were shaded with.
     pub shown: U,
     pub tiles: Tiles,
@@ -38,6 +39,17 @@ pub struct World<B> {
     epoch: u32,
     /// The block words some column reads: a pointer event that no record reads costs nothing.
     reads: u64,
+    /// Every column of the world in paint order: the words each reads (dense, scanned on a block change), its
+    /// entry (reached only on a match), and where it came from (cold). Rebuilt when the tree changes shape.
+    col_reads: Vec<u64>,
+    /// Per block word, the columns that read it (`by_word[w]..by_word[w + 1]` in `readers`): a write to one
+    /// word visits its readers and no other column.
+    by_word: [u16; 65],
+    readers: Vec<u16>,
+    cols: Vec<ColEnt>,
+    cold: Vec<(*const Store, u32)>,
+    spaces: Vec<(u64, *const Store)>,
+    shape: u32,
     /// The clock (`tick`'s argument). The raster's `Time` runs ahead of it under reduced motion.
     clock: u32,
     /// The pointer, and the places under it whose handlers hear hover, bottom first.
@@ -57,10 +69,11 @@ impl<B: Backend> World<B> {
         for w in [U_PICK, U_FOCUS, U_PRESS] {
             shown.w[w] = NONE;
         }
-        World { root: Store::new(1, Space::root(w, h)), shown, tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, reads: 0, clock: 0, ptr: None, hov: Vec::new(), held: None, focus: None, ctab: Vec::new(), ctab_at: (0, 0), _b: PhantomData }
+        World { root: Box::new(Store::new(1, Space::root(w, h))), shown, tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, reads: 0, col_reads: Vec::new(), by_word: [0; 65], readers: Vec::new(), cols: Vec::new(), cold: Vec::new(), spaces: Vec::new(), shape: u32::MAX, clock: 0, ptr: None, hov: Vec::new(), held: None, focus: None, ctab: Vec::new(), ctab_at: (0, 0), _b: PhantomData }
     }
 
-    /// The application's block with the words the raster owns (time, pointer, pick) as the world has them.
+    /// The application's block with the words it does not own (the surface's and the raster's) as the world
+    /// has them.
     #[inline(always)]
     fn block<V: View>(&self, v: &V) -> U {
         let mut u = *v.block();
@@ -83,8 +96,83 @@ impl<B: Backend> World<B> {
         v.view(&mut Write::<V, B>::new(&mut self.root, &mut cx, true));
         self.lists = cx.lists;
         self.root.resweep(&self.shown, &mut self.tiles);
-        self.reads = self.root.reads_all();
+        self.retable();
         self.refocus();
+    }
+
+    /// Bring the column table up to date with the store tree. Cold: the tree changes shape when a column or a
+    /// child store is first described.
+    #[cold]
+    #[inline(never)]
+    fn retable(&mut self) {
+        self.shape = SHAPE.load(Ordering::Relaxed);
+        self.cols.clear();
+        self.cold.clear();
+        self.spaces.clear();
+        self.root.table(&mut self.cols, &mut self.cold);
+        self.root.moving_spaces(&mut self.spaces);
+        self.col_reads.clear();
+        self.col_reads.extend(self.cols.iter().map(|e| e.reads));
+        assert!(self.cols.len() < 1 << 16);
+        self.readers.clear();
+        for w in 0..64 {
+            self.by_word[w] = self.readers.len() as u16;
+            self.readers.extend((0..self.cols.len()).filter(|&k| self.col_reads[k] >> w & 1 != 0).map(|k| k as u16));
+            assert!(self.readers.len() < 1 << 16);
+        }
+        self.by_word[64] = self.readers.len() as u16;
+        // what a column reads, and what moves a space
+        self.reads = self.spaces.iter().fold(self.root.reads_all(), |m, s| m | s.0);
+    }
+
+    /// The damage of the block going from what is shown to `u` (`ch`: the changed words). The path from here
+    /// to a page is this world, the column's entry, the page: the store tree is not on it.
+    #[inline]
+    fn delta(&mut self, u: &U, ch: u64) {
+        if self.shape != SHAPE.load(Ordering::Relaxed) {
+            self.retable();
+        }
+        if ch & self.reads == 0 {
+            return;
+        }
+        for &(reads, st) in &self.spaces {
+            if reads & ch != 0 {
+                // SAFETY: the table is current, so `st` is a store of this world's tree.
+                let st = unsafe { &*st };
+                // the space moved: everything it shows is somewhere else
+                self.tiles.mark(st.space.clip);
+                if st.timed & (st.reads & ch != 0) {
+                    st.resweep(u, &mut self.tiles);
+                }
+            }
+        }
+        if ch & (ch - 1) == 0 {
+            // one word changed (a hover, a theme, a scroll): its readers, by the list
+            let w = ch.trailing_zeros() as usize;
+            for i in self.by_word[w] as usize..self.by_word[w + 1] as usize {
+                self.delta_one(self.readers[i] as usize, u, ch);
+            }
+        } else {
+            for k in 0..self.col_reads.len() {
+                if self.col_reads[k] & ch != 0 {
+                    self.delta_one(k, u, ch);
+                }
+            }
+        }
+    }
+    #[inline(always)]
+    fn delta_one(&mut self, k: usize, u: &U, ch: u64) {
+        let e = &self.cols[k];
+        if e.skip & ch != 0 {
+            return;
+        }
+        // SAFETY: the table is current; `delta` was instantiated for the entry's archetype.
+        unsafe { (e.delta)(e, &self.shown, u, &mut self.tiles) };
+        if e.timed != 0 {
+            let (st, j) = self.cold[k];
+            // SAFETY: as above: `st` is a store of this tree and `j` one of its columns.
+            unsafe { (*st).resweep_col(&(&(*st).cols)[j as usize], u, &mut self.tiles) };
+        }
     }
 
     /// A frame at time `now`. Time advancing is not a turn: nothing is compared, no record is evaluated and no
@@ -96,7 +184,7 @@ impl<B: Backend> World<B> {
         // the clock (loops read the `Env` bit instead). Nothing else knows.
         self.shown.w[U_TIME] = now.wrapping_add(if self.shown.w[U_ENV] & ENV_REDUCED_MOTION != 0 { REDUCED_MOTION_AHEAD } else { 0 });
         if !self.tiles.sweeps.is_empty() {
-            self.tiles.tick(now, &self.shown);
+            self.tiles.tick(self.shown.w[U_TIME], &self.shown);
         }
     }
 
@@ -108,7 +196,7 @@ impl<B: Backend> World<B> {
         if ch & self.reads != 0 {
             let mut u = self.shown;
             (u.w[U_PTR_X], u.w[U_PTR_Y]) = (x as u32, y as u32);
-            self.root.delta(&self.shown, &u, ch, &mut self.tiles);
+            self.delta(&u, ch);
         }
         (self.shown.w[U_PTR_X], self.shown.w[U_PTR_Y]) = (x as u32, y as u32);
     }
@@ -132,14 +220,13 @@ impl<B: Backend> World<B> {
     fn changed<V: View>(&mut self, v: &V, ch: u64, epoch: u32) {
         let u = &self.block(v);
         if ch != 0 {
-            self.root.delta(&self.shown, u, ch, &mut self.tiles);
+            self.delta(u, ch);
         }
         if (epoch != self.epoch) | (ch & self.lists != 0) {
             self.epoch = epoch;
             let mut cx = Cx { tiles: &mut self.tiles, u, all: false, lists: 0 };
             v.view(&mut Patch::<V, B> { st: &mut self.root, cx: &mut cx, sub: 0, _p: PhantomData });
             self.lists |= cx.lists;
-            self.reads = self.root.reads_all();
             if ch != 0 {
                 self.shown = *u;
             }
@@ -156,7 +243,7 @@ impl<B: Backend> World<B> {
         let u = &self.block(v);
         let ch = self.shown.diff(u, self.nwords) & !HOT;
         if ch != 0 {
-            self.root.delta(&self.shown, u, ch, &mut self.tiles);
+            self.delta(u, ch);
         }
         self.epoch = REL_EPOCH.load(Ordering::Relaxed);
         let mut cx = Cx { tiles: &mut self.tiles, u, all: true, lists: 0 };
@@ -165,7 +252,6 @@ impl<B: Backend> World<B> {
         if self.root.timed {
             self.root.resweep(u, &mut self.tiles);
         }
-        self.reads = self.root.reads_all();
         if ch != 0 {
             self.shown = *u;
         }
@@ -253,7 +339,7 @@ impl<B: Backend> World<B> {
         let mut u = self.shown;
         u.w[slot] = val;
         if self.reads >> slot & 1 != 0 {
-            self.root.delta(&self.shown, &u, 1 << slot, &mut self.tiles);
+            self.delta(&u, 1 << slot);
         }
         self.shown = u;
     }
