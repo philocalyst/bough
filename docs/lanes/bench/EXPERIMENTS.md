@@ -67,6 +67,10 @@ note that it was not), the result with provenance, and the verdict. Losers stay 
 ## E6. Resize cost of the sheet once the root follows the window
 
 * Not an experiment with a prediction: an observation to explain. With the root at `w_pct(1.0)`, the resize
-  sweep's p50 is 36 M instructions at 30,000 cells and 61 M at 50,000, but p95 is 514 M and 946 M: some steps
-  cost 15x the median. Next: which sizes (the sweep crosses widths where the ten 110 pt columns stop fitting?),
-  and hotpath's `lay_flush` split.
+  sweep's p50 is 36 M instructions at 30,000 cells and 61 M at 50,000, but p95 is 514 M and 946 M.
+* Per step (`STEPS=1`, 30,000 cells, RENDER=0, 24 steps): two steps cost ~500 M (514 M at 1115 x 523, 499 M at
+  1184 x 1000), the others 22-37 M. Both spikes are where the sweep's height turns (480 -> 523 after falling,
+  1000 -> 957 after rising); the width turning (768) costs nothing extra. Steps 13-22 cost 22 M, the rest 36 M.
+  500 M / 30,000 cells = 16.7 K per cell, about a full relayout with text measurement; 22-36 M is ~1 K per cell.
+  Hypothesis for the layout/core lane: a change of sign of the height delta takes a path that re-measures every
+  row (the scroll box's port height feeds the content's constraints). Not dug further here.
