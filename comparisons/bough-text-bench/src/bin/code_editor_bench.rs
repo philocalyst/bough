@@ -32,7 +32,7 @@ fn main() {
     let st = |ox: f32| LineStyle { ox, oy: 30.0, lh, scale: size_pt * scale / sh.script.upem as f32, color: TEXT, space: 0, strike: strike as u16 };
     let mut plane = vec![0u128; 64];
     let mut pool = GlyphPool::new();
-    let fp0 = bough_metal::perf::snap().footprint;
+    let fp0 = bough::sys::perf::snap().footprint;
 
     // open: the file read, the line index, the first screen
     let (t0, i0) = (Instant::now(), instrs());
@@ -41,7 +41,7 @@ fn main() {
     let mut view = View::new(&mut pool, rows, st(120.0), st(16.0), doc.lines());
     view.show(&mut pool, &sh, &doc, 0, None, &b, &mut plane);
     let (open, oi) = (t0.elapsed().as_secs_f64() * 1e3, (instrs() - i0) as f64 / 1e6);
-    let per_line = (bough_metal::perf::snap().footprint as f64 - fp0 as f64) / lines as f64;
+    let per_line = (bough::sys::perf::snap().footprint as f64 - fp0 as f64) / lines as f64;
     println!("{lines} lines: open to first screen {open:.2} ms ({oi:.2} M instructions), {per_line:.0} bytes a line (document {} B, line index 4 B, highlight state 1 B a line)", doc.len() / lines);
 
     // a keystroke in the middle of the file

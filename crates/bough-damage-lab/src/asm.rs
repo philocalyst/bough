@@ -37,6 +37,7 @@ pub fn lab_cull_plane_runs(sc: &Scene, p: &Plane, out: &mut Out) {
     cull_plane_runs(sc, p, out)
 }
 
+#[cfg(target_arch = "aarch64")]
 #[unsafe(no_mangle)]
 #[inline(never)]
 pub fn lab_cull_hw_neon(sc: &Scene, p: &crate::forms::hw::Hw, bb: R, out: &mut Vec<u32>) {

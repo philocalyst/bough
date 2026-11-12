@@ -3,33 +3,8 @@
 pub const W: i32 = 1920;
 pub const H: i32 = 1440;
 
-pub const KIND_SOLID: u8 = 0;
-pub const KIND_RRECT: u8 = 1;
-pub const KIND_BORDER: u8 = 2;
-pub const KIND_GLYPH: u8 = 3;
-
-#[repr(C, align(8))]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Instance {
-    pub pos: [f32; 2],  //  0
-    pub size: [f32; 2], //  8
-    pub color: u32,     // 16 RGBA8, r in low byte
-    pub color2: u32,    // 20
-    pub radius: f32,    // 24
-    pub bw: f32,        // 28
-    pub uv: [u16; 4],   // 32
-    pub space: u16,     // 40
-    pub kind: u8,       // 42
-    pub flags: u8,      // 43
-    pub ext: u32,       // 44 clip index
-}
-const _: () = assert!(core::mem::size_of::<Instance>() == 48);
-const _: () = assert!(core::mem::align_of::<Instance>() == 8);
-
-#[inline]
-pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> u32 {
-    (r as u32) | (g as u32) << 8 | (b as u32) << 16 | (a as u32) << 24
-}
+// The instance and its kinds live in bough-frame (round 7, platform lane); re-exported under the old paths.
+pub use bough_frame::instance::{rgba, Instance, KIND_BORDER, KIND_GLYPH, KIND_RRECT, KIND_SOLID};
 
 #[repr(C)]
 #[derive(Clone, Copy)]

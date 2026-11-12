@@ -352,6 +352,7 @@ impl CpuRaster {
 /// `acc = sh + acc * (1 - sh.a)` over pixels `[x0, x1)` of a row, `sh` constant (a solid run).
 #[inline(always)]
 fn blend_span(row: &mut [f16], x0: i32, x1: i32, sh: [f16; 4], two: bool) {
+    #[cfg(target_arch = "aarch64")]
     let k: f16 = 1.0 - sh[3];
     #[cfg(target_arch = "aarch64")]
     if !two {

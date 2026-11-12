@@ -1,10 +1,12 @@
 //! The repair backends' choice and the CPU backend's self-check (lane memory, round 6, card
-//! `2026-11-11-repair-backends`). The CPU backend itself is `cpu_raster.rs`.
+//! `2026-11-11-repair-backends`). The CPU backend itself is `cpu_raster.rs`. The self-check compares it with a
+//! GPU executor, so it exists where one does (macOS); elsewhere the CPU executor is the only one.
 /// The CPU backend is exact only for the GPU and shader compiler it was established on (the kernel's arithmetic is
 /// written out, but the store's rounding and the texture unit's conversions are the hardware's): before its first
 /// use on a machine, a fixed probe scene of every modelled kind is drawn by both backends and compared byte for
 /// byte. The verdict is cached per CPU model, OS build and shader source (a file in `$TMPDIR`, or
 /// `BOUGH_CHECK_DIR`), so later processes never submit GPU work to decide. Any mismatch disables the CPU backend.
+#[cfg(target_os = "macos")]
 pub fn cpu_exact(font: &'static [u8]) -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| {
@@ -22,23 +24,10 @@ pub fn cpu_exact(font: &'static [u8]) -> bool {
     })
 }
 
-fn sysctl_string(name: &str) -> String {
-    let c = std::ffi::CString::new(name).unwrap();
-    let mut buf = [0u8; 256];
-    let mut len = buf.len();
-    unsafe extern "C" {
-        fn sysctlbyname(name: *const std::ffi::c_char, old: *mut u8, oldlen: *mut usize, new: *const u8, newlen: usize) -> i32;
-    }
-    // SAFETY: a NUL-terminated name, a 256-byte buffer and its length.
-    if unsafe { sysctlbyname(c.as_ptr(), buf.as_mut_ptr(), &mut len, std::ptr::null(), 0) } != 0 {
-        return String::new();
-    }
-    String::from_utf8_lossy(&buf[..len.saturating_sub(1)]).into_owned()
-}
-
+#[cfg(target_os = "macos")]
 fn check_path() -> std::path::PathBuf {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
-    let key = format!("{}|{}|{}|{}", sysctl_string("machdep.cpu.brand_string"), sysctl_string("kern.osversion"), MODEL_VERSION, bough_metal::gpu::SHADER_SRC);
+    let key = format!("{}|{}|{}", bough_sys::machine_key(), MODEL_VERSION, bough_metal::gpu::SHADER_SRC);
     for b in key.bytes() {
         h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
     }
@@ -47,10 +36,12 @@ fn check_path() -> std::path::PathBuf {
 }
 
 /// Bumped whenever the model's arithmetic changes (invalidates every cached verdict).
+#[cfg(target_os = "macos")]
 const MODEL_VERSION: u32 = 1;
 
 /// The probe: translucent solid boxes at quarter-pixel positions, rounded boxes and borders of several radii and
 /// widths, and translucent text, overlapping; drawn by the CPU backend and compared with the GPU's full redraw.
+#[cfg(target_os = "macos")]
 fn probe(font: &'static [u8]) -> bool {
     use crate::app::{App, Config, View};
     use crate::raw::*;

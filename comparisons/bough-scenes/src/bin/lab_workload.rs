@@ -1,7 +1,7 @@
 //! The windowed lab (zgx `component_workload`): `ZGX_MODE` (idle|stream|scroll|both), `ZGX_SECONDS`
 //! (30), `ZGX_INITIAL_TICKS`; one 960x720 pt window; the workload advances once per `PERIOD` by the
 //! wall clock; ends with `{"framework":"bough","scene":"lab","ticks":N}`.
-use bough::backend::host::run_window;
+use bough::backend::run_window;
 use bough_scenes::*;
 use std::cell::Cell;
 use std::rc::Rc;

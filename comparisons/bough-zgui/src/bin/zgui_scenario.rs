@@ -136,7 +136,7 @@ fn scroll() {
 
 fn main() {
     // process entry, for the first-pixel scenarios
-    let (entry, proc0, main0) = (std::time::Instant::now(), bough_metal::perf::snap().instrs, bough_metal::fused::thread_instructions());
+    let (entry, proc0, main0) = (std::time::Instant::now(), bough::sys::perf::snap().instrs, bough::sys::perf::thread_instructions());
     let raster = std::env::var("RASTER_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
     let name = std::env::args().nth(1).unwrap_or_else(|| "hover-storm".into());
     match name.as_str() {

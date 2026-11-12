@@ -31,10 +31,10 @@ fn main() {
         a.frame();
         let mut v = Vec::new();
         for _ in 0..30 {
-            let i0 = bough_metal::fused::thread_instructions();
+            let i0 = bough::sys::perf::thread_instructions();
             a.tick(1.0 / 60.0);
             a.frame_paced();
-            v.push(bough_metal::fused::thread_instructions() - i0);
+            v.push(bough::sys::perf::thread_instructions() - i0);
         }
         v.sort();
         println!("TRANSITIONS\tn={n}\tinstr_per_frame_p50={}\tper_transition={:.1}\tactive={}", v[v.len() / 2], v[v.len() / 2] as f64 / n as f64, a.rt.transitions.active);

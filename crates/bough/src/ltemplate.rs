@@ -473,7 +473,7 @@ fn mount_element<V: 'static>(m: &mut Mounter<'_, V>, n: &LNode, ids: &mut [u32],
         // a vector icon over the box, rasterised at the box's size, following its top-left
         let (w, h) = ((n.size[0] * s).round().max(1.0), (n.size[1] * s).round().max(1.0));
         let uv = m.rt.images.svg(deco.svg, w as u32, h as u32);
-        let ins = bough_metal::instance::Instance { color: u32::MAX, uv, kind: crate::deco::KIND_IMAGE, ..Default::default() };
+        let ins = bough_frame::Instance { color: u32::MAX, uv, kind: crate::deco::KIND_IMAGE, ..Default::default() };
         m.depth += 1;
         let node = crate::deco::mount_deco(m, ins, 0.0, 0.0, w, h, 1.0);
         m.depth -= 1;

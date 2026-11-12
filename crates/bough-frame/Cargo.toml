@@ -1,0 +1,8 @@
+[package]
+name = "bough-frame"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "The frame contract between bough's engine and every executor: the 48-byte instance, the region layout the kernels read, payload encodings and the frame slot (portable; no platform code)"
+
+[dependencies]

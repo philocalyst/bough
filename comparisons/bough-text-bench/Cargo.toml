@@ -8,8 +8,11 @@ description = "Text round 3: zgx's and zgui's text workloads ported to bough (la
 [dependencies]
 bough = { path = "../../crates/bough" }
 bough-text = { path = "../../crates/bough-text" }
-bough-metal = { path = "../../crates/bough-metal" }
 bough-mem = { path = "../../crates/bough-mem" }
 bough-vlist = { path = "../bough-vlist" }
 zgx-workload = { git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }
 rustybuzz = "0.20"
+# the Metal presenter (macOS) for the tools that drive it directly
+[target.'cfg(target_os = "macos")'.dependencies]
+bough-metal = { path = "../../crates/bough-metal" }
+

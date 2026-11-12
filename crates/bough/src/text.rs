@@ -19,8 +19,8 @@
 use crate::rt::*;
 use bough_core::nrect::WRect;
 use bough_core::Handle;
-use bough_metal::fused::{pay_irun, pay_runs};
-use bough_metal::instance::Instance;
+use bough_frame::{pay_irun, pay_runs};
+use bough_frame::Instance;
 use bough_text::atlas::{GlyphCache, Instance as TInstance, LineBounds, StrikeId, TokStrike};
 use bough_text::pool::{pen_px, Label};
 use bough_text::lines::{LineSet, LineStyle};
@@ -71,9 +71,9 @@ pub fn prepare_faces(faces: &[(u8, Vec<u8>)]) {
         let h = std::thread::Builder::new()
             .name("bough-face".into())
             .spawn(move || {
-                let i0 = bough_metal::fused::thread_instructions();
+                let i0 = bough_sys::perf::thread_instructions();
                 let st = FaceState::new(&f);
-                (st, bough_metal::fused::thread_instructions() - i0)
+                (st, bough_sys::perf::thread_instructions() - i0)
             })
             .expect("face thread");
         jobs.push((font.clone(), h));

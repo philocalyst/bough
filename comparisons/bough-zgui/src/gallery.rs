@@ -170,12 +170,12 @@ fn quiet<D: Doc>(app: &mut App<D>) {
 /// zgui `scenario/cold.rs`: from nothing to the first painted frame of the gallery, one sample per
 /// process (the clock starts before the font is read and the document mounted).
 pub fn cold_start<D: Doc>(gpu: bool) {
-    let i0 = bough_metal::perf::snap().instrs;
+    let i0 = bough::sys::perf::snap().instrs;
     let t0 = std::time::Instant::now();
     let mut app = App::new(D::fresh(), config(WIDTH, HEIGHT), gpu);
     let drew = app.frame();
     let dt = t0.elapsed();
-    let i1 = bough_metal::perf::snap().instrs;
+    let i1 = bough::sys::perf::snap().instrs;
     assert!(drew, "the first frame painted");
     let name = if D::LAID_OUT { "cold.first_frame" } else { "cold.first_frame_dump_geometry" };
     println!(
@@ -205,9 +205,9 @@ pub fn first_pixel<D: Doc>(entry: std::time::Instant, proc0: u64, main0: u64, ov
     let submitted = entry.elapsed();
     app.wait_presented();
     let wall = entry.elapsed();
-    let exec = bough_metal::perf::since_exec_ns();
-    let main = bough_metal::fused::thread_instructions() - main0;
-    let proc = bough_metal::perf::snap().instrs - proc0;
+    let exec = bough::sys::perf::since_exec_ns();
+    let main = bough::sys::perf::thread_instructions() - main0;
+    let proc = bough::sys::perf::snap().instrs - proc0;
     let st = app.startup;
     let raster_stats = bough::app::raster_stats();
     let rast: u64 = raster_stats.iter().map(|r| r[2]).sum();

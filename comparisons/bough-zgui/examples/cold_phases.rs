@@ -5,7 +5,7 @@ use bough_zgui::gallery::Gallery;
 use bough_zgui::*;
 
 fn snap() -> (u64, std::time::Instant) {
-    (bough_metal::perf::snap().instrs, std::time::Instant::now())
+    (bough::sys::perf::snap().instrs, std::time::Instant::now())
 }
 fn show(name: &str, a: (u64, std::time::Instant)) -> (u64, std::time::Instant) {
     let b = snap();

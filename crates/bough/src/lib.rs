@@ -1,4 +1,5 @@
-#![feature(type_info, ptr_metadata, rustc_attrs, const_trait_impl, const_cmp, arbitrary_self_types_pointers, f16, stdarch_neon_f16)]
+#![feature(type_info, ptr_metadata, rustc_attrs, const_trait_impl, const_cmp, arbitrary_self_types_pointers, f16)]
+#![cfg_attr(target_arch = "aarch64", feature(stdarch_neon_f16))]
 #![allow(internal_features)]
 //! bough: the public façade over bough-core (records, damage), bough-text (shaping into the glyph pool),
 //! cephal (layout) and bough-metal's fused presenter. One region holds everything the GPU reads
@@ -36,6 +37,9 @@ pub mod transition;
 pub mod ui;
 
 pub use bough_text::numeric::NumFmt;
+/// The OS counters (instructions, memory) and the frame contract, for harnesses and benchmarks on every platform.
+pub use bough_frame as frame;
+pub use bough_sys as sys;
 
 /// The application surface (`designs/reactivity/final`): views, state, elements in flow (laid out by cephal),
 /// routes, and `Application::run`. No coordinates: `use bough::raw::*;`.

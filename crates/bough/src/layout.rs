@@ -22,8 +22,8 @@ use crate::elem::{quad_instance, ApplyBg, Element, IntoProp, Mounter, TextSrc};
 use crate::rt::*;
 use crate::text::{TShape, TextNode};
 use bough_core::{NRect, RecordInit};
-use bough_metal::fused::{pay_irun, pay_runs};
-use bough_metal::instance::Instance;
+use bough_frame::{pay_irun, pay_runs};
+use bough_frame::Instance;
 use bough_text::pool::GlyphPool;
 use bough_text::para::Para as TextPara;
 use bough_text::window::Shaped;
@@ -907,20 +907,20 @@ pub const LP_NAMES: [&str; 8] = ["mount", "insert", "compute", "write-back", "un
 impl LProf {
     pub fn enable(&mut self) {
         self.on = true;
-        self.ovh = bough_metal::perf::snap_overhead();
+        self.ovh = bough_sys::perf::snap_overhead();
     }
     #[inline]
     pub fn reset(&mut self) {
         if self.on {
-            self.last = bough_metal::perf::snap().instrs;
+            self.last = bough_sys::perf::snap().instrs;
         }
     }
     #[inline]
     pub fn mark(&mut self, i: usize) {
         if self.on {
-            let s = bough_metal::perf::snap().instrs;
+            let s = bough_sys::perf::snap().instrs;
             self.acc[i] += (s - self.last).saturating_sub(self.ovh);
-            self.last = bough_metal::perf::snap().instrs;
+            self.last = bough_sys::perf::snap().instrs;
         }
     }
 }

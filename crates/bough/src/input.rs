@@ -1517,7 +1517,7 @@ impl<V: View> App<V> {
                 self.rt.runs[run as usize].len = 1;
                 let inst = self.rt.runs[run as usize].first;
                 let s = self.rt.scale;
-                *self.rt.inst_mut(inst) = bough_metal::instance::Instance {
+                *self.rt.inst_mut(inst) = bough_frame::Instance {
                     kind: KIND_BORDER,
                     color: self.rt.input.ring_color.0,
                     color2: 0,

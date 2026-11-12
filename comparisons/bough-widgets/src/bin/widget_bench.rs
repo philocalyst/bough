@@ -2,7 +2,7 @@
 //! (+ first frame), retained heap and allocations, 1000 idle turns, 400 hover steps.
 //! Run: widget_bench [rows]   (`NOPROBE=1`: skip the width probe, inputs at a fixed x)
 use bough::raw::App;
-use bough_metal::perf::snap;
+use bough::sys::perf::snap;
 use bough_widgets::*;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -105,7 +105,7 @@ fn main() {
     let hover = t0.elapsed();
     let hover_i = snap().instrs - i0;
     m("400 hover steps", i0, t0);
-    println!("pointer_move share {:.0} instr/step (includes the snap overhead {})", mv as f64 / 400.0, bough_metal::perf::snap_overhead());
+    println!("pointer_move share {:.0} instr/step (includes the snap overhead {})", mv as f64 / 400.0, bough::sys::perf::snap_overhead());
     let st = &app.rt.input.stats;
     println!(
         "{rows} rows ({} widgets): mount {mount_ms:.2} ms (App::new {:.2} ms, {:.1} M instr), {:.1} KiB retained heap (+ {:.1} MiB large columns, virtual; footprint +{:.1} KiB), {allocations} allocations, {} records",

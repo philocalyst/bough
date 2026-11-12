@@ -114,10 +114,23 @@ fn window_config(scale: f32) -> Config {
     cfg
 }
 
-/// The default face: `BOUGH_FONT`, then `ZGX_FONT_FILE`, then the system's Arial.
-fn default_font() -> Vec<u8> {
-    let candidates = [std::env::var("BOUGH_FONT").ok(), std::env::var("ZGX_FONT_FILE").ok(), Some("/System/Library/Fonts/Supplemental/Arial.ttf".into())];
+/// The default face: `BOUGH_FONT`, then `ZGX_FONT_FILE`, then the platform's sans-serif face (macOS: Arial;
+/// Linux: what fontconfig resolves `sans-serif` to, `fc-match`).
+pub fn default_font() -> Vec<u8> {
+    let candidates = [std::env::var("BOUGH_FONT").ok(), std::env::var("ZGX_FONT_FILE").ok(), system_sans()];
     candidates.into_iter().flatten().find_map(|p| std::fs::read(p).ok()).expect("a TrueType font (set BOUGH_FONT)")
+}
+
+#[cfg(target_os = "macos")]
+fn system_sans() -> Option<String> {
+    Some("/System/Library/Fonts/Supplemental/Arial.ttf".into())
+}
+/// fontconfig's answer for `sans-serif` (its own configuration and `FONTCONFIG_FILE` apply), asked through
+/// `fc-match` so the binary links no font library; then the usual DejaVu paths.
+#[cfg(not(target_os = "macos"))]
+fn system_sans() -> Option<String> {
+    let fc = std::process::Command::new("fc-match").args(["-f", "%{file}", "sans-serif"]).output().ok().filter(|o| o.status.success()).and_then(|o| String::from_utf8(o.stdout).ok()).filter(|p| !p.is_empty());
+    fc.or_else(|| ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf"].iter().find(|p| std::path::Path::new(p).exists()).map(|p| p.to_string()))
 }
 
 impl Application {
@@ -128,6 +141,15 @@ impl Application {
         let title = if w.title.is_empty() { "bough".to_string() } else { w.title };
         let _ = WINDOW.set((w.size.0, w.size.1, default_font()));
         crate::backend::host::run_interactive(&title, window_config, w.view, 0.0, |_, _| {}, |_| {})
+    }
+
+    /// Open the window, mount the root view, and run until the window closes.
+    #[cfg(not(target_os = "macos"))]
+    pub fn run<D: IntoWindow>(root: D) -> ! {
+        let w = root.into_window();
+        let title = if w.title.is_empty() { "bough".to_string() } else { w.title };
+        let _ = WINDOW.set((w.size.0, w.size.1, default_font()));
+        crate::backend::run(&title, window_config, w.view, crate::backend::Run::default())
     }
 
     /// `run` for measurement harnesses (not an application API): the same window, configuration and input
@@ -233,7 +255,7 @@ impl<V: 'static> Element<V> for ImageBox {
             decode_premultiplied(png, &mut src);
             resample(&src, pw, ph, buf, tw, th);
         });
-        let ins = bough_metal::instance::Instance { color: u32::MAX, uv, kind: crate::deco::KIND_IMAGE, ..Default::default() };
+        let ins = bough_frame::Instance { color: u32::MAX, uv, kind: crate::deco::KIND_IMAGE, ..Default::default() };
         m.depth += 1;
         let node = crate::deco::mount_deco(m, ins, 0.0, 0.0, 0.0, 0.0, 1.0);
         m.depth -= 1;

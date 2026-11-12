@@ -66,15 +66,15 @@ pub struct Samples {
 
 impl Samples {
     pub fn new() -> Samples {
-        Samples { us: Vec::new(), instr: Vec::new(), ovh: bough_metal::perf::snap_overhead() }
+        Samples { us: Vec::new(), instr: Vec::new(), ovh: bough::sys::perf::snap_overhead() }
     }
     #[inline]
     pub fn time<R>(&mut self, f: impl FnOnce() -> R) -> R {
-        let i0 = bough_metal::perf::snap().instrs;
+        let i0 = bough::sys::perf::snap().instrs;
         let t0 = std::time::Instant::now();
         let r = f();
         let dt = t0.elapsed();
-        let i1 = bough_metal::perf::snap().instrs;
+        let i1 = bough::sys::perf::snap().instrs;
         self.us.push(dt.as_secs_f64() * 1e6);
         self.instr.push(i1.saturating_sub(i0).saturating_sub(self.ovh) as f64);
         r
@@ -82,11 +82,11 @@ impl Samples {
     /// Measure `f` without recording it (the caller decides the bucket): (µs, instructions, result).
     #[inline]
     pub fn measure<R>(&self, f: impl FnOnce() -> R) -> (f64, f64, R) {
-        let i0 = bough_metal::perf::snap().instrs;
+        let i0 = bough::sys::perf::snap().instrs;
         let t0 = std::time::Instant::now();
         let r = f();
         let dt = t0.elapsed();
-        let i1 = bough_metal::perf::snap().instrs;
+        let i1 = bough::sys::perf::snap().instrs;
         (dt.as_secs_f64() * 1e6, i1.saturating_sub(i0).saturating_sub(self.ovh) as f64, r)
     }
     pub fn push(&mut self, us: f64, instr: f64) {

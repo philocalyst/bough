@@ -1,4 +1,6 @@
-//! bough-metal: direct-Metal presenter prototype (see RESULTS.md).
+//! bough-metal: direct-Metal presenter prototype (see RESULTS.md). macOS only: on every other target the crate
+//! is empty (the frame contract it implements is bough-frame, the counters bough-sys).
+#![cfg(target_os = "macos")]
 pub mod damage;
 pub mod fused;
 pub mod gpu;

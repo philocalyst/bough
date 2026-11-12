@@ -2,7 +2,7 @@
 //! (scroll|fling|jump|probe), `ZGX_SECONDS` (30), `ZGX_FONT_FILE`; one 720x800 pt window titled
 //! "bough vlist"; the scene advances once per `PERIOD` by the wall clock; on close it reports
 //! `workload_ticks=N` on stderr (as zgx's adapter does) and the JSON line on stdout.
-use bough::backend::host::run_window;
+use bough::backend::run_window;
 use bough_vlist::*;
 use std::cell::Cell;
 use std::rc::Rc;

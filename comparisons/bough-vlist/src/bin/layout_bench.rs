@@ -51,7 +51,7 @@ impl View for Big {
 }
 
 fn instrs() -> u64 {
-    bough_metal::perf::snap().instrs
+    bough::sys::perf::snap().instrs
 }
 
 fn run(nodes: usize, edits: usize, fixed: bool) {
