@@ -23,6 +23,15 @@ a general ranking:
 
 It loses GPU time on glyph-dense scenes, the dashboard's worst stall, and p95 steadiness against iced.
 
+## Running tally
+
+`docs/TALLY.md` is the running list of everything tried, what each attempt showed (kept, refuted with the number
+that killed it), and what is still open, ordered by expected size. It is updated as work lands. The current
+round's design is `docs/r8/ROUND8.md`: one abstraction (typed expressions whose stage the compiler infers,
+columns per view call site, damage as evaluate-and-compare over exposed pages) under an unchanged author API.
+The public scoreboard is zortax's gui-bench under fakeland; as of 2026-11-12 the benchmarked binary is still the
+round-7 runtime, and the new core is on the `r8/*` branches.
+
 ## The question
 
 Can one framework do all of the following at once?
