@@ -30,6 +30,18 @@ mirrored.
   `[dst0, dst1)` from surface `src` at `p − d`, skipping tiles set in the frame's `FRow` bits (the tile pass writes
   those whole), so copy and repair write disjoint tiles and no barrier is needed. 0 threadgroups without a scroll.
   The source is always the surface showing the previous frame, never the target.
+* **Row certificates (round 6):** the bind table gains `cert[4]` @216 (GPU addresses; the table now fills the
+  256-byte header): per surface a plane of one 72-byte `FCert` per tile (`ty * tiles_x + tx`): `c[8]` (u32x2: the
+  bits of a half4 colour per 32 x 4 px band, 0 = none) and `m[8]` (u8: which of the band's 4 pixel rows hold it).
+  Invariant: a set bit means all 32 pixels of that row hold, in that surface, the bytes `write(float4(c))`
+  produces. `fs_tile` certifies each band it shades (all 128 accumulators bit-equal); `fs_copy` derives every
+  destination row from its source row and then SKIPs it (destination already certified the same colour), FILLs
+  it (32 writes, no read) or MOVEs it, and stores the destination's new certificates. The planes are shared
+  storage, zeroed by the presenter when a surface is first drawn or comes back from a trim; a zero plane is all
+  MOVE. `FSlot.src` bit 8 (`CERT_FROZEN`) makes the copy leave the destination's certificates alone (kernel
+  timing). The frozen original kernels (`src/oracle.metal`, compiled lazily by `reference_pixels`) mask
+  `src & 3` and ignore the planes; they read the same region, slots and bind table, which is why every layout
+  change is an append.
 * **The damage is the dispatch:** the CPU copies the OR-ed tile rows into `FRow` records (O(damaged rows)); the bin
   pass runs one threadgroup per record (indirect args `bin_tg`), the tile pass one per damaged tile (`tile_tg`), each
   finding its tile by a binary search over `prefix` and a select of the k-th set bit of `bits`.
