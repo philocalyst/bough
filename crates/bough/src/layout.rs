@@ -948,6 +948,9 @@ pub struct Lay {
     /// The described specs (see `SpecTable`).
     pub descs: SpecTable,
     stack_ids: Vec<u32>,
+    /// A placement hook (or a view's move) changed a clip's rect since the last placement of the list
+    /// regions: a region windows against its clip, so `lay_flush` places them once more.
+    pub(crate) clips_moved: bool,
 }
 
 impl Lay {
@@ -973,6 +976,7 @@ impl Lay {
             specs: Default::default(),
             descs: SpecTable::default(),
             stack_ids: Vec::new(),
+            clips_moved: false,
         }
     }
 
@@ -1024,6 +1028,7 @@ impl Rt {
         self.lay.eng.remove_group(root, &mut stack, &mut all);
         for &n in &all {
             self.lay.info[n as usize].live = false;
+            self.lay_node_dead(n);
         }
         self.lay.stack_ids = all;
         if let Some(i) = self.lay.pending.iter().position(|&r| r == root) {
@@ -1118,6 +1123,7 @@ impl Rt {
         }
         // list regions place their rows between a compute pass and the write-back; a placement may queue
         // more layout (a container's height, rows at a new width): bounded passes
+        self.clips_settled();
         for _ in 0..8 {
             self.lay_compute_pending();
             if !self.lists_place() || self.lay.pending.is_empty() {
@@ -1125,6 +1131,28 @@ impl Rt {
             }
         }
         self.lay_writeback_ready();
+        // the write-back's placement hooks set clips (a scroll box's port, cut only once its box is placed): a
+        // list region windows against its clip, so an exposure the hooks made is placed now, not at the next
+        // scroll (bounded: each pass places boxes that were laid out by the one before)
+        for _ in 0..4 {
+            if !self.clips_settled() {
+                break;
+            }
+            for _ in 0..8 {
+                if !self.lists_place() || self.lay.pending.is_empty() {
+                    break;
+                }
+                self.lay_compute_pending();
+            }
+            self.lay_compute_pending();
+            self.lay_writeback_ready();
+        }
+    }
+
+    /// Take the "a clip moved" flag: true if list regions exist that may window against it.
+    #[inline]
+    fn clips_settled(&mut self) -> bool {
+        std::mem::take(&mut self.lay.clips_moved) && !self.lists.regs.is_empty()
     }
 
     /// Write back every group laid out since the last call: a cold group (never written) from its root down;

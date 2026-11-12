@@ -315,10 +315,12 @@ impl<V: View> App<V> {
         let once = cfg.mount_once;
         let ptr = &*owner as *const V;
         rt.owner = ptr as *const u8;
+        rt.describes = !once;
+        rt.root_ty = std::any::TypeId::of::<V>();
         {
             let el = owner.view();
             let tp: *mut Vec<u32> = if once { std::ptr::null_mut() } else { &mut tape };
-            let mut m = Mounter { rt: &mut rt, owner: ptr, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None, cls: 0, tape: tp, ti: 0, pos: 0, kid: 0, keep: false };
+            let mut m = Mounter { rt: &mut rt, owner: ptr, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None, cls: 0, tape: tp, ti: 0, pos: 0, kid: 0, keep: false, own: OwnerRef::ROOT };
             el.mount(&mut m);
         }
         rt.bough.insert_run(0, &recs);
@@ -508,6 +510,10 @@ impl<V: View> App<V> {
     /// Describe the view again and patch the retained records (`describe.rs`); not when mounted once.
     pub(crate) fn redescribe(&mut self) {
         if !self.once {
+            // the rows edited this turn first: the root's walk steps over them by their record counts
+            if !self.rt.lists.redesc.is_empty() {
+                self.rt.lists_redescribe();
+            }
             // SAFETY: the tape was recorded by this owner's mount at the start of the Bough.
             unsafe { crate::describe::redescribe(&mut self.rt, &*self.owner, &mut self.tape) };
         }

@@ -58,6 +58,10 @@ impl<T> Slot<T> {
     pub fn index(&self) -> u32 {
         self.idx
     }
+    /// A slot from its parts (a route's owner path, `rt::OwnerRef`).
+    pub(crate) fn raw(idx: u32, generation: u32) -> Slot<T> {
+        Slot { idx, generation, _t: PhantomData }
+    }
 }
 
 /// One replayable step of a turn's changes (positions are those of the list at the time of the op).
@@ -447,6 +451,11 @@ impl<T> List<T> {
     #[inline]
     pub(crate) fn slot_live(&self, s: u32) -> bool {
         self.meta[s as usize] & LIVE != 0
+    }
+    /// The generation slot `s` has now.
+    #[inline]
+    pub(crate) fn slot_gen(&self, s: u32) -> u32 {
+        self.meta[s as usize] & GEN
     }
 }
 
