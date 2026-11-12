@@ -146,3 +146,30 @@ impl Rng {
         v[self.below(v.len())]
     }
 }
+
+/// A row kept in the solver across layouts: what a retained engine pays for a new width.
+pub struct Warm {
+    t: Tree<Option<MeasureFn>>,
+    root: NodeId,
+    row: NodeId,
+}
+impl Warm {
+    pub fn new(n: &Node, s: f32, width: f32) -> Warm {
+        let mut t: Tree<Option<MeasureFn>> = Tree::new();
+        let row = build(&mut t, n, s).expect("a row");
+        let mut st = Style::DEFAULT;
+        st.display = Display::Flex;
+        st.flex_direction = FlexDirection::Column;
+        st.size.width = Dimension::length(width);
+        let root = t.new_leaf_with_context(st, None);
+        t.append_child(root, row);
+        let mut w = Warm { t, root, row };
+        w.relayout(width);
+        w
+    }
+    pub fn relayout(&mut self, width: f32) -> f32 {
+        self.t.patch_style(self.root, |s| s.size.width = Dimension::length(width));
+        self.t.compute_layout_with_measure(self.root, Size { width: AvailableSpace::Definite(width), height: AvailableSpace::MaxContent }, measure);
+        self.t.layout(self.row).size.height
+    }
+}

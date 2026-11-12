@@ -5,7 +5,7 @@
 //! covers; the scenes' rows are tested as the types they are.
 mod common;
 use bough_expr::U;
-use bough_lay::flex::{Buf, Kids, Visit, place_kids, rect, solve};
+use bough_lay::flex::{Item, Kids, Pass, place_kids, rect, solve};
 use bough_lay::tree::standin::{Line, Para};
 use bough_lay::tree::{Kind, Node, measurer};
 use bough_lay::*;
@@ -25,12 +25,23 @@ struct Dyn {
 }
 struct DynKids<'a>(&'a [Dyn]);
 impl Kids for DynKids<'_> {
+    type St = Vec<Item>;
     const LEAVES: usize = 0;
     const WRAPS: bool = true;
-    fn visit<F: Visit>(&self, f: &mut F) {
-        for k in self.0 {
-            f.kid(k);
+    const VARIES: bool = true;
+    fn st(&self) -> Vec<Item> {
+        vec![Item::NONE; self.0.len()]
+    }
+    fn pass<P: Pass>(&self, st: &mut Vec<Item>, p: &mut P) {
+        for (k, it) in self.0.iter().zip(st) {
+            p.kid(k, it);
         }
+    }
+    fn each<F: FnMut(&Item)>(st: &Vec<Item>, f: &mut F) {
+        st.iter().for_each(f)
+    }
+    fn each_mut<F: FnMut(&mut Item)>(st: &mut Vec<Item>, f: &mut F) {
+        st.iter_mut().for_each(f)
     }
     fn empty(&self) -> bool {
         self.0.is_empty()
@@ -49,7 +60,7 @@ impl Lay for Dyn {
     }
     fn size(&self, cx: &mut Cx, known: [Option<V>; 2], parent: [Option<V>; 2], avail: [Av; 2], content: bool) -> [V; 2] {
         match &self.kind {
-            DynKind::Box(k) => solve(&self.spec, &DynKids(k), cx, known, parent, avail, content, &mut Buf::new(), false).outer,
+            DynKind::Box(k) => solve(&self.spec, &DynKids(k), cx, known, parent, avail, content, false).outer,
             DynKind::Line(m) => text(*m, ()).with_spec(self.spec).size(cx, known, parent, avail, content),
             DynKind::Para(m) => text(m.clone(), ()).with_spec(self.spec).size(cx, known, parent, avail, content),
         }
@@ -66,9 +77,8 @@ impl Lay for Dyn {
             k += 1;
         }
         if let DynKind::Box(kids) = &self.kind {
-            let mut buf = Buf::new();
-            let sol = solve(&self.spec, &DynKids(kids), cx, [Some(size[0]), Some(size[1])], [None; 2], [Av::Def(size[0]), Av::Def(size[1])], false, &mut buf, true);
-            k = place_kids(&DynKids(kids), cx, &mut buf, &sol, org, out, k);
+            let mut sol = solve(&self.spec, &DynKids(kids), cx, [Some(size[0]), Some(size[1])], [None; 2], [Av::Def(size[0]), Av::Def(size[1])], false, true);
+            k = place_kids(&DynKids(kids), cx, &mut sol, org, out, k);
         }
         k
     }
@@ -149,7 +159,7 @@ fn make(r: &mut Rng, depth: u32, level: u32, wraps: bool, pct: bool) -> Dyn {
                 if r.below(4) == 0 {
                     spec.margin = [r.pick(&SMALL), 0.0, r.pick(&SMALL), 0.0];
                 }
-                Dyn { spec, painted: true, kind: DynKind::Para(Para { words: words.into(), space: 7.0, line_h: 36.0 }) }
+                Dyn { spec, painted: true, kind: DynKind::Para(Para::new(words.into(), 7.0, 36.0)) }
             }
             _ => {
                 if r.below(4) == 0 {
@@ -262,11 +272,51 @@ fn random_trees_match_the_solver_and_hold_over_their_intervals() {
 #[test]
 fn probe() {
     let Ok(_) = std::env::var("LAY_PROBE") else { return };
-    let para = |w: &[f32]| Dyn { spec: Spec::new(false), painted: true, kind: DynKind::Para(Para { words: w.to_vec().into(), space: 7.0, line_h: 36.0 }) };
+    let para = |w: &[f32]| Dyn { spec: Spec::new(false), painted: true, kind: DynKind::Para(Para::new(w.to_vec().into(), 7.0, 36.0)) };
     for al in [None, Some(Align::End)] {
         let mut root = Dyn { spec: Spec::new(false), painted: false, kind: DynKind::Box(vec![para(&[9.0, 13.2, 21.0, 48.0, 9.0, 48.0, 48.0, 48.0, 13.2, 34.5]), para(&[34.5, 9.0, 13.2, 13.2])]) };
         root.spec.self_align = al;
         let t = root.tree();
         println!("{al:?}: cephal {:?}\n        typed  {:?} size_row {:?}", oracle_row(&t, 2.0, 100.0), typed_row(&root, 2.0, 100.0, t.total), size_row(&root, 2.0, &U::default(), 100.0).0);
+    }
+}
+
+#[path = "../scenes/rows.rs"]
+mod rows;
+
+#[test]
+fn scene_rows_match_the_solver() {
+    // sheet: a row of fixed boxes; uniform by type; holds from its content width up
+    let r = rows::sheet_row(7);
+    for w in [1800.0, 2311.0, 2312.0, 2313.0, 2560.0, 3000.0] {
+        check_row(&r, 2.0, w, "sheet row");
+    }
+    let (_, h, v) = typed_row(&r, 2.0, 2560.0, 22);
+    assert_eq!(h, 44);
+    assert!(v.lo[0] <= 2313.0 && v.hi[0] == f32::INFINITY, "the sheet row holds from its content width up: {v:?}");
+    fn hk<L: Lay>(_: &L) -> Hk {
+        L::HK
+    }
+    assert_eq!(hk(&r), Hk::Fixed);
+    // ide: lines of 3 to 8 tokens; fixed height by the author's `.h`
+    let mut rng = Rng(0x1de);
+    for i in 0..400 {
+        let n = 2 + rng.below(7);
+        let toks: [(f32, f32, f32); rows::MAX_TOK] = std::array::from_fn(|_| (13.2 * (1 + rng.below(9)) as f32, rng.pick(&[0.0, 3.8, 14.0, 28.0]), rng.pick(&[0.0, 3.8])));
+        let l = rows::ide_line(n, &toks, 13.2 * rng.below(6) as f32);
+        for w in [300.0, 900.0, 1860.0] {
+            check_row(&l, 2.0, w, &format!("ide line {i}"));
+        }
+        assert_eq!(hk(&l), Hk::Fixed);
+    }
+    // chat: wrapped text in a bubble that is a fraction of a column that takes the row's free space
+    for i in 0..400 {
+        let m = rows::msg(i);
+        let c = rows::chat_row(&m);
+        for w in [700.0, 1100.0, 1960.0, 2400.0] {
+            let v = check_row(&c, 2.0, w, &format!("chat row {i}"));
+            assert!(v.lo[0] <= w && w <= v.hi[0]);
+        }
+        assert_eq!(hk(&c), Hk::Wraps);
     }
 }

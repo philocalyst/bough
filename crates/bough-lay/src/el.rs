@@ -1,5 +1,5 @@
 //! Elements as the façade builds them. The children of a box are in its type; its style values are plain data.
-use crate::flex::{Align, Buf, Dim, Hk, Justify, Kids, Lay, Out, Spec, Visit, place_kids, rect, solve};
+use crate::flex::{Align, Dim, Hk, Item, Justify, Kids, Lay, Out, Pass, Spec, place_kids, rect, solve};
 use crate::tree::{Kind, Node};
 use crate::val::{Av, Cx, V};
 use core::marker::PhantomData;
@@ -19,7 +19,9 @@ impl<A> Paint for Rec1<A> {
 }
 
 /// The height was set by the author / comes from content.
+#[derive(Clone, Copy)]
 pub struct HFixed;
+#[derive(Clone, Copy)]
 pub struct HAuto;
 pub trait HState {
     const FIXED: bool;
@@ -219,21 +221,27 @@ impl<P, C, H> LBox<P, C, H> {
 impl<P: Paint, C: Kids, H: HState> Lay for LBox<P, C, H> {
     const LEAVES: usize = P::N + C::LEAVES;
     const WRAPS: bool = C::WRAPS;
+    const VARIES: bool = C::VARIES;
     const HK: Hk = if H::FIXED {
         Hk::Fixed
     } else if C::WRAPS {
         Hk::Wraps
-    } else {
+    } else if C::VARIES {
         Hk::Content
+    } else {
+        Hk::Fixed
     };
     #[inline(always)]
     fn spec(&self) -> &Spec {
         &self.spec
     }
-    #[inline(always)]
+    /// A container's size question is the firewall: one function per container type, called from wherever a
+    /// parent needs it, never inlined into it. (A question nests up to four deep per level of the tree: the
+    /// basis, the content minimum, the cross size, the fit-content width. Inlined, the code of a row type
+    /// would grow as a power of its depth; `place`, which is asked once per element, is what inlines.)
+    #[inline(never)]
     fn size(&self, cx: &mut Cx, known: [Option<V>; 2], parent: [Option<V>; 2], avail: [Av; 2], content: bool) -> [V; 2] {
-        let mut buf = Buf::new();
-        solve(&self.spec, &self.kids, cx, known, parent, avail, content, &mut buf, false).outer
+        solve(&self.spec, &self.kids, cx, known, parent, avail, content, false).outer
     }
     #[inline(always)]
     fn reported(&self, cx: &mut Cx, size: [V; 2]) -> [V; 2] {
@@ -245,10 +253,9 @@ impl<P: Paint, C: Kids, H: HState> Lay for LBox<P, C, H> {
             out.put(k, rect(cx, size, org));
         }
         if C::LEAVES != 0 {
-            let mut buf = Buf::new();
             let av = [Av::Def(size[0]), Av::Def(size[1])];
-            let sol = solve(&self.spec, &self.kids, cx, [Some(size[0]), Some(size[1])], [None; 2], av, false, &mut buf, true);
-            place_kids(&self.kids, cx, &mut buf, &sol, org, out, k + P::N);
+            let mut sol = solve(&self.spec, &self.kids, cx, [Some(size[0]), Some(size[1])], [None; 2], av, false, true);
+            place_kids(&self.kids, cx, &mut sol, org, out, k + P::N);
         }
         k + <Self as Lay>::LEAVES
     }
@@ -368,10 +375,18 @@ impl<M: Measure, P: Paint> Lay for Leaf<M, P> {
 // ---- children -----------------------------------------------------------------------------------------------
 
 impl Kids for () {
+    type St = ();
     const LEAVES: usize = 0;
     const WRAPS: bool = false;
+    const VARIES: bool = false;
     #[inline(always)]
-    fn visit<F: Visit>(&self, _: &mut F) {}
+    fn st(&self) {}
+    #[inline(always)]
+    fn pass<P: Pass>(&self, _: &mut (), _: &mut P) {}
+    #[inline(always)]
+    fn each<F: FnMut(&Item)>(_: &(), _: &mut F) {}
+    #[inline(always)]
+    fn each_mut<F: FnMut(&mut Item)>(_: &mut (), _: &mut F) {}
     #[inline(always)]
     fn empty(&self) -> bool {
         true
@@ -379,11 +394,25 @@ impl Kids for () {
     fn trees(&self, _: &mut Vec<Node>) {}
 }
 impl<L: Lay> Kids for L {
+    type St = Item;
     const LEAVES: usize = L::LEAVES;
     const WRAPS: bool = L::WRAPS;
+    const VARIES: bool = L::VARIES;
     #[inline(always)]
-    fn visit<F: Visit>(&self, f: &mut F) {
-        f.kid(self)
+    fn st(&self) -> Item {
+        Item::NONE
+    }
+    #[inline(always)]
+    fn pass<P: Pass>(&self, st: &mut Item, p: &mut P) {
+        p.kid(self, st)
+    }
+    #[inline(always)]
+    fn each<F: FnMut(&Item)>(st: &Item, f: &mut F) {
+        f(st)
+    }
+    #[inline(always)]
+    fn each_mut<F: FnMut(&mut Item)>(st: &mut Item, f: &mut F) {
+        f(st)
     }
     fn trees(&self, out: &mut Vec<Node>) {
         out.push(self.tree())
@@ -392,14 +421,28 @@ impl<L: Lay> Kids for L {
 /// A child that may be absent. Its records exist either way (a row's type fixes its records); absent, they
 /// have empty rects and it takes no part in layout.
 impl<L: Lay> Kids for Option<L> {
+    type St = Item;
     const LEAVES: usize = L::LEAVES;
     const WRAPS: bool = L::WRAPS;
+    const VARIES: bool = true;
     #[inline(always)]
-    fn visit<F: Visit>(&self, f: &mut F) {
+    fn st(&self) -> Item {
+        Item::NONE
+    }
+    #[inline(always)]
+    fn pass<P: Pass>(&self, st: &mut Item, p: &mut P) {
         match self {
-            Some(l) => f.kid(l),
-            None => f.gone::<L>(),
+            Some(l) => p.kid(l, st),
+            None => p.gone::<L>(st),
         }
+    }
+    #[inline(always)]
+    fn each<F: FnMut(&Item)>(st: &Item, f: &mut F) {
+        f(st)
+    }
+    #[inline(always)]
+    fn each_mut<F: FnMut(&mut Item)>(st: &mut Item, f: &mut F) {
+        f(st)
     }
     fn trees(&self, out: &mut Vec<Node>) {
         match self {
@@ -409,12 +452,30 @@ impl<L: Lay> Kids for Option<L> {
     }
 }
 impl<K: Kids, const N: usize> Kids for [K; N] {
+    type St = [K::St; N];
     const LEAVES: usize = K::LEAVES * N;
     const WRAPS: bool = K::WRAPS;
+    const VARIES: bool = K::VARIES;
     #[inline(always)]
-    fn visit<F: Visit>(&self, f: &mut F) {
-        for k in self {
-            k.visit(f);
+    fn st(&self) -> [K::St; N] {
+        core::array::from_fn(|i| self[i].st())
+    }
+    #[inline(always)]
+    fn pass<P: Pass>(&self, st: &mut [K::St; N], p: &mut P) {
+        for i in 0..N {
+            self[i].pass(&mut st[i], p);
+        }
+    }
+    #[inline(always)]
+    fn each<F: FnMut(&Item)>(st: &[K::St; N], f: &mut F) {
+        for s in st {
+            K::each(s, f);
+        }
+    }
+    #[inline(always)]
+    fn each_mut<F: FnMut(&mut Item)>(st: &mut [K::St; N], f: &mut F) {
+        for s in st {
+            K::each_mut(s, f);
         }
     }
     fn trees(&self, out: &mut Vec<Node>) {
@@ -424,12 +485,28 @@ impl<K: Kids, const N: usize> Kids for [K; N] {
     }
 }
 impl<C: Kids, E: Kids> Kids for Chain<C, E> {
+    type St = (C::St, E::St);
     const LEAVES: usize = C::LEAVES + E::LEAVES;
     const WRAPS: bool = C::WRAPS | E::WRAPS;
+    const VARIES: bool = C::VARIES | E::VARIES;
     #[inline(always)]
-    fn visit<F: Visit>(&self, f: &mut F) {
-        self.0.visit(f);
-        self.1.visit(f);
+    fn st(&self) -> Self::St {
+        (self.0.st(), self.1.st())
+    }
+    #[inline(always)]
+    fn pass<P: Pass>(&self, st: &mut Self::St, p: &mut P) {
+        self.0.pass(&mut st.0, p);
+        self.1.pass(&mut st.1, p);
+    }
+    #[inline(always)]
+    fn each<F: FnMut(&Item)>(st: &Self::St, f: &mut F) {
+        C::each(&st.0, f);
+        E::each(&st.1, f);
+    }
+    #[inline(always)]
+    fn each_mut<F: FnMut(&mut Item)>(st: &mut Self::St, f: &mut F) {
+        C::each_mut(&mut st.0, f);
+        E::each_mut(&mut st.1, f);
     }
     fn trees(&self, out: &mut Vec<Node>) {
         self.0.trees(out);
@@ -437,33 +514,43 @@ impl<C: Kids, E: Kids> Kids for Chain<C, E> {
     }
 }
 macro_rules! kids_tuple {
-    ($($t:ident)+) => {
+    ($($t:ident $i:tt)+) => {
         impl<$($t: Kids),+> Kids for ($($t,)+) {
+            type St = ($($t::St,)+);
             const LEAVES: usize = 0 $(+ $t::LEAVES)+;
             const WRAPS: bool = false $(| $t::WRAPS)+;
+            const VARIES: bool = false $(| $t::VARIES)+;
             #[inline(always)]
-            #[allow(non_snake_case)]
-            fn visit<Fv: Visit>(&self, f: &mut Fv) {
-                let ($($t,)+) = self;
-                $($t.visit(f);)+
+            fn st(&self) -> Self::St {
+                ($(self.$i.st(),)+)
             }
-            #[allow(non_snake_case)]
+            #[inline(always)]
+            fn pass<Pv: Pass>(&self, st: &mut Self::St, p: &mut Pv) {
+                $(self.$i.pass(&mut st.$i, p);)+
+            }
+            #[inline(always)]
+            fn each<Fv: FnMut(&Item)>(st: &Self::St, f: &mut Fv) {
+                $($t::each(&st.$i, f);)+
+            }
+            #[inline(always)]
+            fn each_mut<Fv: FnMut(&mut Item)>(st: &mut Self::St, f: &mut Fv) {
+                $($t::each_mut(&mut st.$i, f);)+
+            }
             fn trees(&self, out: &mut Vec<Node>) {
-                let ($($t,)+) = self;
-                $($t.trees(out);)+
+                $(self.$i.trees(out);)+
             }
         }
     };
 }
-kids_tuple!(A);
-kids_tuple!(A B);
-kids_tuple!(A B C);
-kids_tuple!(A B C D);
-kids_tuple!(A B C D E);
-kids_tuple!(A B C D E F);
-kids_tuple!(A B C D E F G);
-kids_tuple!(A B C D E F G H);
-kids_tuple!(A B C D E F G H I);
-kids_tuple!(A B C D E F G H I J);
-kids_tuple!(A B C D E F G H I J K);
-kids_tuple!(A B C D E F G H I J K L);
+kids_tuple!(A 0);
+kids_tuple!(A 0 B 1);
+kids_tuple!(A 0 B 1 C 2);
+kids_tuple!(A 0 B 1 C 2 D 3);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4 F 5);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4 F 5 G 6);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10 L 11);

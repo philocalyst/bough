@@ -36,9 +36,8 @@ const LIST: Spec = Spec::new(true);
 pub fn place_row<L: Lay, O: Out + ?Sized>(l: &L, s: f32, u: &U, width: f32, out: &mut O) -> (i32, Valid) {
     let mut cx = Cx::new(s, u, [width, 0.0]);
     let w = V::avail(width, 0);
-    let mut buf = flex::Buf::new();
-    let sol = flex::solve(&LIST, l, &mut cx, [Some(w), None], [None; 2], [Av::Def(w), Av::Max], false, &mut buf, true);
-    flex::place_kids(l, &mut cx, &mut buf, &sol, [V::k(0.0), V::k(0.0)], out, 0);
+    let mut sol = flex::solve(&LIST, l, &mut cx, [Some(w), None], [None; 2], [Av::Def(w), Av::Max], false, true);
+    flex::place_kids(l, &mut cx, &mut sol, [V::k(0.0), V::k(0.0)], out, 0);
     (val::round(sol.outer[1].v), cx.valid)
 }
 
@@ -48,8 +47,7 @@ pub fn place_row<L: Lay, O: Out + ?Sized>(l: &L, s: f32, u: &U, width: f32, out:
 pub fn size_row<L: Lay>(l: &L, s: f32, u: &U, width: f32) -> (i32, Valid) {
     let mut cx = Cx::new(s, u, [width, 0.0]);
     let w = V::avail(width, 0);
-    let mut buf = flex::Buf::new();
-    let sol = flex::solve(&LIST, l, &mut cx, [Some(w), None], [None; 2], [Av::Def(w), Av::Max], false, &mut buf, false);
+    let sol = flex::solve(&LIST, l, &mut cx, [Some(w), None], [None; 2], [Av::Def(w), Av::Max], false, false);
     (val::round(sol.outer[1].v), cx.valid)
 }
 

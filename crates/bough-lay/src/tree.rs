@@ -65,24 +65,27 @@ pub mod standin {
         }
     }
 
-    /// A paragraph: words of given widths separated by spaces, broken greedily, lines of one height.
-    #[derive(Clone, Debug, PartialEq)]
+    /// A paragraph: words of given widths separated by spaces, broken greedily, lines of one height. As the
+    /// text lane's leaf will, it keeps its inline sizes and the last answer with its interval, so a question
+    /// at a width inside that interval is a range check.
+    #[derive(Clone, Debug)]
     pub struct Para {
         pub words: Rc<[f32]>,
         pub space: f32,
         pub line_h: f32,
+        inline: (f32, f32),
+        last: std::cell::Cell<Block>,
     }
-    impl Measure for Para {
-        const WRAPS: bool = true;
-        fn inline(&self) -> (f32, f32) {
-            let mn = self.words.iter().cloned().fold(0.0f32, f32::max);
+    impl Para {
+        pub fn new(words: Rc<[f32]>, space: f32, line_h: f32) -> Para {
+            let mn = words.iter().cloned().fold(0.0f32, f32::max);
             let mut mx = 0.0;
-            for (i, w) in self.words.iter().enumerate() {
-                mx += w + if i > 0 { self.space } else { 0.0 };
+            for (i, w) in words.iter().enumerate() {
+                mx += w + if i > 0 { space } else { 0.0 };
             }
-            (mn, mx)
+            Para { words, space, line_h, inline: (mn, mx), last: std::cell::Cell::new(Block { w: 0.0, h: 0.0, lo: 1.0, hi: 0.0 }) }
         }
-        fn block(&self, w: f32) -> Block {
+        fn breaks(&self, w: f32) -> Block {
             let (mut lines, mut cur, mut widest, mut hi) = (1u32, 0.0f32, 0.0f32, f32::INFINITY);
             for (i, &ww) in self.words.iter().enumerate() {
                 if i == 0 {
@@ -99,6 +102,23 @@ pub mod standin {
             }
             widest = widest.max(cur);
             Block { w: widest, h: lines as f32 * self.line_h, lo: widest, hi }
+        }
+    }
+    impl Measure for Para {
+        const WRAPS: bool = true;
+        #[inline(always)]
+        fn inline(&self) -> (f32, f32) {
+            self.inline
+        }
+        #[inline(always)]
+        fn block(&self, w: f32) -> Block {
+            let b = self.last.get();
+            if (w >= b.lo) & (w < b.hi) {
+                return b;
+            }
+            let b = self.breaks(w);
+            self.last.set(b);
+            b
         }
     }
 }
