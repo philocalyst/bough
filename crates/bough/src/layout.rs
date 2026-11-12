@@ -47,14 +47,48 @@ pub type Eng = crate::lay_deep::Deep;
 
 // =============================================================================== spec (points)
 
+/// A length: `Dim::Auto`, `Dim::Pt(points)`, `Dim::Pct(fraction of the parent)`, `Dim::Px(device px)`.
+///
+/// A tag and a value, both always written (the value is 0 for `Auto`), so a `Spec` is plain bytes with no
+/// uninitialised payload and two specs compare as bytes (`Spec::bytes`). The constructors keep the spelling
+/// the enum had.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Dim {
-    Auto,
-    Pt(f32),
+pub struct Dim {
+    tag: u32,
+    v: f32,
+}
+#[allow(non_upper_case_globals, non_snake_case)]
+impl Dim {
+    pub const Auto: Dim = Dim { tag: 0, v: 0.0 };
+    #[inline(always)]
+    pub const fn Pt(v: f32) -> Dim {
+        Dim { tag: 1, v }
+    }
     /// Fraction of the parent (0..=1).
-    Pct(f32),
+    #[inline(always)]
+    pub const fn Pct(v: f32) -> Dim {
+        Dim { tag: 2, v }
+    }
     /// Device pixels (a one-line label's own size: see `Para`).
-    Px(f32),
+    #[inline(always)]
+    pub const fn Px(v: f32) -> Dim {
+        Dim { tag: 3, v }
+    }
+    /// The length in device px at `scale` px per point, if it is a fixed one (`Pt` or `Px`).
+    #[inline(always)]
+    pub fn fixed_px(self, scale: f32) -> Option<f32> {
+        match self.tag {
+            1 => Some(self.v * scale),
+            3 => Some(self.v),
+            _ => None,
+        }
+    }
+    /// The length in points, if it was given in points.
+    #[inline(always)]
+    pub fn pt(self) -> Option<f32> {
+        (self.tag == 1).then_some(self.v)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,11 +109,40 @@ pub enum Justify {
     SpaceEvenly,
 }
 
+/// The distinct described specs of a window, by index: a layout node (`LInfo::spec_ix`) and a seal
+/// (`seal.rs`) keep the index of the spec a description last carried, so an unchanged description is
+/// recognised by comparing the new spec's bytes with the retained ones, with no hash and no style lookup.
+#[derive(Default)]
+pub struct SpecTable {
+    specs: Vec<Spec>,
+    ids: std::collections::HashMap<SpecKey, u32, FxBuild>,
+}
+impl SpecTable {
+    #[inline(always)]
+    pub fn is(&self, ix: u32, s: &Spec) -> bool {
+        // NONE (never described) indexes past the end
+        self.specs.get(ix as usize).is_some_and(|r| r.same(s))
+    }
+    #[cold]
+    pub fn intern(&mut self, s: &Spec) -> u32 {
+        if let Some(&i) = self.ids.get(&SpecKey(*s)) {
+            return i;
+        }
+        let i = self.specs.len() as u32;
+        self.specs.push(*s);
+        self.ids.insert(SpecKey(*s), i);
+        i
+    }
+}
+
 /// A box's layout properties in points (converted to a cephal `Style` at mount, in device px).
+///
+/// Plain bytes: `repr(C)`, the four-byte fields first and the one-byte ones last, so there is no padding,
+/// and no field has an uninitialised byte in any value (`SPEC_BYTES` and the constants after the struct
+/// check both at compile time). `Spec::bytes` is therefore the spec's identity.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Spec {
-    pub container: bool,
-    pub column: bool,
     pub w: Dim,
     pub h: Dim,
     pub min_w: f32,
@@ -89,16 +152,32 @@ pub struct Spec {
     pub gap: f32,
     pub grow: f32,
     pub shrink: f32,
-    pub items: Option<Align>,
-    pub self_align: Option<Align>,
-    pub justify: Option<Justify>,
-    /// Absolute: (left, top) inset in points; the box sizes itself by `w`/`h`.
-    pub abs: Option<(f32, f32)>,
+    /// Absolute: (left, top) inset in points when `abs_on`; the box sizes itself by `w`/`h`.
+    abs_xy: [f32; 2],
+    pub container: bool,
+    pub column: bool,
+    abs_on: bool,
     /// `position: relative`: the containing block of absolutely positioned children.
     pub relative: bool,
     /// `overflow: clip`: content overflow stays inside the box for layout (cephal stops propagating there).
     pub clip: bool,
+    pub items: Option<Align>,
+    pub self_align: Option<Align>,
+    pub justify: Option<Justify>,
 }
+
+/// `size_of::<Spec>()`: the sum of its fields' sizes (no padding anywhere).
+pub const SPEC_BYTES: usize = 84;
+const _: () = assert!(size_of::<Spec>() == SPEC_BYTES && size_of::<Dim>() == 8 && align_of::<Spec>() == 4);
+const _: () = assert!(std::mem::offset_of!(Spec, container) == 76 && std::mem::offset_of!(Spec, justify) == 83);
+// Every byte of a spec is initialised: evaluating these reads each byte at compile time (a padding or
+// niche-payload byte would be uninitialised and the constant would not evaluate). `Option` of a fieldless
+// enum is one byte for `None` and for every variant.
+const _: [u8; SPEC_BYTES] = unsafe { std::mem::transmute::<Spec, [u8; SPEC_BYTES]>(Spec::new(true, true)) };
+const _: [u8; 6] = unsafe { std::mem::transmute::<[Option<Align>; 6], [u8; 6]>([None, Some(Align::Start), Some(Align::End), Some(Align::Center), Some(Align::Stretch), Some(Align::Baseline)]) };
+const _: [u8; 7] = unsafe {
+    std::mem::transmute::<[Option<Justify>; 7], [u8; 7]>([None, Some(Justify::Start), Some(Justify::End), Some(Justify::Center), Some(Justify::SpaceBetween), Some(Justify::SpaceAround), Some(Justify::SpaceEvenly)])
+};
 
 impl Spec {
     pub const fn new(container: bool, column: bool) -> Spec {
@@ -117,18 +196,54 @@ impl Spec {
             items: None,
             self_align: None,
             justify: None,
-            abs: None,
+            abs_xy: [0.0; 2],
+            abs_on: false,
             relative: false,
             clip: false,
         }
     }
 
+    /// The spec as its bytes: two specs are the same description iff these are equal (bit-exact: `-0.0`
+    /// and `0.0` differ, which only ever costs an unneeded restyle).
+    #[inline(always)]
+    pub fn bytes(&self) -> &[u8; SPEC_BYTES] {
+        // SAFETY: `Spec` is `repr(C)` with no padding and no uninitialised byte in any value (the constants
+        // after the struct), and `[u8; SPEC_BYTES]` has its size and a smaller alignment.
+        unsafe { &*(self as *const Spec as *const [u8; SPEC_BYTES]) }
+    }
+    /// `self.bytes() == o.bytes()`, as ten 8-byte compares and one 4-byte one, inline (the slice compare is a
+    /// call to `bcmp`, which costs more than the compare for 84 bytes).
+    #[inline(always)]
+    pub fn same(&self, o: &Spec) -> bool {
+        let (a, b) = (self.bytes(), o.bytes());
+        let mut d = 0u64;
+        let mut i = 0;
+        while i < 80 {
+            // SAFETY: i + 8 <= 80 < SPEC_BYTES; unaligned reads of initialised bytes.
+            d |= unsafe { (a.as_ptr().add(i) as *const u64).read_unaligned() ^ (b.as_ptr().add(i) as *const u64).read_unaligned() };
+            i += 8;
+        }
+        // SAFETY: bytes 80..84.
+        d |= unsafe { (a.as_ptr().add(80) as *const u32).read_unaligned() ^ (b.as_ptr().add(80) as *const u32).read_unaligned() } as u64;
+        d == 0
+    }
+    /// The absolute inset (left, top) in points, if the box is absolutely positioned.
+    #[inline(always)]
+    pub fn abs(&self) -> Option<(f32, f32)> {
+        self.abs_on.then_some((self.abs_xy[0], self.abs_xy[1]))
+    }
+    #[inline(always)]
+    pub fn set_abs(&mut self, abs: Option<(f32, f32)>) {
+        let (x, y) = abs.unwrap_or((0.0, 0.0));
+        (self.abs_xy, self.abs_on) = ([x, y], abs.is_some());
+    }
+
     fn dim(d: Dim, s: f32) -> Dimension {
-        match d {
-            Dim::Auto => Dimension::AUTO,
-            Dim::Pt(v) => Dimension::length(v * s),
-            Dim::Pct(f) => Dimension::percent(f),
-            Dim::Px(v) => Dimension::length(v),
+        match d.tag {
+            0 => Dimension::AUTO,
+            1 => Dimension::length(d.v * s),
+            2 => Dimension::percent(d.v),
+            _ => Dimension::length(d.v),
         }
     }
     fn align(a: Align) -> AlignItems {
@@ -189,7 +304,7 @@ impl Spec {
         if self.clip {
             st.overflow = cephal::Point { x: cephal::style::Overflow::Clip, y: cephal::style::Overflow::Clip };
         }
-        if let Some((x, y)) = self.abs {
+        if let Some((x, y)) = self.abs() {
             st.position = Position::Absolute;
             st.inset.left = la(x);
             st.inset.top = la(y);
@@ -294,7 +409,7 @@ pub trait Styled: Sized {
     }
     /// Absolutely positioned at (x, y) points from the parent's padding box.
     fn abs(mut self, x: f32, y: f32) -> Self {
-        self.spec_mut().abs = Some((x, y));
+        self.spec_mut().set_abs(Some((x, y)));
         self
     }
 }
@@ -323,49 +438,24 @@ impl Hasher for Fx {
 }
 pub type FxBuild = BuildHasherDefault<Fx>;
 
-/// A `Spec` as a hash key (bit-exact).
+/// A `Spec` as a hash key: its bytes.
 #[derive(Clone, Copy)]
 pub struct SpecKey(pub Spec);
 impl PartialEq for SpecKey {
+    #[inline]
     fn eq(&self, o: &Self) -> bool {
-        self.0 == o.0
+        self.0.bytes() == o.0.bytes()
     }
 }
 impl Eq for SpecKey {}
 impl Hash for SpecKey {
+    #[inline]
     fn hash<H: Hasher>(&self, h: &mut H) {
-        let s = &self.0;
-        h.write_u8(s.container as u8 | (s.column as u8) << 1 | (s.relative as u8) << 2);
-        let dim = |h: &mut H, d: crate::layout::Dim| match d {
-            crate::layout::Dim::Auto => h.write_u32(0),
-            crate::layout::Dim::Pt(v) => {
-                h.write_u32(1);
-                h.write_u32(v.to_bits())
-            }
-            crate::layout::Dim::Pct(v) => {
-                h.write_u32(2);
-                h.write_u32(v.to_bits())
-            }
-            crate::layout::Dim::Px(v) => {
-                h.write_u32(3);
-                h.write_u32(v.to_bits())
-            }
-        };
-        dim(h, s.w);
-        dim(h, s.h);
-        for v in [s.min_w, s.min_h, s.gap, s.grow, s.shrink].into_iter().chain(s.pad).chain(s.margin) {
-            h.write_u32(v.to_bits());
-        }
-        h.write_u8(s.items.map_or(255, |a| a as u8));
-        h.write_u8(s.self_align.map_or(255, |a| a as u8));
-        h.write_u8(s.justify.map_or(255, |a| a as u8));
-        if let Some((x, y)) = s.abs {
-            h.write_u32(x.to_bits());
-            h.write_u32(y.to_bits());
+        for w in self.0.bytes().chunks_exact(4) {
+            h.write_u32(u32::from_ne_bytes([w[0], w[1], w[2], w[3]]));
         }
     }
 }
-
 
 // =============================================================================== measured text
 
@@ -756,6 +846,9 @@ pub struct LInfo {
     pub avail_h: f32,
     /// A placement hook (`Input::lhooks` index, NONE): a clip or an anchored space that follows the box.
     pub hook: u32,
+    /// `Lay::descs` index of the spec the node's description last carried (NONE until its first
+    /// re-description: a mount records nothing).
+    pub spec_ix: u32,
 }
 
 impl LInfo {
@@ -772,6 +865,7 @@ impl LInfo {
             desc: false,
             tdirty: false,
             queued: false,
+            spec_ix: NONE,
             ax: 0.0,
             ay: 0.0,
             aw: 0.0,
@@ -851,6 +945,8 @@ pub struct Lay {
     pub last_box: u32,
     /// The user specs of boxes with size operands (`boxops.rs`), by layout node.
     pub specs: std::collections::HashMap<u32, Spec>,
+    /// The described specs (see `SpecTable`).
+    pub descs: SpecTable,
     stack_ids: Vec<u32>,
 }
 
@@ -875,6 +971,7 @@ impl Lay {
             stack: Vec::new(),
             kids: Vec::new(),
             specs: Default::default(),
+            descs: SpecTable::default(),
             stack_ids: Vec::new(),
         }
     }
@@ -1296,7 +1393,8 @@ impl<Bg, Ch, X> LBox<Bg, Ch, X> {
         let mut port = Spec::new(false, false);
         let c = &self.spec;
         (port.w, port.h, port.min_w, port.min_h, port.margin) = (c.w, c.h, c.min_w, c.min_h, c.margin);
-        (port.grow, port.shrink, port.self_align, port.abs, port.relative) = (c.grow, c.shrink, c.self_align, c.abs, c.relative);
+        (port.grow, port.shrink, port.self_align, port.relative) = (c.grow, c.shrink, c.self_align, c.relative);
+        port.set_abs(c.abs());
         let mut content = Spec::new(true, c.column);
         (content.gap, content.pad, content.items, content.justify) = (c.gap, c.pad, c.items, c.justify);
         content.w = Dim::Pct(1.0);
@@ -1414,14 +1512,18 @@ where
 
     fn update(self, m: &mut Mounter<'_, V>) {
         let lid = m.tape_next();
-        if X::SIZE {
-            // the size operands own w/h: the description's other properties restyle around them
-            let cur = m.rt.lay.specs.get(&lid).copied().unwrap_or(self.spec);
-            let spec = Spec { w: cur.w, h: cur.h, ..self.spec };
-            m.rt.lay.specs.insert(lid, spec);
-            restyle(m.rt, lid, &spec);
-        } else {
-            restyle(m.rt, lid, &self.spec);
+        if !m.rt.lay.descs.is(m.rt.lay.info[lid as usize].spec_ix, &self.spec) {
+            // the described spec changed (or this is the node's first re-description)
+            if X::SIZE {
+                // the size operands own w/h: the description's other properties restyle around them
+                let cur = m.rt.lay.specs.get(&lid).copied().unwrap_or(self.spec);
+                let spec = Spec { w: cur.w, h: cur.h, ..self.spec };
+                m.rt.lay.specs.insert(lid, spec);
+                restyle(m.rt, lid, &spec);
+            } else {
+                restyle(m.rt, lid, &self.spec);
+            }
+            m.rt.lay.info[lid as usize].spec_ix = m.rt.lay.descs.intern(&self.spec);
         }
         let li = m.rt.lay.info[lid as usize];
         assert_eq!(self.draw, li.kind == 1, "a re-description cannot add or drop a box's paint (bg/rounded/border)");
@@ -1460,6 +1562,20 @@ where
         m.depth -= 1;
         m.rt.lay.cur = cur;
         m.kid = kid;
+    }
+
+    #[inline(always)]
+    fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
+        s.word(1 | (self.draw as u32) << 8 | (self.border.is_some() as u32) << 9);
+        s.spec(&self.spec);
+        s.f32(self.radius);
+        if let Some((w, c)) = self.border {
+            s.f32(w);
+            s.word(c.0);
+        }
+        self.bg.seal(s);
+        self.x.seal(s);
+        self.ch.seal(s);
     }
 }
 
@@ -1590,14 +1706,19 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
 
     fn update(self, m: &mut Mounter<'_, V>) {
         let lid = m.tape_next();
-        let spec = match m.rt.lay.eng.ctx_mut(lid) {
-            Some(ctx) if ctx.user.is_some() => {
-                ctx.user = Some(self.spec);
-                ctx.sized_spec(&self.spec)
-            }
-            _ => self.spec,
-        };
-        restyle(m.rt, lid, &spec);
+        if !m.rt.lay.descs.is(m.rt.lay.info[lid as usize].spec_ix, &self.spec) {
+            // the described spec changed (or this is the node's first re-description). A label's sized spec
+            // follows its text through `lay_text_changed`, so an unchanged description needs nothing here.
+            let spec = match m.rt.lay.eng.ctx_mut(lid) {
+                Some(ctx) if ctx.user.is_some() => {
+                    ctx.user = Some(self.spec);
+                    ctx.sized_spec(&self.spec)
+                }
+                _ => self.spec,
+            };
+            restyle(m.rt, lid, &spec);
+            m.rt.lay.info[lid as usize].spec_ix = m.rt.lay.descs.intern(&self.spec);
+        }
         let node = m.rt.lay.info[lid as usize].rtn;
         let ti = m.rt.nodes[node as usize].text;
         let s = m.rt.scale;
@@ -1609,13 +1730,25 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
             m.rt.bough.set_clip_run(m.pos, 1, m.clip);
             m.rt.lay.info[lid as usize].clip = m.clip;
         }
-        let text = self.s.value();
-        if m.rt.texts[ti as usize].text != text {
-            m.rt.lay_text_changed(node, &text);
-        }
+        // compared in place: a source that is already a string allocates nothing
+        self.s.with_str(|text| {
+            if m.rt.texts[ti as usize].text != text {
+                m.rt.lay_text_changed(node, text);
+            }
+        });
         <crate::boxops::ApplyTextColor as crate::elem::Apply>::apply(m.rt, node, &self.color.value());
         m.pos += 1;
         m.kid += 1;
+    }
+
+    #[inline(always)]
+    fn seal<Z: crate::seal::Sealer>(&self, s: &mut Z) {
+        s.word(2 | (self.wrap as u32) << 8);
+        s.spec(&self.spec);
+        s.f32(self.size);
+        s.f32(self.lh);
+        self.color.seal(s);
+        self.s.seal(s);
     }
 }
 
