@@ -60,7 +60,7 @@ pub fn edge_band(kind: u8, radius: f32, bw: f32) -> i16 {
 /// `edge_band`; text, instance runs and every other kind (images, gradients, shadows) are not translation
 /// invariant anywhere (-1: their whole visible ink).
 #[inline]
-fn scroll_band(inst: &Col<Instance>, kind: u8, payload: u32) -> i16 {
+pub(crate) fn scroll_band(inst: &Col<Instance>, kind: u8, payload: u32) -> i16 {
     if kind != REC_QUAD || payload & (bough_metal::fused::PAY_RUN | bough_metal::fused::PAY_IRUN) != 0 {
         return -1;
     }

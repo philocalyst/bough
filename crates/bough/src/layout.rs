@@ -906,6 +906,8 @@ pub struct LayStats {
     pub computes: u64,
     pub nodes_added: u64,
     pub nodes_written: u64,
+    /// Runs of displaced siblings written back as one rigid move (`wb_rigid`).
+    pub rigid_moves: u64,
     pub nodes_visited: u64,
     pub text_placed: u64,
 }
@@ -1210,7 +1212,10 @@ impl Rt {
                 stack.push((r, 0.0, 0.0, false));
             }
         }
-        for &c in &dirty {
+        let mut i = 0;
+        while i < dirty.len() {
+            let c = dirty[i];
+            i += 1;
             let ci = self.lay.info[c as usize];
             if !ci.live || !(ci.needs || ci.tdirty) {
                 continue;
@@ -1222,52 +1227,151 @@ impl Rt {
                 py += y;
                 p = self.lay.info[p as usize].parent;
             }
+            // A node whose box only went somewhere else (same size, a whole number of device px, nothing
+            // inside it changed) was displaced: a sibling before it grew, shrank, came or went. The engine
+            // reports such siblings one after the other; a run of them displaced alike is one rigid move of
+            // their records (`wb_rigid`): their pixels are copied, not repainted.
+            if let Some(d) = self.displaced(c, &ci, px, py) {
+                let mut j = i;
+                while j < dirty.len() {
+                    let n = dirty[j];
+                    let ni = self.lay.info[n as usize];
+                    if !ni.live || ni.parent != ci.parent || self.displaced(n, &ni, px, py) != Some(d) {
+                        break;
+                    }
+                    j += 1;
+                }
+                if self.wb_rigid(&mut stack, &dirty[i - 1..j], px, py, d) {
+                    i = j;
+                    continue;
+                }
+            }
             stack.push((c, px, py, false));
         }
         dirty.clear();
         self.lay.dirty = dirty;
-        while let Some((n, px, py, force)) = stack.pop() {
-            let li = self.lay.info[n as usize];
-            if !(force || li.needs || li.desc || !li.written || li.tdirty) {
-                continue;
-            }
-            self.lay.stats.nodes_visited += 1;
-            let (rx, ry, w, h) = self.lay.eng.rect(n);
-            let (ax, ay) = (px + rx, py + ry);
-            let moved = !li.written || ax != li.ax || ay != li.ay;
-            let sized = !li.written || w != li.aw || h != li.ah;
-            if li.kind != 0 && (moved || sized || li.tdirty) {
-                match li.kind {
-                    1 => self.place_quad(n, ax, ay, w, h),
-                    _ => self.place_text(n, ax, ay, w, h, sized || li.tdirty),
-                }
-                self.lay.stats.nodes_written += 1;
-            }
-            if li.hook != NONE && (moved || sized) {
-                self.lay_hook(li.hook, li.space, ax, ay, w, h);
-            }
-            {
-                let l = &mut self.lay.info[n as usize];
-                l.ax = ax;
-                l.ay = ay;
-                l.aw = w;
-                l.ah = h;
-                l.written = true;
-                l.needs = false;
-                l.desc = false;
-                l.tdirty = false;
-            }
-            let fc = force || moved;
-            for &c in self.lay.eng.kids(n) {
-                // only what moved (a moved parent moves everything below it) or is flagged is visited
-                let ci = &self.lay.info[c as usize];
-                if fc || ci.needs || ci.desc || !ci.written || ci.tdirty {
-                    stack.push((c, ax, ay, fc));
-                }
-            }
+        while let Some(it) = stack.pop() {
+            self.wb_visit(&mut stack, it);
         }
         self.lay.stack = stack;
     }
+
+    /// One node of the write-back (see `lay_writeback`); its children that need a visit are pushed on `stack`.
+    fn wb_visit(&mut self, stack: &mut Vec<(u32, f32, f32, bool)>, (n, px, py, force): (u32, f32, f32, bool)) {
+        let li = self.lay.info[n as usize];
+        if !(force || li.needs || li.desc || !li.written || li.tdirty) {
+            return;
+        }
+        self.lay.stats.nodes_visited += 1;
+        let (rx, ry, w, h) = self.lay.eng.rect(n);
+        let (ax, ay) = (px + rx, py + ry);
+        let moved = !li.written || ax != li.ax || ay != li.ay;
+        let sized = !li.written || w != li.aw || h != li.ah;
+        if li.kind != 0 && (moved || sized || li.tdirty) {
+            match li.kind {
+                1 => self.place_quad(n, ax, ay, w, h),
+                _ => self.place_text(n, ax, ay, w, h, sized || li.tdirty),
+            }
+            self.lay.stats.nodes_written += 1;
+        }
+        if li.hook != NONE && (moved || sized) {
+            self.lay_hook(li.hook, li.space, ax, ay, w, h);
+        }
+        {
+            let l = &mut self.lay.info[n as usize];
+            l.ax = ax;
+            l.ay = ay;
+            l.aw = w;
+            l.ah = h;
+            l.written = true;
+            l.needs = false;
+            l.desc = false;
+            l.tdirty = false;
+        }
+        let fc = force || moved;
+        for &c in self.lay.eng.kids(n) {
+            // only what moved (a moved parent moves everything below it) or is flagged is visited
+            let ci = &self.lay.info[c as usize];
+            if fc || ci.needs || ci.desc || !ci.written || ci.tdirty {
+                stack.push((c, ax, ay, fc));
+            }
+        }
+    }
+
+    /// Is written node `c`, whose parent is now at `(px, py)`, displaced by a whole, non-zero number of device
+    /// px with its size unchanged? Returns the displacement. (Whether anything inside it changed is `wb_rigid`'s
+    /// check.)
+    #[inline]
+    fn displaced(&self, c: u32, ci: &LInfo, px: f32, py: f32) -> Option<(i32, i32)> {
+        if !ci.written || ci.tdirty {
+            return None;
+        }
+        let (rx, ry, w, h) = self.lay.eng.rect(c);
+        let (dx, dy) = (px + rx - ci.ax, py + ry - ci.ay);
+        if w != ci.aw || h != ci.ah || (dx == 0.0 && dy == 0.0) || dx != dx.round() || dy != dy.round() || dx.abs() > 30000.0 || dy.abs() > 30000.0 {
+            return None;
+        }
+        Some((dx as i32, dy as i32))
+    }
+    /// Write back the subtrees of `kids` (siblings whose parent is at `(px, py)`, each displaced by `d`) as one rigid move: every node is placed as usual, but the damage of the run is a
+    /// move's (`Bough::move_begin` / `move_end`): a copy of the previous frame inside the run's old and new
+    /// bounds, plus the strip the move exposed and the edges of what did not move. Returns false (nothing
+    /// done) when the run cannot be a move: a node in it has a placement hook (a clip, an anchor, a list
+    /// port: their own moves and mounts are not part of one translation).
+    fn wb_rigid(&mut self, stack: &mut Vec<(u32, f32, f32, bool)>, kids: &[u32], px: f32, py: f32, d: (i32, i32)) -> bool {
+        // the subtrees hold no hooks (walked through the children arrays: a few loads per node)
+        let base = stack.len();
+        for &c in kids {
+            stack.push((c, 0.0, 0.0, false));
+        }
+        // (the roots are marked by a non-zero x: a root's own box moved, a descendant's must not have)
+        for it in &mut stack[base..] {
+            it.1 = 1.0;
+        }
+        let mut plain = true;
+        while stack.len() > base {
+            let (n, root, ..) = stack.pop().unwrap();
+            let ni = &self.lay.info[n as usize];
+            if ni.hook != NONE || ni.tdirty || !ni.written || (root == 0.0 && ni.needs) {
+                plain = false;
+                stack.truncate(base);
+                break;
+            }
+            for &c in self.lay.eng.kids(n) {
+                stack.push((c, 0.0, 0.0, false));
+            }
+        }
+        if !plain {
+            return false;
+        }
+        // the subtrees' records are one run: each root's subtree ends where the next root's begins
+        let Some(start) = self.bough.pos_of(self.handle(kids[0])) else { return false };
+        let mut end = start;
+        for &c in kids {
+            match self.bough.pos_of(self.handle(c)) {
+                Some(p) if p == end => end = self.bough.subtree_end(p),
+                _ => return false,
+            }
+        }
+        if end <= start {
+            return false;
+        }
+        let old = self.bough.run_bounds(start, end - start);
+        self.bough.move_begin();
+        for &c in kids {
+            stack.push((c, px, py, true));
+            while stack.len() > base {
+                let it = stack.pop().unwrap();
+                self.wb_visit(stack, it);
+            }
+        }
+        let clip = if old.is_empty() { old } else { old.union(old.translate(d.0, d.1)) };
+        let inst = &self.inst;
+        self.bough.move_end(start, end - start, d.0, d.1, clip, |kind, payload| crate::rt::scroll_band(inst, kind, payload));
+        self.lay.stats.rigid_moves += 1;
+        true
+    }
+
 
     fn place_quad(&mut self, lid: u32, x: f32, y: f32, w: f32, h: f32) {
         // the bands around the edges that moved (exact on the geometry grid), not old ∪ new
