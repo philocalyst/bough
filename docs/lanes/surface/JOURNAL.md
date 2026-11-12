@@ -106,3 +106,26 @@ Plan, in order, each headless with tests before anything platform-side:
    measurement.
 3. Events on the façade's surface (`.on_click(V::method)`, closures over `&mut V`), pick dispatch underneath.
 4. Accessibility on the same queries.
+
+**Correction (same day): the inspector UI exists.** It is gpui-component's `crates/component/src/inspector.rs`
+(689 lines; the same in `gpui-component-release`), on gpui-ce's core; Zed's original `inspector_ui` is in
+gpui-ce's history at `478d1652f6^`; `gpui-ce-0.3` adds a bench of the closed inspector's cost (upstream
+#64309). What it adds to the core: a toggle action and key binding (cmd-alt-i / ctrl-shift-i); a panel with a
+pick-mode button and close; the element's source location as a `file://` link with copy, its global id (Zed:
+instance number, open in the workspace); Origin / Size / Content Size; a **Rust style editor**: the element's
+style printed as builder calls (`div().p_1().mx_2()`, found by matching the reflected `Styled` methods as
+subsets of the style), edited live, unknown methods as inline diagnostics, `.` completes method names with their
+docs, the part no method expresses kept aside; a **JSON style editor** of the whole `StyleRefinement`, edited
+live, parse errors shown; Reset to the style at pick time. Edits last while the element stays selected (its
+README lists persistent and multi-element edits, a highlight after picking, a hierarchy view and pausing the UI
+as future work). Consequence for the plan: the model gets a code view of a picked element (its operands printed
+back as the author's calls, from the expression code), edits through it (operand pins, printable as source
+edits, and theme words) with a diagnostic when a call cannot be applied live, and completion from the element
+layer's style struct when it exists. The key binding, the panel, links and copy belong to the in-window panel,
+which waits for text and layout on the new core.
+
+Provisional answers from the lead (2026-11-12), each kept reversible: the in-window panel written in bough is the
+product but waits for text and layout, so the model and a query protocol come first with a textual viewer as the
+first client; dev-only pins that print as source edits are accepted; pointer transparency as in S1; screen
+readers get the exposed window plus a page each side plus counts, other rows described on demand, scrolling only
+on an explicit action. Events wait for raster and expr to answer S1-S3.
