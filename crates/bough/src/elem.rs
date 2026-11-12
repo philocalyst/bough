@@ -102,6 +102,8 @@ impl<V> Mounter<'_, V> {
     /// and `patch` reads exactly that cell type.
     pub(crate) unsafe fn wire_cell(&mut self, head: &std::cell::Cell<u32>, off: u32, patch: PatchFn, node: u32, recipe: [u8; 16]) -> u32 {
         debug_assert_eq!(head as *const _ as usize, self.owner as usize + off as usize, "operand is not a field of the mounted owner");
+        // SAFETY: this fn's contract: `off` is the proven offset of the cell whose head is `head` in this owner type, and
+        // `patch` reads that cell type (`add_wire` asks for the same).
         let i = unsafe { self.rt.add_wire(head, off, self.cls, patch, node, recipe) };
         self.scope.wires.push(i);
         i

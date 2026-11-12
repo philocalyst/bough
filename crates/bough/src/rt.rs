@@ -268,6 +268,8 @@ pub struct Wire {
 /// `View::changed` of an owner class, type-erased: `(owner, publications, committed readers)`.
 pub type ChangedFn = unsafe fn(*mut u8, &crate::changed::Pubs, &[usize]);
 
+/// # Safety
+/// None needed: reads nothing (a patch for a wire whose cell has nothing to apply).
 unsafe fn nop(_: &mut Rt, _: &Wire, _: *const u8, _: *const u8) {}
 
 /// Index bits of a head (the rest are flags: `QUEUED`, `HELD`).
@@ -919,6 +921,7 @@ impl Rt {
     /// every cell, `#[repr(C)]`), and be derived from a unique borrow (list patches write their cell).
     pub unsafe fn settle(&mut self, owner: *const u8) {
         loop {
+            // SAFETY: this fn's contract (`owner` is the live root owner).
             unsafe { self.settle_cls(owner, 0) };
             if !std::mem::take(&mut self.asy.rescan) {
                 break;
@@ -943,6 +946,7 @@ impl Rt {
             if h & crate::signal::QUEUED == 0 {
                 continue;
             }
+            // SAFETY: the contract again: `head` is the head of the cell at `sig`, in the live owner `owner`.
             unsafe { self.run_head(head, sig, owner) };
         }
     }
@@ -1182,6 +1186,9 @@ impl Rt {
     }
 
     /// Mount rows `range` (ascending) and insert them at the front or the back of the region.
+    ///
+    /// # Safety
+    /// As `region_initial`: `owner` points at the live owner the region's row function was monomorphised for.
     unsafe fn region_mount(&mut self, reg: usize, owner: *const u8, range: Range<usize>, front: bool) {
         if range.is_empty() {
             return;
@@ -1250,6 +1257,7 @@ impl Rt {
             let r = &mut self.regions[reg];
             r.scroll_px = new_px;
             r.range = new_range.clone();
+            // SAFETY: `region_scroll`'s contract is `region_mount`'s.
             unsafe { self.region_mount(reg, owner, new_range, false) };
             return;
         }
@@ -1275,6 +1283,7 @@ impl Rt {
         let surv_start = old_range.start.max(new_range.start);
         let surv_end = old_range.end.min(new_range.end);
         self.regions[reg].range = new_range.clone();
+        // SAFETY: `region_scroll`'s contract is `region_mount`'s.
         unsafe {
             self.region_mount(reg, owner, new_range.start..surv_start, true);
             self.region_mount(reg, owner, surv_end..new_range.end, false);

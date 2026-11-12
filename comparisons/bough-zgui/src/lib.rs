@@ -1,4 +1,4 @@
-//! zgui's interaction benchmarks on bough (`cargo xtask perf` in ~/projects/_ref/zgui: the scenarios of
+//! zgui's interaction benchmarks on bough (`cargo xtask perf` in $BOUGH_REF/zgui: the scenarios of
 //! `crates/zgui-bench/src/scenario` and the `label-churn` / `resize-slope` probes). Each document here is
 //! zgui's fixture rebuilt with bough builders (same window, rows, cells, strings, colours, row heights),
 //! and each driver in `bin/` delivers zgui's event sequence and times zgui's span: one event delivered and

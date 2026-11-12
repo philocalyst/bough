@@ -13,7 +13,7 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 DYLIB = os.path.join(TOOLS, "present_observer.dylib")
 INPUT = os.path.join(TOOLS, "awagy_input")
 CAP = 1 << 20
-FONT = os.path.expanduser("~/projects/_ref/zgx/comparisons/fonts/DejaVuSans.ttf")
+FONT = os.path.expanduser(os.environ.get("BOUGH_REF", "~/projects/_ref")) + "/zgx/comparisons/fonts/DejaVuSans.ttf"
 
 # Frameworks measured here with no site anchor (zgx, BUI): how each is observed. Both are ordinary binaries in
 # bins/<app>-<scroll|dashboard>, launched like every other app; neither presents through a CAMetalLayer drawable.
