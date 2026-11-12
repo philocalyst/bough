@@ -221,3 +221,55 @@ is where the first frame's memory comes from. Experiments, predictions written n
 | M3 | touch the pages from several threads while the main thread connects and mounts | at most 2.6 / cores + 0.1 ms | worse than M1 under load |
 | M4 | the model built after write 1 | table and search connect as early as rows | no change |
 | M5 | static linking (no loader) | connect 0.3 ms earlier | under 0.1 ms |
+
+## 6. Rows hover, first measurement with the harness's preset (2026-11-12, `130e5a9a56`)
+
+`fakeland bench hover-latency` with the runner's own parameters (`steps.rs`: the pointer enters row 5 from row
+1, pixel detector on row 5, 12 repeats, 3 measured iterations after 1 warm-up), ilo-prod, load 4 to 7,
+compositor and app on CPUs 8-15 at nice 19, pixman. Medians in milliseconds. Not yet through the runner (its
+lane-local rebuild failed on a path; next), so no layout check and no validity record beyond the preset's own.
+
+| timing | binary | rows | total p50 | input to commit p50 | p95 |
+|---|---|---|---|---|---|
+| unthrottled | new core | 100 | 0.119 | 0.127 | 0.150 |
+| unthrottled | new core | 3,000 | 0.074 | 0.078 | 0.111 |
+| unthrottled | new core | 100,000 | 0.075 | 0.079 | 0.114 |
+| unthrottled | façade `74e665786c` | 3,000 | 0.901 | 0.907 | 1.186 |
+| fixed 60 Hz | new core | 100 | 11.107 | 0.081 | 0.114 |
+| fixed 60 Hz | new core | 3,000 | 11.100 | 0.085 | 0.112 |
+| fixed 60 Hz | new core | 100,000 | 11.072 | 0.133 | 0.144 |
+| fixed 60 Hz | façade | 3,000 | 11.097 | 0.870 | 1.052 |
+
+I1 (at most 0.05 ms, the same at every size): **missed by 1.6x** (0.08 ms), and the size-independence is not
+shown cleanly yet: the 100-row and 100,000-row cells swap places between the two runs (0.127 / 0.079 and
+0.081 / 0.133), which is run-to-run noise on a shared host at nice 19, not size, but three iterations cannot say
+so. Against the façade it is 11x to 12x. What the 80 µs is made of is not measured yet (the wake-up of a
+niced process, two system calls, the repair of two rows in two buffers, the event path's allocations: the
+surface lane's dispatch builds several `Vec`s per pointer event); that split, cold and warm, is next.
+
+## 7. Answer to the threads lane: a pixel section handed to `wl_shm`
+
+Section 5 says the first frame's cost is the first touch of its memory, so an image that carries pixels is
+aimed at the right stage. What the first-commit path here accepts and what it does not:
+
+* **Yes, the first `wl_buffer` can be backed by a file the app did not write this run.** `wl_shm.create_pool`
+  takes any descriptor the compositor can map shared; the path already creates its pool lazily in write 3, so
+  the image's own descriptor and an offset can stand in for the memfd. If the file's pages are in the page
+  cache the client touches nothing: no faults, no raster.
+* **That buffer is read-only to the app, for ever.** The compositor maps the file shared, so drawing into it
+  would rewrite the image. It is committed once, never repaired, and destroyed when released. The ring treats
+  it as a foreign buffer: every buffer of its own is still blank.
+* **So the cost moves to the first input unless it is paid while idle.** The first frame the app draws itself
+  is a full raster into a blank buffer with all its page faults (2.6 ms). The host must draw that buffer right
+  after the first commit, before any input (it has nothing else to do), and from then on repairs by damage.
+* **Size or scale differ from the image's: the image is not used.** The path already redraws when the first
+  configure differs from the size asked for (`redrawn_for_size`); the same branch drops the image.
+* **Validity is the hard part, and it is the image's, not the host's.** A pixel section is right only if the
+  first frame is a pure function of what the image is keyed on (binary, arguments, size, scale, the block's
+  initial words, the face). The host can make it self-correcting at no cost: the idle raster above produces the
+  true first frame anyway; compare it with the image's pixels and, if they differ, commit the true frame with
+  the difference as damage and rewrite the image. Then a wrong image costs one corrected frame, never a wrong
+  window.
+* Whether it is worth building: decide after M1 and M2 (section 5). If `fallocate` or huge pages bring the
+  first touch under 0.5 ms the image saves that much of about 2 ms and adds a cache to keep right; if the
+  kernel cost stays near 2.6 ms it is the largest thing left in start-up.
