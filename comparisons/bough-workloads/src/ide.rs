@@ -396,6 +396,27 @@ impl Ide {
         let l = (*self.look & 1) | next << 1;
         self.look.set(l);
     }
+    /// gui-bench's keys (`guibench_spec::ide`): `t` toggles the theme; `e` toggles `EDIT_SUFFIX` on the last token of
+    /// line `EDIT_LINE`.
+    fn key(&mut self, e: &Ev) {
+        use crate::guibench_spec::ide as gs;
+        match e.key {
+            Some(Key::Char('t')) => {
+                let t = *self.theme ^ 1;
+                self.set_theme(t);
+            }
+            Some(Key::Char('e')) if gs::EDIT_LINE < self.n_lines => {
+                let l = gs::EDIT_LINE;
+                let cur = (*self.tails[l]).clone();
+                let next = match cur.strip_suffix(gs::EDIT_SUFFIX) {
+                    Some(base) => base.to_string(),
+                    None => cur + gs::EDIT_SUFFIX,
+                };
+                self.tails[l].set(next);
+            }
+            _ => {}
+        }
+    }
     fn set_theme(&mut self, t: u32) {
         let (l, c, f) = (*self.look, *self.chrome, *self.fold_look);
         self.theme.set(t);
@@ -634,6 +655,8 @@ impl View for Ide {
             .w_pct(1.0)
             .h_pct(1.0)
             .bg(sig!(self.theme).map(|t: &u32| pick(*t, 0x1e1f22, 0xffffff)))
+            // the gui-bench keys (a window host focuses the root): `t` the theme, `e` the spec's edit
+            .on_key(|s: &mut Ide, e: &Ev| s.key(e))
     }
 }
 

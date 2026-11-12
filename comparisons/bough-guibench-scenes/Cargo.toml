@@ -12,7 +12,7 @@ description = "bough's editions of the heavy scenes in gui-bench (comparisons/gu
 
 [dependencies]
 bough = { path = "../../crates/bough" }
-bough-workloads = { path = "../bough-workloads", default-features = false, features = ["sheet"] }
+bough-workloads = { path = "../bough-workloads", default-features = false, features = ["sheet", "ide", "dash", "chat"] }
 
 [patch.crates-io]
 wgpu-hal = { path = "../../vendor/wgpu-hal" }

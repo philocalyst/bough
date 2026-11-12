@@ -14,6 +14,7 @@ pub fn run(scene: Scene) -> iced::Result {
     match scene {
         Scene::Sheet { rows } => sheet::run(rows, scene.title()),
         Scene::Canvas { nodes } => canvas::run(nodes, scene.title()),
+        other => panic!("{other:?}: not ported to this framework yet"),
     }
 }
 

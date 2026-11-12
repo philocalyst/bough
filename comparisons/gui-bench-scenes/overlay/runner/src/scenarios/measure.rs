@@ -50,7 +50,7 @@ pub fn run(kind: Kind, run: &mut CellRun) {
                 steps::measure(r, "typing", "typing", &steps::typing(r))
             });
         }
-        Kind::Sheet | Kind::Canvas => unreachable!("scenes measure in crate::scenes"),
+        Kind::Sheet | Kind::Canvas | Kind::Ide | Kind::Dash | Kind::Chat => unreachable!("scenes measure in crate::scenes"),
         Kind::Resize => {
             run.step("resize", |r| {
                 steps::measure(r, "resize", "resize-storm", &steps::resize_storm(r))

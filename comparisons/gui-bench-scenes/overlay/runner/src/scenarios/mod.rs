@@ -34,11 +34,17 @@ pub enum Kind {
     Sheet,
     /// bough's standing workloads: a design canvas of N layered nodes in 20 frames.
     Canvas,
+    /// bough's standing workloads: an IDE of N editor lines.
+    Ide,
+    /// bough's standing workloads: a dashboard of N chart cards.
+    Dash,
+    /// bough's standing workloads: a chat of N messages.
+    Chat,
 }
 
 impl Kind {
     /// Every scenario in run order.
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Rows,
         Kind::Table,
         Kind::Ticker,
@@ -49,11 +55,14 @@ impl Kind {
         Kind::Resize,
         Kind::Sheet,
         Kind::Canvas,
+        Kind::Ide,
+        Kind::Dash,
+        Kind::Chat,
     ];
 
     /// Is this one of the heavy scenes (`crate::scenes`)?
     pub fn is_scene(self) -> bool {
-        matches!(self, Kind::Sheet | Kind::Canvas)
+        matches!(self, Kind::Sheet | Kind::Canvas | Kind::Ide | Kind::Dash | Kind::Chat)
     }
 
     /// Returns the points and colours that the layout check reads.
@@ -74,6 +83,9 @@ impl Kind {
             Kind::Resize => "resize",
             Kind::Sheet => "sheet",
             Kind::Canvas => "canvas",
+            Kind::Ide => "ide",
+            Kind::Dash => "dash",
+            Kind::Chat => "chat",
         }
     }
 
@@ -108,7 +120,7 @@ impl Kind {
         match self {
             _ if quick => vec![60.0],
             Kind::Rows | Kind::Ticker | Kind::Spinner | Kind::Virtual => vec![60.0, 144.0],
-            Kind::Table | Kind::Typing | Kind::Search | Kind::Resize | Kind::Sheet | Kind::Canvas => {
+            Kind::Table | Kind::Typing | Kind::Search | Kind::Resize | Kind::Sheet | Kind::Canvas | Kind::Ide | Kind::Dash | Kind::Chat => {
                 vec![60.0]
             }
         }
@@ -130,6 +142,12 @@ impl Kind {
             (Kind::Sheet, true) => vec![1000],
             (Kind::Canvas, false) => vec![1000, 5000],
             (Kind::Canvas, true) => vec![1000],
+            (Kind::Ide, false) => vec![3000],
+            (Kind::Ide, true) => vec![300],
+            (Kind::Dash, false) => vec![200],
+            (Kind::Dash, true) => vec![20],
+            (Kind::Chat, false) => vec![2000],
+            (Kind::Chat, true) => vec![200],
         }
     }
 

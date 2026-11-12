@@ -150,6 +150,27 @@ pub fn measure(kind: Kind, run: &mut CellRun) {
                 steps::measure(r, "edit", "key-latency", &p)
             });
         }
+        Kind::Ide | Kind::Dash | Kind::Chat => {
+            // the reference scenes (`apps/shared/scenes.rs`, `mod ide/dash/chat`): hover target, away point, the
+            // regions the probes watch
+            let (at, away, hover_roi, theme_roi, edit_roi) = match kind {
+                Kind::Ide => ((306, 99), (640, 789), roi(284, 36, 700, 360), roi(284, 36, 700, 360), roi(284, 36 + 2 * 18, 776, 18)),
+                Kind::Dash => ((1108, 28), (700, 28), roi(16, 72, 1248, 170), roi(16, 72, 1248, 170), roi(16, 72, 1248, 170)),
+                _ => ((766, 30), (416, 30), roi(300, 60, 980, 600), roi(300, 60, 980, 600), roi(300, 736, 500, 64)),
+            };
+            run.step("hover", |r| {
+                let p = hover(r, at, away, hover_roi.clone());
+                steps::measure(r, "hover", "hover-latency", &p)
+            });
+            run.step("theme", |r| {
+                let p = steps::key(r, "t", "t", theme_roi.clone());
+                steps::measure(r, "theme", "key-latency", &p)
+            });
+            run.step("edit", |r| {
+                let p = steps::key(r, "e", "e", edit_roi.clone());
+                steps::measure(r, "edit", "key-latency", &p)
+            });
+        }
         _ => unreachable!("not a scene"),
     }
     run.step("resize", |r| steps::measure(r, "resize", "resize-storm", &steps::resize_storm(r)));

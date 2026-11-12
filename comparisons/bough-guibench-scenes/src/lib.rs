@@ -51,6 +51,21 @@ pub fn run(scene: spec::Scene) -> ! {
             let caps = v.caps();
             window(scene.title(), v, caps)
         }
+        spec::Scene::Ide { lines } => {
+            let v = bough_workloads::ide::Ide::build(lines as f32 / bough_workloads::ide::MAX_LINES as f32);
+            let caps = v.caps();
+            window(scene.title(), v, caps)
+        }
+        spec::Scene::Dash { cards } => {
+            let v = bough_workloads::dash::Dash::build(cards as f32 / bough_workloads::dash::MAX_CARDS as f32);
+            let caps = v.caps();
+            window(scene.title(), v, caps)
+        }
+        spec::Scene::Chat { messages } => {
+            let v = bough_workloads::chat::Chat::build(messages as f32 / bough_workloads::chat::MESSAGES as f32);
+            let caps = v.caps();
+            window(scene.title(), v, caps)
+        }
         spec::Scene::Canvas { nodes } => {
             let v = canvas::Canvas::new(nodes);
             let caps = v.caps();

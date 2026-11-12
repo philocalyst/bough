@@ -77,5 +77,6 @@ pub fn run(scene: Scene) -> eframe::Result {
     match scene {
         Scene::Sheet { rows } => window::run(title, setup, move || Box::new(sheet::Sheet::new(rows))),
         Scene::Canvas { nodes } => window::run(title, setup, move || Box::new(canvas::Canvas::new(nodes))),
+        other => panic!("{other:?}: not ported to this framework yet"),
     }
 }

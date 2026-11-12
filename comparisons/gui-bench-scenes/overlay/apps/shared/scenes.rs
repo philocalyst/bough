@@ -36,6 +36,12 @@ pub enum Scene {
     Sheet { rows: usize },
     /// `--scenario canvas --rows N`: a design canvas of `nodes` layered nodes (N rounded down to a multiple of 20).
     Canvas { nodes: usize },
+    /// `--scenario ide --rows N`: an IDE whose editor holds `lines` lines (default 3,000).
+    Ide { lines: usize },
+    /// `--scenario dash --rows N`: a dashboard of `cards` chart cards (default 200).
+    Dash { cards: usize },
+    /// `--scenario chat --rows N`: a chat whose open conversation holds `messages` messages (default 2,000).
+    Chat { messages: usize },
 }
 
 impl Scene {
@@ -43,6 +49,9 @@ impl Scene {
         match self {
             Scene::Sheet { .. } => "gui-bench sheet",
             Scene::Canvas { .. } => "gui-bench canvas",
+            Scene::Ide { .. } => "gui-bench ide",
+            Scene::Dash { .. } => "gui-bench dash",
+            Scene::Chat { .. } => "gui-bench chat",
         }
     }
 }
@@ -67,6 +76,9 @@ pub fn from_args(args: impl IntoIterator<Item = String>) -> Option<Scene> {
     match scenario.as_deref() {
         Some("sheet") => Some(Scene::Sheet { rows: rows.unwrap_or(1000) }),
         Some("canvas") => Some(Scene::Canvas { nodes: (rows.unwrap_or(5000) / canvas::FRAMES).max(5) * canvas::FRAMES }),
+        Some("ide") => Some(Scene::Ide { lines: rows.unwrap_or(3000).max(48) }),
+        Some("dash") => Some(Scene::Dash { cards: rows.unwrap_or(200).clamp(10, 200) }),
+        Some("chat") => Some(Scene::Chat { messages: rows.unwrap_or(2000).max(20) }),
         _ => None,
     }
 }
@@ -321,6 +333,55 @@ pub mod canvas {
         let (r, gr, b) = super::rgb(SELECT_FILL);
         [x as i64, MOVE_RECT.1 as i64, MOVE_RECT.2 as i64, MOVE_RECT.3 as i64, 6, 100, 0, 0, r as i64, gr as i64, b as i64, 0]
     }
+}
+
+/// The last three scenes are specified by their reference implementation, bough's standing workloads in bough's
+/// repository: `comparisons/bough-workloads/src/{ide,dash,chat}.rs`. Each module doc there describes the scene
+/// (regions, content, counts, what changes and how) and its source holds the exact sizes, colours and data
+/// generators (plain Rust: copy a generator, with `Rng` from `comparisons/bough-workloads/src/lib.rs`, rather than
+/// inventing other content). Port the scene's static content, its hover fan-out, its theme, and the edit below; its
+/// steady interaction, transitions and animation are not probed in gui-bench and may be left out. What the runner
+/// probes is fixed here: the hover target and the point it leaves to, the regions it watches, the keys, and the
+/// layout check points (`runner/src/scenes.rs`), all at the reference's own positions.
+
+/// The IDE (reference: `bough-workloads/src/ide.rs`): tab bar 36, file tree 240 wide, editor with a 44 px gutter and
+/// 18 px lines (identifiers indented by 14 px per level), minimap 110 wide, terminal 200, status bar 22.
+pub mod ide {
+    /// The editor's line index 3 (0-based: the fourth line, numbered 4 in the gutter; `HOT_AT`) starts with the
+    /// identifier `value` one indent level in: the hover target is that token; every occurrence of `value` in the
+    /// editor (about 2,000) takes the hover colour while it is hovered.
+    pub const HOVER: (f32, f32) = (306.0, 99.0);
+    /// Where the pointer goes off the target: the status bar.
+    pub const AWAY: (f32, f32) = (640.0, 789.0);
+    /// `e` toggles this suffix on the last token of line index `EDIT_LINE` (0-based; numbered 3 in the gutter).
+    pub const EDIT_LINE: usize = 2;
+    pub const EDIT_SUFFIX: &str = " // edited";
+}
+
+/// The dashboard (reference: `bough-workloads/src/dash.rs`): header 56 with the title, four range buttons and a
+/// legend of four series (A to D); a scrolled grid of cards, five per row (240 x 170, 12 px gaps, 16 px padding).
+pub mod dash {
+    /// The legend item "B": hovering it dims every mark of the other series in every chart.
+    pub const HOVER: (f32, f32) = (1108.0, 28.0);
+    /// Off the target: the header's empty middle.
+    pub const AWAY: (f32, f32) = (700.0, 28.0);
+    /// `e` moves the first `EDIT_CARDS` cards (the first row) one data tick forward, the next `e` one back: their
+    /// charts shift by one sample, their values and delta badges change.
+    pub const EDIT_CARDS: usize = 5;
+}
+
+/// The chat (reference: `bough-workloads/src/chat.rs`): sidebar 300 wide (search head 52, conversation rows 64), the
+/// open conversation: header 60 (title 200 wide, then the twelve participants' 28 px avatars 4 px apart), messages
+/// (scrolled; at the top on start), a typing row 24, the composer 64 (a text field 360 x 36 and a send button).
+pub mod chat {
+    /// Participant 7's avatar (Hugo Martin, "HM") in the header: hovering it restyles all of their ~167 messages,
+    /// the first two of which are at the top of the conversation as it opens. (bough's own harness hovers
+    /// participant 3 after scrolling to the newest message; gui-bench's probe starts at the top, where 3 has none.)
+    pub const HOVER: (f32, f32) = (766.0, 30.0);
+    /// Off the target: the conversation's title.
+    pub const AWAY: (f32, f32) = (416.0, 30.0);
+    /// `e` toggles the composer's draft between empty and this text.
+    pub const EDIT_DRAFT: &str = "Sounds good, see you at ten.";
 }
 
 #[cfg(test)]

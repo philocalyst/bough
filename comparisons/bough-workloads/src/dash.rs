@@ -217,11 +217,41 @@ pub struct Dash {
     range: Signal<u32>,
     scroll: Signal<f32>,
     rng: Rng,
+    /// The `e` key's toggle (gui-bench).
+    edited: bool,
 }
 
 impl Dash {
     fn rows(&self) -> usize {
         self.cards.div_ceil(COLS)
+    }
+    /// gui-bench's keys (`guibench_spec::dash`): `t` toggles the theme; `e` moves the first row of cards one data
+    /// tick forward, and back on the next press (keys, values and deltas of `EDIT_CARDS` cards).
+    fn key(&mut self, e: &Ev) {
+        match e.key {
+            Some(Key::Char('t')) => {
+                let t = *self.theme ^ 1;
+                self.theme.set(t);
+                let l = *self.look;
+                self.look.set((l & 0xff) | t << 8);
+            }
+            Some(Key::Char('e')) => {
+                let fwd = !self.edited;
+                self.edited = fwd;
+                for c in 0..crate::guibench_spec::dash::EDIT_CARDS.min(self.cards) {
+                    let k = *self.keys[c];
+                    self.keys[c].set(if fwd { k + 1 } else { k - 1 });
+                    let v = *self.values[c];
+                    self.values[c].set(if fwd { v * 1.25 } else { v / 1.25 });
+                    self.deltas[c].set(if fwd { 25.0 } else { -20.0 });
+                    if kind(c) == 3 {
+                        let g = *self.gauge[c];
+                        self.gauge[c].set(if fwd { (g + 0.3).min(1.0) } else { (g - 0.3).max(0.05) });
+                    }
+                }
+            }
+            _ => {}
+        }
     }
     fn set_range(&mut self, r: u32) {
         self.range.set(r);
@@ -457,7 +487,12 @@ impl View for Dash {
             .grow(1.0)
             .bg(sig!(self.theme).map(|t: &u32| page(*t)))
             .scroll(sig!(self.scroll));
-        column((header, body)).w_pct(1.0).h_pct(1.0).bg(sig!(self.theme).map(|t: &u32| page(*t)))
+        column((header, body))
+            .w_pct(1.0)
+            .h_pct(1.0)
+            .bg(sig!(self.theme).map(|t: &u32| page(*t)))
+            // the gui-bench keys (a window host focuses the root): `t` the theme, `e` the spec's edit
+            .on_key(|s: &mut Dash, e: &Ev| s.key(e))
     }
 }
 
@@ -493,6 +528,7 @@ impl Scene for Dash {
             range: Signal::new(0),
             scroll: Signal::new(0.0),
             rng,
+            edited: false,
         };
         for c in 0..cards {
             if kind(c) == 4 {

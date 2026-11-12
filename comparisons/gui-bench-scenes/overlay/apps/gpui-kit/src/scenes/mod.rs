@@ -59,6 +59,7 @@ pub fn run(scene: Scene, name: &'static str, app_id: &'static str) {
                 cx.new(|cx| canvas::Canvas::new(nodes, window, cx))
             })
             .map(drop),
+            other => panic!("{other:?}: not ported to this framework yet"),
         };
         opened.expect("failed to open window");
         cx.activate(true);

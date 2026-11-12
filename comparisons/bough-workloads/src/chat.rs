@@ -538,7 +538,12 @@ impl Chat {
 impl View for Chat {
     fn view(&self) -> impl Element<Self> + '_ {
         let main = column((self.header(), self.conversation(), self.typing(), self.composer())).grow(1.0).h(H);
-        row((self.sidebar(), main)).w(W).h(H).bg(sig!(self.theme).map(|t: &u32| page_bg(*t)))
+        row((self.sidebar(), main))
+            .w(W)
+            .h(H)
+            .bg(sig!(self.theme).map(|t: &u32| page_bg(*t)))
+            // the gui-bench keys (a window host focuses the root): `t` the theme, `e` the spec's edit
+            .on_key(|s: &mut Chat, e: &Ev| s.key(e))
     }
 }
 
@@ -576,6 +581,21 @@ impl Chat {
         }
     }
 
+    /// gui-bench's keys (`guibench_spec::chat`): `t` toggles the theme; `e` toggles the composer's draft between
+    /// empty and `EDIT_DRAFT`.
+    fn key(&mut self, e: &Ev) {
+        match e.key {
+            Some(Key::Char('t')) => {
+                let dark = *self.theme == 0;
+                self.set_dark(dark);
+            }
+            Some(Key::Char('e')) => {
+                let next = if self.draft.is_empty() { crate::guibench_spec::chat::EDIT_DRAFT.to_string() } else { String::new() };
+                self.draft.set(next);
+            }
+            _ => {}
+        }
+    }
     fn set_dark(&mut self, dark: bool) {
         self.theme.set(dark as u32);
         for a in 0..PARTS {
