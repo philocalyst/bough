@@ -86,3 +86,11 @@ Branch `r7/bench` in `wt/r7-bench`, from `round6` `3b0b00c698`. Brief: `bough/ru
   scene). Its baseline needs a rerun on that commit (the first rerun read a binary another build had replaced:
   integration tests rebuild the package's binaries, so a `--no-default-features` test run leaves a scene-less
   `target/dist/workload`; copy binaries out before measuring, as the agents did).
+* Sheet rerun with the glide (`bench/results/r7/workloads/mac-13253be95f-sheet`): mount 3.69 G,
+  hover 15.4 M, theme 57.4 M, resize 125 M (p95 2.1 G), steady p50 3.0 K (a selection move is now a transition
+  retarget, applied by the frame clock), anim p50 19.5 K (the glide's ticks); cold start 316 +- 5 ms (the first
+  baseline's 666 +- 200 ms was the load). Other phases unchanged within 2 %.
+* Both defect repros fail on r7/bench as they should (`--ignored`): nested clip_by (fixed on r7/core by the core
+  lane: derived clips recomputed in rank order; not on round6 yet) and the list-row transition panic (trigger from
+  the chat agent: the transition must start after the row mounted, the view scrolled to the end, and a resize
+  before the frame).
