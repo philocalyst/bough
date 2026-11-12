@@ -27,6 +27,7 @@ pub const HELD: u32 = 1 << 30;
 pub const KEEP: u32 = 1 << 29;
 /// A question about this cell is in the air (`pending(..)` is true).
 pub const LOADING: u32 = 1 << 28;
+const _: () = assert!(IDX == crate::rt::HEAD_IDX);
 
 /// A reactive cell whose first field is its wire head: `Signal`, `List`, `Reader`, `Entities`. `sig!`
 /// proves any of them at an `offset_of!` offset and hands back the cell's operand type `At`.
@@ -244,12 +245,16 @@ fn log(addr: usize, h: u32) {
     })
 }
 
+/// The index bits of a head (`rt::HEAD_IDX`): zero for a cell with no wires, whatever its flags.
+const IDX: u32 = (1 << 28) - 1;
+
 /// Queue a head's wires: nothing for a head without wires or one already queued (two instructions and a
-/// predicted branch on the path every later write of the turn takes).
+/// predicted branch on the path every later write of the turn takes). "Without wires" is the index bits, not
+/// the whole word: a cell with no wires yet may carry `KEEP` or `LOADING`.
 #[inline(always)]
 pub(crate) fn queue(head: &Cell<u32>) {
     let h = head.get();
-    if h != 0 && h & QUEUED == 0 {
+    if h & IDX != 0 && h & QUEUED == 0 {
         head.set(h | QUEUED);
         log(head as *const _ as usize, h);
     }
@@ -258,7 +263,7 @@ pub(crate) fn queue(head: &Cell<u32>) {
 /// Queue a head for the runtime's own reasons (a hold or a release, a status change): no pre-image is kept.
 pub(crate) fn queue_quiet(head: &Cell<u32>) {
     let h = head.get();
-    if h != 0 && h & QUEUED == 0 {
+    if h & IDX != 0 && h & QUEUED == 0 {
         head.set(h | QUEUED);
         log(head as *const _ as usize, 0);
     }

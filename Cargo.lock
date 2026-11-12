@@ -73,6 +73,7 @@ name = "bough"
 version = "0.0.0"
 dependencies = [
  "block2",
+ "bough-async",
  "bough-core",
  "bough-gpu",
  "bough-mem",

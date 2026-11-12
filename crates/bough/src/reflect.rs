@@ -789,7 +789,9 @@ impl<V: crate::app::View> crate::app::App<V> {
         // node by handle (quads and texts carry their record's handle)
         let mut by_handle: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
         for (i, n) in rt.nodes.iter().enumerate() {
-            if n.live && n.handle.idx != 0 {
+            // a released node waits for reclamation still `live`, and its handle's index may already name a newer
+            // record: only a node whose handle (with its generation) is current speaks for the record
+            if n.live && n.handle.idx != 0 && rt.bough.pos_of(n.handle).is_some() {
                 by_handle.insert(n.handle.idx, i as u32);
             }
         }

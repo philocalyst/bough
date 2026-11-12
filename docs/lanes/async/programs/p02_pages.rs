@@ -43,6 +43,7 @@ impl View for Pager {
             self.rows.is_none().then(|| text("Loading\u{2026}")),
             div()
                 .layout(BAR)
+                .bg(rgb(0xf4f5f7))
                 .opacity(pending(sig!(self.page)).map(|p| if p { 0.5 } else { 1.0 }))
                 .child((button("Previous").on_click(Pager::prev), button("Next").on_click(Pager::next))),
             ask(sig!(self.page), api::page).into(sig!(self.rows)),

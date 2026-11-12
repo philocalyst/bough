@@ -1121,7 +1121,7 @@ impl Rt {
             for &off in &self.classes[0] {
                 let h = unsafe { &*(owner.add(off as usize) as *const std::cell::Cell<u32>) }.get();
                 // a held head is settled too (its status wires ran); none may be left queued
-                assert!(h & crate::signal::QUEUED == 0, "settle left a queued head at offset {off}");
+                assert!(h & crate::signal::QUEUED == 0, "settle left a queued head at offset {off} (head {h:#010x})");
             }
         }
         self.lists_end_turn();

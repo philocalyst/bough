@@ -3,11 +3,13 @@
 //!
 //! Ticker: switching symbol drops the old stream (the server sees the subscription go) and keeps the old
 //! symbol's price and name together on screen until the new symbol's first tick; every later tick is its
-//! own frame. Chat: the message shows at once; the reply grows a token per turn; Stop drops the stream
-//! where it is; a second message while a reply streams waits for it (actions land in the order sent).
+//! own frame. Chat: the message shows at once with an empty reply line; the reply grows a token per turn;
+//! Stop drops the stream where it is; a second message's reply waits for the first (actions land in the
+//! order sent), and each reply lands in its own line (the landing is given the run's input).
 //!
 //! Not written: subscribe/unsubscribe bookkeeping, a "which symbol is this tick for" check, a token
-//! buffer, an abort controller, a "streaming" flag (the action knows it is running).
+//! buffer, an abort controller, a "streaming" flag (the action knows it is running), a map from replies to
+//! lines.
 use crate::api::{self, Token};
 use bough::prelude::*;
 
@@ -46,24 +48,24 @@ pub struct Line {
 pub struct Chat {
     pub log: Signal<Vec<Line>>,
     pub draft: Signal<String>,
-    pub reply: Action<String, Token>,
+    /// A run is (the reply's line, the prompt).
+    pub reply: Action<(usize, String), Token>,
 }
 
 impl Chat {
     pub fn new() -> Chat {
-        Chat { log: Signal::new(Vec::new()), draft: Signal::new(String::new()), reply: Action::stream(api::complete).then(Chat::token) }
+        Chat { log: Signal::new(Vec::new()), draft: Signal::new(String::new()), reply: Action::stream(|(_, p)| api::complete(p)).then_with(Chat::token) }
     }
     pub fn send(&mut self) {
         let prompt = std::mem::take(&mut *self.draft);
         self.log.push(Line { mine: true, text: prompt.clone() });
-        self.reply.run(prompt);
+        self.log.push(Line { mine: false, text: String::new() });
+        let line = self.log.len() - 1;
+        self.reply.run((line, prompt));
     }
-    /// A reply's first token opens its line; every token extends the last line.
-    fn token(&mut self, t: Token) {
-        if self.log.last().is_none_or(|l| l.mine) {
-            self.log.push(Line { mine: false, text: String::new() });
-        }
-        self.log.last_mut().unwrap().text.push_str(&t.0);
+    /// Every token extends its reply's line.
+    fn token(&mut self, &(line, _): &(usize, String), t: Token) {
+        self.log[line].text.push_str(&t.0);
     }
     pub fn stop(&mut self) {
         self.reply.cancel();

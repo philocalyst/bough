@@ -24,10 +24,35 @@ use std::ptr::DynMetadata;
 pub struct Action<I, O> {
     head: WireHead,
     f: Box<dyn Fn(I) -> Work>,
-    land: Option<(TypeId, Box<dyn Fn(*mut u8, O)>)>,
+    land: Option<(TypeId, Box<dyn Fn(*mut u8, &I, O)>)>,
     queued: Vec<I>,
     inflight: VecDeque<I>,
     cancel: bool,
+    /// The operations that need `I: Clone` and `O: 'static`, made where those bounds are known: the runtime
+    /// reaches an action through a vtable found at compile time, and that lookup does not see impls with
+    /// lifetime bounds, so `ActionCell` is implemented for every `Action<I, O>` and calls these.
+    start_fn: fn(&mut Action<I, O>, &mut Engine, AId),
+    land_fn: unsafe fn(&mut Action<I, O>, *mut u8, Out),
+}
+
+fn start_runs<I: Clone + 'static, O: 'static>(a: &mut Action<I, O>, e: &mut Engine, aid: AId) {
+    if std::mem::take(&mut a.cancel) {
+        e.cancel(aid);
+    }
+    for i in std::mem::take(&mut a.queued) {
+        a.inflight.push_back(i.clone());
+        e.run(aid, (a.f)(i));
+    }
+}
+
+/// # Safety
+/// `parent` is the live struct holding the action, of the landing's type.
+unsafe fn land_one<I: 'static, O: 'static>(a: &mut Action<I, O>, parent: *mut u8, out: Out) {
+    let o = *out.downcast::<O>().expect("an answer of the action's type");
+    if let (Some((_, h)), Some(i)) = (a.land.as_ref(), a.inflight.front()) {
+        // the run landing is the oldest in flight (runs land in order)
+        h(parent, i, o);
+    }
 }
 
 impl<I: Clone + 'static, O: 'static> Action<I, O> {
@@ -37,7 +62,7 @@ impl<I: Clone + 'static, O: 'static> Action<I, O> {
         F: Fn(I) -> Fut + 'static,
         Fut: Future<Output = O> + 'static,
     {
-        Action { head: WireHead::new(), f: Box::new(move |i| Work::once(f(i))), land: None, queued: Vec::new(), inflight: VecDeque::new(), cancel: false }
+        Action { head: WireHead::new(), f: Box::new(move |i| Work::once(f(i))), land: None, queued: Vec::new(), inflight: VecDeque::new(), cancel: false, start_fn: start_runs::<I, O>, land_fn: land_one::<I, O> }
     }
     /// An action whose run is the stream `f(input)`: every item lands on its own, in order.
     pub fn stream<F, St>(f: F) -> Action<I, O>
@@ -45,12 +70,18 @@ impl<I: Clone + 'static, O: 'static> Action<I, O> {
         F: Fn(I) -> St + 'static,
         St: AsyncIterator<Item = O> + 'static,
     {
-        Action { head: WireHead::new(), f: Box::new(move |i| Work::many(f(i))), land: None, queued: Vec::new(), inflight: VecDeque::new(), cancel: false }
+        Action { head: WireHead::new(), f: Box::new(move |i| Work::many(f(i))), land: None, queued: Vec::new(), inflight: VecDeque::new(), cancel: false, start_fn: start_runs::<I, O>, land_fn: land_one::<I, O> }
     }
     /// Answers land through `h` on the struct that holds this action (checked at mount).
     pub fn then<V: 'static>(mut self, h: fn(&mut V, O)) -> Action<I, O> {
         // the pointer handed to the closure is the struct holding the action, of type `V` (checked at mount)
-        self.land = Some((TypeId::of::<V>(), Box::new(move |p: *mut u8, o: O| h(unsafe { &mut *(p as *mut V) }, o))));
+        self.land = Some((TypeId::of::<V>(), Box::new(move |p: *mut u8, _: &I, o: O| h(unsafe { &mut *(p as *mut V) }, o))));
+        self
+    }
+    /// `then`, with the input of the run the answer belongs to.
+    pub fn then_with<V: 'static>(mut self, h: fn(&mut V, &I, O)) -> Action<I, O> {
+        // as `then`
+        self.land = Some((TypeId::of::<V>(), Box::new(move |p: *mut u8, i: &I, o: O| h(unsafe { &mut *(p as *mut V) }, i, o))));
         self
     }
 
@@ -89,24 +120,16 @@ pub trait ActionCell {
     fn finished(&mut self);
 }
 
-impl<I: Clone + 'static, O: 'static> ActionCell for Action<I, O> {
+impl<I, O> ActionCell for Action<I, O> {
     fn landing_type(&self) -> Option<TypeId> {
         self.land.as_ref().map(|l| l.0)
     }
     fn start(&mut self, e: &mut Engine, aid: AId) {
-        if std::mem::take(&mut self.cancel) {
-            e.cancel(aid);
-        }
-        for i in std::mem::take(&mut self.queued) {
-            self.inflight.push_back(i.clone());
-            e.run(aid, (self.f)(i));
-        }
+        (self.start_fn)(self, e, aid)
     }
     unsafe fn land_out(&mut self, parent: *mut u8, out: Out) {
-        let o = *out.downcast::<O>().expect("an answer of the action's type");
-        if let Some((_, h)) = self.land.as_ref() {
-            h(parent, o);
-        }
+        // SAFETY: the caller's contract.
+        unsafe { (self.land_fn)(self, parent, out) }
     }
     fn finished(&mut self) {
         self.inflight.pop_front();
@@ -224,6 +247,12 @@ fn walk(s: &mut ActScan, t: TypeId, base: usize, depth: u8) {
     }
 }
 
+/// How many `Action` fields the compile-time scan finds in `T` (tests).
+#[doc(hidden)]
+pub fn action_count<T>() -> usize {
+    actions_of::<T>().n
+}
+
 /// Wire every `Action` field of the owner being mounted (`App::new` for the root, a list row's mount for a row).
 pub(crate) fn mount_actions<V: 'static>(m: &mut Mounter<'_, V>) {
     let s = actions_of::<V>();
@@ -257,3 +286,4 @@ impl Rt {
         self.asks.engine.remove_action(aid);
     }
 }
+

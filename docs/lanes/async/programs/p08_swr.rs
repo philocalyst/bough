@@ -44,7 +44,7 @@ impl View for Dash {
         div().layout(COL).child((
             match &*self.stats {
                 None => Arm2::A(text("Loading\u{2026}")),
-                Some(s) => Arm2::B(div().layout(COL).opacity(pending(sig!(self.stats)).map(|p| if p { 0.7 } else { 1.0 })).child((text(format!("{} visitors", s.visitors)), text(format!("${} revenue", s.revenue))))),
+                Some(s) => Arm2::B(div().layout(COL).bg(rgb(0xf4f5f7)).opacity(pending(sig!(self.stats)).map(|p| if p { 0.7 } else { 1.0 })).child((text(format!("{} visitors", s.visitors)), text(format!("${} revenue", s.revenue))))),
             },
             self.stale.as_ref().map(|m| text(m.clone())),
             button("Refresh").on_click(Dash::refresh),

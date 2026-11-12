@@ -44,7 +44,7 @@ impl View for Profile {
         div().layout(COL).child((
             // spinner until the first answer; then the answer, a value or an error
             self.user.is_none().then(|| text("Loading\u{2026}")),
-            div().opacity(pending(sig!(self.user)).map(|p| if p { 0.6 } else { 1.0 })).child(self.user.as_ref().map(|r| r.as_ref().map(card).map_err(failed))),
+            div().bg(rgb(0xf4f5f7)).opacity(pending(sig!(self.user)).map(|p| if p { 0.6 } else { 1.0 })).child(self.user.as_ref().map(|r| r.as_ref().map(card).map_err(failed))),
             // unaffected by the panel
             button(sig!(self.clicks).map(|n| format!("clicked {n}"))).on_click(Profile::click),
             ask(sig!(self.id), api::try_user).into(sig!(self.user)),
