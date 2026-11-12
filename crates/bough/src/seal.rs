@@ -22,6 +22,13 @@ pub trait Sealer {
     fn word(&mut self, w: u32);
     fn bytes(&mut self, b: &[u8]);
     fn spec(&mut self, s: &Spec);
+    /// A paint-only operand (a colour): one whose change is a write to an instance field, with no layout,
+    /// shaping or structure behind it. A checker keeps "equal but for paint" apart from "different"
+    /// (`SealCheck::shape`), which is what lets a shifted sequence be recognised under zebra stripes.
+    #[inline(always)]
+    fn paint(&mut self, w: u32) {
+        self.word(w)
+    }
     /// This description cannot be sealed.
     fn refuse(&mut self);
     #[inline(always)]
@@ -62,8 +69,10 @@ pub struct SealCheck<'a> {
     pub cur: &'a [u8],
     pub descs: &'a SpecTable,
     pub ok: bool,
+    /// No paint operand differed (so far).
+    pub paint_ok: bool,
 }
-impl SealCheck<'_> {
+impl<'a> SealCheck<'a> {
     #[inline(always)]
     fn take_word(&mut self) -> u32 {
         match self.cur.split_first_chunk::<4>() {
@@ -77,8 +86,17 @@ impl SealCheck<'_> {
             }
         }
     }
+    pub fn new(cur: &'a [u8], descs: &'a SpecTable) -> Self {
+        SealCheck { cur, descs, ok: true, paint_ok: true }
+    }
+    /// Bit-identical description.
     #[inline(always)]
     pub fn equal(&self) -> bool {
+        self.ok && self.paint_ok && self.cur.is_empty()
+    }
+    /// Identical but possibly for paint operands: same structure, layout and text.
+    #[inline(always)]
+    pub fn shape(&self) -> bool {
         self.ok && self.cur.is_empty()
     }
 }
@@ -102,6 +120,10 @@ impl Sealer for SealCheck<'_> {
     fn spec(&mut self, s: &Spec) {
         let ix = self.take_word();
         self.ok &= self.descs.is(ix, s);
+    }
+    #[inline(always)]
+    fn paint(&mut self, w: u32) {
+        self.paint_ok &= self.take_word() == w;
     }
     #[inline(always)]
     fn refuse(&mut self) {

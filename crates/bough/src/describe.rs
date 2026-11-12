@@ -169,7 +169,10 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
     let mut fresh: Vec<RecordInit> = Vec::new();
     let mut added: Vec<DynItem> = Vec::new();
     let (fresh_pos, fresh_kid) = (std::cell::Cell::new(usize::MAX), std::cell::Cell::new(0));
-    for e in items {
+    let mut items = items;
+    // one item of look-ahead (insertion detection below)
+    let mut pending: Option<E> = None;
+    while let Some(e) = pending.take().or_else(|| items.next()) {
         if k < old.len() && old[k].key != e.dyn_key() {
             // a keyed item that changed identity: replaced in place (its run out, the new one in)
             let key = e.dyn_key();
@@ -197,20 +200,57 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
             m.kid += it.nkid as usize;
             old[k] = it;
         } else if k < old.len() {
-            let it = &mut old[k];
-            if it.seal.1 != 0 {
+            let (same, shape) = sealed_as(&old[k], &e, &seals, &m.rt.lay.descs, cx);
+            if same {
                 // described exactly as before, in the same context: its records stand
-                let (o, n) = (it.seal.0 as usize, it.seal.1 as usize);
-                let mut c = crate::seal::SealCheck { cur: &seals.bytes[o..o + n], descs: &m.rt.lay.descs, ok: true };
-                seal_context(cx, &mut c);
-                e.seal(&mut c);
-                if c.equal() {
-                    m.pos += it.nrec as usize;
-                    m.kid += it.nkid as usize;
-                    k += 1;
+                m.pos += old[k].nrec as usize;
+                m.kid += old[k].nkid as usize;
+                k += 1;
+                continue;
+            }
+            // Edits by description. The item differs from the retained one at its place by more than paint;
+            // before rewriting it (and, positionally, every item after it), see whether the sequence only
+            // shifted by one:
+            // * the new item has the shape of the retained *next* one: the retained item here was removed;
+            // * the *next* new item has the shape of the retained one here: the new item was inserted.
+            // "Shape" is the seal but for paint operands (a zebra stripe changes with the index, and a colour
+            // is a write, not a reason to reshape a row's text). Seals are the operands themselves, so the
+            // match is exact, and only items that seal (no state of their own) can match: after the splice
+            // the item is updated the ordinary way, which leaves what a fresh mount would.
+            if !shape && old[k].seal.1 != 0 {
+                if k + 1 < old.len() && sealed_as(&old[k + 1], &e, &seals, &m.rt.lay.descs, cx).1 {
+                    let gone = old.remove(k);
+                    seals.dead += gone.seal.1;
+                    remove_items(m, lid, gone.nrec as usize, gone.nkid as usize);
+                    m.rt.release_scope(gone.scope);
+                    pending = Some(e); // against the retained item now at `k`
                     continue;
                 }
+                if let Some(e2) = items.next() {
+                    let hit = sealed_as(&old[k], &e2, &seals, &m.rt.lay.descs, cx).1;
+                    pending = Some(e2);
+                    if hit {
+                        let key = e.dyn_key();
+                        let mut buf = Vec::new();
+                        let mut it = mount_item(m, e, Some(&mut buf));
+                        it.key = key;
+                        m.rt.bough.insert_run(m.pos, &buf);
+                        if lid != NONE && it.nkid > 0 {
+                            m.rt.lay.eng.place_tail_kids(lid, m.kid, it.nkid as usize);
+                            m.rt.lay.eng.invalidate(&m.rt.bough, lid);
+                            m.rt.queue_container(lid);
+                        }
+                        m.pos += it.nrec as usize;
+                        m.kid += it.nkid as usize;
+                        old.insert(k, it);
+                        k += 1;
+                        continue;
+                    }
+                    // not an insertion: `e` rewrites the retained item here, `e2` waits its turn. The seal
+                    // written below must be `e`'s, so the look-ahead must not have been consumed by it.
+                }
             }
+            let it = &mut old[k];
             if !seals.refused {
                 // the description about to be applied, sealed for the next turn
                 scratch.clear();
@@ -303,6 +343,33 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
     }
     m.rt.dyns.seals[d as usize] = seals;
     m.rt.dyns.parts[d as usize] = old;
+}
+
+/// Is `e`, described in context `cx`, what `it`'s seal says? (bit-identical, identical but for paint)
+#[inline(always)]
+fn sealed_as<V, E: Element<V>>(it: &DynItem, e: &E, seals: &Seals, descs: &crate::layout::SpecTable, cx: (u16, u16, u16, f32, f32)) -> (bool, bool) {
+    if it.seal.1 == 0 {
+        return (false, false);
+    }
+    let (o, n) = (it.seal.0 as usize, it.seal.1 as usize);
+    let mut c = crate::seal::SealCheck::new(&seals.bytes[o..o + n], descs);
+    seal_context(cx, &mut c);
+    e.seal(&mut c);
+    (c.equal(), c.shape())
+}
+
+/// Take `nrec` records and `nkid` layout children out at the walk's position (a removed item's run).
+fn remove_items<V>(m: &mut Mounter<'_, V>, lid: u32, nrec: usize, nkid: usize) {
+    if lid != NONE && nkid > 0 {
+        for i in 0..nkid {
+            let c = m.rt.lay.eng.kids(lid)[m.kid + i];
+            m.rt.remove_layout_subtree(c);
+        }
+        m.rt.lay.eng.splice_kids(&m.rt.bough, lid, m.kid, nkid, &[]);
+        m.rt.lay.eng.invalidate(&m.rt.bough, lid);
+        m.rt.queue_container(lid);
+    }
+    m.rt.bough.remove_run(m.pos, nrec);
 }
 
 /// `Option<E>`: a dynamic part of zero or one item.

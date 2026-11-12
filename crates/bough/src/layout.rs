@@ -1571,7 +1571,7 @@ where
         s.f32(self.radius);
         if let Some((w, c)) = self.border {
             s.f32(w);
-            s.word(c.0);
+            s.paint(c.0);
         }
         self.bg.seal(s);
         self.x.seal(s);

@@ -234,7 +234,7 @@ impl<V> IntoProp<Color, V> for Color {
     }
     #[inline(always)]
     fn seal<S: crate::seal::Sealer>(&self, s: &mut S) {
-        s.word(self.0)
+        s.paint(self.0)
     }
 }
 

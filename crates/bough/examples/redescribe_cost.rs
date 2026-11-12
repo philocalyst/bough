@@ -74,7 +74,40 @@ where
     (hi - lo) / 32
 }
 
+/// Instructions per (remove the row at index 2, insert it back) pair, the application row shape.
+fn churn(n: usize) -> u64 {
+    let font = std::fs::read(std::env::var("ZGX_FONT_FILE").unwrap_or_else(|_| "/System/Library/Fonts/Supplemental/Arial.ttf".into())).unwrap();
+    let mut cfg = Config::new(1280.0, 800.0, 1.0, font);
+    cfg.caps = Caps { instances: 1 << 17, pages: 1 << 13, glyphs: 1 << 20, runs: 1 << 17, spaces: 1 << 12, clips: 1 << 12, strikes: 16 };
+    let rows = (0..n as u32).map(|i| (i, format!("Row label {i}"))).collect();
+    let mut a = App::new(Table::<0> { rows, selected: u32::MAX }, cfg, false);
+    a.turn(|_| {});
+    let mut run = |reps: u32| {
+        let t0 = tinstr();
+        for _ in 0..reps {
+            let mut gone = None;
+            a.turn(|t| gone = Some(t.rows.remove(2)));
+            a.turn(|t| t.rows.insert(2, gone.take().unwrap()));
+        }
+        tinstr() - t0
+    };
+    run(2);
+    if let Some(n) = std::env::var("SPIN").ok().and_then(|v| v.parse::<u32>().ok()) {
+        run(n);
+    }
+    let (lo, hi) = (run(4), run(12));
+    (hi - lo) / 8
+}
+
 fn main() {
+    if std::env::var_os("CHURN").is_some() {
+        println!("rows,remove_insert_pair,per_row");
+        for n in std::env::args().skip(1).filter_map(|s| s.parse::<usize>().ok()) {
+            let c = churn(n);
+            println!("{n},{c},{}", c / n as u64);
+        }
+        return;
+    }
     let sizes: Vec<usize> = std::env::args().skip(1).filter_map(|s| s.parse().ok()).collect();
     let sizes = if sizes.is_empty() { vec![10, 100, 1000] } else { sizes };
     println!("rows,owned,owned_per_row,static,static_per_row,bare,bare_per_row,once");
