@@ -931,6 +931,10 @@ pub struct Lay {
     pub info: Vec<LInfo>,
     /// Layout parent while a subtree is being mounted (NONE: the next box is a group root).
     pub cur: u32,
+    /// An insertion cursor `(container, after)`: while set, a child attached to `container` is linked after
+    /// `after` and becomes the cursor (an item mounted by a re-description lands at the walk's place);
+    /// `(NONE, 0)`: children are appended.
+    pub ins: (u32, u32),
     /// Available space (px) a group root created now gets; height `NaN` = max-content.
     pub mount_avail: (f32, f32),
     pub pending: Vec<u32>,
@@ -961,6 +965,7 @@ impl Lay {
             prof,
             info: Vec::new(),
             cur: NONE,
+            ins: (NONE, 0),
             last_box: NONE,
             mount_avail: (0.0, f32::NAN),
             pending: Vec::new(),
@@ -1133,7 +1138,6 @@ impl Rt {
     /// siblings are never visited.
     fn lay_writeback(&mut self) {
         let mut stack = std::mem::take(&mut self.lay.stack);
-        let mut kids = std::mem::take(&mut self.lay.kids);
         let mut dirty = std::mem::take(&mut self.lay.dirty);
         stack.clear();
         for &r in &self.lay.ready {
@@ -1188,19 +1192,18 @@ impl Rt {
                 l.desc = false;
                 l.tdirty = false;
             }
-            kids.clear();
-            self.lay.eng.children_into(&self.bough, n, &mut kids);
             let fc = force || moved;
-            for &c in &kids {
+            let mut c = self.lay.eng.first_kid(n);
+            while c != 0 {
                 // only what moved (a moved parent moves everything below it) or is flagged is visited
                 let ci = &self.lay.info[c as usize];
                 if fc || ci.needs || ci.desc || !ci.written || ci.tdirty {
                     stack.push((c, ax, ay, fc));
                 }
+                c = self.lay.eng.next_sib(c);
             }
         }
         self.lay.stack = stack;
-        self.lay.kids = kids;
     }
 
     fn place_quad(&mut self, lid: u32, x: f32, y: f32, w: f32, h: f32) {
@@ -1427,7 +1430,12 @@ pub(crate) fn attach<V>(m: &mut Mounter<'_, V>, lid: u32) -> u32 {
         l.clip = m.clip;
     }
     if parent != NONE {
-        m.rt.lay.eng.append(parent, lid);
+        if m.rt.lay.ins.0 == parent {
+            let after = std::mem::replace(&mut m.rt.lay.ins.1, lid);
+            m.rt.lay.eng.link_after(parent, after, lid);
+        } else {
+            m.rt.lay.eng.append(parent, lid);
+        }
     } else {
         let (aw, ah) = m.rt.lay.mount_avail;
         let l = &mut m.rt.lay.info[lid as usize];
@@ -1557,11 +1565,13 @@ where
         let (cur, kid) = (m.rt.lay.cur, m.kid);
         m.rt.lay.cur = lid;
         m.kid = 0;
+        m.prev = 0;
         m.depth += 1;
         self.ch.update(m);
         m.depth -= 1;
         m.rt.lay.cur = cur;
         m.kid = kid;
+        m.prev = lid;
     }
 
     #[inline(always)]
@@ -1739,6 +1749,7 @@ impl<V: 'static, S: TextSrc<V>, C: IntoProp<Color, V>> Element<V> for Para<S, C>
         <crate::boxops::ApplyTextColor as crate::elem::Apply>::apply(m.rt, node, &self.color.value());
         m.pos += 1;
         m.kid += 1;
+        m.prev = lid;
     }
 
     #[inline(always)]

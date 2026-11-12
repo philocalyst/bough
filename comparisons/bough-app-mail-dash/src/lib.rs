@@ -156,7 +156,7 @@ pub fn lay_rect(rt: &bough::rt::Rt, path: &[usize]) -> [f32; 4] {
     let mut n = rt.lay.first_root();
     let (mut x, mut y, _, _) = rt.lay.eng.rect(n);
     for &i in path {
-        n = rt.lay.eng.kids(n)[i];
+        n = rt.lay.eng.kids(n).nth(i).expect("layout child");
         let (rx, ry, _, _) = rt.lay.eng.rect(n);
         x += rx;
         y += ry;

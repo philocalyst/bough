@@ -1280,4 +1280,44 @@ impl Rt {
             self.region_mount(reg, owner, surv_end..new_range.end, false);
         }
     }
+
+    // ------------------------------------------------------------------ the storage ledger
+    /// The façade's tables as `(name, entries, bytes)`: `size_of` x capacity of each table plus the heap
+    /// capacity of every `Vec` / `Box` reachable from its entries (lane `store`: what one mounted element
+    /// costs beside its 23 B core record). GPU-region columns (instances, pages, glyph slots) are not heap
+    /// and are not listed.
+    pub fn store_ledger(&self) -> Vec<(&'static str, usize, usize)> {
+        use std::mem::size_of;
+        let mut v: Vec<(&'static str, usize, usize)> = Vec::new();
+        v.push(("core: bough (pages' directory, prefix, htab, planes)", self.bough.len(), self.bough.heap_bytes()));
+        v.push(("rt.nodes", self.nodes.len(), self.nodes.capacity() * size_of::<Node>() + self.nodes.iter().map(|n| n.series.capacity() * 4).sum::<usize>() + self.node_free.capacity() * 4));
+        v.push(("rt.runs", self.runs.len(), self.runs.capacity() * size_of::<Run>() + self.run_free.capacity() * 4));
+        v.push(("rt.wires", self.wires.len(), self.wires.capacity() * size_of::<Wire>() + self.wire_free.capacity() * 4));
+        let text_heap = |t: &crate::text::TextNode| {
+            t.text.capacity()
+                + match &t.shape {
+                    crate::text::TShape::Label(_) => size_of::<bough_text::pool::Label>(),
+                    crate::text::TShape::Set(_) => size_of::<bough_text::lines::LineSet>(),
+                    crate::text::TShape::Lines { widths, spans, .. } => widths.capacity() * 4 + spans.capacity() * 8,
+                    _ => 0,
+                }
+        };
+        v.push(("rt.texts", self.texts.len(), self.texts.capacity() * size_of::<crate::text::TextNode>() + self.texts.iter().map(text_heap).sum::<usize>() + self.text_free.capacity() * 4));
+        v.push(("lay.info", self.lay.info.len(), self.lay.info.capacity() * size_of::<crate::layout::LInfo>()));
+        v.extend(self.lay.eng.ledger());
+        fn scope_heap(s: &Scope) -> usize {
+            (s.nodes.capacity() + s.wires.capacity() + s.runs.capacity() + s.lroots.capacity() + s.dyns.capacity() + s.lregs.capacity() + s.prods.capacity()) * 4
+        }
+        let (mut items, mut bytes) = (0usize, 0usize);
+        for p in &self.dyns.parts {
+            items += p.len();
+            bytes += p.capacity() * size_of::<crate::describe::DynItem>();
+            bytes += p.iter().map(|i| i.tape.capacity() * 4 + scope_heap(&i.scope)).sum::<usize>();
+        }
+        v.push(("dyns.parts (items, tapes, scopes)", items, bytes));
+        v.push(("dyns.seals", self.dyns.seals.len(), self.dyns.seals.iter().map(|s| s.bytes.capacity()).sum::<usize>()));
+        v.push(("reflect.types", self.reflect.types.len(), self.reflect.types.capacity() * 16));
+        v.push(("reclaim_q", self.reclaim_q.len(), self.reclaim_q.capacity() * size_of::<Scope>() + self.reclaim_q.iter().map(scope_heap).sum::<usize>()));
+        v
+    }
 }

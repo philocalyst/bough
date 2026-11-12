@@ -38,6 +38,9 @@ pub struct Mounter<'a, V> {
     /// `update`: the Bough position of the next record, and the layout child index within `rt.lay.cur`.
     pub(crate) pos: usize,
     pub(crate) kid: usize,
+    /// `update`: the layout child of `rt.lay.cur` the walk last stepped over (0: none yet): the sibling a
+    /// spliced item is linked after or unlinked from (`describe.rs`).
+    pub(crate) prev: u32,
     /// An operand asked to keep the element's node addressable (`select`: an outside table names it).
     pub(crate) keep: bool,
 }
@@ -80,7 +83,7 @@ impl<V> Mounter<'_, V> {
     /// A mounter for a sub-part (a dynamic item) of this one: same position state, its own scope, records
     /// buffer and tape.
     pub(crate) fn sub<'b>(&'b mut self, recs: &'b mut Vec<RecordInit>, scope: &'b mut Scope, tape: *mut Vec<u32>) -> Mounter<'b, V> {
-        Mounter { rt: &mut *self.rt, owner: self.owner, recs, scope, depth: self.depth, ox: self.ox, oy: self.oy, space: self.space, clip: self.clip, pending_num: None, cls: self.cls, tape, ti: 0, pos: self.pos, kid: self.kid, keep: false }
+        Mounter { rt: &mut *self.rt, owner: self.owner, recs, scope, depth: self.depth, ox: self.ox, oy: self.oy, space: self.space, clip: self.clip, pending_num: None, cls: self.cls, tape, ti: 0, pos: self.pos, kid: self.kid, prev: self.prev, keep: false }
     }
     pub fn mount(&mut self, e: impl Element<V>) {
         e.mount(self)
@@ -1077,7 +1080,7 @@ pub(crate) unsafe fn mount_row<V: 'static>(rt: &mut Rt, owner: *const u8, reg: u
     let mut scope = Scope::default();
     let before = recs.len();
     {
-        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls: 0, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, keep: false };
+        let mut m = Mounter { rt, owner: owner as *const V, recs, scope: &mut scope, depth, ox: 0.0, oy: 0.0, space, clip, pending_num: None, cls: 0, tape: std::ptr::null_mut(), ti: 0, pos: 0, kid: 0, prev: 0, keep: false };
         // SAFETY: see the function contract.
         f(unsafe { &*(owner as *const V) }, row, &mut m);
     }
