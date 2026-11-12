@@ -109,3 +109,59 @@ fn a_full_chunk_and_a_single_page_do_not_merge() {
     b.remove_run(64 * 64, 64); // and then nothing: one full chunk
     b.check_invariants();
 }
+
+/// `Page::dir` is a hint (fix c): handles on every page must keep resolving to their record's position
+/// through any number of page inserts and removals before them, in both directions, including hints
+/// stale by hundreds of entries, and batched handle writes must settle the right pages.
+#[test]
+fn handles_resolve_through_stale_directory_hints() {
+    let mut rng = bough_core::rng::Rng::new(0xD1);
+    let n = 20_000;
+    let mut b = Bough::new(3200, 3200);
+    b.insert_run(0, &recs(n));
+    // model: the payload at each position; handles are on records chosen by payload
+    let mut model: Vec<u32> = (0..n as u32).collect();
+    let mut hs: Vec<(bough_core::Handle, u32)> = Vec::new();
+    for pos in (1..n).step_by(37) {
+        hs.push((b.attach_handle(pos), pos as u32));
+    }
+    let mut next = n as u32;
+    for step in 0..300 {
+        let len = model.len();
+        // most edits near the front, so every later page's hint goes stale by the page count changed
+        let at = 1 + if rng.below(3) > 0 { rng.below(200) as usize } else { rng.below(len as u64 - 1) as usize };
+        let k = 1 + rng.below(if step % 7 == 0 { 3000 } else { 200 }) as usize;
+        if rng.below(2) == 0 && len > 6000 {
+            let (at, k) = (at.min(len - 1), k.min(len - 1 - at.min(len - 2)).max(1));
+            let gone: Vec<u32> = model.drain(at..at + k).collect();
+            b.remove_run(at, k);
+            hs.retain(|(h, pay)| {
+                let dead = gone.contains(pay);
+                assert_eq!(b.handle_live(*h), !dead);
+                !dead
+            });
+        } else {
+            let new: Vec<_> = (0..k).map(|i| RecordInit::new(1, NRect::new(2, 2, 14, 14), 1, next + i as u32)).collect();
+            b.insert_run(at, &new);
+            model.splice(at..at, (0..k as u32).map(|i| next + i));
+            next += k as u32;
+        }
+        // a third of the handles each step: the others' pages keep older hints
+        for (i, (h, pay)) in hs.iter().enumerate() {
+            if (i + step) % 3 == 0 {
+                let pos = b.pos_of(*h).expect("live handle");
+                assert_eq!(model[pos], *pay, "step {step}: handle of payload {pay} resolved to {pos}");
+                assert_eq!(b.payload_at(pos), *pay);
+            }
+        }
+        if step % 10 == 0 {
+            let writes: Vec<_> = hs.iter().step_by(5).map(|(h, _)| (*h, NRect::new(step as i32, step as i32, step as i32 + 9, step as i32 + 9))).collect();
+            b.set_inks_handles(&writes, true);
+            for (h, _) in hs.iter().step_by(5) {
+                assert_eq!(b.ink_at(b.pos_of(*h).unwrap()), NRect::new(step as i32, step as i32, step as i32 + 9, step as i32 + 9));
+            }
+            b.check_invariants();
+        }
+    }
+    b.check_invariants();
+}

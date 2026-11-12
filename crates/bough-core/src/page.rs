@@ -76,7 +76,8 @@ pub struct Page {
     /// Only grows: bumped on alloc, free and every structural edit (shift/insert/remove).
     pub version: u32,
     pub id: u32,
-    /// Directory index of this page (maintained by the directory; `u32::MAX` when free).
+    /// Directory index of this page as last known: a hint that `Bough::dir_of` checks against the
+    /// directory and repairs (exact when the page enters the directory; `u32::MAX` when free).
     pub dir: u32,
     /// Groups whose summary is stale inside a batched write (`Bough::set_inks`); 0 otherwise.
     pub dirty: u8,
