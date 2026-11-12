@@ -44,7 +44,7 @@ fn mount(pan: (f32, f32)) -> App<Nested> {
 /// newest first, and a `clip_by` patch reads its parent's current rect), so the retained frame differs from a fresh
 /// mount at the same pan.
 #[test]
-#[ignore = "defect: nested clip_by reads its parent's stale rect after a write (round6 3b0b00c698)"]
+#[ignore = "defect: nested clip_by reads its parent's stale rect after a write (round6 3b0b00c698; fixed on r7/core, derived clips in rank order, not yet on round6)"]
 fn nested_clip_by_retained_equals_fresh() {
     let mut a = mount((0.0, 0.0));
     for (k, p) in [(30.0f32, 0.0f32), (30.0, 40.0), (-15.0, 10.0)].into_iter().enumerate() {
@@ -67,6 +67,11 @@ fn nested_clip_by_retained_equals_fresh() {
 /// `layout node is in the Bough` (lay_deep.rs) from `lay_compute_pending` in `App::resize`; its reading of the
 /// code is that `Rt::cut_scope` kills a released scope's wires but not its transitions, which keep restyling a
 /// dead layout node.
+///
+/// Minimal trigger (found by bisecting the chat scene): the row's transition must be started by a write AFTER the
+/// row mounted (a write in the push turn only sets the mounted value: no transition runs), the view must be
+/// scrolled to the end (`wheel_points`) between the push and that write (without the scroll the test passes), and
+/// the window must resize before the next frame.
 struct Row {
     h: Signal<f32>,
 }
@@ -82,7 +87,7 @@ struct Feed {
 impl View for Feed {
     fn view(&self) -> impl Element<Self> + '_ {
         column((
-            column(each((0..400).map(|i| text(format!("history line {i}")).font(12.0, 18.0)))),
+            column(each((0..200).map(|i| para(format!("history message {i}: a paragraph long enough to wrap onto two or three lines when the window is narrow, and onto one when it is wide")).font(12.0, 18.0).w_pct(1.0)))),
             list(sig!(self.rows)).w_pct(1.0),
         ))
         .w_pct(1.0)
@@ -96,15 +101,23 @@ impl View for Feed {
 fn list_row_transition_survives_resize() {
     let mut a = App::new(Feed { scroll: Signal::new(0.0), rows: List::new() }, Config::new(400.0, 300.0, 1.0, bough_workloads::font()).once(), true);
     a.frame();
-    for k in 0..6 {
+    a.resize(900.0, 400.0);
+    a.frame();
+    for k in 0..8 {
+        // a row arrives mounted at h = 28 (turn 1), the view scrolls to the end, the transition is started by a
+        // second turn (28 -> 0: only a write AFTER the row mounted retargets it), and in the same step the window
+        // narrows (the history re-wraps taller, so the new row leaves the visible window) or widens again
         a.turn(|v| {
-            v.rows.push(Row { h: Signal::new(0.0) });
+            v.rows.push(Row { h: Signal::new(28.0) });
+        });
+        a.wheel_points(100.0, 100.0, 1.0e7);
+        a.turn(|v| {
             let n = v.rows.len();
-            v.rows.edit(n - 1).h.set(40.0);
-            v.scroll.set(400.0 * 18.0 + 60.0 * n as f32);
+            v.rows.edit(n - 1).h.set(0.0);
         });
         a.tick(1.0 / 60.0);
-        a.resize(if k % 2 == 0 { 600.0 } else { 300.0 }, if k % 2 == 0 { 500.0 } else { 260.0 });
+        a.resize(if k % 2 == 0 { 260.0 } else { 900.0 }, if k % 2 == 0 { 300.0 } else { 400.0 });
+        a.tick(1.0 / 60.0);
         a.frame();
         let px = a.presented_pixels();
         let full = a.reference_pixels();
