@@ -189,9 +189,15 @@ fn memo_hit<T: LayoutTree + CacheAccess + ?Sized>(tree: &mut T, node: NodeId, in
     if tree.speculation() == 0 {
         if inputs.run_mode == RunMode::PerformLayout {
             // As the algorithm's final pass would: each child is asked its final question, then placed.
-            let kids: scratch::Scratch<NodeId> = scratch::Scratch::collect(tree.children(node));
-            debug_assert_eq!(kids.len(), nkids, "a shape fixes the child count");
-            for (i, &child) in kids.iter().enumerate().take(nkids) {
+            // a shape has at most `MAX_SHAPE_CHILDREN` children: on the stack, no pool
+            let mut kids = [NodeId::new(0); memo::MAX_SHAPE_CHILDREN];
+            let mut n = 0;
+            for c in tree.children(node) {
+                kids[n] = c;
+                n += 1;
+            }
+            debug_assert_eq!(n, nkids, "a shape fixes the child count");
+            for (i, &child) in kids[..n.min(nkids)].iter().enumerate() {
                 let kid = tree.memo().expect("a memo").kid(e, i);
                 if let Some(k) = kid.key {
                     tree.compute_child_layout(child, k.into_input(RunMode::PerformLayout), None);
@@ -217,9 +223,17 @@ fn memo_store<T: LayoutTree + CacheAccess + ?Sized>(tree: &mut T, node: NodeId, 
     match run_mode {
         RunMode::ComputeSize => tree.memo().expect("a memo").store_size(shape, key, *output, observed),
         RunMode::PerformLayout => {
-            let kids: scratch::Scratch<NodeId> = scratch::Scratch::collect(tree.children(node));
+            let mut kids = [NodeId::new(0); memo::MAX_SHAPE_CHILDREN];
+            let mut n = 0;
+            for c in tree.children(node) {
+                if n == kids.len() {
+                    return;
+                }
+                kids[n] = c;
+                n += 1;
+            }
             let start = tree.memo().expect("a memo").begin_final();
-            for &child in kids.iter() {
+            for &child in kids[..n].iter() {
                 let cheap = tree.query_meta(child).cheap_leaf;
                 let cache = tree.cache(child);
                 let key = if cheap { None } else { cache.final_key() };

@@ -80,6 +80,9 @@ fn avail(v: &Value) -> AvailableSpace {
     }
 }
 
+#[global_allocator]
+static ALLOC: bough_mem::count::Counting = bough_mem::count::Counting;
+
 fn instr() -> u64 {
     bough_mem::pmu::instructions_cycles().0
 }
@@ -162,11 +165,13 @@ fn measure(leaf: &mut Leaf, input: MeasureInput, _: &Style) -> MeasureOutput {
 }
 
 fn mount(sc: &mut Scene) -> u64 {
-    let i0 = instr();
+    let (i0, a0, l0) = (instr(), bough_mem::count::allocs(), bough_mem::count::live());
     for &(r, a) in &sc.roots {
         sc.tree.compute_layout_with_measure(r, a, measure);
     }
-    instr() - i0
+    let n = instr() - i0;
+    eprintln!("  mount: {} allocations, {} bytes live after", bough_mem::count::allocs() - a0, bough_mem::count::live() as i64 - l0 as i64);
+    n
 }
 
 fn main() {
@@ -205,6 +210,7 @@ fn main() {
             }
             let n = instr() - i0;
             total += n;
+            let _ = &n;
             if reps == 1 {
                 println!("step {k:2}\t{w}x{h}\troots={}\t{n}\t{}", ch.len(), stats());
             }
