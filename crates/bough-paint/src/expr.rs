@@ -1,82 +1,19 @@
-//! Expressions as types: a local mirror of the expr lane's trait (`docs/r8/SEAM.md`), so the swap to
-//! `bough-x` is this module. An expression value is its own per-record constants: reads of the block and
-//! constants are zero-sized, `Rec` holds one word, a combinator is a `repr(C)` struct of its operands. So a
-//! record of an archetype is a `[u32; N]` whose word `k` is the `k`-th `Rec` met walking the type depth
-//! first, which is how the generated GPU function names it.
+//! Expressions that reach the GPU. The vocabulary (`U`, lenses, `Words`, `Code`, the stage types, `Expr` and
+//! the leaves `Uw`, `Un`, `K`, `Ki`, `Rec`) is `bough-expr`, shared with the expr lane (`docs/r8/SEAM.md`).
+//! What lives here is what is named after a leaf function of `ops.rs`: the combinators, and `Lane`.
+//!
+//! An expression value is its own per-record constants: reads of the block and constants are zero-sized,
+//! `Rec` holds one word, a combinator is a `repr(C)` struct of its operands. So a record of an archetype is a
+//! `[u32; N]` whose word `k` is the `k`-th `Rec` met walking the type depth first, which is how the generated
+//! GPU function names it.
 //!
 //! A combinator has no body of its own. `op!` takes a leaf of `ops.rs` and emits both faces from that one
 //! identifier: `eval` calls the leaf on the operands' values; `CODE` is a static tree naming the leaf and the
 //! operands' trees. The CPU kernel is `eval` monomorphised and inlined; the GPU function is `CODE` rendered
 //! (`emit.rs`). Neither can say something the other does not.
 use crate::ops::ops as x;
-use wgsl_rs::std::{Vec4i, Vec4u};
-
-/// The uniform block: every word of state a `Frame` expression may read.
-#[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct U {
-    pub w: [u32; 64],
-}
-impl Default for U {
-    fn default() -> U {
-        U { w: [0; 64] }
-    }
-}
-impl U {
-    /// The words that differ between two blocks.
-    pub fn diff(&self, o: &U) -> u64 {
-        let mut m = 0u64;
-        for i in 0..64 {
-            m |= ((self.w[i] != o.w[i]) as u64) << i;
-        }
-        m
-    }
-}
-/// Block words the raster owns (the application reads them and never writes them).
-pub const U_TIME: usize = 63;
-pub const U_PICK: usize = 62;
-pub const U_PTR_X: usize = 61;
-pub const U_PTR_Y: usize = 60;
-
-/// What an expression is evaluated against: the block, and the record's own rect lanes (Q8, x0 y0 x1 y1).
-#[derive(Clone, Copy)]
-pub struct Cx<'a> {
-    pub u: &'a U,
-    pub rect: Vec4i,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum Stage {
-    Const,
-    Mount,
-    Turn,
-    Frame,
-}
-pub const fn later(s: &[Stage]) -> Stage {
-    let mut m = Stage::Const;
-    let mut i = 0;
-    while i < s.len() {
-        if s[i] as u8 > m as u8 {
-            m = s[i];
-        }
-        i += 1;
-    }
-    m
-}
-
-/// An expression's structure as data: what the GPU function and the plan are made from.
-#[derive(Debug)]
-pub enum Code {
-    /// Word `.0` of the block.
-    U(usize),
-    /// The next word of the record (depth-first order).
-    Rec,
-    /// The record's rect lanes.
-    Lane,
-    Lit(u32),
-    /// A leaf of `ops.rs` applied to operands.
-    Call(&'static str, &'static [&'static Code]),
-}
+pub use bough_expr::{Code, Cx, Expr, Frame, JoinAll, K, Ki, Lens, Mount, Rec, Stage, StageId, U, U_PICK, U_PTR_X, U_PTR_Y, U_TIME, Un, Uw, Words, lens, un};
+use wgsl_rs::std::{Vec4, Vec4i, Vec4u};
 
 /// The type of an expression's value, for generated code.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -102,101 +39,19 @@ impl Val for Vec4i {
     const TY: Ty = Ty::V4i;
 }
 
-/// A value whose bytes are whole 32-bit words with no padding and no invalid bit pattern: a record can be
-/// read in place from a column and handed to the GPU as words.
-///
-/// # Safety
-/// `size_of::<Self>() % 4 == 0`, `align_of::<Self>() <= 4`, every bit pattern is a valid value.
-pub unsafe trait Words: Copy + 'static {}
-// SAFETY: one word; no fields.
-unsafe impl Words for u32 {}
-
-pub trait Expr: Words {
-    type Out: Val;
-    const STAGE: Stage;
-    /// The block words it reads.
-    const READS: u64;
-    /// If the value is a colour, its alpha is provably full.
-    const OPAQUE: bool = false;
-    const CODE: &'static Code;
-    fn eval(&self, cx: &Cx) -> Self::Out;
-}
-
-/// Word `S` of the block.
-#[derive(Clone, Copy)]
-pub struct Uw<const S: usize>;
-// SAFETY: zero-sized.
-unsafe impl<const S: usize> Words for Uw<S> {}
-impl<const S: usize> Expr for Uw<S> {
-    type Out = u32;
-    const STAGE: Stage = Stage::Frame;
-    const READS: u64 = 1 << S;
-    const CODE: &'static Code = &Code::U(S);
-    #[inline(always)]
-    fn eval(&self, cx: &Cx) -> u32 {
-        cx.u.w[S]
-    }
-}
-/// A constant word.
-#[derive(Clone, Copy)]
-pub struct K<const V: u32>;
-// SAFETY: zero-sized.
-unsafe impl<const V: u32> Words for K<V> {}
-impl<const V: u32> Expr for K<V> {
-    type Out = u32;
-    const STAGE: Stage = Stage::Const;
-    const READS: u64 = 0;
-    const OPAQUE: bool = V >> 24 == 255;
-    const CODE: &'static Code = &Code::Lit(V);
-    #[inline(always)]
-    fn eval(&self, _: &Cx) -> u32 {
-        V
-    }
-}
-/// A constant signed value (Q8 lengths).
-#[derive(Clone, Copy)]
-pub struct Ki<const V: i32>;
-// SAFETY: zero-sized.
-unsafe impl<const V: i32> Words for Ki<V> {}
-impl<const V: i32> Expr for Ki<V> {
-    type Out = i32;
-    const STAGE: Stage = Stage::Const;
-    const READS: u64 = 0;
-    const CODE: &'static Code = &Code::Call("x_i", &[&Code::Lit(V as u32)]);
-    #[inline(always)]
-    fn eval(&self, _: &Cx) -> i32 {
-        V
-    }
-}
-/// One word the record owns.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Rec(pub u32);
-// SAFETY: one `u32`.
-unsafe impl Words for Rec {}
-impl Expr for Rec {
-    type Out = u32;
-    const STAGE: Stage = Stage::Mount;
-    const READS: u64 = 0;
-    const CODE: &'static Code = &Code::Rec;
-    #[inline(always)]
-    fn eval(&self, _: &Cx) -> u32 {
-        self.0
-    }
-}
-/// The record's rect lanes (Q8).
+/// The record's rect lanes (Q8) as a value.
 #[derive(Clone, Copy)]
 pub struct Lane;
 // SAFETY: zero-sized.
 unsafe impl Words for Lane {}
 impl Expr for Lane {
     type Out = Vec4i;
-    const STAGE: Stage = Stage::Mount;
+    type Stage = Mount;
     const READS: u64 = 0;
     const CODE: &'static Code = &Code::Lane;
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> Vec4i {
-        cx.rect
+        Vec4 { x: cx.rect[0], y: cx.rect[1], z: cx.rect[2], w: cx.rect[3] }
     }
 }
 
@@ -209,9 +64,12 @@ macro_rules! op {
         pub struct $name<$($T),*> { $(pub $f: $T),* }
         // SAFETY: `repr(C)` over operands that are `Words` (whole words, alignment <= 4): no padding arises.
         unsafe impl<$($T: Words),*> Words for $name<$($T),*> {}
-        impl<$($T: Expr<Out = $ty>),*> Expr for $name<$($T),*> {
+        impl<$($T: Expr<Out = $ty>),*> Expr for $name<$($T),*>
+        where
+            ($($T::Stage,)*): JoinAll,
+        {
             type Out = $out;
-            const STAGE: Stage = later(&[$($T::STAGE),*]);
+            type Stage = <($($T::Stage,)*) as JoinAll>::Out;
             const READS: u64 = 0 $(| $T::READS)*;
             const OPAQUE: bool = $opq;
             const CODE: &'static Code = &Code::Call(stringify!($leaf), &[$($T::CODE),*]);

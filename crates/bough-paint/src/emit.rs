@@ -57,9 +57,16 @@ const EMPTY: &str = "x_rect(0u, 0u, 0u, 0u)";
 /// `paint::NO_CLIP` as words.
 const NO_CLIP: &str = "x_rect(4290871296u, 4290871296u, 4096000u, 4096000u)";
 
+/// What has no generated form yet. `Code::Cpu` (a Rust function) is a value the store must keep current in
+/// a record word; `Code::UAt` (a block word chosen by a record word) needs the block as an array in the
+/// generated function. Neither occurs in a paint operand of this crate's scenes.
+fn unsupported(c: &Code) -> ! {
+    panic!("no GPU form for {c:?} in a paint operand")
+}
 pub fn words(c: &Code) -> usize {
     match c {
-        Code::Rec => 1,
+        Code::Rec | Code::UAt(..) => 1,
+        Code::Cpu(a) => a.iter().map(|c| words(c)).sum(),
         Code::Call(_, a) => a.iter().map(|c| words(c)).sum(),
         _ => 0,
     }
@@ -75,6 +82,8 @@ pub fn pwords(p: &PCode) -> usize {
 fn reads(c: &Code) -> u64 {
     match c {
         Code::U(s) => 1 << s,
+        Code::UAt(b, n) => ((1u64 << n) - 1) << b,
+        Code::Cpu(a) => a.iter().fold(0, |m, c| m | reads(c)),
         Code::Call(_, a) => a.iter().fold(0, |m, c| m | reads(c)),
         _ => 0,
     }
@@ -117,6 +126,7 @@ fn expr(c: &Code, base: &mut usize, u: char) -> String {
         }
         Code::Lane => "rect".into(),
         Code::Lit(v) => format!("{v}u"),
+        Code::UAt(..) | Code::Cpu(_) => unsupported(c),
         Code::Call(n, a) => {
             let args: Vec<String> = a.iter().map(|c| expr(c, base, u)).collect();
             format!("{n}({})", args.join(", "))

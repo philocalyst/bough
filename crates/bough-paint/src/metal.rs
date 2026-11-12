@@ -463,7 +463,7 @@ impl Gpu {
         let first = self.first;
         let mut new = *u;
         new.w[U_PICK] = self.prev.w[U_PICK];
-        let mut mask = if first { u64::MAX } else { self.prev.diff(&new) };
+        let mut mask = if first { u64::MAX } else { self.prev.diff(&new, 64) };
         if pointer.is_some() {
             mask |= 1 << U_PICK;
         }

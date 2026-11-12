@@ -165,6 +165,10 @@ name = "bough-damage-lab"
 version = "0.0.0"
 
 [[package]]
+name = "bough-expr"
+version = "0.0.0"
+
+[[package]]
 name = "bough-frame"
 version = "0.0.0"
 
@@ -237,6 +241,7 @@ dependencies = [
 name = "bough-paint"
 version = "0.0.0"
 dependencies = [
+ "bough-expr",
  "bough-kernel",
  "naga",
  "objc2",
@@ -340,6 +345,13 @@ dependencies = [
  "bough-metal",
  "bough-text",
  "zgx-workload",
+]
+
+[[package]]
+name = "bough-x"
+version = "0.0.0"
+dependencies = [
+ "bough-mem",
 ]
 
 [[package]]

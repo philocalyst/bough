@@ -38,10 +38,10 @@ impl ColView {
         unsafe { self.base.add((i as usize >> 6) * 64 * (LANES + self.w as usize)) }
     }
     #[inline(always)]
-    pub fn rect(&self, i: u32) -> Vec4i {
+    pub fn rect(&self, i: u32) -> [i32; 4] {
         let (p, r) = (self.page(i), i as usize & 63);
         // SAFETY: the four rect lanes are the page's first 256 words.
-        unsafe { Vec4 { x: *p.add(r) as i32, y: *p.add(64 + r) as i32, z: *p.add(128 + r) as i32, w: *p.add(192 + r) as i32 } }
+        unsafe { [*p.add(r) as i32, *p.add(64 + r) as i32, *p.add(128 + r) as i32, *p.add(192 + r) as i32] }
     }
     #[inline(always)]
     pub fn z(&self, i: u32) -> u32 {
@@ -467,7 +467,7 @@ impl Scene {
     pub fn update(&mut self, u: &U) -> FrameStats {
         let mut fs = FrameStats::default();
         let first = self.first;
-        let mask = if first { u64::MAX } else { self.prev.diff(u) };
+        let mask = if first { u64::MAX } else { self.prev.diff(u, 64) };
         fs.mask = mask;
         if first {
             self.damage.all();
