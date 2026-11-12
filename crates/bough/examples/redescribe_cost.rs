@@ -99,7 +99,48 @@ fn churn(n: usize) -> u64 {
     (hi - lo) / 8
 }
 
+/// Instructions to construct an `App` over `n` rows of shape `K` (headless: no GPU), minus the same for 0 rows.
+fn mount<const K: u32>(n: usize) -> u64
+where
+    Table<K>: View,
+{
+    let font = std::fs::read(std::env::var("ZGX_FONT_FILE").unwrap_or_else(|_| "/System/Library/Fonts/Supplemental/Arial.ttf".into())).unwrap();
+    let one = |n: usize| {
+        let mut cfg = Config::new(1280.0, 800.0, 1.0, font.clone());
+        cfg.caps = Caps { instances: 1 << 17, pages: 1 << 13, glyphs: 1 << 20, runs: 1 << 17, spaces: 1 << 12, clips: 1 << 12, strikes: 16 };
+        let rows: Vec<(u32, String)> = (0..n as u32).map(|i| (i, format!("Row label {i}"))).collect();
+        let t0 = tinstr();
+        let mut a = App::new(Table::<K> { rows, selected: u32::MAX }, cfg, false);
+        a.turn(|_| {});
+        let d = tinstr() - t0;
+        if std::env::var_os("SPIN").is_none() {
+            std::mem::forget(a); // teardown is measured apart
+        }
+        d
+    };
+    one(1);
+    let (z, f) = (one(0), one(n));
+    if K == 0 {
+        eprintln!("  an empty App (new + first turn, headless): {z} instructions");
+    }
+    f.saturating_sub(z)
+}
+
 fn main() {
+    if std::env::var_os("MOUNT").is_some() {
+        println!("rows,owned_mount,per_row,static_mount,per_row,bare_mount,per_row");
+        for n in std::env::args().skip(1).filter_map(|s| s.parse::<usize>().ok()) {
+            if let Some(reps) = std::env::var("SPIN").ok().and_then(|v| v.parse::<u32>().ok()) {
+                for _ in 0..reps {
+                    mount::<0>(n);
+                }
+            }
+            let (o, s, b) = (mount::<0>(n), mount::<1>(n), mount::<2>(n));
+            let k = n as u64;
+            println!("{n},{o},{},{s},{},{b},{}", o / k, s / k, b / k);
+        }
+        return;
+    }
     if std::env::var_os("CHURN").is_some() {
         println!("rows,remove_insert_pair,per_row");
         for n in std::env::args().skip(1).filter_map(|s| s.parse::<usize>().ok()) {

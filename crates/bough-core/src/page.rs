@@ -6,7 +6,7 @@
 //! blocks of 8 u16 lanes are issued only while `i + lanes <= len` (or, for the page-specialised
 //! scans, the 64-slot arrays are exact multiples of the block size). Unaligned `vld1q` is permitted.
 
-use crate::nrect::{NRect, union8};
+use crate::nrect::{COORD_MAX, COORD_MIN, NRect, WRect, union8};
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
 
@@ -15,6 +15,16 @@ pub const CAP: usize = 64;
 pub const GROUP: usize = 8;
 pub const NGROUPS: usize = CAP / GROUP;
 pub const PAD_DEPTH: u16 = 0xFFFF;
+
+/// The page carries an affine (`xm`, `xv`): absolute = M stored + xv + off.
+pub const F_XF: u8 = 1;
+/// The page holds ink outside the 16-bit domain: absolute = stored + `off` is formed in i32 and the
+/// 16-bit absolute form is a clamped view. `|off| <= 32767` unless every record is beyond the domain on
+/// that axis (then nothing in a window can meet the page and `offl` is not read).
+pub const F_FAR: u8 = 2;
+/// The page holds one record whose extent no 16-bit frame can hold (over 65,532 px): the stored ink is
+/// its clamped view (`off` = 0) and the exact rect lives in the Bough's wide table under the page id.
+pub const F_WIDE: u8 = 4;
 
 /// A fully materialised record (what the oracle stores and what `Bough::record` returns).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +83,9 @@ pub struct Page {
     /// Bit `g` set iff group `g` holds a record with a clip id (maintained by `regroup`): clip-free
     /// groups never look at the clip column.
     pub cgroups: u8,
+    /// 0 for a plain page; otherwise the page is not in the plain frame (see `F_XF`, `F_FAR`,
+    /// `F_WIDE`) and every stored-to-absolute conversion takes the exact path. (A former padding byte.)
+    pub flags: u8,
     /// Only grows: bumped on alloc, free and every structural edit (shift/insert/remove).
     pub version: u32,
     pub id: u32,
@@ -127,6 +140,7 @@ impl Page {
             handle: [0; CAP],
             clip: [0; CAP],
             cgroups: 0,
+            flags: 0,
             version: 0,
             id,
             dir: u32::MAX,
@@ -188,19 +202,47 @@ impl Page {
         Record { depth: self.depth[slot], ink: self.abs(self.ink[slot]), kind: self.kind[slot], payload: self.payload[slot], handle: self.handle[slot], clip: self.clip[slot] }
     }
 
-    /// Stored (page-relative) rect -> absolute: translated, or on a transformed page the bounding box of the
-    /// transformed rect (grown by a pixel, as the kernels' coverage window).
+    /// Stored (page-relative) rect -> absolute, as the 16-bit form: exact for a plain page (its ink is
+    /// inside the domain); the bounding box of the transformed rect (grown by a pixel, as the kernels'
+    /// coverage window) on a transformed page; the clamped view on a far or wide page.
     #[inline(always)]
     pub fn abs(&self, r: NRect) -> NRect {
-        if self.is_xf() {
-            return self.xf_abs(r);
+        if self.flags != 0 {
+            return self.abs_slow(r);
         }
         r.translate(self.off[0], self.off[1])
+    }
+    #[inline(never)]
+    fn abs_slow(&self, r: NRect) -> NRect {
+        if self.flags & F_XF != 0 {
+            return self.xf_abs(r);
+        }
+        self.abs_wide(r).to_nrect()
+    }
+    /// Stored rect -> exact absolute rect (not for transformed or wide pages: see `Bough::slot_wide`).
+    #[inline]
+    pub fn abs_wide(&self, r: NRect) -> WRect {
+        WRect::from(r).translate(self.off[0], self.off[1])
+    }
+    /// Exact absolute rect -> stored, if it fits this page's frame.
+    #[inline]
+    pub fn rel_of(&self, w: WRect) -> Option<NRect> {
+        if w.is_empty() {
+            return Some(NRect::EMPTY);
+        }
+        let r = [w.0[0] - self.off[0], w.0[1] - self.off[1], w.0[2] - self.off[0], w.0[3] - self.off[1]];
+        r.iter().all(|v| (COORD_MIN..=COORD_MAX).contains(v)).then(|| NRect::new(r[0], r[1], r[2], r[3]))
     }
     /// Does this page carry a transform?
     #[inline(always)]
     pub fn is_xf(&self) -> bool {
-        self.xm != [0.0; 4] || self.xv != [0.0; 2]
+        self.flags & F_XF != 0
+    }
+    /// Re-derive `F_XF` after `xm` / `xv` were written.
+    #[inline]
+    pub fn sync_xf(&mut self) {
+        let xf = self.xm != [0.0; 4] || self.xv != [0.0; 2];
+        self.flags = (self.flags & !F_XF) | if xf { F_XF } else { 0 };
     }
     /// The four corners of stored rect `r` transformed (absolute px, `off` included).
     #[inline]
@@ -250,10 +292,10 @@ impl Page {
     pub fn off_lanes(&self) -> [i16; 4] {
         self.offl
     }
-    /// Set the offset (|dx|, |dy| <= 32767).
+    /// Set the offset. `offl` is exact for `|dx|, |dy| <= 32767` (every page a window can meet); beyond
+    /// that the page is far (`F_FAR`, wholly outside the domain) and its lanes are never read.
     #[inline(always)]
     pub fn set_off(&mut self, dx: i32, dy: i32) {
-        debug_assert!(dx.abs() <= 32767 && dy.abs() <= 32767);
         self.off = [dx, dy];
         self.offl = [dx as i16, dy as i16, (-dx) as i16, (-dy) as i16];
     }
@@ -279,26 +321,38 @@ impl Page {
         let mo = [m[0] * ox + m[1] * oy - ox, m[2] * ox + m[3] * oy - oy];
         self.xm = [m[0] - 1.0, m[1], m[2], m[3] - 1.0];
         self.xv = [k[0] + t[0] - mk[0] + mo[0], k[1] + t[1] - mk[1] + mo[1]];
+        self.sync_xf();
     }
 
-    /// Store an absolute (canonical) ink at `slot`: relative to `off`, or -- if that would leave
-    /// the i16 domain -- after normalising the page (then relative = absolute).
+    /// Store an absolute (canonical, in-domain) ink at `slot` of a plain page, relative to `off`; false
+    /// (nothing stored) if the page is not plain or the relative form leaves the 16-bit frame: the caller
+    /// takes the exact path.
     #[inline(always)]
-    pub fn store_abs(&mut self, slot: usize, ink: NRect) {
+    pub fn store_abs(&mut self, slot: usize, ink: NRect) -> bool {
+        if self.flags & !F_XF != 0 {
+            return false;
+        }
         match ink.translate_checked(-self.off[0], -self.off[1]) {
-            Some(r) => self.ink[slot] = r,
-            None => {
+            Some(r) => {
+                self.ink[slot] = r;
+                true
+            }
+            None if self.flags & F_XF != 0 => {
                 self.normalize();
                 self.ink[slot] = ink;
+                true
             }
+            None => false,
         }
     }
 
-    /// Apply `off` to the stored inks and reset it to 0 (before records are copied to another page).
+    /// Transformed pages only: fold `off` into the affine's translation and reset it to 0 (before records
+    /// are copied to another page). Untransformed pages keep their frame; pages that exchange records
+    /// share it.
     #[inline]
     pub fn normalize(&mut self) {
-        if self.off != [0, 0] {
-            if self.is_xf() {
+        if self.off != [0, 0] && self.is_xf() {
+            {
                 // fold the offset into the affine's translation instead: absolute = m s + xv + off and
                 // absolute = m (s + off) + xv' must agree, so xv' = xv + off - m off
                 let (ox, oy) = (self.off[0] as f32, self.off[1] as f32);
@@ -439,6 +493,7 @@ impl PagePool {
         p.set_sentinel(0, CAP);
         p.gink = [NRect::EMPTY; NGROUPS];
         p.cgroups = 0;
+        p.flags = 0;
         p.set_off(0, 0);
         // A freed page carries no transform: the next run to reuse it must not inherit one (round 6).
         (p.xm, p.xv) = ([0.0; 4], [0.0; 2]);

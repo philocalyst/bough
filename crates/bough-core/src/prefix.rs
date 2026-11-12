@@ -209,16 +209,36 @@ impl BlockedPrefix {
         self.local.truncate(self.n + 1);
         self.blk.truncate(self.n / BLOCK + 1);
     }
-    pub fn invalidate_from(&mut self, _d: usize, lens: &[u32]) {
-        debug_assert_eq!(lens.len(), self.n);
-        let mut acc = 0u32;
-        for i in 0..=self.n {
-            if i % BLOCK == 0 {
-                self.blk[i / BLOCK] = acc;
-            }
-            self.local[i] = acc - self.blk[i / BLOCK];
-            if i < self.n {
-                acc += lens[i];
+    /// Lengths of pages `>= d` (or their number) changed arbitrarily; the lengths of pages `< d` did
+    /// not, so `start[0..=d]` stands and only `start[d+1..=n]` is recomputed (round 6: this rebuilt from
+    /// page 0 whatever `d` was, 19 instructions per page of the whole directory on every split).
+    /// One running sum from `start[d]`, a block at a time: a load, an add, a subtract and a store per
+    /// page, no division and no bounds check.
+    pub fn invalidate_from(&mut self, d: usize, lens: &[u32]) {
+        let n = self.n;
+        assert!(lens.len() == n && self.local.len() == n + 1 && self.blk.len() == n / BLOCK + 1);
+        let mut i = d.min(n);
+        // SAFETY (all unchecked accesses below): i <= n throughout, so i / BLOCK <= n / BLOCK is a
+        // block index, and every page index touched is in i..end with end <= n (lens) or <= n (local,
+        // whose length is n + 1), by the assert above.
+        unsafe {
+            let mut base = *self.blk.get_unchecked(i / BLOCK);
+            let mut acc = base + *self.local.get_unchecked(i);
+            while i < n {
+                // the pages i..end share i's block; start[end] opens the next block when end is its first page
+                let end = ((i / BLOCK + 1) * BLOCK).min(n);
+                let last = if end % BLOCK == 0 { end - 1 } else { end };
+                for j in i..last {
+                    acc += *lens.get_unchecked(j);
+                    *self.local.get_unchecked_mut(j + 1) = acc - base;
+                }
+                if last < end {
+                    acc += *lens.get_unchecked(last);
+                    *self.blk.get_unchecked_mut(end / BLOCK) = acc;
+                    *self.local.get_unchecked_mut(end) = 0;
+                    base = acc;
+                }
+                i = end;
             }
         }
     }
