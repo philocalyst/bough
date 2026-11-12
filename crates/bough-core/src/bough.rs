@@ -14,8 +14,8 @@
 
 use crate::damage::{DamageRing, Plane, RING, ScrollRec, tile_span};
 use crate::emit::compact8;
-use crate::nrect::{NRect, Thresh, lt_mask, lt8, translate_union, union_all};
-use crate::page::{CAP, GROUP, NGROUPS, PAD_DEPTH, Page, PagePool, Record, find_first_le, find_last_lt, page_find_first_le, page_find_last_lt};
+use crate::nrect::{COORD_MAX, COORD_MIN, NRect, Thresh, WRect, lt_mask, lt8, translate_union, union_all};
+use crate::page::{F_FAR, F_WIDE, F_XF, CAP, GROUP, NGROUPS, PAD_DEPTH, Page, PagePool, Record, find_first_le, find_last_lt, page_find_first_le, page_find_last_lt};
 pub use crate::page::RecordInit;
 use crate::prefix::Prefix;
 use bough_mem::Col;
@@ -72,6 +72,11 @@ pub struct Bough {
     ring: DamageRing,
     total: usize,
     scratch: Vec<RecordInit>,
+    /// Records restated in a page's frame (an insert into a page whose offset is not zero).
+    rel_scratch: Vec<RecordInit>,
+    /// The exact rects of the records in wide pages (`F_WIDE`: one record no 16-bit frame can hold), by
+    /// page id. A handful at most (a document's background, a dormant run's extent).
+    wide: Vec<(u32, WRect)>,
     dirty_scratch: Vec<u32>,
     /// Clip rects by id (absolute); id 0 = the whole domain (unclipped). GPU-visible (the shader clamps
     /// every record to `clips[page.clip[slot]]`).
@@ -193,6 +198,8 @@ impl Bough {
             ring: DamageRing::new(window_w, window_h),
             total: 0,
             scratch: Vec::new(),
+            rel_scratch: Vec::new(),
+            wide: Vec::new(),
             dirty_scratch: Vec::new(),
             clips,
             uniform: [0; 4],
@@ -594,22 +601,24 @@ impl Bough {
     /// Insert `count` blank, empty pages at directory index `at`.
     fn dir_insert_blank(&mut self, at: usize, count: usize) {
         let mut ptrs = Vec::with_capacity(count);
-        for _ in 0..count {
+        attr!(0, for _ in 0..count {
             ptrs.push(self.pool.alloc());
-        }
-        self.d_id.insert_n(at, count, 0);
-        for (k, &p) in ptrs.iter().enumerate() {
-            // SAFETY: a live pool page.
-            self.d_id[at + k] = unsafe { (*p).id };
-        }
-        self.d_ptr.splice(at..at, ptrs);
-        self.d_ink.insert_n(at, count, NRect::EMPTY);
-        self.d_min_depth.splice(at..at, core::iter::repeat_n(PAD_DEPTH, count));
-        self.d_len.splice(at..at, core::iter::repeat_n(0, count));
-        for _ in 0..count {
+        });
+        attr!(1, {
+            self.d_id.insert_n(at, count, 0);
+            for (k, &p) in ptrs.iter().enumerate() {
+                // SAFETY: a live pool page.
+                self.d_id[at + k] = unsafe { (*p).id };
+            }
+        });
+        attr!(2, drop(self.d_ptr.splice(at..at, ptrs)));
+        attr!(3, self.d_ink.insert_n(at, count, NRect::EMPTY));
+        attr!(4, drop(self.d_min_depth.splice(at..at, core::iter::repeat_n(PAD_DEPTH, count))));
+        attr!(5, drop(self.d_len.splice(at..at, core::iter::repeat_n(0, count))));
+        attr!(6, for _ in 0..count {
             self.prefix.grow();
-        }
-        self.reindex_pages(at);
+        });
+        attr!(7, self.reindex_pages(at));
     }
 
     /// Remove directory entries `[d, d+k)` (whole pages emptied by one `remove_run`) in one pass: each
@@ -624,34 +633,44 @@ impl Bough {
         }
         for i in d..d + k {
             // SAFETY: live page.
-            let id = unsafe { (*self.d_ptr[i]).id };
+            let (id, fl) = unsafe { ((*self.d_ptr[i]).id, (*self.d_ptr[i]).flags) };
+            if fl & F_WIDE != 0 {
+                self.wide_drop(id);
+            }
             self.pool.free(id);
         }
         let n = self.d_ptr.len();
-        self.d_ptr.drain(d..d + k);
-        self.d_id.copy_within(d + k..n, d);
-        self.d_id.truncate(n - k);
-        self.d_ink.copy_within(d + k..n, d);
-        self.d_ink.truncate(n - k);
-        self.d_min_depth.drain(d..d + k);
-        self.d_len.drain(d..d + k);
-        for _ in 0..k {
+        attr!(2, drop(self.d_ptr.drain(d..d + k)));
+        attr!(1, {
+            self.d_id.copy_within(d + k..n, d);
+            self.d_id.truncate(n - k);
+        });
+        attr!(3, {
+            self.d_ink.copy_within(d + k..n, d);
+            self.d_ink.truncate(n - k);
+        });
+        attr!(4, drop(self.d_min_depth.drain(d..d + k)));
+        attr!(5, drop(self.d_len.drain(d..d + k)));
+        attr!(6, for _ in 0..k {
             self.prefix.shrink();
-        }
-        self.reindex_pages(d);
+        });
+        attr!(7, self.reindex_pages(d));
     }
 
     fn dir_remove(&mut self, d: usize) {
         // SAFETY: live page.
-        let id = unsafe { (*self.d_ptr[d]).id };
-        self.d_ptr.remove(d);
-        self.d_id.remove(d);
-        self.d_ink.remove(d);
-        self.d_min_depth.remove(d);
-        self.d_len.remove(d);
-        self.prefix.shrink();
-        self.pool.free(id);
-        self.reindex_pages(d);
+        let (id, fl) = unsafe { ((*self.d_ptr[d]).id, (*self.d_ptr[d]).flags) };
+        if fl & F_WIDE != 0 {
+            self.wide_drop(id);
+        }
+        attr!(2, self.d_ptr.remove(d));
+        attr!(1, self.d_id.remove(d));
+        attr!(3, self.d_ink.remove(d));
+        attr!(4, self.d_min_depth.remove(d));
+        attr!(5, self.d_len.remove(d));
+        attr!(6, self.prefix.shrink());
+        attr!(0, self.pool.free(id));
+        attr!(7, self.reindex_pages(d));
     }
 
     /// Re-point handle-table entries for every live handle in slots `[lo, hi)` of page `d`.
@@ -743,19 +762,46 @@ impl Bough {
         self.insert_impl(pos, recs, true);
     }
 
+    /// `insert_run` with exact rects: record `i`'s ink is `wide[i]` (any i32 device-pixel rect;
+    /// `recs[i].ink` is ignored). For content outside the 16-bit domain: the rows of a long scrolled
+    /// column, a document taller than 32,766 px. Such records live in pages with their own offset, and
+    /// translating them later is exact.
+    pub fn insert_run_wide(&mut self, pos: usize, recs: &[RecordInit], wide: &[WRect]) {
+        assert_eq!(recs.len(), wide.len());
+        self.insert_core(pos, recs, Some(wide), true);
+    }
+
     fn insert_impl(&mut self, pos: usize, recs: &[RecordInit], damage: bool) {
+        self.insert_core(pos, recs, None, damage);
+    }
+
+    #[inline]
+    fn insert_core(&mut self, pos: usize, recs: &[RecordInit], wide: Option<&[WRect]>, damage: bool) {
         let k = recs.len();
         if k == 0 {
             return;
         }
         assert!(pos <= self.total, "insert position out of range");
         if damage {
-            for chunk in recs.chunks(CAP) {
-                let mut u = NRect::EMPTY;
-                for r in chunk {
-                    u = u.union(self.clipped(r.ink.canon(), r.clip));
+            match wide {
+                None => {
+                    for chunk in recs.chunks(CAP) {
+                        let mut u = NRect::EMPTY;
+                        for r in chunk {
+                            u = u.union(self.clipped(r.ink.canon(), r.clip));
+                        }
+                        self.ring.add(u);
+                    }
                 }
-                self.ring.add(u);
+                Some(w) => {
+                    for (chunk, wc) in recs.chunks(CAP).zip(w.chunks(CAP)) {
+                        let mut u = NRect::EMPTY;
+                        for (r, w) in chunk.iter().zip(wc) {
+                            u = u.union(self.clipped(w.to_nrect(), r.clip));
+                        }
+                        self.ring.add(u);
+                    }
+                }
             }
         }
         if self.d_ptr.is_empty() {
@@ -770,6 +816,14 @@ impl Bough {
             let (d, s) = self.locate(pos - 1);
             (d, s + 1)
         };
+        {
+            let p = self.page(d);
+            if wide.is_some() || p.off != [0, 0] || p.flags != 0 {
+                // not the plain frame (stored = absolute): restate the records in the page's frame, or
+                // give them pages of their own
+                return self.insert_framed(pos, d, s, recs, wide);
+            }
+        }
         let l = self.d_len[d] as usize;
         if l + k <= CAP {
             self.insert_in_page(d, s, recs);
@@ -779,11 +833,216 @@ impl Bough {
         self.total += k;
     }
 
+    /// An insert at slot `s` of page `d` when the page's frame is not the identity or the records carry
+    /// exact rects. A transformed page takes the records as before (its offset folded away). A plain
+    /// page takes them restated relative to its offset when every one is inside the domain and fits the
+    /// frame. Anything else (records outside the domain, a far or wide page) goes to pages of its own.
+    #[inline(never)]
+    fn insert_framed(&mut self, pos: usize, d: usize, s: usize, recs: &[RecordInit], wide: Option<&[WRect]>) {
+        let k = recs.len();
+        let l = self.d_len[d] as usize;
+        let flags = self.page(d).flags;
+        if flags & F_XF != 0 && wide.is_none() {
+            self.page_mut(d).normalize();
+            if l + k <= CAP {
+                self.insert_in_page(d, s, recs);
+            } else {
+                self.insert_split(d, s, recs);
+            }
+            self.total += k;
+            return;
+        }
+        if flags == 0 {
+            let mut rel = core::mem::take(&mut self.rel_scratch);
+            rel.clear();
+            let p = self.page(d);
+            for (i, r) in recs.iter().enumerate() {
+                let w = wide.map_or(WRect::from(r.ink.canon()), |w| w[i]);
+                match p.rel_of(w) {
+                    Some(ink) if w.in_domain() => rel.push(RecordInit { ink, ..*r }),
+                    _ => break,
+                }
+            }
+            let fits = rel.len() == k;
+            if fits {
+                if l + k <= CAP {
+                    self.insert_in_page(d, s, &rel);
+                } else {
+                    self.insert_split(d, s, &rel);
+                }
+                self.total += k;
+            }
+            rel.clear();
+            self.rel_scratch = rel;
+            if fits {
+                return;
+            }
+        }
+        let rects: Vec<WRect> = recs.iter().enumerate().map(|(i, r)| wide.map_or(WRect::from(r.ink.canon()), |w| w[i])).collect();
+        self.insert_cold(pos, recs, &rects);
+    }
+
+    /// The frame (offset, flags) of a page whose records' exact union is `u`: plain (`keep` if it still
+    /// fits, else 0) when `u` is inside the domain; otherwise a far frame, the offset nearest zero that
+    /// puts every coordinate in 16 bits, valid only if on each axis `|off| <= 32767` or `u` lies wholly
+    /// beyond the domain there (so a page any window can meet always has exact 16-bit offset lanes).
+    /// `None`: no such frame (the span is over 65,532 px, or straddles too far): cut the page, or, for a
+    /// single record, keep its exact rect aside (`F_WIDE`).
+    fn frame_for(u: WRect, keep: [i32; 2]) -> Option<([i32; 2], u8)> {
+        let small = |o: [i32; 2]| o[0].abs() <= 32767 && o[1].abs() <= 32767;
+        if u.is_empty() {
+            return Some((if small(keep) { keep } else { [0, 0] }, 0));
+        }
+        if u.in_domain() {
+            let fits = |o: [i32; 2]| (0..4).all(|i| (COORD_MIN..=COORD_MAX).contains(&(u.0[i] - o[i & 1])));
+            return Some((if small(keep) && fits(keep) { keep } else { [0, 0] }, 0));
+        }
+        let mut off = [0i32; 2];
+        for a in 0..2 {
+            let (lo, hi) = (u.0[a], u.0[a + 2]);
+            let (min, max) = (hi - COORD_MAX, lo - COORD_MIN);
+            if min > max {
+                return None;
+            }
+            off[a] = 0.clamp(min, max);
+            if off[a].abs() > 32767 && !(lo > COORD_MAX || hi < COORD_MIN) {
+                return None;
+            }
+        }
+        Some((off, F_FAR))
+    }
+
+    /// Cut `rects` (records in order) into runs of at most `CAP` that each have a frame; a record that
+    /// has none on its own is a run of one (wide).
+    fn frame_runs(rects: &[WRect]) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let mut a = 0;
+        while a < rects.len() {
+            let mut u = rects[a];
+            let mut b = a + 1;
+            if Self::frame_for(u, [0, 0]).is_some() {
+                while b < rects.len() && b - a < CAP {
+                    let v = u.union(rects[b]);
+                    if Self::frame_for(v, [0, 0]).is_none() {
+                        break;
+                    }
+                    u = v;
+                    b += 1;
+                }
+            }
+            out.push((a, b));
+            a = b;
+        }
+        out
+    }
+
+    /// Exact rect of slot `s` of page `d` (on a transformed page: the transformed bounding box).
+    fn slot_wide(&self, d: usize, s: usize) -> WRect {
+        let p = self.page(d);
+        if p.flags & F_WIDE != 0 {
+            return self.wide.iter().find(|e| e.0 == p.id).expect("wide page has its rect").1;
+        }
+        if p.flags & F_XF != 0 {
+            return WRect::from(p.abs(p.ink[s]));
+        }
+        p.abs_wide(p.ink[s])
+    }
+    fn page_rects(&self, d: usize) -> Vec<WRect> {
+        (0..self.d_len[d] as usize).map(|s| self.slot_wide(d, s)).collect()
+    }
+    /// The exact ink of the record at `pos`.
+    pub fn ink_wide_at(&self, pos: usize) -> WRect {
+        let (d, s) = self.locate(pos);
+        self.slot_wide(d, s)
+    }
+    fn wide_drop(&mut self, id: u32) {
+        self.wide.retain(|e| e.0 != id);
+    }
+
+    /// Write the inks of page `d`'s live slots from their exact rects, choosing its frame; a page whose
+    /// records have no common frame is cut into pages that do. Returns the number of directory pages
+    /// the page became. (The exact path: far content only.)
+    fn reencode(&mut self, d: usize, rects: &[WRect]) -> usize {
+        let l = self.d_len[d] as usize;
+        debug_assert_eq!(l, rects.len());
+        let u = rects.iter().fold(WRect::EMPTY, |u, r| u.union(*r));
+        let (keep, id, was_wide) = { let p = self.page(d); (p.off, p.id, p.flags & F_WIDE != 0) };
+        let frame = Self::frame_for(u, keep);
+        if frame.is_none() && l > 1 {
+            let runs = Self::frame_runs(rects);
+            let j = runs[0].1;
+            let pos = self.start_of(d) + j;
+            self.split_at(pos);
+            let a = self.reencode(d, &rects[..j]);
+            return a + self.reencode(d + a, &rects[j..]);
+        }
+        if was_wide {
+            self.wide_drop(id);
+        }
+        let p = self.page_mut(d);
+        p.version += 1;
+        match frame {
+            Some((off, fl)) => {
+                p.set_off(off[0], off[1]);
+                p.flags = fl;
+                for (s, r) in rects.iter().enumerate() {
+                    p.ink[s] = p.rel_of(*r).expect("the frame holds every record");
+                }
+            }
+            None => {
+                p.set_off(0, 0);
+                p.flags = F_WIDE;
+                p.ink[0] = rects[0].to_nrect();
+                self.wide.push((id, rects[0]));
+            }
+        }
+        let p = self.page_mut(d);
+        for g in 0..NGROUPS {
+            p.regroup(g);
+        }
+        self.d_ink[d] = self.page(d).union_abs();
+        self.fix_chunks(d, d + 1);
+        1
+    }
+
+    /// Records that fit no existing page's frame: `pos` is made a page boundary and the records get
+    /// pages of their own, cut where their frames change.
+    fn insert_cold(&mut self, pos: usize, recs: &[RecordInit], rects: &[WRect]) {
+        let k = recs.len();
+        if self.total == 0 && !self.d_ptr.is_empty() {
+            // the blank page a first insert opened: these records bring their own
+            self.dir_remove(0);
+        }
+        self.split_at(pos);
+        let at = if pos == self.total { self.d_ptr.len() } else { self.locate(pos).0 };
+        let runs = Self::frame_runs(rects);
+        self.dir_insert_blank(at, runs.len());
+        for (j, &(a, b)) in runs.iter().enumerate() {
+            let d = at + j;
+            let p = self.page_mut(d);
+            p.version += 1;
+            let mut md = PAD_DEPTH;
+            for (i, r) in recs[a..b].iter().enumerate() {
+                p.write(i, &RecordInit { ink: NRect::EMPTY, ..*r });
+                md = md.min(r.depth);
+            }
+            self.d_len[d] = (b - a) as u32;
+            self.d_min_depth[d] = md;
+            self.fixup_handles(d, 0, b - a);
+        }
+        self.prefix.invalidate_from(at, &self.d_len);
+        self.total += k;
+        for (j, &(a, b)) in runs.iter().enumerate() {
+            let n = self.reencode(at + j, &rects[a..b]);
+            debug_assert_eq!(n, 1);
+        }
+        self.fix_chunks(at, self.d_ptr.len());
+    }
+
     fn insert_in_page(&mut self, d: usize, s: usize, recs: &[RecordInit]) {
         let l = self.d_len[d] as usize;
         let k = recs.len();
         let p = self.page_mut(d);
-        p.normalize();
         p.version += 1;
         if s < l {
             p.shift(s, s + k, l - s);
@@ -810,7 +1069,6 @@ impl Bough {
         let t = l + k;
         let m = t.div_ceil(CAP);
         let sizes = Sizes::new(t, m, s, l);
-        self.page_mut(d).normalize();
         self.dir_insert_blank(d + 1, m - 1);
         let sz0 = sizes.size(0);
         let mut off = sz0;
@@ -820,7 +1078,10 @@ impl Bough {
             // SAFETY: di != d, both live distinct pool pages.
             let (newp, oldp) = unsafe { (&mut *self.page_ptr(di), &*self.page_ptr(d)) };
             newp.wgen = newp.wgen.wrapping_add(1);
+            // the new pages share the old one's frame: stored inks are copied as they are
             (newp.xm, newp.xv) = (oldp.xm, oldp.xv);
+            newp.set_off(oldp.off[0], oldp.off[1]);
+            newp.flags = oldp.flags;
             copy_virtual(newp, off, off + szi, oldp, s, k, recs);
             newp.version += 1;
             self.d_len[di] = szi as u32;
@@ -851,8 +1112,8 @@ impl Bough {
         for i in 0..m {
             self.refresh(d + i);
         }
-        self.prefix.invalidate_from(d, &self.d_len);
-        self.fix_chunks(d, self.d_ptr.len());
+        attr!(8, self.prefix.invalidate_from(d, &self.d_len));
+        attr!(9, self.fix_chunks(d, self.d_ptr.len()));
     }
 
     // ------------------------------------------------------------------ remove
@@ -943,8 +1204,8 @@ impl Bough {
                 self.prefix.delta(td, -(n as i32), &self.d_len);
             }
         } else {
-            self.prefix.invalidate_from(d0.min(self.d_len.len()), &self.d_len);
-            self.fix_chunks(d0, self.d_ptr.len());
+            attr!(8, self.prefix.invalidate_from(d0.min(self.d_len.len()), &self.d_len));
+            attr!(9, self.fix_chunks(d0, self.d_ptr.len()));
         }
         // Underflow: merge small neighbours around the cut.
         let mut j = (d0 + 1).min(self.d_ptr.len().saturating_sub(1)) as isize;
@@ -954,8 +1215,7 @@ impl Bough {
             if i + 1 < self.d_ptr.len() {
                 let (a, b) = (self.d_len[i] as usize, self.d_len[i + 1] as usize);
                 // pages of different transforms never merge (a transformed page holds one subtree)
-                let same_xf = { let (p, q) = (self.page(i), self.page(i + 1)); p.xm == q.xm && p.xv == q.xv };
-                if a + b <= CAP && (a < MIN_FILL || b < MIN_FILL) && same_xf {
+                if a + b <= CAP && (a < MIN_FILL || b < MIN_FILL) && self.mergeable(i) {
                     self.merge_next(i);
                 }
             }
@@ -963,6 +1223,19 @@ impl Bough {
         }
         if self.d_ptr.is_empty() {
             self.c_ink.clear();
+        }
+    }
+
+    /// May pages `i` and `i + 1` become one? Plain pages when the second's ink fits the first's frame
+    /// (always, when neither has an offset); transformed pages of the same transform; never a far or
+    /// wide page (it keeps its own frame).
+    #[inline]
+    fn mergeable(&self, i: usize) -> bool {
+        let (p, q) = (self.page(i), self.page(i + 1));
+        match (p.flags, q.flags) {
+            (0, 0) => p.off == q.off || self.d_ink[i + 1].translate_checked(-p.off[0], -p.off[1]).is_some(),
+            (F_XF, F_XF) => p.xm == q.xm && p.xv == q.xv,
+            _ => false,
         }
     }
 
@@ -977,6 +1250,11 @@ impl Bough {
             b.normalize();
             a.version += 1;
             a.copy_from(la, b, 0, lb);
+            if a.off != b.off {
+                // into a's frame (`mergeable`: it fits)
+                // SAFETY: slots la..la+lb are live in-bounds inks.
+                unsafe { translate_union(a.ink.as_mut_ptr().add(la), lb, b.off[0] - a.off[0], b.off[1] - a.off[1]) };
+            }
             a.regroup_range(la, la + lb);
         }
         self.fixup_handles(d, la, la + lb);
@@ -984,8 +1262,8 @@ impl Bough {
         self.d_ink[d] = self.d_ink[d].union(self.d_ink[d + 1]);
         self.d_min_depth[d] = self.d_min_depth[d].min(self.d_min_depth[d + 1]);
         self.dir_remove(d + 1);
-        self.prefix.invalidate_from(d, &self.d_len);
-        self.fix_chunks(d, self.d_ptr.len());
+        attr!(8, self.prefix.invalidate_from(d, &self.d_len));
+        attr!(9, self.fix_chunks(d, self.d_ptr.len()));
     }
 
     // ------------------------------------------------------------------ move
@@ -1009,23 +1287,32 @@ impl Bough {
         assert!(start + len <= self.total && to <= self.total - len);
         let mut stage = core::mem::take(&mut self.scratch);
         stage.clear();
-        self.read_run_impl(start, len, ddepth, &mut stage);
-        self.remove_impl(start, len, false, true);
-        self.insert_impl(to, &stage, false);
+        if self.read_run_impl(start, len, ddepth, &mut stage) {
+            // some of the run is outside the domain: its 16-bit inks are views; carry the exact rects
+            let wide: Vec<WRect> = (start..start + len).map(|pos| self.ink_wide_at(pos)).collect();
+            self.remove_impl(start, len, false, true);
+            self.insert_core(to, &stage, Some(&wide), false);
+        } else {
+            self.remove_impl(start, len, false, true);
+            self.insert_impl(to, &stage, false);
+        }
         stage.clear();
         self.scratch = stage;
     }
 
-    fn read_run_impl(&self, start: usize, len: usize, ddepth: i32, out: &mut Vec<RecordInit>) {
+    /// Returns whether any page of the run is far or wide (then the inks pushed are clamped views).
+    fn read_run_impl(&self, start: usize, len: usize, ddepth: i32, out: &mut Vec<RecordInit>) -> bool {
         if len == 0 {
-            return;
+            return false;
         }
         let (mut d, mut s) = self.locate(start);
         let mut rem = len;
+        let mut far = 0u8;
         while rem > 0 {
             let l = self.d_len[d] as usize;
             let n = rem.min(l - s);
             let p = self.page(d);
+            far |= p.flags;
             for i in s..s + n {
                 out.push(RecordInit {
                     depth: (p.depth[i] as i32 + ddepth) as u16,
@@ -1040,13 +1327,29 @@ impl Bough {
             d += 1;
             s = 0;
         }
+        far & (F_FAR | F_WIDE) != 0
     }
 
     /// Append the records `[start, start+len)` to `out` (absolute ink, handles kept): the input of a
-    /// `rewrite_run` that permutes sub-runs (a list's rows reordered).
+    /// `rewrite_run` that permutes sub-runs (a list's rows reordered). Inks outside the 16-bit domain
+    /// come out clamped: a run that may hold such content is read with `read_run_wide`.
     pub fn read_run(&self, start: usize, len: usize, out: &mut Vec<RecordInit>) {
         assert!(start + len <= self.total);
         self.read_run_impl(start, len, 0, out);
+    }
+    /// `read_run`, with each record's exact rect appended to `wide`.
+    pub fn read_run_wide(&self, start: usize, len: usize, out: &mut Vec<RecordInit>, wide: &mut Vec<WRect>) {
+        assert!(start + len <= self.total);
+        self.read_run_impl(start, len, 0, out);
+        wide.extend((start..start + len).map(|pos| self.ink_wide_at(pos)));
+    }
+    /// `rewrite_run` with exact rects (`wide[i]` is record `i`'s ink).
+    pub fn rewrite_run_wide(&mut self, start: usize, recs: &[RecordInit], wide: &[WRect]) {
+        if recs.is_empty() {
+            return;
+        }
+        self.remove_impl(start, recs.len(), false, true);
+        self.insert_core(start, recs, Some(wide), true);
     }
 
     /// Replace the run `[start, start+recs.len())` by `recs`, a rearrangement of the same records (their
@@ -1084,43 +1387,117 @@ impl Bough {
             let l = self.d_len[d] as usize;
             let n = rem.min(l - s);
             let old_d = self.d_ink[d];
+            let mut pages = 1;
             if s == 0 && n == l {
-                // Whole page: the offset moves, the records do not (O(1) per page).
+                // Whole page: the offset moves, the records do not (O(1) per page). The page stays plain
+                // while its offset stays in 16 bits and its ink inside the domain (one saturating lane add
+                // and one compare on its summary); otherwise the exact path decides its frame.
                 let p = self.page_mut(d);
                 let (nx, ny) = (p.off[0] + dx, p.off[1] + dy);
-                if nx.abs() > 32767 || ny.abs() > 32767 {
-                    // keep |off| in i16: fold the offset into the stored inks, then move them
-                    p.normalize();
-                    // SAFETY: l live in-bounds slots; absolute results in the domain by contract.
-                    unsafe { translate_union(p.ink.as_mut_ptr(), l, dx, dy) };
-                    p.regroup_range(0, l);
-                } else {
-                    p.set_off(nx, ny);
+                let fast = p.flags & !F_XF == 0 && nx.abs() <= 32767 && ny.abs() <= 32767;
+                match if fast { old_d.translate_in_domain(dx, dy) } else { None } {
+                    Some(new_d) => {
+                        p.set_off(nx, ny);
+                        self.d_ink[d] = new_d;
+                        uo = uo.union(old_d);
+                        un = un.union(new_d);
+                    }
+                    None if p.flags & F_XF != 0 => {
+                        // a transformed page: fold the offset into the affine, then move the stored inks
+                        p.normalize();
+                        // SAFETY: l live in-bounds slots.
+                        unsafe { translate_union(p.ink.as_mut_ptr(), l, dx, dy) };
+                        p.regroup_range(0, l);
+                        let new_d = p.union_abs();
+                        self.d_ink[d] = new_d;
+                        uo = uo.union(old_d);
+                        un = un.union(new_d);
+                    }
+                    None => {
+                        let (o, w, np) = self.translate_exact(d, 0, l, dx, dy);
+                        (uo, un, pages) = (uo.union(o), un.union(w), np);
+                    }
                 }
-                let new_d = old_d.translate(dx, dy);
-                self.d_ink[d] = new_d;
-                uo = uo.union(old_d);
-                un = un.union(new_d);
             } else {
                 let p = self.page_mut(d);
-                // Partial page: its records move relative to the others, so the offset is applied to
-                // the stored inks first (relative coordinates could otherwise leave the domain).
-                p.normalize();
-                // SAFETY: slots s..s+n are live in-bounds ink entries; domain contract in nrect docs.
-                let (old, new) = unsafe { translate_union(p.ink.as_mut_ptr().add(s), n, dx, dy) };
-                p.regroup_range(s, s + n);
-                let u = p.union_abs();
-                // normalised: stored = absolute
-                self.d_ink[d] = u;
-                uo = uo.union(old);
-                un = un.union(new);
+                if p.flags == 0 {
+                    // Partial page: its records move relative to the others, in the page's frame. The add
+                    // wraps, so it can be taken back exactly if the run would leave the frame or the domain.
+                    // SAFETY: slots s..s+n are live in-bounds ink entries.
+                    let (old, new) = unsafe { translate_union(p.ink.as_mut_ptr().add(s), n, dx, dy) };
+                    let plain0 = p.off == [0, 0];
+                    let ok = old.translate_in_domain(dx, dy).is_some() && (plain0 || p.abs(old).translate_in_domain(dx, dy).is_some());
+                    if ok {
+                        p.regroup_range(s, s + n);
+                        // (no offset: stored is absolute)
+                        let (o, w) = if plain0 { (old, new) } else { (p.abs(old), p.abs(new)) };
+                        self.d_ink[d] = p.union_abs();
+                        uo = uo.union(o);
+                        un = un.union(w);
+                    } else {
+                        // SAFETY: as above; the wrapping add is its own inverse.
+                        unsafe { translate_union(p.ink.as_mut_ptr().add(s), n, -dx, -dy) };
+                        let (o, w, np) = self.translate_exact(d, s, n, dx, dy);
+                        (uo, un, pages) = (uo.union(o), un.union(w), np);
+                    }
+                } else if p.flags & F_XF != 0 {
+                    p.normalize();
+                    // SAFETY: slots s..s+n are live in-bounds ink entries.
+                    let (old, new) = unsafe { translate_union(p.ink.as_mut_ptr().add(s), n, dx, dy) };
+                    p.regroup_range(s, s + n);
+                    let u = p.union_abs();
+                    self.d_ink[d] = u;
+                    uo = uo.union(old);
+                    un = un.union(new);
+                } else {
+                    let (o, w, np) = self.translate_exact(d, s, n, dx, dy);
+                    (uo, un, pages) = (uo.union(o), un.union(w), np);
+                }
             }
             rem -= n;
-            d += 1;
+            d += pages;
             s = 0;
         }
         self.fix_chunks(d0, d);
         (uo, un)
+    }
+
+    /// The exact path of a translation: slots `[s, s + n)` of page `d` (not transformed) move by
+    /// `(dx, dy)` in i32. A whole far page whose frame stays valid only moves its offset; anything else
+    /// is rewritten from the exact rects (`reencode`: the frame is chosen again, the page cut if it must
+    /// be). Returns the clamped views of the old and the new union of the moved records, and the number
+    /// of directory pages the page became.
+    #[inline(never)]
+    fn translate_exact(&mut self, d: usize, s: usize, n: usize, dx: i32, dy: i32) -> (NRect, NRect, usize) {
+        let l = self.d_len[d] as usize;
+        let (flags, off) = { let p = self.page(d); (p.flags, p.off) };
+        if s == 0 && n == l && flags & F_WIDE == 0 {
+            let p = self.page(d);
+            let uo = p.abs_wide(p.union_ink());
+            if uo.is_empty() {
+                // nothing drawn here: nothing moves (the offset stays where a plain page may have it)
+                return (NRect::EMPTY, NRect::EMPTY, 1);
+            }
+            let un = uo.translate(dx, dy);
+            let no = [off[0] + dx, off[1] + dy];
+            let valid = (0..2).all(|a| no[a].abs() <= 32767 || un.0[a] > COORD_MAX || un.0[a + 2] < COORD_MIN);
+            if valid {
+                let p = self.page_mut(d);
+                p.set_off(no[0], no[1]);
+                p.flags = if un.in_domain() { 0 } else { F_FAR };
+                self.d_ink[d] = un.to_nrect();
+                return (uo.to_nrect(), un.to_nrect(), 1);
+            }
+        }
+        let mut rects = self.page_rects(d);
+        let (mut uo, mut un) = (WRect::EMPTY, WRect::EMPTY);
+        for r in &mut rects[s..s + n] {
+            uo = uo.union(*r);
+            *r = r.translate(dx, dy);
+            un = un.union(*r);
+        }
+        let pages = self.reencode(d, &rects);
+        (uo.to_nrect(), un.to_nrect(), pages)
     }
 
     /// A scroll step: `translate_run` of a scroll container's content, with damage
@@ -1273,13 +1650,15 @@ impl Bough {
         let ink = ink.canon();
         let p = self.page_mut(d);
         let old = p.abs(p.ink[s]);
-        if old == ink {
+        if old == ink && p.flags & !F_XF == 0 {
             return;
         }
         let (kind, id) = (p.kind[s], p.clip[s]);
         let xf = p.is_xf();
         let old_stored = p.ink[s];
-        p.store_abs(s, ink);
+        if !p.store_abs(s, ink) {
+            return self.set_ink_exact(d, s, WRect::from(ink), damage);
+        }
         p.regroup(s / GROUP);
         let u = p.union_abs();
         let od = self.d_ink[d];
@@ -1302,6 +1681,66 @@ impl Bough {
         }
     }
 
+    /// The exact path of an ink write: the record's page is far or wide, or the new ink leaves its
+    /// frame or the domain. The page is rewritten from exact rects. Damage: the clamped views of the old
+    /// and the new ink (both whole: no symmetric-difference refinement out here).
+    #[inline(never)]
+    fn set_ink_exact(&mut self, d: usize, s: usize, ink: WRect, damage: bool) {
+        let mut rects = self.page_rects(d);
+        if rects[s] == ink {
+            return;
+        }
+        let id = self.page(d).clip[s];
+        let old = rects[s];
+        rects[s] = ink;
+        self.reencode(d, &rects);
+        if damage {
+            let (o, w) = (self.clipped(old.to_nrect(), id), self.clipped(ink.to_nrect(), id));
+            self.ring.add(o);
+            self.ring.add(w);
+        }
+    }
+    /// `set_ink` with an exact rect (any i32 device-pixel rect).
+    pub fn set_ink_wide(&mut self, pos: usize, ink: WRect) {
+        let (d, s) = self.locate(pos);
+        if ink.in_domain() {
+            self.set_ink_at(d, s, ink.to_nrect(), true);
+        } else {
+            self.set_ink_exact(d, s, ink, true);
+        }
+    }
+    /// `set_ink_handle` with an exact rect.
+    pub fn set_ink_handle_wide(&mut self, h: Handle, ink: WRect) -> bool {
+        let Some((d, s)) = self.handle_loc(h) else { return false };
+        if ink.in_domain() {
+            self.set_ink_at(d, s, ink.to_nrect(), true);
+        } else {
+            self.set_ink_exact(d, s, ink, true);
+        }
+        true
+    }
+
+    /// `set_ink_handle_edges` with an exact rect: the edge-band damage when the ink is inside the domain
+    /// (where it can be seen), the exact path otherwise.
+    pub fn set_ink_handle_edges_wide(&mut self, h: Handle, ink: WRect, moved: u8, band: i16) -> bool {
+        if ink.in_domain() {
+            return self.set_ink_handle_edges(h, ink.to_nrect(), moved, band);
+        }
+        let Some((d, s)) = self.handle_loc(h) else { return false };
+        self.set_ink_exact(d, s, ink, true);
+        true
+    }
+    /// `set_ink_handle_nodamage` with an exact rect.
+    pub fn set_ink_handle_nodamage_wide(&mut self, h: Handle, ink: WRect) -> bool {
+        let Some((d, s)) = self.handle_loc(h) else { return false };
+        if ink.in_domain() {
+            self.set_ink_at(d, s, ink.to_nrect(), false);
+        } else {
+            self.set_ink_exact(d, s, ink, false);
+        }
+        true
+    }
+
     /// Batched ink writes (a layout pass, a turn's bindings): every ink is stored, each touched
     /// group summary and page summary is recomputed once, the chunk summaries once. With
     /// `damage`, each write marks what `set_ink` marks. Positions in ascending order skip the
@@ -1322,11 +1761,19 @@ impl Bough {
             let ink = ink.canon();
             let p = self.page_mut(d);
             let old = p.abs(p.ink[s]);
-            if old == ink {
+            if old == ink && p.flags & !F_XF == 0 {
                 continue;
             }
             let (kind, id) = (p.kind[s], p.clip[s]);
-            p.store_abs(s, ink);
+            if !p.store_abs(s, ink) {
+                // the exact path may recut pages: settle this one, write alone, locate afresh
+                if gm != 0 {
+                    self.settle_page(d, gm);
+                }
+                self.set_ink_exact(d, s, WRect::from(ink), damage);
+                (base, len, gm) = (0, 0, 0);
+                continue;
+            }
             gm |= 1 << (s / GROUP);
             if damage {
                 let (old, ink) = (self.clipped(old, id), self.clipped(ink, id));
@@ -1376,11 +1823,16 @@ impl Bough {
         let pg = unsafe { &mut *p };
         pg.wgen = pg.wgen.wrapping_add(1);
         let old = pg.abs(pg.ink[s]);
-        if old == ink {
+        if old == ink && pg.flags & !F_XF == 0 {
             return;
         }
         let (kind, id) = (pg.kind[s], pg.clip[s]);
-        pg.store_abs(s, ink);
+        if !pg.store_abs(s, ink) {
+            // the exact path may recut pages: settle what is pending first (directory indices move)
+            let d = pg.dir as usize;
+            self.settle_pages(dirty);
+            return self.set_ink_exact(d, s, WRect::from(ink), damage);
+        }
         if pg.dirty == 0 {
             dirty.push(pg.dir);
         }
@@ -1528,13 +1980,15 @@ impl Bough {
             return;
         }
         let l = self.d_len[d] as usize;
-        self.page_mut(d).normalize();
         self.dir_insert_blank(d + 1, 1);
         {
             // SAFETY: d and d+1 are distinct live pages.
             let (newp, oldp) = unsafe { (&mut *self.page_ptr(d + 1), &*self.page_ptr(d)) };
             newp.wgen = newp.wgen.wrapping_add(1);
+            // the same frame: stored inks are copied as they are
             (newp.xm, newp.xv) = (oldp.xm, oldp.xv);
+            newp.set_off(oldp.off[0], oldp.off[1]);
+            newp.flags = oldp.flags;
             copy_virtual(newp, s, l, oldp, s, 0, &[]);
             newp.version += 1;
         }
@@ -1578,6 +2032,7 @@ impl Bough {
                 p.version += 1;
                 if m == [1.0, 0.0, 0.0, 1.0] && t == [0.0, 0.0] {
                     (p.xm, p.xv) = ([0.0; 4], [0.0; 2]);
+                    p.sync_xf();
                 } else {
                     p.set_xf(m, k, t);
                 }
@@ -1963,6 +2418,7 @@ impl Bough {
         dst.d_min_depth.clone_from(&self.d_min_depth);
         dst.d_len.clone_from(&self.d_len);
         dst.c_ink.clone_from(&self.c_ink);
+        dst.wide.clone_from(&self.wide);
         dst.prefix.copy_from(&self.prefix);
         dst.clips.clone_from_slice_of(&self.clips);
         dst.ring.copy_from(&self.ring);
@@ -2008,6 +2464,27 @@ impl Bough {
             }
             let l = self.d_len[d] as usize;
             assert!((1..=CAP).contains(&l), "page {d} has len {l}");
+            // frames (round 6): a plain page's ink is inside the domain and its offset in 16 bits; a far
+            // page's offset is in 16 bits on every axis where it is not wholly beyond the domain; a wide
+            // page is one record whose exact rect is in the table
+            assert_eq!(p.flags & F_XF != 0, p.xm != [0.0; 4] || p.xv != [0.0; 2], "page {d} F_XF");
+            assert_eq!(p.offl, [p.off[0] as i16, p.off[1] as i16, (-p.off[0]) as i16, (-p.off[1]) as i16]);
+            if p.flags & F_XF == 0 {
+                let u = (0..l).fold(WRect::EMPTY, |u, s| u.union(p.abs_wide(p.ink[s])));
+                match p.flags {
+                    0 => assert!(u.in_domain() && p.off[0].abs() <= 32767 && p.off[1].abs() <= 32767, "plain page {d}: union {u:?} off {:?}", p.off),
+                    F_FAR => {
+                        for a in 0..2 {
+                            assert!(p.off[a].abs() <= 32767 || u.is_empty() || u.0[a] > COORD_MAX || u.0[a + 2] < COORD_MIN, "far page {d} axis {a}: union {u:?} off {:?}", p.off);
+                        }
+                    }
+                    F_WIDE => {
+                        let w = self.wide.iter().filter(|e| e.0 == p.id).collect::<Vec<_>>();
+                        assert!(l == 1 && p.off == [0, 0] && w.len() == 1 && p.ink[0] == w[0].1.to_nrect(), "wide page {d}");
+                    }
+                    f => panic!("page {d} flags {f}"),
+                }
+            }
             assert_eq!(starts[d] as usize, sum);
             for s in l..CAP {
                 assert_eq!(p.depth[s], PAD_DEPTH, "pad depth p{d} s{s}");
@@ -2046,6 +2523,8 @@ impl Bough {
         }
         assert_eq!(starts[n] as usize, sum);
         assert_eq!(sum, self.total);
+        let wide_pages = (0..n).filter(|&d| self.page(d).flags & F_WIDE != 0).count();
+        assert_eq!(wide_pages, self.wide.len(), "wide table");
         let bound = self.htab.iter().filter(|e| e.live && !e.page.is_null()).count();
         assert_eq!(bound, live_handles, "bound handle count");
     }
