@@ -1,0 +1,18 @@
+[package]
+name = "bough-host"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Round 8, e2e lane: the host layer. Portable: the presentation policy (a ring of buffers repaired by age, commit on input with the newest state winning, damage exact across superseded commits), the host's events, an xkb text keymap reader. Linux: a Wayland client written on the wire (no libwayland, no protocol crate, no event-loop framework), whose first commit goes out with the configure acknowledgement"
+
+[dependencies]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[features]
+# Mutants the burst gate (tests/burst.rs) must fail with:
+# a repair forgets the tiles an older buffer missed
+mutant_age = []
+# a commit that supersedes an unlatched one reports only its own damage, as if the compositor had shown the other
+mutant_superseded = []

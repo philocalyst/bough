@@ -173,6 +173,13 @@ name = "bough-frame"
 version = "0.0.0"
 
 [[package]]
+name = "bough-glyph"
+version = "0.0.0"
+dependencies = [
+ "swash",
+]
+
+[[package]]
 name = "bough-gpu"
 version = "0.1.0"
 dependencies = [
@@ -192,6 +199,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-guibench-x"
+version = "0.1.0"
+dependencies = [
+ "bough-expr",
+ "bough-glyph",
+ "bough-host",
+ "bough-span",
+ "bough-x",
+]
+
+[[package]]
 name = "bough-heavy"
 version = "0.0.0"
 dependencies = [
@@ -199,6 +217,13 @@ dependencies = [
  "bough-metal",
  "libc",
  "zgx-workload",
+]
+
+[[package]]
+name = "bough-host"
+version = "0.0.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -259,6 +284,15 @@ dependencies = [
  "bough-metal",
  "libc",
  "zgx-workload",
+]
+
+[[package]]
+name = "bough-span"
+version = "0.0.0"
+dependencies = [
+ "bough-expr",
+ "bough-glyph",
+ "bough-x",
 ]
 
 [[package]]

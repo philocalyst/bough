@@ -206,3 +206,5 @@ impl Chars<'_> {
 
 /// DejaVu Sans 2.37 at 14 px, Latin-1 (the face and size of gui-bench's spec). Provenance: `data/README.md`.
 pub static DEJAVU_SANS_14: Image = Image::new(include_bytes!("../data/dejavu-sans-14.bgi"));
+/// The same face at 28 px: the 14 px text of a window at scale 2.
+pub static DEJAVU_SANS_28: Image = Image::new(include_bytes!("../data/dejavu-sans-28.bgi"));

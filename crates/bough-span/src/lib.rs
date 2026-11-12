@@ -180,6 +180,16 @@ impl<'a> Spans<'a> {
     pub unsafe fn raw(px: *mut u32, stride: usize, w: i32, h: i32, mask: Option<&'a TileSet>, img: &'static Image) -> Spans<'a> {
         Spans { px, stride, w, h, mask, img, st: Stats::default(), _p: core::marker::PhantomData }
     }
+    /// The same with the mask's lifetime erased: for a caller that owns both and keeps the mask alive for as
+    /// long as the pass (`World<Spans<'static>>` names a `'static` backend type).
+    ///
+    /// # Safety
+    /// As [`Spans::raw`], and `mask` outlives the returned pass.
+    pub unsafe fn erased(px: *mut u32, stride: usize, w: i32, h: i32, mask: Option<&TileSet>, img: &'static Image) -> Spans<'static> {
+        // SAFETY: the caller keeps `mask` alive for the pass.
+        let mask: Option<&'static TileSet> = unsafe { core::mem::transmute(mask) };
+        Spans { px, stride, w, h, mask, img, st: Stats::default(), _p: core::marker::PhantomData }
+    }
 
     /// The parts of `r` (cut to the surface) that lie in tiles of the mask, as rectangles: per tile row, one per
     /// maximal run of tiles.
