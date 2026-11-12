@@ -419,3 +419,18 @@ journal section 1), is the large term the image removes; parsing and rasterising
    the exactness gate on both executors.
 5. `TextState`, the selection scope and hit testing (TEXT-API order 3 and 4), on line records.
 6. Atlas residency by exposure; the scalable archetype for animated size.
+
+## 10. Third pass (the last batch): predictions, written before the code
+
+The lead's order: the raster seam (fallback ready), the glyph memo collected and the two memos folded, the full
+shaper behind the memo off the interaction path, elements when the expr lane publishes its layer.
+
+| id | hypothesis | prediction | kill |
+|---|---|---|---|
+| C1 | dead runs are bounded by clearing the lanes when they pass a budget and re-describing what is exposed (the exposed records are the only holders of runs) | glyph state never exceeds the budget plus one turn's growth over 20,000 keystrokes and label edits; the pixel gates hold across every collection | any frame after a collection that differs from a full redraw, or state above twice the budget |
+| C2 | what a collection costs | one re-description of the exposed records plus re-shaping the lines on screen: at most 80,000 instructions on the rows scene; its damage is every text record's rect (the runs' words change though their pixels do not); at a 256 KiB budget it happens once per 2,000 keystrokes or more | above 300,000 instructions, or more often than once per 500 keystrokes |
+| C3 | one memo: `bough_face::Glyphs` with the shaper as a parameter serves the table shaper, the prepared face and the full shaper; `bough_text::stage::memo` (and its string image, refuted in 7.3) is deleted | the stage bench's memo cells within 10 % of section 4's on the Mac (hit at 16 bytes about 129 hashed, 90 keyed; miss about 12 per byte) | a hit more than 1.3x dearer than before |
+| P1 | text the prepared face refuses is shaped by the vendored parley on a worker and lands as runs in the same lanes, drawn from a slot table that grows | the frame that first shows such a line costs the interaction path at most 2,000 instructions more than a covered line (a queue push); the line is blank until the worker's result is taken at a later turn; taking it is one re-description | the interaction path waits for the worker, or opens a font |
+| P2 | the worker's cost for a first uncovered line (20 to 40 characters: Cyrillic, Greek, Arabic), fonts already loaded in the worker | at most 400,000 instructions and 0.3 ms on ilo-prod for shaping (from section 5's 303 per byte plus fixed costs), plus 27,000 per new glyph rasterised | above 3 ms |
+| P3 | the first uncovered line of a process pays the font machinery once | at most 5 ms on the worker (font context, the face's tables); stated, not hidden | above 50 ms |
+| R1 | if the raster refuses line records on the GPU: a line expanded to one glyph record each at mount | boxes and texels of the expansion equal what `Face::spans` covers, glyph for glyph (a test); cost about 30 instructions per glyph (G1) | any pixel differing between the expansion and the line record on the oracle |
