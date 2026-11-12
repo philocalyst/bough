@@ -22,6 +22,8 @@
 //! whole lanes (checked in the disassembly on aarch64 and x86-64); there is no per-architecture intrinsic.
 #![forbid(unsafe_code)]
 
+pub mod pieces;
+
 /// Records per page.
 pub const P: usize = 64;
 pub const TILE_SHIFT: u32 = 5;

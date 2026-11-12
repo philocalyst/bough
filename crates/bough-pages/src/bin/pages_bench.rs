@@ -325,6 +325,159 @@ fn main() {
         }
     }
 
+    // ---------------------------------------------------------------- the directory: piece table against shifting
+    if b.want("dir") {
+        use bough_pages::pieces::{Pieces, Shift};
+        let rec = |i: usize| Rec { payload: i as u32, handle: 0, rect: [0, 0, 10, 10], depth: 1, kind: 1, clip: 0 };
+        macro_rules! dir_cells {
+            ($name:literal, $T:ty) => {
+                for n in [1_000usize, 10_000, 100_000, 1_000_000] {
+                    let eight: Vec<Rec> = (0..8).map(rec).collect();
+                    let mut ids = Vec::with_capacity(1 << 16);
+                    // build by appends of 8
+                    let reps = if n >= 100_000 { 1 } else { 20 };
+                    b.cell(concat!("dir-build-append8-", $name), &format!("n={n}"), "record", n as u64, reps, || {
+                        let mut d = <$T>::new();
+                        for _ in 0..n / 8 {
+                            ids.clear();
+                            d.insert(d.len, &eight, &mut ids);
+                        }
+                        black_box(&d);
+                    });
+                    let mut d = <$T>::new();
+                    for _ in 0..n / 8 {
+                        ids.clear();
+                        d.insert(d.len, &eight, &mut ids);
+                    }
+                    let mut r = Rng(11);
+                    let at: Vec<usize> = (0..1024).map(|_| r.next() % (n - 16)).collect();
+                    b.cell(concat!("dir-pair8-front-", $name), &format!("n={n}"), "pair", 256, 8, || {
+                        for _ in 0..256 {
+                            ids.clear();
+                            d.insert(0, &eight, &mut ids);
+                            d.remove(0, 8);
+                        }
+                    });
+                    b.cell(concat!("dir-pair8-random-", $name), &format!("n={n}"), "pair", 1024, 4, || {
+                        for &p in &at {
+                            ids.clear();
+                            d.insert(p, &eight, &mut ids);
+                            d.remove(at[(p * 7 + 3) % 1024], 8);
+                        }
+                    });
+                    b.cell(concat!("dir-walk-fresh-", $name), &format!("n={n}"), "record", n as u64, if n >= 100_000 { 5 } else { 200 }, || {
+                        black_box(d.walk());
+                    });
+                    // churn: every record replaced four times over, at random places
+                    let mut d = <$T>::new();
+                    for _ in 0..n / 8 {
+                        ids.clear();
+                        d.insert(d.len, &eight, &mut ids);
+                    }
+                    let fresh = d.shape();
+                    let fresh_bytes = d.bytes();
+                    let mut r = Rng(5);
+                    for _ in 0..n / 2 {
+                        let p = r.next() % (d.len - 8);
+                        d.remove(p, 8);
+                        ids.clear();
+                        let q = r.next() % (d.len + 1);
+                        d.insert(q, &eight, &mut ids);
+                    }
+                    let (pieces, pages, permuted, len) = d.shape();
+                    println!(
+                        "# shape,{},n={n},fresh entries {} pages {} bytes/record {:.1}; churned entries {pieces} pages {pages} permuted {permuted} records/entry {:.1} fill {:.2} bytes/record {:.1}",
+                        $name,
+                        fresh.0,
+                        fresh.1,
+                        fresh_bytes as f64 / fresh.3 as f64,
+                        len as f64 / pieces as f64,
+                        len as f64 / (pages * 64) as f64,
+                        d.bytes() as f64 / len as f64
+                    );
+                    b.cell(concat!("dir-walk-churned-", $name), &format!("n={n}"), "record", n as u64, if n >= 100_000 { 5 } else { 200 }, || {
+                        black_box(d.walk());
+                    });
+                    let at: Vec<usize> = (0..1024).map(|_| r.next() % (n - 16)).collect();
+                    b.cell(concat!("dir-pair8-random-churned-", $name), &format!("n={n}"), "pair", 1024, 4, || {
+                        for &p in &at {
+                            ids.clear();
+                            d.insert(p, &eight, &mut ids);
+                            d.remove(at[(p * 7 + 3) % 1024], 8);
+                        }
+                    });
+                }
+            };
+        }
+        dir_cells!("pieces", Pieces);
+        dir_cells!("shift", Shift);
+        // the workloads a view produces: rows of 8 records, pages built with slack (48 of 64), a row replaced
+        // in place, a list scrolled (rows leave at one end and arrive at the other), a row inserted between
+        // two rows and a row removed elsewhere
+        macro_rules! row_cells {
+            ($name:literal, $T:ty) => {
+                for n in [1_000usize, 100_000, 1_000_000] {
+                    let eight: Vec<Rec> = (0..8).map(rec).collect();
+                    let mut ids = Vec::with_capacity(1 << 16);
+                    let mut d = <$T>::new();
+                    for r in 0..n / 8 {
+                        ids.clear();
+                        d.insert(d.len, &eight, &mut ids);
+                        if r % 6 == 5 {
+                            d.break_page();
+                        }
+                    }
+                    let rows = n / 8;
+                    let mut r = Rng(21);
+                    let at: Vec<usize> = (0..1024).map(|_| r.next() % (rows - 2)).collect();
+                    b.cell(concat!("rows-replace-", $name), &format!("n={n}"), "row", 1024, 4, || {
+                        for &p in &at {
+                            d.remove(p * 8, 8);
+                            ids.clear();
+                            d.insert(p * 8, &eight, &mut ids);
+                        }
+                    });
+                    b.cell(concat!("rows-scroll-", $name), &format!("n={n}"), "row", 1024, 4, || {
+                        for _ in 0..1024 {
+                            d.remove(0, 8);
+                            ids.clear();
+                            d.insert(d.len, &eight, &mut ids);
+                        }
+                    });
+                    b.cell(concat!("rows-insert-remove-", $name), &format!("n={n}"), "pair", 1024, 4, || {
+                        for &p in &at {
+                            ids.clear();
+                            d.insert(p * 8, &eight, &mut ids);
+                            d.remove(at[(p * 7 + 3) % 1024] * 8, 8);
+                        }
+                    });
+                    // long run of the last workload, then the shape and an ordered walk
+                    for _ in 0..n / 2 {
+                        let p = (r.next() % (d.len / 8 - 1)) * 8;
+                        ids.clear();
+                        d.insert(p, &eight, &mut ids);
+                        let q = (r.next() % (d.len / 8 - 1)) * 8;
+                        d.remove(q, 8);
+                    }
+                    let (pieces, pages, permuted, len) = d.shape();
+                    println!("# rows-shape,{},n={n},entries {pieces} pages {pages} permuted {permuted} records/entry {:.1} fill {:.2} bytes/record {:.1}", $name, len as f64 / pieces as f64, len as f64 / (pages * 64) as f64, d.bytes() as f64 / len as f64);
+                    b.cell(concat!("rows-walk-after-", $name), &format!("n={n}"), "record", n as u64, if n >= 100_000 { 5 } else { 200 }, || {
+                        black_box(d.walk());
+                    });
+                    b.cell(concat!("rows-insert-remove-after-", $name), &format!("n={n}"), "pair", 1024, 4, || {
+                        for &p in &at {
+                            ids.clear();
+                            d.insert(p * 8, &eight, &mut ids);
+                            d.remove(at[(p * 7 + 3) % 1024] * 8, 8);
+                        }
+                    });
+                }
+            };
+        }
+        row_cells!("pieces", Pieces);
+        row_cells!("shift", Shift);
+    }
+
     // ---------------------------------------------------------------- idle re-description over operand lanes
     if b.want("redescribe") {
         for rows in [1usize, 64, 256, 1000, 100_000] {

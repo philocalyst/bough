@@ -179,9 +179,17 @@ impl<T: Lerp> Running for State<T> {
 }
 
 /// Every transition of a runtime and the frame clock's time.
-#[derive(Default)]
+///
+/// **Ownership** (round 7): a transition belongs to the scope that mounted the element it animates, like the
+/// element's wires (`Scope::trans`). Unmounting the element releases it: it stops, and its slot is reused. A
+/// transition therefore cannot outlive its element, apply to a dead layout node or reach whatever element is
+/// later given the same id. (A slot is `None` while free.)
 pub struct Transitions {
-    items: Vec<Box<dyn Running>>,
+    items: Vec<Option<Box<dyn Running>>>,
+    free: Vec<u32>,
+    /// The transition whose applier is running (`u32::MAX`: none), and whether it was released meanwhile.
+    stepping: u32,
+    stepping_released: bool,
     /// Seconds since the runtime started, advanced by `App::tick`.
     pub now: f64,
     pub active: u32,
@@ -190,17 +198,47 @@ pub struct Transitions {
     pub steps: u64,
 }
 
+impl Default for Transitions {
+    fn default() -> Self {
+        Transitions { items: Vec::new(), free: Vec::new(), stepping: u32::MAX, stepping_released: false, now: 0.0, active: 0, retargets: 0, steps: 0 }
+    }
+}
+
 impl Transitions {
     pub(crate) fn add<T: Lerp>(&mut self, node: u32, apply: Box<dyn Fn(&mut Rt, u32, &T)>, init: T, curve: Curve) -> u32 {
-        self.items.push(Box::new(State { node, apply, curve, from: init, to: init, vel_to: init, t0: 0.0, shown: init, active: false }));
-        (self.items.len() - 1) as u32
+        let st: Box<dyn Running> = Box::new(State { node, apply, curve, from: init, to: init, vel_to: init, t0: 0.0, shown: init, active: false });
+        match self.free.pop() {
+            Some(i) => {
+                self.items[i as usize] = Some(st);
+                i
+            }
+            None => {
+                self.items.push(Some(st));
+                (self.items.len() - 1) as u32
+            }
+        }
+    }
+
+    /// The owner of transition `id` unmounted: it stops and its slot is free.
+    pub(crate) fn release(&mut self, id: u32) {
+        if id == self.stepping {
+            // the one being stepped (out of its slot): `step_transitions` drops it when its applier returns
+            self.stepping_released = true;
+            return;
+        }
+        if let Some(it) = self.items[id as usize].take() {
+            if it.is_active() {
+                self.active -= 1;
+            }
+            self.free.push(id);
+        }
     }
 
     /// The transition `id` (of value type `T`) retargets to `to` at the current time, from the value it
     /// shows now (and, smooth, the velocity it has now).
     pub(crate) fn retarget<T: Lerp>(&mut self, id: u32, to: T) {
         let now = self.now;
-        let Some(s) = self.items[id as usize].as_any().downcast_mut::<State<T>>() else { return };
+        let Some(s) = self.items[id as usize].as_mut().and_then(|it| it.as_any().downcast_mut::<State<T>>()) else { return };
         if s.to == to && s.active {
             return;
         }
@@ -230,7 +268,7 @@ impl Transitions {
 
     /// The value transition `id` (mount order: the n-th transition operand lowered) shows now.
     pub fn shown<T: Lerp>(&mut self, id: u32) -> Option<T> {
-        self.items.get_mut(id as usize)?.as_any().downcast_mut::<State<T>>().map(|s| s.shown)
+        self.items.get_mut(id as usize)?.as_mut()?.as_any().downcast_mut::<State<T>>().map(|s| s.shown)
     }
 
     /// Transitions created so far.
@@ -251,24 +289,32 @@ impl Rt {
             return false;
         }
         let now = self.transitions.now;
-        let mut items = std::mem::take(&mut self.transitions.items);
-        let mut active = 0;
-        for it in items.iter_mut() {
+        // one at a time, taken out of its slot while its applier runs: an applier may unmount elements (a
+        // restyle that re-windows a list), which releases their transitions, this one included
+        for i in 0..self.transitions.items.len() {
+            let Some(mut it) = self.transitions.items[i].take() else { continue };
             if !it.is_active() {
+                self.transitions.items[i] = Some(it);
                 continue;
             }
+            self.transitions.stepping = i as u32;
             if it.step(now).is_some() {
                 it.apply_shown(self);
             }
             self.transitions.steps += 1;
-            if it.is_active() {
-                active += 1;
+            if std::mem::take(&mut self.transitions.stepping_released) {
+                // its owner unmounted while its applier ran: it is gone (it was running: one fewer)
+                self.transitions.stepping = u32::MAX;
+                self.transitions.active -= 1;
+                self.transitions.free.push(i as u32);
+                continue;
             }
+            self.transitions.stepping = u32::MAX;
+            if !it.is_active() {
+                self.transitions.active -= 1;
+            }
+            self.transitions.items[i] = Some(it);
         }
-        // transitions added while stepping (none today) would be in self.transitions.items
-        items.append(&mut self.transitions.items);
-        self.transitions.items = items;
-        self.transitions.active = active;
         true
     }
 }
@@ -320,6 +366,7 @@ impl<'a, T: Lerp, V> IntoProp<T, V> for Transit<Wired<'a, T, V>> {
     fn lower<K: Apply<P = T>>(self, m: &mut Mounter<'_, V>, node: u32) -> T {
         let init = *self.w.get();
         let id = m.rt.transitions.add::<T>(node, Box::new(apply_fn::<K> as fn(&mut Rt, u32, &T)), init, self.curve);
+        m.scope.trans.push(id);
         let mut recipe = [0u8; 16];
         recipe[..4].copy_from_slice(&id.to_le_bytes());
         m.wire(&self.w, patch_transit::<T>, node, recipe);
@@ -339,6 +386,7 @@ where
         assert!(size_of::<F>() <= 12, "a transition's projection must capture at most 12 bytes");
         let init = (self.w.f)(self.w.w.get());
         let id = m.rt.transitions.add::<P>(node, Box::new(apply_fn::<K> as fn(&mut Rt, u32, &P)), init, self.curve);
+        m.scope.trans.push(id);
         let mut recipe = [0u8; 16];
         recipe[..4].copy_from_slice(&id.to_le_bytes());
         // SAFETY: F is Copy and at most 12 bytes (asserted): it fits after the id.

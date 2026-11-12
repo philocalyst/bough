@@ -376,12 +376,14 @@ pub struct Scope {
     pub prods: Vec<u32>,
     /// Derived clips (`template::WClip` entries) mounted in this scope, released with it.
     pub clips: Vec<u32>,
+    /// Transitions of this scope's elements (`transition.rs`): they belong to it and stop with it.
+    pub trans: Vec<u32>,
 }
 
 impl Scope {
     /// Heap bytes of the scope's lists (memory ledger).
     pub fn heap_bytes(&self) -> usize {
-        (self.wires.capacity() + self.texts.capacity() + self.insts.capacity() + self.runs.capacity() + self.lroots.capacity() + self.dyns.capacity() + self.lregs.capacity() + self.prods.capacity() + self.clips.capacity()) * 4 + self.series.capacity() * 8
+        (self.wires.capacity() + self.texts.capacity() + self.insts.capacity() + self.runs.capacity() + self.lroots.capacity() + self.dyns.capacity() + self.lregs.capacity() + self.prods.capacity() + self.clips.capacity() + self.trans.capacity()) * 4 + self.series.capacity() * 8
     }
 }
 
@@ -1649,6 +1651,9 @@ impl Rt {
         }
         for k in s.clips.drain(..) {
             self.clip_release(k);
+        }
+        for t in s.trans.drain(..) {
+            self.transitions.release(t);
         }
         // dynamic items are cut now too (their wires may sit on live signals)
         for &d in &s.dyns {

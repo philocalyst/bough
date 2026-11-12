@@ -306,6 +306,7 @@ impl<T: crate::transition::Lerp, V> Restyled<T, V> for crate::transition::Transi
     fn install<F: Fn(&T, &mut Style) + Copy + 'static>(self, m: &mut Mounter<'_, V>, lid: u32, f: F) {
         let init = *self.w.get();
         let id = m.rt.transitions.add::<T>(lid, Box::new(move |rt: &mut Rt, lid: u32, v: &T| rt.lay_restyle(lid, |st| f(v, st))), init, self.curve);
+        m.scope.trans.push(id);
         let mut recipe = [0u8; 16];
         recipe[..4].copy_from_slice(&id.to_le_bytes());
         m.wire(&self.w, crate::transition::patch_transit::<T>, lid, recipe);

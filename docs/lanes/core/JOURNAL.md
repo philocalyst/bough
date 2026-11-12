@@ -444,3 +444,91 @@ Not covered, stated: derived-clip entries are never released (the table grows wi
 without raising; list port clips (`region_set_port`) read their parent clip at the write and are raised to
 dependents but are not themselves derived entries. The general form (every piece of derived geometry, ports
 and view clips included, as an entry of one ranked table released with its block) is step 2's business.
+
+## B1. The directory as a piece table (model, before the real core)
+
+The page model proved the stable-slot page; it did not say what happens at a page boundary. If a record keeps
+`(page, slot)` for life, a full page cannot split by moving half its records, so the directory splits
+instead: an entry is a **piece**, a run of one page's slots in paint order (`crates/bough-pages/src/pieces.rs`,
+`Pieces`), identity pieces as `(page, start, len)`, permuted ones with a 64-byte ord block of their own (no two
+pieces share one, so no edit of a piece fixes another). `Shift` is today's directory in the same harness
+(position-ordered pages, column shifts, handle re-pointing, split in half). A differential test puts both
+through 6,000 random edits against a plain vector and checks that every live record of the piece table is
+still at the identity it was given. Each page carries a **seal** (bumped by any change to what it shows) for
+the compute lane's staged commands; a second test checks it moves exactly when its page does. The compute
+lane's two requests are in the design: paint order is the directory and the piece, never a position; the seal
+is per page.
+
+**Predictions, written before the first run** (instructions per operation; ilo-prod and the Mac):
+
+1. An insert of 8 + a remove of 8 at random positions, 100,000 records: the piece table at most a third of the
+   shifting directory.
+2. Front inserts (8 at position 0, repeated): the same ratio or better (the shifting page re-points up to 63
+   handles per insert; a piece prepends 8 ord bytes).
+3. After churn that replaces every record four times over (N/2 pairs of remove 8 / insert 8 at random
+   positions): pieces per page in use at most 2.0; average piece length at least 16 records; bytes per record
+   at most 1.5x the shifting directory's (which carries a handle table); at least half of the pieces permuted.
+4. Ordered walk of every record after that churn: at most 1.5x the shifting directory's time per record.
+5. Building by appends: equal within 10 %.
+
+Kill: after the churn, an average piece shorter than 8 records or more than 2x the bytes per record means the
+piece table needs compaction (relocation with notification) designed in before the real core takes it.
+
+### Results (ilo-prod, Zen 2, x86-64 SSE2 build, pinned to CPU 2, load average 8 to 10; minimum of five)
+
+Raw: `data/r7/dir-pieces-vs-shift-ilo-prod.txt`, `data/r7/dir-rows-pieces-vs-shift-ilo-prod.txt`. Instructions
+per operation, piece table / shifting directory; time and L2 misses where they differ in kind.
+
+Adversarial matrix (pages built full, then inserts and removes of 8 at random record positions):
+
+| cell | 1,000 | 100,000 | 1,000,000 |
+|---|---|---|---|
+| insert 8 + remove 8 at the front | 946 / 1,156 | 1,080 / 1,258 | 1,080 / 1,258 |
+| insert 8 + remove 8 at random positions, fresh | 2,376 / 2,010 | 2,863 / 2,956 | 5,138 / 5,637 |
+| the same after the churn | 2,292 / 1,968 | 3,764 / 3,038 | 20,691 / 8,607 |
+| ordered walk per record, fresh | 13.6 / 9.4 | 12.9 / 9.2 (2.3 / 0.8 ns) | 11.3 / 9.1 |
+| ordered walk per record, after the churn | 13.4 / 9.5 | 13.2 / 9.3 (2.5 / 0.9 ns) | 13.2 / 9.3 (10.3 / 3.7 ns) |
+| build by appends, per record | 86 / 121 | 204 / 235 | 358 / 388 |
+| after the churn: records per entry | 9.5 / 20.4 | 10.5 / 23.8 | 10.5 / 23.7 |
+| after the churn: page fill | 0.24 / 0.32 | 0.26 / 0.37 | 0.26 / 0.37 |
+| after the churn: permuted pieces | 75 % | 80 % | 79 % |
+
+Row-shaped workloads (rows of 8 records, pages built with slack at 48 of 64):
+
+| cell | 1,000 | 100,000 | 1,000,000 |
+|---|---|---|---|
+| replace a row in place | 1,164 / 1,782 | 1,868 / 2,328 (10 / 21 L2 misses) | 5,147 / 5,615 |
+| scroll (a row leaves the front, one arrives at the end) | 940 / 1,544 | 2,006 / 2,536 | 5,187 / 5,679 |
+| insert a row, remove another | 1,533 / 1,699 | 2,418 / 2,697 (13 / 46 L2 misses) | 5,382 / 5,844 |
+| the same after n/2 such pairs | 1,534 / 1,699 | 2,540 / 2,622 | 9,979 / 6,550 |
+| ordered walk per record after them | 12.1 / 9.3 | 12.2 / 9.3 (1.33 / 0.84 ns) | 12.2 / 9.2 (5.8 / 2.5 ns) |
+| records per entry / fill after them | 20.8 / 29.4; 0.41 / 0.46 | 17.8 / 28.5; 0.37 / 0.45 | 17.8 / 28.6; 0.37 / 0.45 |
+
+(Both sides grow with n because the model's block search is a linear scan of block counts; that is the
+harness, equal on both sides, and the reason the 1,000,000 column should be read as "same order". The
+shifting side's bytes per record are not comparable: its handle table in this model never reuses a handle.)
+
+**Verdict against the predictions.**
+
+1. "At most a third on random inserts": **refuted.** Parity on fresh trees (0.97x at 100,000), 1.24x *worse*
+   after churn at 100,000 and 2.4x worse at 1,000,000 (twice the entries to search and shift).
+2. "Front inserts the same ratio or better": **refuted.** 0.86x.
+3. Shape after churn: records per entry 10.5 (predicted at least 16: missed; not under the kill line of 8),
+   fill 0.26 against 0.37, 80 % permuted (predicted).
+4. "Ordered walk at most 1.5x": 1.42x in instructions, **2.8x in time at 1,000,000** (1.6x on the row
+   workload at 100,000): missed where it matters, in the cache.
+5. Appends: 0.87x to 0.92x: holds.
+
+Why the page model's 4x to 5x did not survive: an edit's cost is the directory, not the page. A point inside
+a full page costs the shifting directory one split and the piece table one split *and* a new page (two
+directory inserts, a page that then sits at 8 of 64 until an insert lands beside it). A piece table only wins
+where the slots it frees are the slots the next insert needs: row replaced in place (0.80x), scroll (0.79x),
+row inserted and another removed (0.90x), with a third to a half of the L2 misses. Those are real GUI shapes
+and the gain is real, but it is 10 to 25 %, not a factor.
+
+**What this means for the plan.** Stable slots do not pay for themselves in structural edits. If they are
+taken, it is for what identity = place deletes (the handle table: 24 B a record and a dependent load on every
+write through a handle; the handle column; re-pointing) and for sharing page images, and they need a
+compaction story for the ordered walk (the bin pass) after heavy churn, which the model does not have. The
+store lane's identity already gives the two properties the rest of this lane's design needs: per-id columns
+that never move, and planes addressable by id. So the order of work should not start with the directory.
