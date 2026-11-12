@@ -26,12 +26,11 @@
 //! a motion) it does nothing. Otherwise it projects the published set again and compares node by node. The gate
 //! (`tests/ax.rs`) holds the tree kept by applying deltas equal to a fresh projection after every step.
 use bough_x::event::{NONE, REDUCED_MOTION_AHEAD, U_FOCUS, kind};
-use bough_x::expr::{APP_WORDS, Code, U, U_TIME};
+use bough_x::expr::{APP_WORDS, Code, HOT, U, U_TIME};
 use bough_x::reflect::{Kind as SKind, Part, Reflect, Snap, StoreInfo, Val};
-use bough_x::sink::{REL_EPOCH, View};
+use bough_x::sink::View;
 use bough_x::store::{Backend, NO_WORD, Path, Rect, Store};
 use bough_x::world::World;
-use core::sync::atomic::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -244,7 +243,8 @@ pub struct Ax {
     refl: Option<Reflect>,
     /// What the last projection was made from: the block, the relation epoch, the focus, the words it read.
     block: U,
-    epoch: u32,
+    /// Every list's (window, row count, relation version) as of its last pass: what its rows were.
+    lists: Vec<[u32; 4]>,
     focus: Option<(Path, u32, u32)>,
     reads: u64,
     /// Each list's row count as last published (for announcing appended rows).
@@ -261,7 +261,7 @@ impl Default for Ax {
 
 impl Ax {
     pub fn new() -> Ax {
-        Ax { tree: Tree::default(), refl: None, block: U::default(), epoch: u32::MAX, focus: None, reads: !0, counts: BTreeMap::new(), projected: 0 }
+        Ax { tree: Tree::default(), refl: None, block: U::default(), lists: Vec::new(), focus: None, reads: !0, counts: BTreeMap::new(), projected: 0 }
     }
     pub fn tree(&self) -> &Tree {
         &self.tree
@@ -269,10 +269,10 @@ impl Ax {
 
     /// Bring the tree up to date after a turn; what changed.
     pub fn update<V: View, B: Backend>(&mut self, w: &World<B>, v: &V) -> Update {
-        let epoch = REL_EPOCH.load(Ordering::Relaxed);
+        let lists = lists_of(&w.root);
         let focus = w.focused();
         let current = self.refl.as_ref().is_some_and(|r| r.current(&w.root));
-        if current && epoch == self.epoch && focus == self.focus && self.block.diff(&w.shown, 64) & self.reads == 0 {
+        if current && lists == self.lists && focus == self.focus && self.block.diff(&w.shown, 64) & self.reads == 0 {
             self.projected = 0;
             return Update::default();
         }
@@ -290,7 +290,7 @@ impl Ax {
             }
         }
         for id in self.tree.nodes.keys() {
-            if !fresh.nodes.contains_key(id) {
+            if !fresh.nodes.contains_key(id) && !cfg!(feature = "mutant_removed") {
                 up.removed.push(*id);
             }
         }
@@ -312,9 +312,14 @@ impl Ax {
         self.counts = fresh.nodes.values().filter_map(|n| n.row_count.map(|c| (n.id, c))).collect();
         self.tree = fresh;
         self.block = w.shown;
-        self.epoch = epoch;
+        self.lists = lists;
         self.focus = focus;
-        self.reads = reads;
+        // the settled tree does not move with time or the pointer: those words never make it project
+        self.reads = reads & !HOT;
+        #[cfg(feature = "mutant_fast")]
+        {
+            self.reads = 1 << U_FOCUS;
+        }
         up
     }
 
@@ -327,8 +332,8 @@ impl Ax {
         let mut p = Project::new(w, v, self.refl.as_ref().unwrap());
         let path = list.path();
         let Some(info) = p.r.root.at(&path) else { return Vec::new() };
-        let SKind::List(li) = &info.kind else { return Vec::new() };
-        let grid = p.list_is_grid(&path, li.n);
+        let (SKind::List(_), Some(st)) = (&info.kind, w.root.at(&path)) else { return Vec::new() };
+        let grid = p.list_is_grid(&path, st.n);
         let ids = p.list_rows(&path, rows, grid, None);
         let mut out: Vec<Node> = Vec::new();
         for id in ids {
@@ -336,6 +341,21 @@ impl Ax {
         }
         out
     }
+}
+
+/// Each list store's window, row count and relation version, in tree order.
+fn lists_of(st: &Store) -> Vec<[u32; 4]> {
+    fn go(st: &Store, out: &mut Vec<[u32; 4]>) {
+        if st.src.is_some() {
+            out.push([st.lo, st.hi, st.n, st.seen]);
+        }
+        for s in &st.subs {
+            go(s, out);
+        }
+    }
+    let mut out = Vec::new();
+    go(st, &mut out);
+    out
 }
 
 /// The text a person would hear for a node and its descendants.
@@ -401,6 +421,7 @@ impl<'a, V: View, B: Backend> Project<'a, V, B> {
         for it in self.r.items(&self.w.root, &u) {
             if it.kind() == "outline" {
                 self.rings.push(it.screen);
+                self.reads |= it.info.reads;
             }
         }
         win.children = self.store(&self.r.root, &self.w.root, root);
@@ -418,7 +439,8 @@ impl<'a, V: View, B: Backend> Project<'a, V, B> {
         for part in &info.seq {
             match *part {
                 Part::Row(k) => {
-                    let row: Vec<&Snap> = items.iter().filter(|s| info.sites.get(site_of(info, s)).and_then(|x| x.as_ref()).is_some_and(|x| x.row == k)).collect();
+                    // a stored record of a fixed shape knows its row call
+                    let row: Vec<&Snap> = items.iter().filter(|s| s.ent.row == k).collect();
                     out.extend(self.row(&path, k, &row, false, st.space.origin(&u)));
                 }
                 Part::Sub(q) => {
@@ -427,8 +449,9 @@ impl<'a, V: View, B: Backend> Project<'a, V, B> {
                     p.at[p.n as usize] = q as u16;
                     p.n += 1;
                     match &si.kind {
-                        SKind::List(li) => {
-                            let n = li.n;
+                        SKind::List(_) => {
+                            // the row count as of the list's last pass (reflection learned the shape, not the count)
+                            let n = ss.n;
                             let grid = self.list_is_grid(&p, n);
                             let page = ss.hi.saturating_sub(ss.lo).max(1);
                             let range = ss.lo.saturating_sub(page)..(ss.hi + page).min(n);
@@ -486,7 +509,7 @@ impl<'a, V: View, B: Backend> Project<'a, V, B> {
             // a row that is one interactive item (and its texts) is that item; otherwise a row of cells
             let item = (!grid && kids.len() == 1).then(|| self.tree.nodes.get(&kids[0]).cloned()).flatten();
             let mut node = match item {
-                Some(mut n) if n.role != Role::StaticText => {
+                Some(mut n) if matches!(n.role, Role::Button | Role::Group) => {
                     self.tree.nodes.remove(&kids[0]);
                     for v in self.owner.values_mut() {
                         if *v == kids[0] {
@@ -674,20 +697,23 @@ impl<'a, V: View, B: Backend> Project<'a, V, B> {
             .collect();
         for (gid, cols) in grids {
             let gpath = gid.path();
-            let mut hits = Vec::new();
+            // texts outside the grid that line up with its columns, by the row they were described in
+            let mut rows: BTreeMap<(Path2, u32), Vec<(NodeId, u32)>> = BTreeMap::new();
             for n in self.tree.nodes.values() {
                 if n.role == Role::StaticText && n.live == Live::Off && !n.id.path().at[..n.id.depth as usize].starts_with(&gpath.at[..gpath.n as usize]) {
                     if let Some(c) = cols.iter().position(|&(x0, x1)| x0 == n.bounds.x0 && x1 == n.bounds.x1) {
-                        hits.push((n.id, c as u32));
+                        rows.entry((p2(&n.id.path()), n.id.row)).or_default().push((n.id, c as u32));
                     }
                 }
             }
-            // a header row: most columns matched by texts of one row
-            if hits.len() * 2 >= cols.len() {
-                for (id, c) in hits {
-                    let n = self.tree.nodes.get_mut(&id).unwrap();
-                    n.role = Role::ColumnHeader;
-                    n.col_index = Some(c);
+            // a header row: one row whose texts line up with most of the columns
+            for (_, hits) in rows {
+                if hits.len() * 2 >= cols.len() {
+                    for (id, c) in hits {
+                        let n = self.tree.nodes.get_mut(&id).unwrap();
+                        n.role = Role::ColumnHeader;
+                        n.col_index = Some(c);
+                    }
                 }
             }
         }
@@ -707,11 +733,6 @@ impl<'a, V: View, B: Backend> Project<'a, V, B> {
         }
         let _ = (NONE, self.w.shown.w[U_FOCUS]);
     }
-}
-
-/// The index of the site a stored record came from (its position in the store's shape).
-fn site_of(_info: &StoreInfo, s: &Snap) -> usize {
-    s.ent.pos as usize
 }
 
 fn inside(a: Rect, b: Rect) -> bool {

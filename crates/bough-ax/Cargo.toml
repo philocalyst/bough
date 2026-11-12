@@ -7,3 +7,10 @@ description = "Round 8: accessibility as one more projection of the stores and t
 
 [dependencies]
 bough-x = { path = "../bough-x" }
+
+[features]
+# Mutants the gate (tests/ax.rs, deltas_equal_a_fresh_projection) must fail with:
+# the "nothing changed" test forgets the content's words (an edit is missed)
+mutant_fast = []
+# an update forgets the nodes that went away
+mutant_removed = []
