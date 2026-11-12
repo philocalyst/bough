@@ -55,3 +55,36 @@ fn hover_follows_the_content_under_a_still_pointer() {
     let bad = retained.iter().zip(&fresh).filter(|(x, y)| x != y).count();
     assert!(bad == 0, "after the scroll {bad} bytes differ from a fresh mount with the pointer at the same point (a stale hover)");
 }
+
+struct Plain {
+    y: Signal<f32>,
+    marked: usize,
+}
+
+impl View for Plain {
+    fn view(&self) -> impl Element<Self> + '_ {
+        div()
+            .w_pct(1.0)
+            .h_pct(1.0)
+            .bg(rgb(0xffffff))
+            .scroll(sig!(self.y))
+            .child(each((0..20).map(|i| block(0.0, 32.0).w_pct(1.0).shrink(0.0).bg(rgb(if i == self.marked { 0xffe08a } else { 0xffffff })))))
+            .on_key(|v: &mut Self, _e| v.marked += 1)
+    }
+}
+
+#[test]
+fn plain_state_inside_a_scroll_box_is_described_again() {
+    let mut a = App::new(Plain { y: Signal::new(0.0), marked: 0 }, cfg(), true);
+    a.frame();
+    a.set_focus(a.rt.bough.handle_at(0), false);
+    a.key_down(Key::Down, Mods::default());
+    a.key_down(Key::Down, Mods::default());
+    a.frame();
+    assert_eq!(a.owner.marked, 2, "the key route ran");
+    let mut f = App::new(Plain { y: Signal::new(0.0), marked: 2 }, cfg(), true);
+    f.frame();
+    let (r, fresh) = (a.presented_pixels(), f.presented_pixels());
+    let bad = r.iter().zip(&fresh).filter(|(x, y)| x != y).count();
+    assert!(bad == 0, "{bad} bytes differ from a fresh mount: the scroll box's content kept its first description");
+}
