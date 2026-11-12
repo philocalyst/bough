@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # xfer.sh LOCAL_FILE REMOTE_PATH : copy a file to the remote host through rex, verified by sha256.
 #   Same environment as rx.sh (REX_HOST, REX_SESSION_ID). Prints both hashes; exits 1 if they differ.
 # rex refuses a control message over 64 KiB, so the file goes as base64 in 63,000-byte chunks, each appended by
