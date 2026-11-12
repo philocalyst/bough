@@ -805,7 +805,7 @@ impl<V: View> App<V> {
     /// The publication policy is chosen by the turn's source at compile time (`PACED`), never per frame.
     pub fn frame_as<const PACED: bool>(&mut self) -> bool {
         // one ring: "did this epoch have damage other than paint" is read before paint is projected into it
-        let core = !self.rt.bough.plane(0).is_clear();
+        let core = crate::span!(14, !self.rt.bough.plane(0).is_clear());
         let paint = crate::span!(5, self.rt.paint_resolve());
         if !core && !paint {
             // an idle frame returns released subtrees' resources (`Rt::reclaim`), a budget at a time
@@ -835,7 +835,7 @@ impl<V: View> App<V> {
                 self.shown = Some(i);
                 self.last_surface = i;
             }
-            Pick::Draw(i) => crate::span!(8 + crate::attr::NEST * (1 - crate::attr::OUTER), self.draw::<PACED>(i, epoch)),
+            Pick::Draw(i) => self.draw::<PACED>(i, epoch),
         }
         self.prof.mark(PH_PRESENT);
         crate::span!(4, {
@@ -847,6 +847,7 @@ impl<V: View> App<V> {
     }
 
     fn draw<const PACED: bool>(&mut self, i: usize, epoch: u32) {
+        let t_pre = crate::span_mark!();
         let mut purged = false;
         // a CPU-repairable frame must not make the surface resident (a first residency drains the pre-armed
         // frames: GPU work); its volatility is handled by `write_begin` / `prepare_target`, whichever runs
@@ -879,10 +880,12 @@ impl<V: View> App<V> {
         let full = !matches!(age, Some(a) if a as usize <= RING);
         let mut copy = bough_metal::fused::SlotCopy::NONE;
         self.last_full = full;
+        crate::span_from!(12, t_pre);
         if !full {
             crate::span!(9, self.repair_rows(age.unwrap()));
             copy = crate::span!(10, self.copy_plan(i, epoch, age.unwrap()));
         }
+        let t_mid = crate::span_mark!();
         self.prof.mark(PH_DAMAGE);
         let n_dir = self.rt.bough.dir_len() as u32;
         self.surf_stats.uses[i] += 1;
@@ -933,6 +936,7 @@ impl<V: View> App<V> {
             self.repaired_tiles = g.draw_in::<PACED>(i, &self.rows[..hi], full, n_dir, &copy, lo);
             drawn = true;
         }
+        crate::span_from!(13, t_mid);
         if !drawn {
             // headless: the CPU side of the frame ends at the tile list in the region's frame slot
             // SAFETY: the runtime's region, laid out by `rt.layout`; headless, so no GPU reads it.

@@ -4,7 +4,7 @@
 #[cfg(feature = "attr")]
 pub mod on {
     use std::cell::Cell;
-    pub const N: usize = 12;
+    pub const N: usize = 20;
     thread_local! {
         pub static ACC: [Cell<u64>; N] = const { [const { Cell::new(0) }; N] };
         pub static CNT: [Cell<u64>; N] = const { [const { Cell::new(0) }; N] };
@@ -58,5 +58,29 @@ macro_rules! span {
             $crate::attr::on::add(($i) % 100, __t);
         }
         __r
+    }};
+}
+
+/// `span_from!(slot, t0)` / `span_mark!()`: charge the instructions since a mark to `slot` (straight-line
+/// stretches that are not one expression).
+#[macro_export]
+#[doc(hidden)]
+macro_rules! span_mark {
+    () => {{
+        #[cfg(feature = "attr")]
+        let __m = $crate::attr::on::now();
+        #[cfg(not(feature = "attr"))]
+        let __m = 0u64;
+        __m
+    }};
+}
+#[macro_export]
+#[doc(hidden)]
+macro_rules! span_from {
+    ($i:expr, $t:expr) => {{
+        #[cfg(feature = "attr")]
+        $crate::attr::on::add($i, $t);
+        #[cfg(not(feature = "attr"))]
+        let _ = $t;
     }};
 }

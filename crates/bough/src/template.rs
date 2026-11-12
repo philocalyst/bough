@@ -212,17 +212,13 @@ fn view_clips(rt: &mut Rt, v: usize) {
         let p = rt.bough.clip_rect(parent).to_xyxy();
         let a = [r[0] + ox, r[1] + oy, r[2] + ox, r[3] + oy];
         let c = NRect::new(a[0].max(p[0] as f32).floor() as i32, a[1].max(p[1] as f32).floor() as i32, a[2].min(p[2] as f32).ceil() as i32, a[3].min(p[3] as f32).ceil() as i32);
-        rt.bough.set_clip_rect(id, c);
+        rt.set_clip(id, c);
     }
 }
 
 /// Views nested in `v` (and their tooltips) follow a move of `v`'s content by (dx, dy): their records were
 /// moved with `v`'s, so only their spaces, clips and tooltip rects change.
 fn shift_nested(rt: &mut Rt, v: usize, dx: i32, dy: i32) {
-    for k in 0..rt.input.tips_of(v).len() {
-        let t = rt.input.views[v].tips[k];
-        rt.input.shift_tip(&mut rt.bough, t, dx, dy);
-    }
     for k in 0..rt.input.views[v].nested.len() {
         let c = rt.input.views[v].nested[k] as usize;
         {
@@ -498,30 +494,200 @@ pub fn clip_by<'a, T, V, F: Fn(&T) -> [f32; 4] + Copy + 'static, C>(sig: Wired<'
     ClipBy { sig, f, ch }
 }
 
+/// Derived geometry. A clip entry's absolute rect is a function of three inputs: `local` (edges in device
+/// px from the origin of `space`), the origin of `space`, and the rect of `parent`. Nothing writes the rect directly: a wire stores
+/// `local`, a tooltip sets `hidden`, a move of the space or a change of the parent raises the entry's level,
+/// and `Rt::clips_settle` recomputes entries level by level. **Level** is the static schedule: 0 when the
+/// parent clip is not derived, else the parent's level + 1; spaces are eager (a space's origin is final as
+/// soon as it is written, nested ones included), so an entry's inputs are final once every lower level is,
+/// whatever order the writes of a turn came in.
+#[derive(Clone, Copy)]
+pub(crate) struct WClip {
+    pub id: u16,
+    pub space: u16,
+    pub parent: u16,
+    pub local: [f32; 4],
+    pub level: u16,
+    /// Shows nothing while set (a tooltip not showing).
+    pub hidden: bool,
+    pub live: bool,
+    /// Index in its level's list.
+    at: u32,
+}
+
 /// # Safety
-/// Wire contract: `sig` is a `Signal<T>`; the recipe holds an `F`; `w.node` is the clip index in `Input::clips`.
+/// Wire contract: `sig` is a `Signal<T>`; the recipe holds an `F`; `w.node` is the clip's entry in `Input::wclips`.
 unsafe fn patch_clip_by<T: 'static, F: Fn(&T) -> [f32; 4] + Copy>(rt: &mut Rt, w: &Wire, sig: *const u8, _owner: *const u8) {
     // SAFETY: see the function contract.
     let s = unsafe { &*(sig as *const Signal<T>) };
     let f: F = unsafe { std::ptr::read_unaligned(w.recipe.as_ptr() as *const F) };
-    let (id, space, parent) = rt.input.wclips[w.node as usize];
-    let r = clip_px(rt, space, f(s), parent);
-    rt.bough.set_clip_rect(id, r);
+    // an input, not the rect: the rect is derived when every wire of the cell has run (`clips_settle`)
+    let local = edges(f(s), rt.scale);
+    let e = &mut rt.input.wclips[w.node as usize];
+    e.local = local;
+    let l = e.level as u32;
+    rt.clips_raise(l);
 }
 
-fn clip_px(rt: &Rt, space: u16, r: [f32; 4], parent: u16) -> NRect {
-    let (s, o) = (rt.scale, rt.space(space));
-    let a = NRect::new((o[0] + r[0] * s).floor() as i32, (o[1] + r[1] * s).floor() as i32, (o[0] + (r[0] + r[2]) * s).ceil() as i32, (o[1] + (r[1] + r[3]) * s).ceil() as i32);
+/// The absolute rect of local edges `e` (device px `[x0, y0, x1, y1]` from the space's origin), rounded
+/// outward and cut to `parent`.
+fn clip_px(rt: &Rt, space: u16, e: [f32; 4], parent: u16) -> NRect {
+    let o = rt.space(space);
+    let a = NRect::new((o[0] + e[0]).floor() as i32, (o[1] + e[1]).floor() as i32, (o[0] + e[2]).ceil() as i32, (o[1] + e[3]).ceil() as i32);
     a.intersect(rt.bough.clip_rect(parent)).canon()
+}
+
+/// Local edges (device px) of a rect `(x, y, w, h)` in points.
+#[inline]
+pub(crate) fn edges(r: [f32; 4], s: f32) -> [f32; 4] {
+    [r[0] * s, r[1] * s, (r[0] + r[2]) * s, (r[1] + r[3]) * s]
+}
+
+fn lower(v: &mut Vec<u32>, i: usize, x: u32) {
+    if v.len() <= i {
+        v.resize(i + 1, u32::MAX);
+    }
+    v[i] = v[i].min(x);
+}
+
+impl Rt {
+    /// Derived entries of level `from` and above may have a changed input.
+    #[inline(always)]
+    pub(crate) fn clips_raise(&mut self, from: u32) {
+        self.input.wclip_from = self.input.wclip_from.min(from);
+    }
+    /// Space `s` moved: the derived entries that read its origin (or a nested space's) are stale.
+    #[inline(always)]
+    pub(crate) fn clips_space_moved(&mut self, s: u16) {
+        if let Some(&r) = self.input.space_rank.get(s as usize) {
+            self.input.wclip_from = self.input.wclip_from.min(r);
+        }
+    }
+    /// Set clip `id`'s rect (`Bough::set_clip_rect`) and raise the derived entries cut to it.
+    #[inline]
+    pub(crate) fn set_clip(&mut self, id: u16, r: NRect) {
+        self.bough.set_clip_rect(id, r);
+        if let Some(&k) = self.input.clip_rank.get(id as usize) {
+            self.input.wclip_from = self.input.wclip_from.min(k);
+        }
+    }
+    /// Recompute the derived entries whose inputs changed, level by level from the lowest raised one (an
+    /// entry recomputed here is read by higher levels only). One compare when nothing was raised. Called when
+    /// the wires of a cell have run, and after a layout flush has placed its boxes.
+    #[inline(always)]
+    pub(crate) fn clips_settle(&mut self) {
+        if self.input.wclip_from != u32::MAX {
+            self.clips_settle_from();
+        }
+    }
+    #[inline(never)]
+    fn clips_settle_from(&mut self) {
+        let from = std::mem::replace(&mut self.input.wclip_from, u32::MAX) as usize;
+        for l in from..self.input.wclip_levels.len() {
+            let list = std::mem::take(&mut self.input.wclip_levels[l]);
+            for &k in &list {
+                let c = self.input.wclips[k as usize];
+                let r = if c.hidden { NRect::EMPTY } else { clip_px(self, c.space, c.local, c.parent) };
+                if r != self.bough.clip_rect(c.id) {
+                    self.bough.set_clip_rect(c.id, r);
+                }
+            }
+            self.input.wclip_levels[l] = list;
+        }
+        // a recompute raises nothing below its own level, and everything above was just recomputed
+        self.input.wclip_from = u32::MAX;
+    }
+    /// Is clip `id` a derived one?
+    #[inline]
+    pub(crate) fn clip_is_derived(&self, id: u16) -> bool {
+        self.input.clip_entry.get(id as usize).is_some_and(|&k| k != u32::MAX)
+    }
+    fn clip_entry_new(&mut self, e: WClip) -> u32 {
+        let l = e.level as usize;
+        if self.input.wclip_levels.len() <= l {
+            self.input.wclip_levels.resize_with(l + 1, Vec::new);
+        }
+        let k = match self.input.wclip_free.pop() {
+            Some(k) => k,
+            None => {
+                self.input.wclips.push(e);
+                (self.input.wclips.len() - 1) as u32
+            }
+        };
+        self.input.wclips[k as usize] = WClip { at: self.input.wclip_levels[l].len() as u32, live: true, ..e };
+        self.input.wclip_levels[l].push(k);
+        lower(&mut self.input.clip_rank, e.parent as usize, l as u32);
+        // the space and the spaces it is nested in: a move of any of them moves this entry
+        let mut s = e.space;
+        loop {
+            lower(&mut self.input.space_rank, s as usize, l as u32);
+            match self.space_parent_of(s) {
+                Some(p) => s = p,
+                None => break,
+            }
+        }
+        k
+    }
+    fn clip_level_under(&self, parent: u16) -> u16 {
+        match self.input.clip_entry.get(parent as usize) {
+            Some(&k) if k != u32::MAX => self.input.wclips[k as usize].level + 1,
+            _ => 0,
+        }
+    }
+    /// A new derived clip: `local` (edges, device px) in `space`, cut to `parent`; returns (clip id, entry).
+    pub(crate) fn clip_derived(&mut self, space: u16, local: [f32; 4], parent: u16, hidden: bool) -> (u16, u32) {
+        let r = if hidden { NRect::EMPTY } else { clip_px(self, space, local, parent) };
+        let id = match self.input.clip_free.pop() {
+            Some(id) => {
+                self.bough.set_clip_rect(id, r);
+                id
+            }
+            None => self.bough.new_clip(r),
+        };
+        let level = self.clip_level_under(parent);
+        let k = self.clip_entry_new(WClip { id, space, parent, local, level, hidden, live: true, at: 0 });
+        if self.input.clip_entry.len() <= id as usize {
+            self.input.clip_entry.resize(id as usize + 1, u32::MAX);
+        }
+        self.input.clip_entry[id as usize] = k;
+        (id, k)
+    }
+    /// Show or hide a derived clip (a tooltip's).
+    pub(crate) fn clip_show(&mut self, k: u32, on: bool) {
+        let e = &mut self.input.wclips[k as usize];
+        e.hidden = !on;
+        let l = e.level as u32;
+        self.clips_raise(l);
+        self.clips_settle();
+    }
+    /// Release derived entry `k` (its scope unmounted): it leaves its level, and a clip's id is kept for the
+    /// next derived clip.
+    pub(crate) fn clip_release(&mut self, k: u32) {
+        let e = self.input.wclips[k as usize];
+        if !e.live {
+            return;
+        }
+        let list = &mut self.input.wclip_levels[e.level as usize];
+        list.swap_remove(e.at as usize);
+        if let Some(&moved) = list.get(e.at as usize) {
+            self.input.wclips[moved as usize].at = e.at;
+        }
+        self.input.wclips[k as usize].live = false;
+        self.input.wclip_free.push(k);
+        self.bough.set_clip_rect(e.id, NRect::EMPTY);
+        self.input.clip_entry[e.id as usize] = u32::MAX;
+        if let Some(r) = self.input.clip_rank.get_mut(e.id as usize) {
+            *r = u32::MAX; // its dependents were mounted under it and are released with it
+        }
+        self.input.clip_free.push(e.id);
+    }
 }
 
 /// A clip id whose rect `f(&value)` (points, current space, inside the current clip) follows `sig`.
 pub fn wired_clip<T: 'static, V, F: Fn(&T) -> [f32; 4] + Copy + 'static>(m: &mut Mounter<'_, V>, sig: Wired<'_, T, V>, f: F) -> u16 {
     let prev = m.clip;
-    let r = clip_px(m.rt, m.space, f(sig.get()), prev);
-    let id = m.rt.bough.new_clip(r);
-    let k = m.rt.input.wclips.len() as u32;
-    m.rt.input.wclips.push((id, m.space, prev));
+    let (id, k) = m.rt.clip_derived(m.space, edges(f(sig.get()), m.rt.scale), prev, false);
+    m.scope.clips.push(k);
     let mut recipe = [0u8; 16];
     const { assert!(size_of::<F>() <= 16, "clip closure: at most 16 bytes of captures") };
     // SAFETY: size_of::<F>() <= 16 (checked above); unaligned write into a byte array.
@@ -575,16 +741,14 @@ unsafe fn patch_port(rt: &mut Rt, w: &Wire, sig: *const u8, owner: *const u8) {
     let top = **unsafe { &*(sig as *const Signal<f32>) };
     let reg = w.node as usize;
     let s = rt.scale;
-    let (x0, bottom_px, wpx) = {
+    let (x, bottom_px, wpx, oy, space) = {
         let r = &rt.regions[reg];
-        let [x0, _, x1, _] = r.vp.to_xyxy();
-        (r.vp_x, r.vp_y + r.port_h * s, (x1 - x0) as f32)
+        (r.vp_x, r.vp_y + r.port_h * s, r.port_w, r.oy, r.space)
     };
-    let _ = x0;
-    let y = (top * s).round();
-    let x = rt.regions[reg].vp_x;
+    let o = rt.space(space);
+    let y = (o[1] + oy + top * s).round();
     // SAFETY: see the function contract.
-    unsafe { rt.region_set_port(reg, owner, [x, y, wpx, bottom_px - y]) };
+    unsafe { rt.region_set_port(reg, owner, [o[0] + x, y, wpx, o[1] + bottom_px - y]) };
 }
 
 impl Rt {
@@ -597,21 +761,30 @@ impl Rt {
     pub(crate) unsafe fn region_set_port(&mut self, reg: usize, owner: *const u8, r: [f32; 4]) {
         let s = self.scale;
         let (x, y, w, h) = (r[0].round(), r[1].round(), r[2].round(), r[3].round());
-        let (old_x, old_y, clip, scroll_px, old_vp) = {
+        let (old_x, old_y, clip, ck, scroll_px, space) = {
             let g = &self.regions[reg];
-            (g.vp_x, g.vp_y, g.clip, g.scroll_px, g.vp)
+            (g.vp_x, g.vp_y, g.clip, g.ck, g.scroll_px, g.space)
         };
-        let vp = NRect::new(x as i32, y as i32, (x + w) as i32, (y + h) as i32).intersect(self.bough.clip_rect(self.regions[reg].parent_clip)).canon();
-        if vp == old_vp && x == old_x && y == old_y {
+        // the port's place in its space: the clip is derived from it (and follows the space and the clip above
+        // it from then on)
+        let o = self.space(space);
+        let (lx, ly) = (x - o[0], y - o[1]);
+        let old_vp = self.bough.clip_rect(clip);
+        let e = &mut self.input.wclips[ck as usize];
+        e.local = [lx, ly, lx + w, ly + h];
+        let l = e.level as u32;
+        self.clips_raise(l);
+        self.clips_settle();
+        let vp = self.bough.clip_rect(clip);
+        if vp == old_vp && lx == old_x && ly == old_y {
             return;
         }
-        self.bough.set_clip_rect(clip, vp);
-        let (dx, dy) = ((x - old_x) as i32, (y - old_y) as i32);
+        let (dx, dy) = ((lx - old_x) as i32, (ly - old_y) as i32);
         {
             let g = &mut self.regions[reg];
-            g.vp_x = x;
-            g.vp_y = y;
-            g.vp = vp;
+            g.vp_x = lx;
+            g.vp_y = ly;
+            g.port_w = w;
             g.port_h = h / s;
         }
         if dx != 0 || dy != 0 {
@@ -647,21 +820,25 @@ impl<'a, V: 'static> PortList<'a, V> {
         let top = *self.top.get();
         let (vx, vy) = ((o[0] + (m.ox + self.x) * s).round(), (o[1] + (m.oy + top) * s).round());
         let vb = (o[1] + (m.oy + self.bottom) * s).round();
-        let vp0 = NRect::new(vx as i32, vy as i32, (vx + self.w * s) as i32, vb as i32).intersect(m.rt.bough.clip_rect(m.clip)).canon();
-        // a clip of its own (it moves with the port)
-        let clip = m.rt.bough.new_clip(vp0);
-        let vp = m.rt.bough.clip_rect(clip);
+        // a clip of its own, derived from the port's place in its space (it moves with the port, with the
+        // space and with the clip above it)
+        let (lx, ly) = (vx - o[0], vy - o[1]);
+        let pw = (self.w * s).round();
+        let (clip, ck) = m.rt.clip_derived(m.space, [lx, ly, lx + pw, vb - o[1]], m.clip, false);
+        m.scope.clips.push(ck);
         let reg = m.rt.regions.len();
         fn none(_: f32) -> std::ops::Range<usize> {
             0..0
         }
         m.rt.regions.push(VRegion {
             row_h: self.row_h * s,
-            vp_x: vx,
-            vp_y: vy,
+            vp_x: lx,
+            vp_y: ly,
+            port_w: pw,
+            oy: m.oy * s,
+            space: m.space,
             clip,
-            vp,
-            parent_clip: m.clip,
+            ck,
             depth: m.depth,
             base_pos: m.recs.len(),
             range: 0..0,
@@ -825,7 +1002,9 @@ impl<'a, V: 'static> Element<V> for PortListIn<'a, V> {
         let s = m.rt.scale;
         let lid = m.rt.lay.cur;
         assert!(lid != NONE, "port_list_in is mounted inside a laid-out box");
-        let clip = m.rt.bough.new_clip(NRect::EMPTY);
+        // no port until the layout places it: an empty derived clip in the current space
+        let (clip, ck) = m.rt.clip_derived(m.space, [0.0; 4], m.clip, false);
+        m.scope.clips.push(ck);
         let reg = m.rt.regions.len();
         fn none(_: f32) -> std::ops::Range<usize> {
             0..0
@@ -834,9 +1013,11 @@ impl<'a, V: 'static> Element<V> for PortListIn<'a, V> {
             row_h: self.row_h * s,
             vp_x: 0.0,
             vp_y: 0.0,
+            port_w: 0.0,
+            oy: 0.0,
+            space: m.space,
             clip,
-            vp: NRect::EMPTY,
-            parent_clip: m.clip,
+            ck,
             depth: m.depth,
             base_pos: m.recs.len(),
             range: 0..0,

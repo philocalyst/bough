@@ -645,7 +645,7 @@ impl Rt {
         if r == self.bough.clip_rect(clip) {
             return;
         }
-        self.bough.set_clip_rect(clip, r);
+        self.set_clip(clip, r);
         let kids = self.input.clip_kids.get(&clip).cloned().unwrap_or_default();
         for c in kids {
             self.recut(c);

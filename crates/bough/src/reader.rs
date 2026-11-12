@@ -613,8 +613,8 @@ unsafe fn patch_boundary<T: 'static>(rt: &mut Rt, w: &Wire, sig: *const u8, _o: 
     }
     let (old, rect, clips) = (b.shown, b.rect, b.clips);
     b.shown = now;
-    rt.bough.set_clip_rect(clips[old as usize], bough_core::NRect::EMPTY);
-    rt.bough.set_clip_rect(clips[now as usize], rect);
+    rt.set_clip(clips[old as usize], bough_core::NRect::EMPTY);
+    rt.set_clip(clips[now as usize], rect);
 }
 
 impl<'a, T: 'static, V: 'static, L: crate::elem::Element<V>, F: crate::elem::Element<V>, C: crate::elem::Element<V>> crate::elem::Element<V> for Boundary<'a, T, V, L, F, C> {

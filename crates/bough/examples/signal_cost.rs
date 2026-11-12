@@ -102,7 +102,7 @@ fn cells(n: usize, once: bool) -> [u64; 6] {
 #[cfg(feature = "attr")]
 fn attribute() {
     let ovh = bough_metal::perf::tinstr_overhead();
-    let names = ["handler (the write)", "settle (all)", "run_head", "patch (applier)", "epoch advance", "paint_resolve", "(empty span: calibration)", "pick", "draw (whole, includes the three below)", "repair_rows", "copy_plan", "write_slot"];
+    let names = ["handler (the write)", "settle (all)", "run_head", "patch (applier)", "epoch advance", "paint_resolve", "(empty span: calibration)", "pick", "", "repair_rows", "copy_plan", "write_slot", "draw: before repair_rows", "draw: between copy_plan and the slot", "plane(0).is_clear"];
     for n in [1usize, 256] {
         let mut a = app(n, true);
         let reps = 4000u64;

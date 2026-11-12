@@ -390,3 +390,57 @@ the model does.
    masks to the projection), then the tile bitmap as rows of `stride` words (removes the 4,096 px panic).
 6. Cache-miss counters on `bough-core` with the bench lane's recipe (`bench/perf/pstat.sh`, r7/bench), at 1,
    64, 256 and 100,000 records, before and after 2.
+
+# Phase B (from 2026-11-12, on the integrated base)
+
+Rebased onto `round6` `2db93d2120` (core and store lanes merged). One conflict (`redescribe_cost.rs`, both
+sides kept). On the new base, release, same example source built against `2db93d2120` in a second worktree,
+once mode, 1 / 64 / 256 rows: idle 266 -> 101; colour 649 / 618 / 606 -> 432 / 432 / 431; colour + frame
+1,729 / 1,432 / 954 -> 1,677 / 1,390 / 911; idle + frame 323 -> 161. The colour applier alone
+(`APPLIERS=1 redescribe_cost`) is 45 instructions (store's columns and the deferred damage together; it was
+159). Idle re-description 299 per row at 1,000 rows (store's seal work), description build 60.
+
+**A measurement error of phase A, found here.** `signal_cost` writes row `7k mod n`; at 256 rows only the 25
+rows inside the 800 px window are visible, so nine writes in ten damage nothing and their frame returns at
+once. The 256-row "colour + frame" cell is therefore mostly idle frames, and the phase A sentence "a colour
+write counted with its frame is unchanged (870 -> 865)" understated the frame: the one-row cell, where every
+write is visible, is the real one-record frame, 1,245 instructions above the turn on the rebased head.
+
+## B0. Derived geometry in rank order (a correctness defect; outranked the performance steps)
+
+Reported by the bench lane (r7/bench `0dd77a69b2`, `comparisons/bough-workloads/tests/defects.rs`): two nested
+`clip_by`s and an `offset` wired to one signal; after the third write retained != fresh mount.
+
+**Mechanism, verified in the code and by four failing tests** (`crates/bough/tests/geometry_order.rs`,
+headless, comparing every record's ink and clip rect with a fresh mount):
+
+1. `Rt::add_wire` prepends, so a cell's wires run newest first. `patch_clip_by` computed the clip's absolute
+   rect at once from the parent clip's *current* rect and the space's *current* origin. The inner clip's wire
+   ran before the outer's and before the offset's: stale parent, stale origin. (The repro's first difference,
+   x = 45 against 50, is the inner clip cut to the outer's previous rect.)
+2. The same staleness without any ordering: a `clip_by` whose own signal was not written did not follow an
+   `offset` that moved its space, nor a parent `clip_by` that moved (nothing recomputed it).
+3. A `clip_by` inside an `anchor` was computed at mount with the anchor's space at (0, 0); the layout's
+   placement moved the space and the view's own clips, not the wired one (the second report: confirmed).
+4. Found while fixing: a constant `clip(..)` under an `offset` or a `clip_by` was an absolute rect fixed at
+   mount, so it followed neither.
+
+**Fix, by construction.** A clip whose inputs can change is a *derived* value with three inputs: its local
+rect, its space's origin, its parent clip's rect (`template::WClip`). Nothing writes its absolute rect
+directly. A wire stores the local rect; a space move (`set_space` / `shift_space`) and a change of a clip
+through the façade (`Rt::set_clip`) raise the lowest rank that reads them (one load: a per-space and a
+per-clip "lowest dependent rank"); `Rt::clips_settle` recomputes from the lowest raised rank upward in one
+forward pass. **Rank is mount order**: a clip's parent clip and the space it is in (and the spaces that one
+is nested in) are always mounted before it, so the pass sees every input final, whatever order the writes
+came in. It runs when the wires of a cell have run (`run_head`) and after a layout flush has placed its boxes;
+it is one compare when nothing was raised. A constant `clip` under a moving parent takes the same form (its
+rank goes on the re-description tape).
+
+Negative control: the pass in reverse rank order fails three of the four tests.
+
+Not covered, stated: derived-clip entries are never released (the table grows with mounts, like the existing
+`views` / `offsets` / `wclips` tables); a constant clip inside a virtual-list row is still an absolute rect
+(making it derived needs the release, or the entries grow with every scrolled row); tooltip clips are set
+without raising; list port clips (`region_set_port`) read their parent clip at the write and are raised to
+dependents but are not themselves derived entries. The general form (every piece of derived geometry, ports
+and view clips included, as an entry of one ranked table released with its block) is step 2's business.

@@ -254,8 +254,25 @@ pub struct Input {
     pub(crate) lhooks: Vec<(crate::ltemplate::PlaceHook, u32)>,
     /// Layout clips by parent clip id (re-cut when the parent changes).
     pub(crate) clip_kids: std::collections::HashMap<u16, Vec<u32>>,
-    /// Wired clips (`template::clip_by`): (clip id, space, parent clip).
-    pub(crate) wclips: Vec<(u16, u16, u16)>,
+    /// Derived geometry (`template::WClip`): clips whose rect is a function of a local rect, a space's origin
+    /// and a parent clip. A slab (released entries are reused) with
+    /// the live entries listed per **level** (0: the parent clip is not derived; else the parent's level + 1):
+    /// an entry's inputs are final once every lower level is. See `Rt::clips_settle`.
+    pub(crate) wclips: Vec<crate::template::WClip>,
+    pub(crate) wclip_free: Vec<u32>,
+    pub(crate) wclip_levels: Vec<Vec<u32>>,
+    /// The lowest level with a changed input since the last `clips_settle` (`u32::MAX`: none).
+    pub(crate) wclip_from: u32,
+    /// Per space and per clip id: the lowest level of a derived entry that reads it (`u32::MAX`: none; a
+    /// released reader leaves a lower bound behind, which only costs a pass), so a move of a space or a change
+    /// of a clip raises `wclip_from` with one load.
+    pub(crate) space_rank: Vec<u32>,
+    pub(crate) clip_rank: Vec<u32>,
+    /// Per clip id: its derived entry (`u32::MAX`: the clip is not derived).
+    pub(crate) clip_entry: Vec<u32>,
+    /// Clip ids of released derived entries, reused by the next ones (the clip column does not grow with
+    /// rows scrolled through a list).
+    pub(crate) clip_free: Vec<u16>,
     /// Offset groups (`template::offset`).
     pub(crate) offsets: Vec<crate::template::OffsetState>,
     /// Handles of the hover chain (dispatch chain under the pointer), nearest first.
@@ -300,6 +317,13 @@ impl Default for Input {
             lhooks: Vec::new(),
             clip_kids: Default::default(),
             wclips: Vec::new(),
+            wclip_free: Vec::new(),
+            wclip_levels: Vec::new(),
+            wclip_from: u32::MAX,
+            space_rank: Vec::new(),
+            clip_rank: Vec::new(),
+            clip_entry: Vec::new(),
+            clip_free: Vec::new(),
             offsets: Vec::new(),
             hover: Vec::new(),
             cell: NRect::EMPTY,
@@ -361,17 +385,6 @@ impl Input {
     }
     pub(crate) fn act_of_handle(&self, h: Handle) -> u32 {
         self.act_of(h)
-    }
-    pub(crate) fn tips_of(&self, v: usize) -> &[u32] {
-        &self.views[v].tips
-    }
-    /// A tooltip inside a moved view: its rect moves too (and its clip, if it is showing).
-    pub(crate) fn shift_tip(&mut self, b: &mut bough_core::Bough, t: u32, dx: i32, dy: i32) {
-        let tip = &mut self.tips[t as usize];
-        tip.rect = tip.rect.translate(dx, dy);
-        if b.clip_rect(tip.clip) != NRect::EMPTY {
-            b.set_clip_rect(tip.clip, tip.rect);
-        }
     }
     /// Is the focused element a text field (zgui's `input::typing`)?
     pub fn focused_field(&self) -> bool {
@@ -695,8 +708,9 @@ impl<T> Tooltip<T> {
 
 /// A mounted tooltip (`Input::tips`).
 pub(crate) struct Tip {
-    clip: u16,
-    pub(crate) rect: NRect,
+    /// The bubble's clip is a derived clip (`template::WClip`), hidden until the tooltip shows: it follows
+    /// the space the tooltip was mounted in like any other.
+    ck: u32,
     bubble: Handle,
     inst: u32,
     label: Handle,
@@ -755,11 +769,10 @@ impl<T> Tooltip<T> {
         let before = m.recs.len();
         self.trigger.mount(m);
         let a = act_for(m, before, 0);
-        let s = m.rt.scale;
-        let id = m.rt.bough.new_clip(NRect::EMPTY);
         let [x, y, w, h] = self.rect;
-        let o = m.rt.space(m.space);
-        let r = NRect::new((o[0] + (m.ox + x) * s).floor() as i32, (o[1] + (m.oy + y) * s).floor() as i32, (o[0] + (m.ox + x + w) * s).ceil() as i32, (o[1] + (m.oy + y + h) * s).ceil() as i32);
+        // the bubble's clip: its rect in the current space, cut to nothing above it, hidden until shown
+        let (id, ck) = m.rt.clip_derived(m.space, crate::template::edges([m.ox + x, m.oy + y, w, h], m.rt.scale), 0, true);
+        m.scope.clips.push(ck);
         let prev = m.clip;
         m.clip = id;
         let st = self.style;
@@ -782,7 +795,7 @@ impl<T> Tooltip<T> {
         }
         m.clip = prev;
         let k = m.rt.input.tips.len() as u32;
-        m.rt.input.tips.push(Tip { clip: id, rect: r, bubble, inst, label, ti, style: st, alpha: 0.0, fading: false });
+        m.rt.input.tips.push(Tip { ck, bubble, inst, label, ti, style: st, alpha: 0.0, fading: false });
         m.rt.input.acts[a as usize].tip = k;
         if let Some(v) = m.rt.input.mounting_view {
             m.rt.input.views[v as usize].tips.push(k);
@@ -1101,11 +1114,11 @@ impl<V: View> App<V> {
         }
         if act.tip != NONE {
             let k = act.tip as usize;
-            let (clip, rect, fade) = {
+            let (ck, fade) = {
                 let t = &self.rt.input.tips[k];
-                (t.clip, t.rect, t.style.fade)
+                (t.ck, t.style.fade)
             };
-            self.rt.bough.set_clip_rect(clip, if on { rect } else { NRect::EMPTY });
+            self.rt.clip_show(ck, on);
             if on && fade > 0.0 {
                 self.rt.input.tips[k].fading = true;
                 tip_alpha(&mut self.rt, k, 0.0);
@@ -1586,7 +1599,7 @@ impl<V: View> App<V> {
                 continue;
             }
             let (clip, root, inset) = (view.clip, view.root, view.inset_w);
-            self.rt.bough.set_clip_rect(clip, NRect::new(0, 0, w, h));
+            self.rt.set_clip(clip, NRect::new(0, 0, w, h));
             if root != NONE {
                 let l = &mut self.rt.lay.info[root as usize];
                 l.avail_w = w as f32 - inset;

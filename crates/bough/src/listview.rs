@@ -898,7 +898,7 @@ impl Rt {
             let (clip, pclip) = (self.lists.regs[reg].clip, self.lists.regs[reg].pclip);
             let rect = b.intersect(self.bough.clip_rect(pclip)).canon();
             if rect != self.bough.clip_rect(clip) {
-                self.bough.set_clip_rect(clip, rect);
+                self.set_clip(clip, rect);
             }
             self.lists.regs[reg].vpr = rect;
         }

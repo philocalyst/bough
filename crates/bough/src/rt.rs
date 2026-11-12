@@ -374,12 +374,14 @@ pub struct Scope {
     pub lregs: Vec<u32>,
     /// Async producers declared in this scope (`reader.rs`), revoked with it.
     pub prods: Vec<u32>,
+    /// Derived clips (`template::WClip` entries) mounted in this scope, released with it.
+    pub clips: Vec<u32>,
 }
 
 impl Scope {
     /// Heap bytes of the scope's lists (memory ledger).
     pub fn heap_bytes(&self) -> usize {
-        (self.wires.capacity() + self.texts.capacity() + self.insts.capacity() + self.runs.capacity() + self.lroots.capacity() + self.dyns.capacity() + self.lregs.capacity() + self.prods.capacity()) * 4 + self.series.capacity() * 8
+        (self.wires.capacity() + self.texts.capacity() + self.insts.capacity() + self.runs.capacity() + self.lroots.capacity() + self.dyns.capacity() + self.lregs.capacity() + self.prods.capacity() + self.clips.capacity()) * 4 + self.series.capacity() * 8
     }
 }
 
@@ -407,13 +409,18 @@ pub type RowMountFn = unsafe fn(&mut Rt, *const u8, usize, usize, &mut Vec<Recor
 
 pub struct VRegion {
     pub row_h: f32,
+    /// The port's top-left in `space` (device px from the space's origin), its width, and the mounter's
+    /// vertical origin when it was mounted (device px; a port list's `top` operand is relative to it).
     pub vp_x: f32,
     pub vp_y: f32,
+    pub port_w: f32,
+    pub oy: f32,
+    /// The space the port is in: its rows' spaces are nested in it, so a move of it carries them.
+    pub space: u16,
+    /// The port's clip, a derived clip (`template::WClip` entry `ck`): the viewport is its rect, read when
+    /// needed, and follows the space and the clip above it.
     pub clip: u16,
-    /// The viewport (absolute device px): the scroll marks are clipped to it.
-    pub vp: NRect,
-    /// The clip the port lies in (a moved port is cut to it).
-    pub parent_clip: u16,
+    pub ck: u32,
     pub depth: u16,
     pub base_pos: usize,
     pub range: Range<usize>,
@@ -868,8 +875,11 @@ impl Rt {
         let new = [v[0].round() as i32, v[1].round() as i32];
         let old = self.glyphs.spaces[s as usize];
         self.glyphs.spaces[s as usize] = new;
-        if new != old && (self.space_kids.get(s as usize).is_some_and(|k| !k.is_empty()) || self.space_regs.get(s as usize).is_some_and(|r| !r.is_empty())) {
-            self.carry_space(s, new[0] - old[0], new[1] - old[1]);
+        if new != old {
+            self.clips_space_moved(s);
+            if self.space_kids.get(s as usize).is_some_and(|k| !k.is_empty()) || self.space_regs.get(s as usize).is_some_and(|r| !r.is_empty()) {
+                self.carry_space(s, new[0] - old[0], new[1] - old[1]);
+            }
         }
     }
     /// Move space `s` (and what is nested in it) by `(dx, dy)` device px.
@@ -878,8 +888,11 @@ impl Rt {
         let sp = &mut self.glyphs.spaces[s as usize];
         sp[0] += dx;
         sp[1] += dy;
-        if (dx != 0 || dy != 0) && (self.space_kids.get(s as usize).is_some_and(|k| !k.is_empty()) || self.space_regs.get(s as usize).is_some_and(|r| !r.is_empty())) {
-            self.carry_space(s, dx, dy);
+        if dx != 0 || dy != 0 {
+            self.clips_space_moved(s);
+            if self.space_kids.get(s as usize).is_some_and(|k| !k.is_empty()) || self.space_regs.get(s as usize).is_some_and(|r| !r.is_empty()) {
+                self.carry_space(s, dx, dy);
+            }
         }
     }
     /// `s` moved by `(dx, dy)`: so do its descendants; the list regions placed in any of them keep their rows
@@ -964,7 +977,16 @@ impl Rt {
         self.space_kids[parent as usize].push(s);
         s
     }
+    /// The space `s` is nested in, if any.
+    #[inline]
+    pub(crate) fn space_parent_of(&self, s: u16) -> Option<u16> {
+        self.space_parent.get(s as usize).copied().filter(|&p| p != u16::MAX)
+    }
     pub fn free_space(&mut self, s: u16) {
+        if let Some(r) = self.input.space_rank.get_mut(s as usize) {
+            *r = u32::MAX; // a reused space is read by no derived clip yet
+        }
+
         if let Some(&p) = self.space_parent.get(s as usize) {
             if p != u16::MAX {
                 let k = &mut self.space_kids[p as usize];
@@ -1462,6 +1484,8 @@ impl Rt {
             }
             i = w.next;
         }
+        // the cell's wires have all run: geometry derived from what they wrote settles now, in rank order
+        self.clips_settle();
     }
 
     // ------------------------------------------------------------------ geometry helpers
@@ -1623,6 +1647,9 @@ impl Rt {
         for p in s.prods.drain(..) {
             self.revoke_producer(p);
         }
+        for k in s.clips.drain(..) {
+            self.clip_release(k);
+        }
         // dynamic items are cut now too (their wires may sit on live signals)
         for &d in &s.dyns {
             let mut items = std::mem::take(&mut self.dyns.parts[d as usize]);
@@ -1728,7 +1755,8 @@ impl Rt {
 
     pub fn region_row_space_origin(&self, reg: usize, row: usize) -> [f32; 2] {
         let r = &self.regions[reg];
-        [r.vp_x, r.vp_y + row as f32 * r.row_h - r.scroll_px]
+        let o = self.space(r.space);
+        [o[0] + r.vp_x, o[1] + r.vp_y + row as f32 * r.row_h - r.scroll_px]
     }
 
     /// Scroll a region: unmount rows that left the range, move the survivors through their spaces (not
@@ -1768,7 +1796,7 @@ impl Rt {
         self.regions[reg].scroll_px = new_px;
         let (base, nrec, vp) = {
             let r = &self.regions[reg];
-            (r.base_pos, r.rows.iter().map(|x| x.nrec as usize).sum::<usize>(), r.vp)
+            (r.base_pos, r.rows.iter().map(|x| x.nrec as usize).sum::<usize>(), self.bough.clip_rect(r.clip))
         };
         for i in 0..self.regions[reg].rows.len() {
             let s = self.regions[reg].rows[i].space;

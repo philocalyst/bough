@@ -1177,9 +1177,12 @@ impl Rt {
                 // text re-placed with no layout change (a sized label's same-width edit)
                 self.lay_writeback_ready();
             }
+            self.clips_settle();
             return;
         }
-        self.lay_flush_queued()
+        self.lay_flush_queued();
+        // placement moved spaces and clips: the clips derived from them settle, in rank order
+        self.clips_settle();
     }
     #[inline(never)]
     fn lay_flush_queued(&mut self) {

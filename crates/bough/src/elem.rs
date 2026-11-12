@@ -1042,37 +1042,74 @@ pub fn clip<Ch>(x: f32, y: f32, w: f32, h: f32, ch: Ch) -> Clip<Ch> {
     Clip([x, y, w, h], ch)
 }
 impl<Ch> Clip<Ch> {
-    fn enter<V>(&self, m: &mut Mounter<'_, V>) -> u16 {
+    /// The clip's edges in the current space (device px from its origin).
+    #[inline]
+    fn local<V>(&self, m: &Mounter<'_, V>) -> [f32; 4] {
+        let [x, y, w, h] = self.0;
+        let s = m.rt.scale;
+        [(m.ox + x) * s, (m.oy + y) * s, (m.ox + x + w) * s, (m.oy + y + h) * s]
+    }
+    /// The absolute rect (device px), cut to the current clip.
+    fn abs<V>(&self, m: &Mounter<'_, V>) -> [f32; 4] {
         let s = m.rt.scale;
         let o = m.rt.space(m.space);
         let [x, y, w, h] = self.0;
         let r = [o[0] + (m.ox + x) * s, o[1] + (m.oy + y) * s, o[0] + (m.ox + x + w) * s, o[1] + (m.oy + y + h) * s];
-        let prev = m.clip;
-        let r = if prev != 0 {
-            let p = m.rt.bough.clip_rect(prev).to_xyxy();
+        if m.clip != 0 {
+            let p = m.rt.bough.clip_rect(m.clip).to_xyxy();
             [r[0].max(p[0] as f32), r[1].max(p[1] as f32), r[2].min(p[2] as f32), r[3].min(p[3] as f32)]
         } else {
             r
-        };
-        m.clip = m.rt.clip_rect(r);
-        prev
+        }
     }
 }
+/// A constant clip whose space or parent clip can move after the mount (it is in a row, under an `offset`
+/// or an anchor, or under a `clip_by`) is a derived clip (`template::WClip`): its rank goes on the tape, and it follows its inputs in
+/// rank order like a wired one. Any other constant clip is a shared absolute rect (or, in a scroll view's
+/// content, the view's).
 impl<V, Ch: Element<V>> Element<V> for Clip<Ch> {
     fn update(self, m: &mut Mounter<'_, V>) {
-        let prev = self.enter(m);
+        let k = m.tape_next();
+        let prev = m.clip;
+        if k == NONE {
+            let r = self.abs(m);
+            m.clip = m.rt.clip_rect(r);
+        } else {
+            let local = self.local(m);
+            let e = &mut m.rt.input.wclips[k as usize];
+            // the shape is fixed between two descriptions: the space and the parent clip are the ones it
+            // was mounted with; only the rect can differ
+            debug_assert!(e.parent == prev && e.space == m.space);
+            if e.local != local {
+                e.local = local;
+                let l = e.level as u32;
+                m.rt.clips_raise(l);
+                m.rt.clips_settle();
+            }
+            m.clip = m.rt.input.wclips[k as usize].id;
+        }
         self.1.update(m);
         m.clip = prev;
     }
     fn mount(self, m: &mut Mounter<'_, V>) {
-        let s = m.rt.scale;
-        let o = m.rt.space(m.space);
-        let [x, y, w, h] = self.0;
-        let r = [o[0] + (m.ox + x) * s, o[1] + (m.oy + y) * s, o[0] + (m.ox + x + w) * s, o[1] + (m.oy + y + h) * s];
         let prev = m.clip;
-        // nested clips compose (intersection, in `scoped_clip`); inside a scroll view's content the clip moves
-        // with the content and is re-cut against its parent when either moves (template.rs)
-        m.clip = m.rt.scoped_clip(r, prev);
+        // any space but the root's exists because something moves it (a row, an offset, an anchor); a view's
+        // content keeps the view's own clip list
+        if m.rt.input.mounting_view.is_none() && (m.space != 0 || m.rt.clip_is_derived(prev)) {
+            let (id, k) = m.rt.clip_derived(m.space, self.local(m), prev, false);
+            m.scope.clips.push(k);
+            m.tape_push(k);
+            m.clip = id;
+        } else {
+            m.tape_push(NONE);
+            // nested clips compose (intersection, in `scoped_clip`); inside a scroll view's content the clip
+            // moves with the content and is re-cut against its parent when either moves (template.rs)
+            let s = m.rt.scale;
+            let o = m.rt.space(m.space);
+            let [x, y, w, h] = self.0;
+            let r = [o[0] + (m.ox + x) * s, o[1] + (m.oy + y) * s, o[0] + (m.ox + x + w) * s, o[1] + (m.oy + y + h) * s];
+            m.clip = m.rt.scoped_clip(r, prev);
+        }
         self.1.mount(m);
         m.clip = prev;
     }
@@ -1106,7 +1143,8 @@ pub fn virtual_list<'a, V>(
 /// # Safety
 /// `owner` points at the live owner `V`; `reg`'s row function is a `fn(&V, usize, &mut Mounter<V>)`.
 pub(crate) unsafe fn mount_row<V: 'static>(rt: &mut Rt, owner: *const u8, reg: usize, row: usize, recs: &mut Vec<RecordInit>) -> RowInfo {
-    let space = rt.alloc_space();
+    // nested in the port's space: a move of that space (an offset, an anchor) carries the row
+    let space = rt.alloc_space_in(rt.regions[reg].space);
     let origin = rt.region_row_space_origin(reg, row);
     rt.set_space(space, origin);
     let (clip, depth, f) = {
@@ -1138,17 +1176,21 @@ impl<'a, V: 'static> Element<V> for VirtualList<'a, V> {
         let s = m.rt.scale;
         let o = m.rt.space(m.space);
         let [x, y, w, h] = self.vp;
-        let (vx, vy) = (o[0] + (m.ox + x) * s, o[1] + (m.oy + y) * s);
-        let clip = m.rt.clip_rect([vx, vy, vx + w * s, vy + h * s]);
-        let vp = m.rt.bough.clip_rect(clip);
+        let _ = o;
+        // the port: a derived clip (it follows its space and the clip above it; `template::WClip`)
+        let local = crate::template::edges([m.ox + x, m.oy + y, w, h], s);
+        let (clip, ck) = m.rt.clip_derived(m.space, local, m.clip, false);
+        m.scope.clips.push(ck);
         let reg = m.rt.regions.len();
         m.rt.regions.push(VRegion {
             row_h: self.row_h * s,
-            vp_x: vx,
-            vp_y: vy,
+            vp_x: local[0],
+            vp_y: local[1],
+            port_w: local[2] - local[0],
+            oy: 0.0,
+            space: m.space,
             clip,
-            vp,
-            parent_clip: m.clip,
+            ck,
             depth: m.depth,
             base_pos: m.recs.len(),
             range: 0..0,
