@@ -257,7 +257,7 @@ fn finish<V: View>(app: &mut App<V>, report: &mut Option<Box<dyn FnOnce(&mut App
 /// buffer last shown with a full redraw of the retained state, `BOUGH_DUMP=<file>` writes it (raw BGRA).
 fn report_exit<V: View>(a: &mut App<V>) {
     if std::env::var_os("BOUGH_STATS").is_some() {
-        eprintln!("surfaces: {:?}; cpu executor: {:?}", a.surf_stats, a.cpu.stats);
+        eprintln!("surfaces: {:?}; kernel backend: {:?}", a.surf_stats, a.kernel.as_ref().map(|k| k.stats));
     }
     if std::env::var_os("BOUGH_CHECK").is_some() {
         let px = a.presented_pixels();

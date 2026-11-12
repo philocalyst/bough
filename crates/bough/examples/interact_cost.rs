@@ -82,7 +82,7 @@ fn bench<V: View>(name: &str, be: Repair, mut app: App<V>, mut step: impl FnMut(
 
 fn main() {
     let f = font();
-    for be in [Repair::Cpu, Repair::Gpu] {
+    for be in [Repair::Kernel, Repair::Gpu] {
         let cfg = || Config::new(480.0, 320.0, 2.0, f.clone());
         // the counter: its button's centre by its interactive record's box
         let app = App::new(counter::Counter { count: Signal::new(0) }, cfg(), true);

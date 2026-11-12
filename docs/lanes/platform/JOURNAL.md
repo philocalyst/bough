@@ -125,3 +125,31 @@ env is DejaVu Sans, the face gui-bench's spec names).
 * Stale build caught: after a negative control that reverted and restored source files, cargo's mtime freshness
   reused the reverted library and a passing test "failed"; the restored tree passed once rebuilt. From then on
   `cargo -Z checksum-freshness` (AGENTS.md).
+
+### 2026-11-12, M3 comparison, M4 (Vulkan), and the scroll-copy condition
+
+* **cmp-1** (gui-bench `--quick`, all 12 builds in one runner invocation on ilo-prod, 12:15-13:13Z, load 8-9 from
+  other tenants, nice 10; bough f2335ebcb8 CPU executor into wl_shm, the others the zortax lavapipe builds; table in
+  `results/cmp-1/headline.md`, identity and binary hashes in `results/cmp-1/IDENTITY.txt`): bough hover p50 11.5 ms
+  (input to commit 0.16 ms at 100 rows), idle 34.5 MiB and 0.03 ms CPU/s, scroll 6.7 ms CPU/frame, resize 15.9 ms,
+  spinner 10k 1.3 ms/frame, fine remove 14.6 ms p50; validity 44 of 47 reports (3 wake_lateness). Its typing and
+  search cells predate select-all (0c062fbe29) and are not comparable: rerun as cmp-2.
+* **M4(a), the Vulkan executor** (`bough-kernel/src/vulkan.rs`, after merging r7/compute): naga SPIR-V 1.3 of the one
+  kernel source, wgpu-hal 29 Vulkan, five storage buffers, a fence per frame, `wrap` imports caller memory as the
+  output (VK_EXT_external_memory_host). On ilo-prod lavapipe (llvmpipe, LLVM 21.1.8): `tests/exact.rs` 24 scenes,
+  9,600 CPU tiles, 3,840 GPU tiles, 0 differing words, spec hash 892af7c19e24755b, identical to the Mac's; the Vulkan
+  negative control (the shared OpConstant 16384 -> 16383) caught in 4 of 4 scenes.
+* **First Vulkan gate run: 64 of 66 segfaults.** `KernelBackend` drops `gpu` before `targets`, and a Target
+  destroyed its buffer and memory through a cloned `ash::Device` whose VkDevice was gone. Now the Gpu shares its
+  hal device (Arc) with its targets (any drop order is sound), the App releases the GPU's imports before a resize
+  frees the pages, and `vulkan_writes_wrapped_memory` covers `wrap` and the drop order.
+* **The scroll-copy condition** (the lead's question after the integrator reverted 72a87feefc): a copy is exact for a
+  record only if the executor's pixels of it are a function of the pixel's offset from the record. Untransformed
+  records are; transformed ones are not (the kernels map a pixel through the affine in absolute coordinates). Found
+  by instrumenting bough-zgui gallery-l ring 2 step 41: the one wrong pixel (157,511) belongs to a label in space 5,
+  turned 20 degrees, moving with the scrolled run; the full redraw itself differs by one level between the label's
+  two positions. The unmasked kind had marked the port's whole clip on every scroll, hiding it. `scroll_run_copy`
+  now repaints run pages carrying a transform (old and new cover) and treats static records of transformed pages as
+  band -1; untransformed pages cost nothing extra. Negative controls: each half alone fails the new core oracle test.
+  The interaction flags play no part. cmp-1's rows-scroll numbers stand (no transformed content there; the gates were
+  pixel exact).

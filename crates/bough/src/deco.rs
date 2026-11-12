@@ -230,6 +230,12 @@ impl Images {
         &self.px
     }
 
+    /// Changes whenever an image or a ramp is added (the allocation cursor only advances): an executor that
+    /// keeps its own copy of the atlas compares it with the stamp it last uploaded.
+    pub fn stamp(&self) -> u64 {
+        (self.y as u64) << 32 | self.x as u64
+    }
+
     /// Place `w` x `h` premultiplied RGBA pixels (cached by `key`); returns (x, y, w, h) in the atlas.
     pub fn put(&mut self, key: u64, w: u32, h: u32, fill: impl FnOnce(&mut [u8])) -> [u16; 4] {
         if let Some(&r) = self.cache.get(&(key, w, h)) {

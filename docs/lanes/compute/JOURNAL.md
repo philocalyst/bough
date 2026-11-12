@@ -373,3 +373,168 @@ written and a repair: GPU 1.34-1.84 ms, pool 2.3-3.0 ms, one core 12 ms (184 M i
 rounded boxes are nearly all edge). What a turn per frame adds before any pixel, in this crate alone:
 restaging 0.43 ms / 6.8 M instructions and binning 0.25 ms / 7.3 M; in the application also 10,720 writes,
 their damage and the applier. Not wired to the façade yet (`transition.rs` still applies per frame).
+
+## 4. After the lead's second brief (2026-11-12, ~03:40)
+
+Order given: (1) finish the kernel (images, ramps, transformed spaces), make the backend the default, delete
+what it replaces; (2) explicit vectors in the CPU executors' inner loops, scalar form kept as the
+specification, vector == scalar gated; (3) validate the estimator on the bench lane's five scenes with
+regret against an oracle; (4) retained staging on (page, seal); (5) transitions and user nodes through the
+façade.
+
+### 1a. Every kind in the kernel (commit after `eb06240d21`: "transformed spaces, images and ramp gradients")
+
+* A command may live in an affine space: inverse matrix in Q16, pivot and translated pivot in Q8, scale in
+  Q8 (words 20-29; a command is now 30 words, the extra ten read only when flagged). The map
+  `u = k + M^-1 (c - k - t)` uses a 16-bit-limb product (`mulq16`): WGSL has no 64-bit integers and a Q8
+  coordinate times a Q16 matrix entry does not fit 32 bits. A transformed solid becomes a square-cornered
+  box; coverage is `cov(d * scale)`; no core survives a transform.
+* Samplers: `taps` returns up to four texel indices (one atlas byte for a glyph, four for a transformed
+  glyph, four RGBA texels for an image rotated about its centre, two for a ramp, linear or radial); `shade`
+  takes the four fetched values. The GPU reads them from the atlas and a new image buffer; the CPU from the
+  same bytes.
+* Gate: 125 scenes, now with one command in six in a random rotated/scaled/sheared space and images and
+  ramps among the kinds: 0 differing words, three executors, hash `a27797983e9e39f9`; four mutants caught.
+  It passed on the first run; the only failure was my translation test not moving the pivots.
+* `kernel_backend.rs` stages kinds 4 and 5 and transformed spaces from the runtime's records; the only frame
+  it still refuses is one with out-of-range ids. Atlases are uploaded to the GPU executor when their stamps
+  change (`Atlas::stamp` in bough-text, `Images::stamp`), not per frame.
+
+### 2. Explicit vectors: predictions (written before any vector code exists)
+
+Structure: every kind's row becomes "a coverage row (u16 x 32, Q15), then one shared vector blend"; the
+coverage producers call the kernel (scalar) except where a row is separable (a shadow's 1-D profiles, a
+glyph's bytes). Vector primitives (portable SIMD, 32-bit lanes with widening multiply and rounding narrow,
+which is what both NEON and AVX2 have; a 16-bit rounding high multiply would halve it but ONE = 32768 does
+not fit a signed 16-bit lane): `store_row`, `blend_const`, `blend_cov`, `blend_rgba`.
+
+| loop | now, instr/px | predicted |
+|---|---:|---:|
+| store | ~12 | <= 4 |
+| constant translucent blend | 7.6 | <= 4.5 |
+| glyph box pixel | 13 | <= 7 |
+| shadow, square corners (non-flat rows) | 41 | <= 7 |
+| shadow, rounded (corner pixels stay scalar) | 61 | <= 30 |
+| gradient, not vertical | 24.5 | <= 12 |
+| user node | 54 | <= 30 |
+| canvas, full frame, one core | 238 ms | 110-140 ms (pool 40 -> ~20 ms; GPU is 5.5 ms) |
+| signal-write frame in the app | 55 K | <= 40 K |
+
+Kill: a formulation whose vector result differs from the scalar specification is dropped, not patched;
+the whole item is dropped if the canvas gains less than 1.3x.
+
+### 1b. The kernel backend is the default (commit `22b90254f0`)
+
+Before the flip, the whole workspace under `BOUGH_KERNEL_STRICT=1 BOUGH_REPAIR=kernel BOUGH_SETTLE_AUDIT=1
+cargo test --release --workspace --no-fail-fast` (auto executor, load 17-35): **245 passed, 3 failed**, the
+three being the two assertions on the presenter's GPU bin growth and the corrupted-region test's refusal.
+That run covers the suites with images, gradients, shadows and transforms (bough-suite, bough-zgui,
+bough-widgets, the app ports) with no fallback possible.
+
+Then: `Repair` is `{Kernel (default), Gpu}`; staging never refuses (a record indexing outside its columns is
+skipped and counted; texel indices are clamped in the kernel), so there is no fallback path at all;
+`cpu_raster.rs`, `repair.rs` (the per-machine self-check and its cache file in `$TMPDIR`),
+`tests/cpu_repair.rs`, `sabotage_blend`, `BOUGH_CPU_VERIFY` and the tile-count thresholds are deleted
+(-1,030 lines); the bin-growth assertions are pinned to `Repair::Gpu`, whose mechanism they test. After the
+flip, default environment, settle audit on: bough + bough-heavy + bough-scenes + bough-vlist **65 passed,
+0 failed**; `cargo check --workspace --all-targets` clean.
+
+Not deleted: the presenter's Metal kernels (`shader.metal` fs_bin / fs_tile / fs_copy, `oracle.metal`, the
+certificates, the bins, the pre-armed stream). Nothing reaches them by default any more, but the kernel
+backend's GPU executor is synchronous (the frame thread waits for the kernel, 0.3-6 ms on large frames) and
+the presenter's is not; they go when the kernel's executor publishes through the publisher thread. The
+whole workspace was not re-run after the flip, and no windowed session was run.
+(A commit between `eb06240d21` and this one did not build the `bough` crate: the Atlas change landed in the
+kernel crate one commit before its caller. The platform lane hit it. Every commit from here is checked with
+`cargo check --workspace --all-targets`.)
+
+### 2. Explicit vectors: results (`src/simd.rs`; `kbench micro`, dist, M3 Pro, load 9-13, one run)
+
+`tests/simd.rs` holds each loop equal to the scalar kernel on 20,000 random rows with 0 and ONE in every
+position; `tests/exact.rs` (125 scenes) is unchanged at 0 differing words and the same hash, on the first
+compile. Instructions per tile-command (1,024 pixels), non-flat / flat:
+
+| kind | scalar | vector | predicted (per px) | verdict |
+|---|---:|---:|---|---|
+| solid, translucent | 7,821 / 474 | 5,589 / 609 | <= 4.5 | 5.5: missed |
+| rounded box r 8 | 13,184 / 1,540 | 13,093 / 1,767 | | unchanged (edge distance is scalar) |
+| shadow, square corners | 42,032 / 20,791 | 12,412 / 3,899 | <= 7 | 12: missed, 3.4x better |
+| shadow, rounded | 62,804 / 37,299 | 27,619 / 19,480 | <= 30 | met |
+| gradient at 57 degrees | 24,522 | 31,896 | <= 12 | **killed**: a colour row plus a coverage row was 50 K; the scalar form is back |
+| user node | 54,127 | 52,395 | <= 30 | not improved |
+| text, 8 glyph boxes | 22,404 | 18,144 | <= 7 per px | 10.5: missed |
+| canvas, full frame, one core | 238 ms, 2.86 G | 108-115 ms, 1.99-2.03 G | 110-140 ms | met (2.1x) |
+| canvas, 10 workers | 40 ms | 18-27 ms | ~20 ms | met |
+| gridtext, full frame, one core | 4.03 ms, 78.0 M | 3.65 ms, 67.7 M | | -13 % |
+| signal-write frame (ring 4) | 54-55 K | 51.0-52.9 K | <= 40 K | missed |
+
+How far the canvas gap closed: one core 43x the GPU's 5.5 ms -> 20x; ten workers 7x -> 3.3-5x. The cut did
+most of what could be done (47 G -> 2.9 G); vectors halved the rest. What remains on a core is per-pixel
+distance evaluation (rounded corners, shadow corner terms, gradients, user nodes), which is what the GPU is
+for: the estimator sends that frame to the GPU from 16 tiles up.
+Flat tiles got slightly dearer per command (277 -> 515 instructions for an opaque solid: per-command setup
+of the row machinery); 0.01 us, not chased.
+
+Signal-write frame by ring size (`BOUGH_RING`, default backend, slope OPS 2000 -> 8000, two repetitions):
+ring 1 (buffer age 1, what a window sees) **43.5-44.3 K**; ring 2 47.1 K; ring 4 52.6-52.9 K; the presenter's
+kernels 107.4-108.8 K. CPU time 2.9 us median. A text tile costs about 11 K here (zeroing, shading and
+storing all 32 rows of a tile with glyphs); frames at ring 4 repair 2-6 tiles.
+
+### 0. Merged r7/platform (`3b74924d50`)
+
+The portable target path (`App::draw_target`, wl_shm and offscreen targets) now draws through the kernel
+backend only; `cpu_raster.rs` and `repair.rs` are gone on every platform. macOS: workspace check clean,
+bough-kernel tests pass. The Linux side of the merge (two stats prints in `wayland.rs` and
+`bough-guibench`) was edited blind. **No windowed run was made**: the host shows its window with
+`orderFrontRegardless` on the active Space and there is no switch to place it elsewhere; adding one is a
+host change I did not want to make unreviewed under the no-focus rule. The publisher and present paths are
+covered headlessly by `comparisons/bough-scenes/tests/present.rs`, which passes.
+
+### The table: themed operands resolved by the kernel (interface for core; approved design)
+
+**What it is.** A small table of 32-bit pairs that travels with the frame. A command may say "my colour is
+entry i" instead of carrying a colour; the kernel resolves it when it loads the command. A theme switch is a
+table write plus damage; no record is re-applied, restaged or rebinned unless an entry's opacity class
+changes.
+
+**Where it lives.** At the end of the program words (`Prog`): header word 9 is the table's word offset, word
+10 its last entry index. No new buffer and no new binding, so the Metal and Vulkan executors do not change;
+the program is rewritten every frame anyway, and the table is 2 words per entry (512 words for 256
+entries). On the CPU it is `Scene::table: Vec<u32>`, copied into the program by the binner.
+
+**Entry formats.** Colour: premultiplied Q15 RGBA, 4 x u16 in two words (`stage::table_color(rgba8)`);
+writing the table is where the premultiply happens, once. Scalar: a Q15 value in the low 16 bits of the
+first word (`stage::table_scalar`), used as an opacity step.
+
+**Command format (32 words, was 30).** Word 0 flags `F_T_PM` (0x80000: the first colour is entry
+`word29 & 0xffff`), `F_T_PM2` (0x100000: the second colour is entry `word29 >> 16`), `F_T_OP` (0x200000:
+both colours are scaled by the scalar entry `word30 & 0xffff`). Word 31 is spare. Staging:
+`Scene::push_tinted(cmd, Tint { pm, pm2, opacity })`.
+
+**Cost.** Per command load: one flag test when untinted; two to six words read and at most eight Q15
+products when tinted. Per pixel: nothing (a command's colour is per command). On the CPU the fast executor
+loads a command once per tile it touches.
+
+**Animated themes.** The presenter writes the *effective* table each frame:
+`stage::table_mix(from, to, t)` (the kernel's own `mix4u`, so every executor sees the same integers); 256
+entries are about 3 K instructions. The kernel does not interpolate tables itself.
+
+**Exactness.** The table is input data like the atlas; nothing about it is executor-specific. The gate
+tints a share of its commands and also checks that a tinted scene equals the same scene staged with the
+table's colours baked in.
+
+**Occlusion.** The cut asks `opaque(cmd)` of the *resolved* command, at bin time. Binning is per frame
+today, so a table write that makes an entry opaque or translucent is simply seen by the next bin. When tile
+programs are retained (keyed on page seals), their key must also include the opacity class of every entry
+they use: the backend will expose `opacity_bits() -> [u64; 4]` (one bit per entry: resolved alpha == ONE)
+and a retained program is valid while the bits of its entries are unchanged.
+
+**Damage (core's side).** A table write must damage the tiles of the records that use the entry. The kernel
+side needs nothing; the suggested shape is a 64-bit bloom per page, bit `i & 63` set for every entry index a
+record of the page names (`stage::bloom(index) -> u64`), so a write to entry i damages the pages whose bloom
+has that bit.
+
+**What the table does not carry.** Radii and stroke widths. They are geometry: a command's window, core and
+root shift are derived from them at staging, so a radius that changes without restaging would invalidate the
+core (identity 3) unless the record also declared an upper bound and was staged for it. That is possible
+later (stage with the bound, resolve the value at load) but it is not free, so it is not in this change.

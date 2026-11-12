@@ -67,12 +67,7 @@ fn run(ring: usize) -> Vec<u8> {
     });
     a.frame();
     check(&mut a, "rows added");
-    // the x86-64-v3 twin (AVX2 + F16C spans and store) against the scalar loop: the same bytes
-    let fast = a.reference_pixels();
-    a.cpu.scalar = true;
-    let slow = a.reference_pixels();
-    a.cpu.scalar = false;
-    assert!(fast == slow, "ring {ring}: the vector tile loop differs from the scalar one");
+    // (the vector loops are held to the scalar kernel in bough-kernel's own tests: tests/simd.rs, tests/exact.rs)
     a.presented_pixels()
 }
 

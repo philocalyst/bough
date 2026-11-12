@@ -56,10 +56,34 @@ fn executors_agree() {
                 panic!("seed {seed} now {now} cut {cut} flat {flat} threads {}: pixel ({x},{y}) fast {a:08x} spec {b:08x}", extra + 1);
             }
         }
+        // themed operands: the table resolved by the kernel equals the same colours staged into the commands
+        let mut out = vec![0u32; words];
+        cpu::naive(&scene.baked(), FW, FH, &atlas, now, &mut out, STRIDE);
+        assert!(first_diff(&out, &spec).is_none(), "seed {seed}: tinted != baked");
         // the per-tile specification (the oracle large scenes use)
         let mut out = vec![0u32; words];
         cpu::reference(&scene, FW, FH, &atlas, now, &mut out, STRIDE, &pool);
         assert!(first_diff(&out, &spec).is_none(), "seed {seed}: reference != naive");
+        // a pixel clip: one command changes colour; repairing only its window (inside the tiles it touches)
+        // over the old frame gives the new frame
+        {
+            let mut r = scenes::Rng(seed * 7 + 3);
+            let mut s2 = scene.clone();
+            let j = (1 + r.u(s2.len() as u32 - 1)) as usize * stage::WORDS;
+            if s2.words[j] & (stage::F_TO | k::F_ANIM) == 0 {
+                (s2.words[j + 16], s2.words[j + 17]) = (0x2000_1000, 0x7000_3000);
+                let win = [(s2.words[j + 4] as i16) as i32, ((s2.words[j + 4] >> 16) as i16) as i32, (s2.words[j + 5] as i16) as i32, ((s2.words[j + 5] >> 16) as i16) as i32];
+                let tiles: Vec<(u16, u16)> = (0..8u16).flat_map(|y| (0..10u16).map(move |x| (x, y))).filter(|&(x, y)| (x as i32) * 32 < win[2] && (x as i32 + 1) * 32 > win[0] && (y as i32) * 32 < win[3] && (y as i32 + 1) * 32 > win[1]).collect();
+                let mut want = vec![0u32; words];
+                cpu::naive(&s2, FW, FH, &atlas, now, &mut want, STRIDE);
+                let mut out = spec.clone();
+                bin.bin(&s2, FW, FH, STRIDE as u32, &atlas, now, &Damage::Tiles(&tiles), true, &mut prog);
+                for extra in [0, 2] {
+                    cpu::raster(&s2, &prog, &atlas, &mut out, STRIDE, &pool, extra, Opt::clipped(win));
+                    assert!(first_diff(&out, &want).is_none(), "seed {seed}: clipped repair != new frame ({extra} workers)");
+                }
+            }
+        }
         // a damaged subset: its tiles equal the specification, every other word is untouched
         let mut r = scenes::Rng(seed + 99);
         let sub: Vec<(u16, u16)> = (0..8u16).flat_map(|y| (0..10u16).map(move |x| (x, y))).filter(|_| r.u(3) == 0).collect();

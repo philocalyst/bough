@@ -287,9 +287,9 @@ fn animate_in_throughput_mode_is_pixel_exact() {
                 assert!(px == r, "ring {ring} frame {t}: presented != full redraw");
             }
         }
-        // the GPU's row bins (the CPU executor has none)
+        // the presenter's Metal kernels only: their row bins (the kernel backend's tile lists have no capacity)
         #[cfg(target_os = "macos")]
-        if ring == 3 {
+        if ring == 3 && app.repair == bough::app::Repair::Gpu {
             assert!(app.gpu.as_ref().unwrap().bin_growths > 0);
         }
         let px = app.presented_pixels();

@@ -517,7 +517,7 @@ pub fn headless<V: Bench>(view: V, op: &str, o: Opts) {
             a.frames
         );
         if std::env::var_os("BOUGH_STATS").is_some() {
-            eprintln!("stats repaired_tiles(last)={} surfaces={:?} cpu={:?}", a.repaired_tiles, a.surf_stats, a.cpu.stats);
+            eprintln!("stats repaired_tiles(last)={} surfaces={:?} cpu={:?}", a.repaired_tiles, a.surf_stats, a.kernel.as_ref().map(|k| k.stats));
         }
         return;
     }

@@ -71,7 +71,7 @@ pub mod kernel {
     pub const ONE: u32 = 32768u32;
     pub const HALF: u32 = 16384u32;
     /// Words of a packed command (`load`).
-    pub const CMD_WORDS: u32 = 30u32;
+    pub const CMD_WORDS: u32 = 32u32;
     /// Words of the program header; the tile table (4 words per tile: x, y, list offset, list length) follows.
     pub const PROG_HDR: u32 = 12u32;
     pub const K_SOLID: u32 = 0u32;
@@ -91,6 +91,13 @@ pub mod kernel {
     /// Word 0 flag: the command lives in a transformed space (words 20..29: the inverse matrix in Q16, the
     /// pivot and the translated pivot in Q8, the scale in Q8).
     pub const F_XF: u32 = 0x40000u32;
+    /// Word 0 flags: a colour is an entry of the frame's table (the program's tail), resolved when the
+    /// command is loaded. `F_T_PM`: the first colour is entry `word29 & 0xffff`; `F_T_PM2`: the second is
+    /// entry `word29 >> 16`; `F_T_OP`: both colours are scaled by the Q15 scalar entry `word30 & 0xffff`.
+    pub const F_T_PM: u32 = 0x80000u32;
+    pub const F_T_PM2: u32 = 0x100000u32;
+    pub const F_T_OP: u32 = 0x200000u32;
+    pub const F_T_ANY: u32 = 0x380000u32;
     /// Word 0 flag: the command is a transition. The next slot holds its end state; word 3 of this slot is
     /// the start time and word 3 of the next is (duration << 2 | ease), times in presenter ticks.
     pub const F_ANIM: u32 = 0x10000u32;
@@ -658,6 +665,29 @@ pub mod kernel {
             xs: xs as i32,
         }
     }
+    /// A command with its themed operands resolved: `flags` is word 0, `tpm` / `tpm2` the table's colours for
+    /// it and `op` the table's opacity scalar (each read only if its flag is set).
+    pub fn tint(c: Cmd, flags: u32, tpm: Vec4u, tpm2: Vec4u, op: u32) -> Cmd {
+        let mut pm = c.pm;
+        let mut pm2 = c.pm2;
+        if (flags & F_T_PM) != 0u32 {
+            pm = tpm;
+        }
+        if (flags & F_T_PM2) != 0u32 {
+            pm2 = tpm2;
+        }
+        if (flags & F_T_OP) != 0u32 {
+            pm = scale(pm, min(op, ONE));
+            pm2 = scale(pm2, min(op, ONE));
+        }
+        Cmd { win: c.win, core: c.core, b: c.b, par: c.par, rad: c.rad, pm: pm, pm2: pm2, xi: c.xi, xk: c.xk, xs: c.xs }
+    }
+    /// Table entry `i` (two words: a premultiplied Q15 colour, or a scalar in its first component), clamped
+    /// to the table (PROG words 9 and 10: its offset and last entry).
+    pub fn table(i: u32) -> Vec4u {
+        let at = get!(PROG)[9u32] + 2u32 * min(i, get!(PROG)[10u32]);
+        unpack_u16x4(get!(PROG)[at], get!(PROG)[at + 1u32])
+    }
     /// The transition whose two states are `a` and `b` (heads `ha`, `hb`) as it is at `now`.
     pub fn timed(a: Cmd, b: Cmd, ha: Vec4u, hb: Vec4u, now: u32) -> Cmd {
         at(a, b, progress(now, ha.w(), hb.w() >> 2u32, hb.w() & 3u32))
@@ -665,13 +695,24 @@ pub mod kernel {
     pub fn word4(w: u32) -> Vec4u {
         vec4u(get!(CMDS)[w], get!(CMDS)[w + 1u32], get!(CMDS)[w + 2u32], get!(CMDS)[w + 3u32])
     }
-    pub fn load(i: u32) -> Cmd {
+    pub fn load_raw(i: u32) -> Cmd {
         let w = i * CMD_WORDS;
         let h = word4(w);
         if (h.x() & F_XF) == 0u32 {
             return decode(h, word4(w + 4u32), word4(w + 8u32), word4(w + 12u32), word4(w + 16u32), splat(0u32), splat(0u32), 0u32);
         }
         decode(h, word4(w + 4u32), word4(w + 8u32), word4(w + 12u32), word4(w + 16u32), word4(w + 20u32), word4(w + 24u32), get!(CMDS)[w + 28u32])
+    }
+    /// Slot `i` with its themed operands resolved against the table.
+    pub fn load(i: u32) -> Cmd {
+        let c = load_raw(i);
+        let w = i * CMD_WORDS;
+        let flags = get!(CMDS)[w];
+        if (flags & F_T_ANY) == 0u32 {
+            return c;
+        }
+        let ix = get!(CMDS)[w + 29u32];
+        tint(c, flags, table(ix & 65535u32), table(ix >> 16u32), table(get!(CMDS)[w + 30u32] & 65535u32).x())
     }
     /// Command `i` as it is at `now`.
     pub fn load_at(i: u32, now: u32) -> Cmd {
