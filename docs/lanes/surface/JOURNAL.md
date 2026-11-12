@@ -266,3 +266,55 @@ Cost (`sheet_x`, 10,000 rows, `dist`, M3 Pro, load 14, against `feb3214293`): ho
 pointer between headers 8,294 -> 9,246, pointer on the same record 665 -> 717, exposed edit 1,605 -> 1,627, scroll
 three rows 5,387 -> 5,373; idle, theme and select unchanged. About 2 µs per hover against the 50 µs target of
 Amendment 5. `__text` +5.9 KB.
+
+## 5. Accessibility as a projection (2026-11-12; `crates/bough-ax`, `a8e6dcc8c5`)
+
+Predictions written before the tests ran: (A1) an app that does not use it pays nothing (it is a crate of its
+own, generic over the view; nothing in the core calls it); (A2) the tree kept by applying deltas equals a fresh
+projection after every step of a random script, and two mutants fail that; (A3) a theme, a hover and the frames
+of a motion project nothing; (A4) the 100,000-row sheet publishes under 2,000 nodes and reports 100,000 rows;
+any row on demand with nothing materialised; (A5) an edit changes at most three nodes. All held (tests below);
+A1 holds by construction (not linked), the core additions it needed are reflection's (section 2) and two world
+methods (`activate`, `scroll_into_view`).
+
+What is decided here, as the brief asked:
+* **100,000 rows not materialised**: a list node says its row count; it publishes the exposed window and one page
+  on each side (a screen reader's next and previous rows are there before it asks); any other row is described
+  on demand from the view's row function (`Ax::rows`), with nothing materialised and nothing scrolled; the view
+  scrolls only on an explicit action (`World::scroll_into_view`, the scroll word written, the next settle exposes
+  the row). Focus may sit on a row that scrolled away: the core keeps it as (store, site, row).
+* **In motion**: the projection evaluates everything under the settled block (the clock run 2^30 ahead, what
+  reduced motion shows), so it reports where things will rest, and frames cost it nothing: it only runs after
+  turns, and its "nothing changed" test ignores `Time` and the pointer words. Reduced motion itself is the core's
+  (`Env` bit: `Time` runs ahead; loops read the bit, raster's leaf).
+* **No annotation**: roles from handlers (click: button named by the text inside it; text: input whose value is
+  the text inside it; drag: splitter; focusable: group), lists of items or grids (rows of several texts) with
+  column headers found by alignment, selection from an operand that compares a block word with the record's own
+  constant (`x_eq(U(w), Rec)` in its code) or from a selection outline at rest on the record, focus from the
+  core's `Focus`, polite live regions for texts that read application words, announcements for rows appended.
+* **Deltas by comparison**, from the same change detection as the pixels: if the words the tree read, every
+  list's (window, count, relation version) and the focus are unchanged, nothing is done; otherwise the published
+  set is projected again and compared node by node.
+
+Not done: platform adapters (macOS AX, AT-SPI); text selection and editing semantics (the text lane's seam: the
+model has a value, not a selection); selection read from an opaque Rust closure (it needs the typed `eq` form,
+which the façade's `sig!(..).eq(..)` is); a node's bounds for a record in a list that moves (detached rows are
+described without their paint offset).
+
+## 6. The event path's cost (2026-11-12; `examples/events_x.rs`, `dadb85a941`)
+
+`bench/results/r8/surface/events_x-mac.tsv`; M3 Pro, `dist`, load 28. A step is the entry point and the settle
+after it; dispatch is the entry point alone; instructions are the same at 100, 10,000 and 1,000,000 rows.
+
+| step | dispatch | with settle | cycles warm | cycles after a 64 MiB sweep |
+|---|---:|---:|---:|---:|
+| pointer onto another row (leave, enter) | 1,772 | 2,614 | 483 | 21,148 |
+| pointer within the same row | 948 | 994 | 195 to 424 | 12,063 |
+| click on a row (selection word) | 3,992 | 4,884 | 908 | 26,982 |
+| key, nothing focused | 96 | 301 | 62 | 7,587 |
+| text into the focused field (a relation of one row) | 1,014 | 1,756 | 348 | 19,171 |
+
+Warm, every step is under 0.3 µs; cold (every line it touches from memory) under 10 µs on this loaded host.
+The click was 5,647 instructions before one walk under the pointer was made to serve press, focus, pick and
+hover (four walks became two). The cold column is an upper bound; the line count itself wants Intel's LLC
+events (mothership), not run.
