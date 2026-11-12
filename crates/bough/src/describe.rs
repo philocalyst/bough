@@ -172,7 +172,30 @@ pub(crate) fn update_dyn<V, E: Element<V>>(m: &mut Mounter<'_, V>, items: impl I
     let mut items = items;
     // one item of look-ahead (insertion detection below)
     let mut pending: Option<E> = None;
-    while let Some(e) = pending.take().or_else(|| items.next()) {
+    loop {
+        // OPUS EXPERIMENT (IDEAS-OPUS.md, finding A1): the hot path (an item described exactly as retained)
+        // runs in its own loop, where `e` has one source (`items.next()`), so it is never merged with the
+        // look-ahead slot and never copied into it. Only a mismatch leaves this loop.
+        let e = match pending.take() {
+            Some(e) => e,
+            None => {
+                let mut next = None;
+                for e in items.by_ref() {
+                    if k < old.len() && old[k].key == e.dyn_key() && sealed_as(&old[k], &e, &seals, &m.rt.lay.descs, cx).0 {
+                        m.pos += old[k].nrec as usize;
+                        m.kid += old[k].nkid as usize;
+                        k += 1;
+                        continue;
+                    }
+                    next = Some(e);
+                    break;
+                }
+                match next {
+                    Some(e) => e,
+                    None => break,
+                }
+            }
+        };
         if k < old.len() && old[k].key != e.dyn_key() {
             // a keyed item that changed identity: replaced in place (its run out, the new one in)
             let key = e.dyn_key();
