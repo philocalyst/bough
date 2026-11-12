@@ -656,6 +656,10 @@ impl Bough {
     /// The current epoch's plane, for writers that produce tile marks themselves (bough-text's
     /// labels OR their tile rows in at update time; [`Plane::or_rows`] keeps its row band exact).
     #[inline(always)]
+    /// Pixel bounds of the damage a repair of `age` must redraw (`DamageRing::px_bounds`).
+    pub fn damage_px<'a>(&self, age: u32, out: &'a mut [NRect; crate::damage::RING * crate::damage::PX_MAX]) -> Option<&'a [NRect]> {
+        self.ring.px_bounds(age, out)
+    }
     pub fn plane_mut(&mut self) -> &mut Plane {
         self.ring.cur_mut()
     }
@@ -3034,6 +3038,10 @@ impl Bough {
         self.dirty.drain(crate::dirty::PAINT, |base, mut m| {
             if !full && any && base & 0xfff == 0 {
                 full = out.covers(win, all_rows);
+                if full {
+                    // the records skipped from here on have no pixel bound
+                    out.pn = crate::damage::PX_OVER;
+                }
             }
             while m != 0 {
                 let idx = base + m.trailing_zeros();
@@ -3072,7 +3080,7 @@ impl Bough {
                     continue;
                 }
                 let (tx0, ty0, tx1, ty1) = crate::damage::tile_span(v);
-                out.mark_span(tx0, ty0, tx1, ty1);
+                out.mark_span_px(tx0, ty0, tx1, ty1, v);
                 any = true;
             }
         });

@@ -138,7 +138,7 @@ pub fn mark<P: Marks + ?Sized>(plane: &mut P, x0: i32, y0: i32, x1: i32, y1: i32
     if m == 0 || y1 <= y0 {
         return;
     }
-    plane.or_rows(r0, r1, m);
+    plane.or_rows_px(r0, r1, m, [x0, y0, x1, y1]);
 }
 
 /// `plane[r] |= m` for `r` in `r0..=r1` (clamped to the plane; `r0 >= 0`).

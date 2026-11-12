@@ -34,7 +34,15 @@ pub struct Plane {
     pub solid: bool,
     /// Tile rows of the window this plane belongs to.
     pub n: u32,
+    /// Pixel bounds of the marks: every damaged pixel lies in one of `px[..pn]` (each inside the marked
+    /// tiles), so a repair may leave the rest of a marked tile alone. `pn == PX_OVER`: a mark came without
+    /// its pixels (a move, a shifted plane, a raw tile mask): only the tiles bound the damage.
+    pub px: [NRect; PX_MAX],
+    pub pn: u8,
 }
+/// Pixel rects kept per epoch; a further one is merged into the entry it grows least.
+pub const PX_MAX: usize = 4;
+pub const PX_OVER: u8 = 255;
 
 impl Default for Plane {
     fn default() -> Self {
@@ -61,11 +69,11 @@ fn colmask(tx0: u32, tx1: u32) -> u128 {
 }
 
 impl Plane {
-    pub const EMPTY: Plane = Plane { rows: [0; MAX_TILES_Y], y0: MAX_TILES_Y as u32, y1: 0, solid: false, n: 0 };
+    pub const EMPTY: Plane = Plane { rows: [0; MAX_TILES_Y], y0: MAX_TILES_Y as u32, y1: 0, solid: false, n: 0, px: [NRect::EMPTY; PX_MAX], pn: 0 };
 
     pub fn new(n_rows: u32) -> Plane {
         assert!(n_rows as usize <= MAX_TILES_Y);
-        Plane { rows: [0; MAX_TILES_Y], y0: MAX_TILES_Y as u32, y1: 0, solid: false, n: n_rows }
+        Plane { rows: [0; MAX_TILES_Y], y0: MAX_TILES_Y as u32, y1: 0, solid: false, n: n_rows, px: [NRect::EMPTY; PX_MAX], pn: 0 }
     }
 
     /// Row range `[lo, hi)` outside which every row is zero (empty range when clear).
@@ -78,6 +86,58 @@ impl Plane {
     /// The common case (span inside one 64-bit word) is one load-OR-store per tile row.
     #[inline(always)]
     pub fn mark_span(&mut self, tx0: u32, ty0: u32, tx1: u32, ty1: u32) {
+        self.pn = PX_OVER;
+        self.tiles_span(tx0, ty0, tx1, ty1);
+    }
+
+    /// `mark_span` for the tiles of the (canonical, window-clipped, non-empty) pixel rect `r`, which is kept
+    /// as a pixel bound.
+    #[inline(always)]
+    pub fn mark_span_px(&mut self, tx0: u32, ty0: u32, tx1: u32, ty1: u32, r: NRect) {
+        self.px_push(r);
+        self.tiles_span(tx0, ty0, tx1, ty1);
+    }
+
+    /// The pixel bounds of this plane's marks, when every mark came with its pixels.
+    #[inline]
+    pub fn px_rects(&self) -> Option<&[NRect]> {
+        (self.pn != PX_OVER).then(|| &self.px[..self.pn as usize])
+    }
+
+    #[inline(always)]
+    pub fn px_push(&mut self, r: NRect) {
+        let n = self.pn as usize;
+        if n >= PX_MAX {
+            return self.px_push_slow(r);
+        }
+        // the usual repeats: the same record written twice, a glyph inside its label
+        if n != 0 && self.px[n - 1].union(r) == self.px[n - 1] {
+            return;
+        }
+        self.px[n] = r;
+        self.pn = n as u8 + 1;
+    }
+    #[cold]
+    fn px_push_slow(&mut self, r: NRect) {
+        if self.pn == PX_OVER {
+            return;
+        }
+        let area = |r: NRect| {
+            let [x0, y0, x1, y1] = r.to_xyxy();
+            (x1 - x0) as i64 * (y1 - y0) as i64
+        };
+        let (mut best, mut grow) = (0, i64::MAX);
+        for (i, e) in self.px.iter().enumerate() {
+            let g = area(e.union(r)) - area(*e);
+            if g < grow {
+                (best, grow) = (i, g);
+            }
+        }
+        self.px[best] = self.px[best].union(r);
+    }
+
+    #[inline(always)]
+    fn tiles_span(&mut self, tx0: u32, ty0: u32, tx1: u32, ty1: u32) {
         debug_assert!(tx0 < tx1 && ty0 < ty1 && tx1 as usize <= MAX_TILES_X && ty1 as usize <= MAX_TILES_Y);
         self.solid = false;
         self.y0 = self.y0.min(ty0);
@@ -110,6 +170,24 @@ impl Plane {
         if r1 < r0 || m == 0 {
             return;
         }
+        self.pn = PX_OVER;
+        self.or_rows_raw(r0, r1, m);
+    }
+
+    /// `or_rows` for the tiles of pixel rect `r` (canonical, non-empty), kept as a pixel bound.
+    #[inline(always)]
+    pub fn or_rows_px(&mut self, r0: i32, r1: i32, m: u128, r: NRect) {
+        let r0 = r0.max(0);
+        let r1 = r1.min(self.n as i32 - 1);
+        if r1 < r0 || m == 0 {
+            return;
+        }
+        self.px_push(r);
+        self.or_rows_raw(r0, r1, m);
+    }
+
+    #[inline(always)]
+    fn or_rows_raw(&mut self, r0: i32, r1: i32, m: u128) {
         self.solid = false;
         self.y0 = self.y0.min(r0 as u32);
         self.y1 = self.y1.max(r1 as u32 + 1);
@@ -122,7 +200,7 @@ impl Plane {
     #[inline(always)]
     pub fn mark(&mut self, r: NRect) {
         let (tx0, ty0, tx1, ty1) = tile_span(r);
-        self.mark_span(tx0, ty0, tx1, ty1);
+        self.mark_span_px(tx0, ty0, tx1, ty1, r);
     }
 
     /// Add a rect clipped to `window` (no-op if the clipped rect is empty).
@@ -215,6 +293,7 @@ impl Plane {
         self.y0 = MAX_TILES_Y as u32;
         self.y1 = 0;
         self.solid = false;
+        self.pn = 0;
     }
 
     /// `self |= o`.
@@ -228,6 +307,14 @@ impl Plane {
         self.y1 = self.y1.max(o.y1);
         self.solid = false;
         self.n = self.n.max(o.n);
+        match o.px_rects() {
+            Some(rs) => {
+                for &r in rs {
+                    self.px_push(r);
+                }
+            }
+            None => self.pn = PX_OVER,
+        }
     }
 
     #[inline]
@@ -250,6 +337,7 @@ impl Plane {
     /// 1-2 tiles a 32-px tile covers after a non-multiple-of-32 move), clipped to the span; the original marks
     /// stay (a mark from a record that did not scroll is still where it was). O(rows of the span).
     pub fn shift_within(&mut self, c: NRect, dx: i32, dy: i32) {
+        self.pn = PX_OVER;
         let c = c.canon();
         if c.is_empty() || (dx == 0 && dy == 0) {
             return;
@@ -407,7 +495,7 @@ impl DamageRing {
         let tx1 = (((!nx1) >> TILE_SHIFT) + 1).min(self.tw as i32) as u32;
         let ty1 = (((!ny1) >> TILE_SHIFT) + 1).min(self.rows as i32) as u32;
         // SAFETY: `cur` points into `planes` (boxed, never moved) at index epoch % RING.
-        unsafe { (*self.cur).mark_span(tx0, ty0, tx1, ty1) };
+        unsafe { (*self.cur).mark_span_px(tx0, ty0, tx1, ty1, r.intersect(self.window)) };
     }
     /// Mark a canonical rect that lies inside the window (coverage already clipped by the caller,
     /// as every binding computes it): no clip, no clamp. Empty rects mark nothing.
@@ -420,7 +508,7 @@ impl DamageRing {
         }
         let (tx0, ty0, tx1, ty1) = tile_span(r);
         // SAFETY: as in `add`; an inside rect's span is within the window's tiles.
-        unsafe { (*self.cur).mark_span(tx0, ty0, tx1, ty1) };
+        unsafe { (*self.cur).mark_span_px(tx0, ty0, tx1, ty1, r) };
     }
     /// A new window size (up to 4096 x 4096): window, tile columns and rows. The planes keep their marks
     /// (rows past the new height are never read); the caller damages what the resize repaints.
@@ -522,7 +610,7 @@ impl DamageRing {
             d.clear();
             let (lo, hi) = s.occ_range();
             d.rows[lo..hi].copy_from_slice(&s.rows[lo..hi]);
-            (d.y0, d.y1, d.solid, d.n) = (s.y0, s.y1, s.solid, s.n);
+            (d.y0, d.y1, d.solid, d.n, d.px, d.pn) = (s.y0, s.y1, s.solid, s.n, s.px, s.pn);
         }
         self.moves = o.moves;
         self.scroll_bits = o.scroll_bits;
@@ -533,6 +621,19 @@ impl DamageRing {
     pub fn cur_mut(&mut self) -> &mut Plane {
         // SAFETY: `cur` points into `planes` (boxed, never moved); &mut self is exclusive.
         unsafe { &mut *self.cur }
+    }
+    /// The pixel bounds of the last `age` epochs' damage (1..=RING), into `out`: every pixel a repair of that
+    /// age must redraw lies in one of the returned rects (which may overlap). `None`: some mark of those
+    /// epochs came without its pixels (a move, a raw tile mask); the tiles are the only bound.
+    pub fn px_bounds<'a>(&self, age: u32, out: &'a mut [NRect; RING * PX_MAX]) -> Option<&'a [NRect]> {
+        let mut n = 0;
+        for back in 0..age.min(RING as u32) {
+            for &r in self.plane(back).px_rects()? {
+                out[n] = r;
+                n += 1;
+            }
+        }
+        Some(&out[..n])
     }
     /// The plane of the epoch `back` epochs ago (0 = current).
     pub fn plane(&self, back: u32) -> &Plane {
