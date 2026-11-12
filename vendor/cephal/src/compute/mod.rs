@@ -351,7 +351,7 @@ pub fn compute_uncached<T: LayoutTree + CacheAccess + ?Sized>(
         (Display::None, _) => compute_hidden_layout(tree, node),
         // An empty grid still has its explicit tracks, unless it stands for measured content.
         #[cfg(feature = "grid")]
-        (Display::Grid, false) if !tree.is_measured_leaf(node) => crate::compute::grid::compute_grid_layout(tree, node, inputs),
+        (Display::Grid, false) if !tree.is_measured_leaf(node) => tree.compute_grid(node, inputs),
         (_, false) => tree.compute_leaf(node, inputs, block_ctx),
         (Display::Block, true) => block_observing(tree, |tree| block::compute_block_layout(tree, node, inputs, block_ctx)),
         (Display::FlowRoot, true) => block_observing(tree, |tree| block::compute_block_layout(tree, node, inputs, None)),
@@ -359,7 +359,7 @@ pub fn compute_uncached<T: LayoutTree + CacheAccess + ?Sized>(
         (Display::Flex, true) => crate::compute::flex::compute_flexbox_layout(tree, node, inputs),
         #[cfg(feature = "grid")]
         (Display::Grid, true) => {
-            let output = crate::compute::grid::compute_grid_layout(tree, node, inputs);
+            let output = tree.compute_grid(node, inputs);
             // Grid treats a min-content height as max-content before reading anything; its width
             // is taken as observed.
             tree.take_observed();

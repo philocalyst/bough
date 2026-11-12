@@ -128,3 +128,19 @@ version but is not shared, to keep this change to the two crates).
 Gate: the frames of every pixel case (`bench/size/pixels.sh`: heavy, lab, animate, vlist, counter) are
 byte-identical to the unmodified rasteriser's, and `cargo test --release -p bough-text` (the atlas, cache and window
 tests) passes.
+
+## Layout: cephal (size lane, `docs/lanes/developer-loop/`)
+
+`vendor/cephal` is zortax/cephal `9e77f91` (0.2.0, vendored without history at the machine migration, commit
+`ad79959f5d`). Changes against that commit:
+
+| file | change | why |
+|---|---|---|
+| `src/tree/traits.rs` | `LayoutTree::compute_grid(&mut self, node, inputs)` (feature `grid`, `where Self: CacheAccess`), default body `compute::grid::compute_grid_layout(self, node, inputs)` | the grid algorithm becomes overridable like `compute_leaf`; every existing tree (`owned::View`, `Worker`, `Marker`) keeps the default, so their behaviour is unchanged |
+| `src/compute/mod.rs` | `compute_uncached` calls `tree.compute_grid(..)` in its two grid arms instead of `compute_grid_layout` | a host can route grid layout through a function it installs only when it builds a grid style |
+
+bough's `DView` overrides `compute_grid` with a function installed by the first `Display::Grid` style that enters
+`lay_deep::Deep::intern` / `intern_style` (every style that can hold one: templates, restyles, reflection; the
+prelude's `Spec::to_style` builds only flex and block). A program that never builds a grid style does not link the
+grid algorithm (159,812 B of code under `production`). Gate: `crates/bough/tests/grid_hook.rs` (a grid template's
+hand-computed geometry; with the install removed from `Deep::intern` it panics, which the test reports as a failure).

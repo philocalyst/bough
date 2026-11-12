@@ -153,6 +153,19 @@ pub trait LayoutTree {
         false
     }
 
+    /// Overridable grid algorithm for a `Display::Grid` container; the default is
+    /// [`compute_grid_layout`](crate::compute::grid::compute_grid_layout). (bough, vendor/README.md: a host whose
+    /// grid styles can only come from code it controls routes this through a function that code installs, so a
+    /// program that never builds a grid style does not link the grid algorithm.)
+    #[cfg(feature = "grid")]
+    #[inline]
+    fn compute_grid(&mut self, node: NodeId, inputs: LayoutInput) -> LayoutOutput
+    where
+        Self: crate::tree::CacheAccess,
+    {
+        crate::compute::grid::compute_grid_layout(self, node, inputs)
+    }
+
     /// Overridable leaf algorithm; the default applies the box model around [`LayoutTree::measure`].
     fn compute_leaf(&mut self, node: NodeId, inputs: LayoutInput, _block_ctx: Option<&mut BlockContext<'_>>) -> LayoutOutput {
         crate::compute::leaf::compute_leaf_layout(self, node, inputs)

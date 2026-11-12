@@ -131,6 +131,7 @@ impl Deep {
     }
     /// Intern a resolved style (reflection's style edits).
     pub fn intern_style(&mut self, s: Style) -> u32 {
+        enable_grid_for(&s);
         self.styles.intern(s)
     }
     /// The resolved style of node `n` (reflection).
@@ -201,6 +202,7 @@ impl Deep {
 
     /// Intern a resolved cephal `Style` (templates resolve their declarations once per distinct style).
     pub fn intern(&mut self, st: Style) -> u32 {
+        enable_grid_for(&st);
         self.styles.intern(st)
     }
 
@@ -481,6 +483,21 @@ impl DView<'_> {
     }
 }
 
+/// cephal's grid algorithm for [`DView`], installed by the first grid style that enters the engine.
+///
+/// A grid container can only exist after a `Display::Grid` style was interned, and every style that can hold
+/// one enters through [`Deep::intern`] or [`Deep::intern_style`] (templates, restyles, reflection), which
+/// install this first; `Spec::to_style` (the prelude's elements) only builds flex and block. So a program that
+/// never builds a grid style never references `compute_grid_layout`, and the linker drops it (~160 KB).
+static GRID: std::sync::OnceLock<for<'a> fn(&mut DView<'a>, NodeId, LayoutInput) -> LayoutOutput> = std::sync::OnceLock::new();
+
+#[inline]
+fn enable_grid_for(st: &Style) {
+    if st.display == Display::Grid {
+        GRID.get_or_init(|| |v, node, inputs| cephal::compute::grid::compute_grid_layout(v, node, inputs));
+    }
+}
+
 #[inline(never)]
 fn measured_leaf(v: &mut DView<'_>, node: NodeId, inputs: LayoutInput) -> LayoutOutput {
     cephal::compute::leaf::compute_leaf_layout(v, node, inputs)
@@ -531,6 +548,12 @@ impl LayoutTree for DView<'_> {
     #[inline]
     fn is_measured_leaf(&self, node: NodeId) -> bool {
         self.d.ctx_ref(ix(node) as u32).is_some_and(|c| c.user.is_none())
+    }
+    /// Through [`GRID`]: installed by the style that made this node a grid container.
+    #[inline(never)]
+    fn compute_grid(&mut self, node: NodeId, inputs: LayoutInput) -> LayoutOutput {
+        let grid = GRID.get().expect("a grid container whose style did not enter through Deep::intern");
+        grid(self, node, inputs)
     }
     #[inline(always)]
     fn compute_leaf(&mut self, node: NodeId, inputs: LayoutInput, _: Option<&mut BlockContext<'_>>) -> LayoutOutput {
