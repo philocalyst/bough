@@ -584,56 +584,11 @@ impl Bough {
         self.d_min_depth[d] = md;
     }
 
-    /// Directory index of live page `p`. `Page::dir` is a hint, exact when the page entered the directory
-    /// and after each lookup, stale by however many entries were since inserted or removed before the page
-    /// (round 6, fix c: every split or removal used to rewrite the header of every later page). It is
-    /// checked against the directory's own pointer column, which is the truth, and repaired on a miss.
-    #[inline(always)]
-    fn dir_of(&self, p: *mut Page) -> usize {
-        // SAFETY: p is a live page of this Bough (a directory pointer or a bound handle's page).
-        let h = unsafe { (*p).dir } as usize;
-        if h < self.d_ptr.len() && unsafe { *self.d_ptr.get_unchecked(h) } == p {
-            return h;
+    fn reindex_pages(&mut self, from: usize) {
+        for i in from..self.d_ptr.len() {
+            // SAFETY: live page.
+            unsafe { (*self.d_ptr[i]).dir = i as u32 };
         }
-        self.dir_find(p, h)
-    }
-    /// The hint missed: scan the pointer column outward from it (the page moved by the net number of
-    /// entries inserted and removed before it since the hint was written, so the scan is at most what the
-    /// eager rewrites it replaces would have cost this page), then repair the hint.
-    #[cold]
-    #[inline(never)]
-    fn dir_find(&self, p: *mut Page, hint: usize) -> usize {
-        let n = self.d_ptr.len();
-        let h = hint.min(n - 1);
-        let col = self.d_ptr.as_ptr();
-        let found = |d: usize| {
-            // SAFETY: a live page; `dir` is read only here and in `dir_of`, on this thread, and no
-            // reference to the page is held across this call.
-            unsafe { (*p).dir = d as u32 };
-            d
-        };
-        // SAFETY: every index read is checked against 0..n first.
-        unsafe {
-            if *col.add(h) == p {
-                return found(h);
-            }
-            let (mut up, mut down) = (h + 1, h);
-            while up < n || down > 0 {
-                if up < n {
-                    if *col.add(up) == p {
-                        return found(up);
-                    }
-                    up += 1;
-                }
-                if down > 0 {
-                    down -= 1;
-                    if *col.add(down) == p {
-                        return found(down);
-                    }
-                }
-            }
-        }
-        unreachable!("a live page is in the directory");
     }
 
     /// Insert `count` blank, empty pages at directory index `at`.
@@ -656,11 +611,7 @@ impl Bough {
         attr!(6, for _ in 0..count {
             self.prefix.grow();
         });
-        // the new pages' hints are exact; the pages after them find theirs stale when next asked
-        attr!(7, for k in 0..count {
-            // SAFETY: live page.
-            unsafe { (*self.d_ptr[at + k]).dir = (at + k) as u32 };
-        });
+        attr!(7, self.reindex_pages(at));
     }
 
     /// Remove directory entries `[d, d+k)` (whole pages emptied by one `remove_run`) in one pass: each
@@ -693,7 +644,7 @@ impl Bough {
         attr!(6, for _ in 0..k {
             self.prefix.shrink();
         });
-
+        attr!(7, self.reindex_pages(d));
     }
 
     fn dir_remove(&mut self, d: usize) {
@@ -706,7 +657,7 @@ impl Bough {
         attr!(5, self.d_len.remove(d));
         attr!(6, self.prefix.shrink());
         attr!(0, self.pool.free(id));
-
+        attr!(7, self.reindex_pages(d));
     }
 
     /// Re-point handle-table entries for every live handle in slots `[lo, hi)` of page `d`.
@@ -762,7 +713,8 @@ impl Bough {
     #[inline(always)]
     fn handle_loc(&self, h: Handle) -> Option<(usize, usize)> {
         let (p, s) = self.handle_ptr(h)?;
-        Some((self.dir_of(p), s))
+        // SAFETY: bound handles point at live pages.
+        Some((unsafe { (*p).dir } as usize, s))
     }
     pub fn pos_of(&self, h: Handle) -> Option<usize> {
         let (d, s) = self.handle_loc(h)?;
@@ -1435,12 +1387,10 @@ impl Bough {
         }
         let (kind, id) = (pg.kind[s], pg.clip[s]);
         pg.store_abs(s, ink);
-        let first = pg.dirty == 0;
-        pg.dirty |= 1 << (s / GROUP);
-        if first {
-            // (pg is not used past this point: dir_of reads the page through `p`)
-            dirty.push(self.dir_of(p) as u32);
+        if pg.dirty == 0 {
+            dirty.push(pg.dir);
         }
+        pg.dirty |= 1 << (s / GROUP);
         if damage {
             let (old, ink) = (self.clipped(old, id), self.clipped(ink, id));
             if self.kind_uniform(kind) {
@@ -2055,7 +2005,7 @@ impl Bough {
         assert_eq!(starts.len(), n + 1);
         for d in 0..n {
             let p = self.page(d);
-            assert_eq!(self.dir_of(self.d_ptr[d]), d, "page dir index");
+            assert_eq!(p.dir, d as u32, "page dir index");
             assert_eq!(self.d_id[d], p.id, "directory page id column");
             assert_eq!(p.dirty, 0, "page left with stale groups");
             for g in 0..NGROUPS {
