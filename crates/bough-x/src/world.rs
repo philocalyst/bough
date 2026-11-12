@@ -275,12 +275,13 @@ impl<B: Backend> World<B> {
         self.cold.iter().position(|&(s, c)| core::ptr::eq(s, st) && c == col).map(|i| i as u32)
     }
     /// The store, column and record a place names (the column table holds the store: no walk).
+    ///
+    /// The table is current for this world: every entry point brings it up to date before it dispatches, and
+    /// nothing a handler does changes this world's store tree (only a settle does). The shape counter is
+    /// process-wide, so another world growing must not make this one's places unreadable.
     pub fn at_place(&self, place: u32) -> Option<(&Store, u32, u32)> {
-        if self.shape != SHAPE.load(Ordering::Relaxed) {
-            return None;
-        }
         let &(st, col) = self.cold.get((place >> PLACE_REC_BITS) as usize)?;
-        // SAFETY: the table is current (checked above), so `st` is a store of this world's tree.
+        // SAFETY: the table is current (see above), so `st` is a store of this world's tree.
         let st = unsafe { &*st };
         let rec = place & ((1 << PLACE_REC_BITS) - 1);
         (rec < st.cols.get(col as usize)?.nrec).then_some((st, col, rec))
@@ -444,8 +445,11 @@ impl<B: Backend> World<B> {
     /// DOM blurs on the background), `Press` and `PressAt` are written, the press handler runs, and a drag
     /// handler captures the pointer.
     pub fn pointer_down<V: View>(&mut self, v: &mut V, x: i32, y: i32, button: Button) -> Dispatch {
-        self.pointer(v, x, y);
+        // one walk under the pointer serves the pick, hover, focus, the press and the drag
+        self.ptr = Some((x, y));
         let chain = self.chain(x, y, kind::POINTER | kind::FOCUSABLE);
+        let ptr: Vec<u32> = chain.iter().copied().filter(|&p| self.kinds(p) & kind::POINTER != 0).collect();
+        self.picked(v, ptr.last().copied().unwrap_or(NONE), &ptr);
         if button == Button::Primary {
             let f = chain.iter().rev().copied().find(|&p| self.kinds(p) & kind::FOCUSABLE != 0);
             self.focus_place(v, f);
@@ -475,14 +479,19 @@ impl<B: Backend> World<B> {
             self.pointer(v, x, y);
             return Dispatch { kind: kind::DRAG, place: h.drag, consumed };
         }
-        self.pointer(v, x, y);
-        if button != Button::Primary || h.place == NONE {
-            return Dispatch::NOTHING;
-        }
+        // one walk under the pointer serves the pick, hover and the click
+        self.ptr = Some((x, y));
         let chain = self.chain(x, y, kind::POINTER);
-        let Some(i) = chain.iter().position(|&p| p == h.place) else { return Dispatch::NOTHING };
-        let e = Event { kind: kind::CLICK, ev: Ev::at(x as f32, y as f32), text: "" };
-        self.bubble(v, chain[..=i].iter().rev().copied(), &e)
+        self.picked(v, chain.last().copied().unwrap_or(NONE), &chain);
+        let d = match chain.iter().position(|&p| p == h.place) {
+            Some(i) if button == Button::Primary && h.place != NONE => {
+                let e = Event { kind: kind::CLICK, ev: Ev::at(x as f32, y as f32), text: "" };
+                self.bubble(v, chain[..=i].iter().rev().copied(), &e)
+            }
+            _ => Dispatch::NOTHING,
+        };
+        self.done(chain);
+        d
     }
 
     /// A press and a release at (x, y).
