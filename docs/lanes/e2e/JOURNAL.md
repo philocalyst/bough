@@ -99,3 +99,64 @@ What this needs from other lanes (sent to the lead with the first report):
 | I5 | typing: handling and CPU per frame | at most 0.05 ms | above 0.15 ms |
 | I6 | idle RSS | at most 8 MiB | above 20 MiB |
 | I7 | commit on input under a burst of k inputs inside one refresh: the frame the compositor latches shows the newest input; presented == full redraw of the newest state on every latch; damage sent equals the tiles that differ from the previous commit | holds for k = 1..16 and ring sizes 2..4 | any stale latch, or any differing pixel |
+
+## 4. What was built (2026-11-12; `2e0523c35f` and after)
+
+Four crates and the app, none depending on the façade:
+
+* **`crates/bough-glyph`**: a prepared glyph image. `examples/bake.rs` runs the real shaper and rasteriser
+  (swash, as `bough-text`) over a character set (Latin-1) at one size and writes advances and kerning in font
+  units (kerning = the first glyph's advance inside a pair minus its advance alone, so GPOS classes and the
+  legacy table are both in it), the ligatures the shaper forms (DejaVu Sans: ff, fi, fl, ffi, ffl; found by
+  shaping every pair and every triple that starts with a ligating pair) and unhinted alpha coverage. The image
+  is read in place from rodata (`Image::new` is `const`); placing a string is arithmetic over its bytes.
+  Gate `tests/exact.rs`: placement and coverage equal to swash's on 4,013 strings (137 ligature folds, 1,582
+  kerned strings) and 195 glyphs; mutants `kern` and `cov` fail. DejaVu Sans at 14 px is 96,813 bytes of which
+  76 KB is the kerning square. What it does not hold (other scripts, context beyond pairs and short ligatures)
+  is the real shaper's, lazily: **not built**; `Image::covers` is the test a caller makes.
+* **`crates/bough-span`**: the CPU span raster as a `bough-x` `Backend`. A column is painted in one pass, each
+  record straight into the surface, restricted to a set of 32-pixel tiles (`Spans::cells`: every primitive is
+  cut to the runs of damaged tiles it touches, so a glyph that straddles a damaged and an undamaged tile is
+  blended once). Kinds that draw themselves through `bough-x`'s new `draw.rs` (`Draws` / `Prims`, the open end
+  of the closed set of kinds; the same shape as `bough-paint`'s `Paint` / `Sink`): `Text` (the text is an
+  expression's value: a record constant, or a function of block words evaluated when they change), `TextOf` (a
+  `Line` of application state named by a versioned handle, never a pointer), `Bar` (a caret or a selection
+  inside its box), `Spin` (a rounded box turned by an expression over `Time`).
+  **It does not use `bough-paint`'s tile kernels.** Those shade through a Q15 accumulator per tile so that CPU
+  and GPU agree word for word; nothing on this path has a GPU twin, and a span written once is several times
+  cheaper than an accumulated tile (ROUND8 section 6's "CPU spans" class). They stay the executor for paints
+  that need them. Told to the lead as a departure from the brief's wording.
+* **`crates/bough-host`**: `wl.rs`, a Wayland client on the wire (libc only: no libwayland, no protocol crate,
+  no xkbcommon, nothing `dlopen`ed); `pace.rs`, the ring (per buffer, the tiles damaged since it was drawn; a
+  frame goes into the free buffer with the least to repair; the compositor is told the damage since the
+  previous *commit*); `keymap.rs`, a reader for the part of an xkb text keymap a Latin layout needs (level two
+  by Shift, letters by Shift xor Caps Lock; no AltGr, no second group, no keypad level: stated in the file);
+  `run.rs`, the loop.
+* **`comparisons/bough-guibench-x`** (binary `bough-bench`): rows and virtual (one view: there is no virtual
+  variant to write), table fine (a relation with its journal) and coarse (opaque state, re-describing mode),
+  ticker, spinner, typing, search. State is plain structs and handlers are methods; events go through the
+  surface lane's dispatch (`on_hover`, `on_click`, `on_key`, `on_text`). The `view` bodies are written against
+  the core (rows as tuples of records, rects by arithmetic): **not the façade's idiom yet** (Amendment 2); the
+  element layer replaces those bodies and nothing else here.
+
+Binary: 1,070,976 bytes at `dist` on ilo-prod (the façade's: 55,506,840), built in 18 s from nothing.
+
+Gates (`comparisons/bough-guibench-x/tests/pixels.rs`, headless, any platform; Mac, release): the host's ring
+and the span raster driven as the Wayland loop drives them, against a model compositor that behaves as
+fakeland does (latches the newest commit, holds the buffer on screen, releases a superseded commit, copies only
+the damage it was told, accumulated over commits it did not show). After every commit the committed buffer ==
+a full redraw; at every latch the screen == a full redraw, and with a ring of three or more == the *newest*
+state (I7: commit on input, no stale latch; bursts of 1 to about 6 inputs per latch); every eighth step == a
+fresh mount; rings of 2, 3 and 4; resizes and scale 2 mid-script; all six scenarios, 60 to 400 steps each. A
+ring of 2 starves under bursts (288 of 400 steps had to wait for a release) and then latches the last
+*committed* state, which is the old rule's behaviour; 3 never starves. Mutants, each failing the file:
+`mutant_straddle`, `mutant_age`, `mutant_superseded`. Also `filter_equals_the_definition` (the search filter's
+refinement stack against `spec::matches` over 3,000 edits).
+
+First run under fakeland (ilo-prod, `fakeland serve --renderer pixman`, rows 3,000): a correct first frame, and
+hover on a pointer move, at the first attempt (`/root/work/r8/e2e/smoke/t1.png`).
+
+Found on the way: the façade's spinner is driven by a 16 ms application clock (`Spinner::clock`, 1000 / 16 =
+62.5 turns of the crank a second), which is why it stays at 62.5 fps at 120 and 240 Hz in the lead's sweep. It
+is not a property of the host. Here the turn is an expression over `Time`, and time advances on frame
+callbacks only.
