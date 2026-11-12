@@ -1,12 +1,15 @@
-//! Retired instructions (macOS `proc_pid_rusage`, RUSAGE_INFO_V4 `ri_instructions`) and time.
+//! Retired instructions (macOS `proc_pid_rusage`, RUSAGE_INFO_V4 `ri_instructions`; elsewhere the calling thread's
+//! counters from `bough_mem::pmu`, user mode: round 7, bench lane) and time.
 #![allow(dead_code)]
 
 use std::time::Instant;
 
+#[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut core::ffi::c_void) -> i32;
 }
 
+#[cfg(target_os = "macos")]
 pub fn instructions() -> u64 {
     // SAFETY: plain syscall wrapper writing a rusage_info_v4 (RUSAGE_INFO_V4 = 4).
     unsafe {
@@ -15,6 +18,10 @@ pub fn instructions() -> u64 {
         assert_eq!(r, 0, "proc_pid_rusage failed");
         info.ri_instructions
     }
+}
+#[cfg(not(target_os = "macos"))]
+pub fn instructions() -> u64 {
+    bough_mem::pmu::instructions_cycles().0
 }
 
 pub fn overhead() -> u64 {

@@ -127,7 +127,7 @@ impl View for Sheet {
             row(each((0..COLS).map(move |c| div().w(CELL_W).h(CELL_H).px(6.0).child(text(sig!(self.sums).at(c).num(|v: &f32| *v, VALUE)).font(12.0, CELL_H))))),
         ))
         .bg(sig!(self.look).map(|l: &u32| chrome(*l)));
-        column((toolbar, header, body, footer)).w(Sheet::SIZE.0).h(Sheet::SIZE.1).bg(sig!(self.look).map(|l: &u32| fill(*l, NO_HOVER, 0)))
+        column((toolbar, header, body, footer)).w_pct(1.0).h_pct(1.0).bg(sig!(self.look).map(|l: &u32| fill(*l, NO_HOVER, 0)))
     }
 }
 
@@ -155,8 +155,8 @@ impl Scene for Sheet {
         Caps {
             instances: instances.min(Caps::RESERVE.instances),
             pages: (records / 32 + 1024).next_power_of_two().min(Caps::RESERVE.pages),
-            // a numeric label keeps 16 glyph slots (NumFmt's 16 bytes) and a little more: ~21 per cell measured
-            glyphs: (cells * 24 + self.rows * 8 + 65536).next_power_of_two().min(Caps::RESERVE.glyphs),
+            // measured: ~35 glyph slots per cell (a numeric label's 16-byte slot and its shaping headroom)
+            glyphs: (cells * 40 + self.rows * 16 + 65536).next_power_of_two().min(Caps::RESERVE.glyphs),
             runs: (cells + self.rows * 2 + 8192).next_power_of_two().min(Caps::RESERVE.runs),
             ..Caps::DEFAULT
         }
