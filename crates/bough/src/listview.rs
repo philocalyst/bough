@@ -836,14 +836,17 @@ impl Rt {
             let mut out = std::mem::take(&mut self.lists.stage2);
             stage.clear();
             out.clear();
-            self.bough.read_run(base, kept, &mut stage);
+            // exact rects travel with the records (a reordered row may lie outside the 16-bit domain)
+            let (mut wide, mut wide_out) = (Vec::with_capacity(kept), Vec::with_capacity(kept));
+            self.bough.read_run_wide(base, kept, &mut stage, &mut wide);
             for &s in src {
                 if s != NONE {
                     let (a, n) = (koff[s as usize], rows[s as usize].nrec as usize);
                     out.extend_from_slice(&stage[a..a + n]);
+                    wide_out.extend_from_slice(&wide[a..a + n]);
                 }
             }
-            self.bough.rewrite_run(base, &out);
+            self.bough.rewrite_run_wide(base, &out, &wide_out);
             self.lists.stage = stage;
             self.lists.stage2 = out;
         }
