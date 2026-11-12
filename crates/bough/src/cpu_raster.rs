@@ -74,7 +74,13 @@ impl Default for CpuRaster {
 #[inline(always)]
 fn unpack(c: u32) -> [f16; 4] {
     let k = 1.0f32 / 255.0;
-    [(c & 0xff) as f32 * k, (c >> 8 & 0xff) as f32 * k, (c >> 16 & 0xff) as f32 * k, (c >> 24) as f32 * k].map(|v| v as f16)
+    [
+        (c & 0xff) as f32 * k,
+        (c >> 8 & 0xff) as f32 * k,
+        (c >> 16 & 0xff) as f32 * k,
+        (c >> 24) as f32 * k,
+    ]
+    .map(|v| v as f16)
 }
 
 #[inline(always)]
@@ -88,7 +94,10 @@ fn premul(c: u32) -> [f16; 4] {
 /// correctly rounded: the one operation the CPU could not reproduce; examples/mathprobe.rs.)
 #[inline(always)]
 fn sd(c: [f32; 2], b: [f32; 4], r: f32) -> f32 {
-    let q = [(c[0] - b[2]).max(b[0] - c[0]) + r, (c[1] - b[3]).max(b[1] - c[1]) + r];
+    let q = [
+        (c[0] - b[2]).max(b[0] - c[0]) + r,
+        (c[1] - b[3]).max(b[1] - c[1]) + r,
+    ];
     let (mx, my) = (q[0].max(0.0), q[1].max(0.0));
     my.mul_add(my, mx * mx).sqrt() + q[0].max(q[1]).min(0.0) - r
 }
@@ -117,11 +126,35 @@ impl CpuRaster {
         }
     }
 
-    fn push(&mut self, q: [f32; 4], b: [f32; 4], core: [f32; 4], pm: [f16; 4], pm2: [f16; 4], cv: [f16; 4], uv: [u16; 2], kind: u8, radius: f32, bw: f32) {
+    fn push(
+        &mut self,
+        q: [f32; 4],
+        b: [f32; 4],
+        core: [f32; 4],
+        pm: [f16; 4],
+        pm2: [f16; 4],
+        cv: [f16; 4],
+        uv: [u16; 2],
+        kind: u8,
+        radius: f32,
+        bw: f32,
+    ) {
         let (x0, x1) = span(q[0], q[2]);
         let (y0, y1) = span(q[1], q[3]);
         if x0 < x1 && y0 < y1 {
-            self.ents.push(Ent { q, b, core, pm, pm2, cv, uv, kind, radius, bw, px: [x0, y0, x1, y1] });
+            self.ents.push(Ent {
+                q,
+                b,
+                core,
+                pm,
+                pm2,
+                cv,
+                uv,
+                kind,
+                radius,
+                bw,
+                px: [x0, y0, x1, y1],
+            });
         }
     }
 
@@ -130,12 +163,20 @@ impl CpuRaster {
     fn stage(&mut self, rt: &Rt, rows: &[u128], full: bool, w: i32, h: i32) -> bool {
         let pl = &mut *self.plane;
         let ty = (h as usize).div_ceil(32);
-        let all = if w >= 128 * 32 { u128::MAX } else { (1u128 << (w as u32).div_ceil(32)) - 1 };
+        let all = if w >= 128 * 32 {
+            u128::MAX
+        } else {
+            (1u128 << (w as u32).div_ceil(32)) - 1
+        };
         pl.rows = [0; bough_core::damage::MAX_TILES_Y];
         pl.n = ty as u32;
         let (mut y0, mut y1) = (u32::MAX, 0u32);
         for y in 0..ty {
-            let r = if full { all } else { rows.get(y).copied().unwrap_or(0) & all };
+            let r = if full {
+                all
+            } else {
+                rows.get(y).copied().unwrap_or(0) & all
+            };
             pl.rows[y] = r;
             if r != 0 {
                 y0 = y0.min(y as u32);
@@ -171,18 +212,33 @@ impl CpuRaster {
             return false;
         }
         let r = rt.bough.record(pos);
+        // anything out of range refuses (the GPU masks it into its column and draws garbage, bounded)
+        if r.clip as usize >= rt.bough.gpu_extent().1 {
+            return false;
+        }
         let [cx0, cy0, cx1, cy1] = rt.bough.clip_rect(r.clip).to_xyxy();
         let cl = [cx0 as f32, cy0 as f32, cx1 as f32, cy1 as f32];
         let p = r.payload;
         if p & PAY_RUN != 0 {
             let (r0, rn) = (p & 0xFFFFF, ((p >> 20) & 0x7FF) + 1);
             for run in r0..r0 + rn {
-                let Some(rh) = rt.glyphs.runs.get(run as usize).copied() else { return false };
-                let Some(off) = Self::space(rt, rh.space) else { return false };
-                let Some(toks) = rt.text.cache.tok_strike(rh.strike as usize) else { return false };
+                let Some(rh) = rt.glyphs.runs.get(run as usize).copied() else {
+                    return false;
+                };
+                let Some(off) = Self::space(rt, rh.space) else {
+                    return false;
+                };
+                let Some(toks) = rt.text.cache.tok_strike(rh.strike as usize) else {
+                    return false;
+                };
                 let pm = premul(rh.color);
                 for slot in rh.base..rh.base + rh.len {
-                    let (Some(&x), Some(&e)) = (rt.glyphs.x.get(slot as usize), rt.glyphs.ent.get(slot as usize)) else { return false };
+                    let (Some(&x), Some(&e)) = (
+                        rt.glyphs.x.get(slot as usize),
+                        rt.glyphs.ent.get(slot as usize),
+                    ) else {
+                        return false;
+                    };
                     let en = &toks.entry[(e & 255) as usize];
                     if en.uv[2] == 0 {
                         continue;
@@ -191,22 +247,47 @@ impl CpuRaster {
                     let px = (dx as f32).mul_add(rh.scale, rh.origin[0] + 0.5).floor() + en.geo[0];
                     let p0 = [px + off[0], rh.origin[1] + en.geo[1] + off[1]];
                     let size = [en.geo[2], en.geo[3]];
-                    let qa = [(p0[0] - 1.0).clamp(cl[0], cl[2]), (p0[1] - 1.0).clamp(cl[1], cl[3])];
-                    let qb = [(p0[0] - 1.0 + (size[0] + 2.0)).clamp(cl[0], cl[2]), (p0[1] - 1.0 + (size[1] + 2.0)).clamp(cl[1], cl[3])];
+                    let qa = [
+                        (p0[0] - 1.0).clamp(cl[0], cl[2]),
+                        (p0[1] - 1.0).clamp(cl[1], cl[3]),
+                    ];
+                    let qb = [
+                        (p0[0] - 1.0 + (size[0] + 2.0)).clamp(cl[0], cl[2]),
+                        (p0[1] - 1.0 + (size[1] + 2.0)).clamp(cl[1], cl[3]),
+                    ];
                     if qa[0] < qb[0] && qa[1] < qb[1] {
-                        self.push([qa[0], qa[1], qb[0], qb[1]], [p0[0], p0[1], p0[0] + size[0], p0[1] + size[1]], [0.0; 4], pm, [0.0; 4], pm, [en.uv[0], en.uv[1]], 3, 0.0, 0.0);
+                        self.push(
+                            [qa[0], qa[1], qb[0], qb[1]],
+                            [p0[0], p0[1], p0[0] + size[0], p0[1] + size[1]],
+                            [0.0; 4],
+                            pm,
+                            [0.0; 4],
+                            pm,
+                            [en.uv[0], en.uv[1]],
+                            3,
+                            0.0,
+                            0.0,
+                        );
                     }
                 }
             }
             return true;
         }
-        let (i0, n) = if p & PAY_IRUN != 0 { (p & 0x3FFFF, ((p >> 18) & 0xFFF) + 1) } else { (p, 1) };
+        let (i0, n) = if p & PAY_IRUN != 0 {
+            (p & 0x3FFFF, ((p >> 18) & 0xFFF) + 1)
+        } else {
+            (p, 1)
+        };
         for i in i0..i0 + n {
-            let Some(q) = rt.inst.get(i as usize) else { return false };
+            let Some(q) = rt.inst.get(i as usize) else {
+                return false;
+            };
             if q.kind > 3 {
                 return false;
             }
-            let Some(off) = Self::space(rt, q.space) else { return false };
+            let Some(off) = Self::space(rt, q.space) else {
+                return false;
+            };
             let p0 = [q.pos[0] + off[0], q.pos[1] + off[1]];
             let p1 = [p0[0] + q.size[0], p0[1] + q.size[1]];
             let m = if q.kind == 0 {
@@ -216,21 +297,47 @@ impl CpuRaster {
             } else {
                 1.0
             };
-            let qa = [(p0[0] - m).clamp(cl[0], cl[2]), (p0[1] - m).clamp(cl[1], cl[3])];
-            let qb = [(p1[0] + m).clamp(cl[0], cl[2]), (p1[1] + m).clamp(cl[1], cl[3])];
+            let qa = [
+                (p0[0] - m).clamp(cl[0], cl[2]),
+                (p0[1] - m).clamp(cl[1], cl[3]),
+            ];
+            let qb = [
+                (p1[0] + m).clamp(cl[0], cl[2]),
+                (p1[1] + m).clamp(cl[1], cl[3]),
+            ];
             if !(qa[0] < qb[0] && qa[1] < qb[1]) {
                 continue;
             }
             let (pm, pm2) = (premul(q.color), premul(q.color2));
             let rad = q.radius.min(0.5 * q.size[0].min(q.size[1]));
-            let k = if q.kind == 1 { rad.max(0.5) + 1.0 } else { rad.max(0.5 + q.bw) + 1.0 };
+            let k = if q.kind == 1 {
+                rad.max(0.5) + 1.0
+            } else {
+                rad.max(0.5 + q.bw) + 1.0
+            };
             let core = match q.kind {
                 0 => [qa[0], qa[1], qb[0], qb[1]],
                 3 => [0.0; 4],
-                _ => [(p0[0] + k).max(qa[0]), (p0[1] + k).max(qa[1]), (p1[0] - k).min(qb[0]), (p1[1] - k).min(qb[1])],
+                _ => [
+                    (p0[0] + k).max(qa[0]),
+                    (p0[1] + k).max(qa[1]),
+                    (p1[0] - k).min(qb[0]),
+                    (p1[1] - k).min(qb[1]),
+                ],
             };
             let cv = if q.kind == 2 { pm2 } else { pm };
-            self.push([qa[0], qa[1], qb[0], qb[1]], [p0[0], p0[1], p1[0], p1[1]], core, pm, pm2, cv, [q.uv[0], q.uv[1]], q.kind, rad, q.bw);
+            self.push(
+                [qa[0], qa[1], qb[0], qb[1]],
+                [p0[0], p0[1], p1[0], p1[1]],
+                core,
+                pm,
+                pm2,
+                cv,
+                [q.uv[0], q.uv[1]],
+                q.kind,
+                rad,
+                q.bw,
+            );
         }
         true
     }
@@ -240,7 +347,12 @@ impl CpuRaster {
         self.ents
             .iter()
             .filter(|e| x >= e.px[0] && x < e.px[2] && y >= e.px[1] && y < e.px[3])
-            .map(|e| format!("kind {} q {:?} b {:?} core {:?} pm {:?} pm2 {:?} r {} bw {}", e.kind, e.q, e.b, e.core, e.pm, e.pm2, e.radius, e.bw))
+            .map(|e| {
+                format!(
+                    "kind {} q {:?} b {:?} core {:?} pm {:?} pm2 {:?} r {} bw {}",
+                    e.kind, e.q, e.b, e.core, e.pm, e.pm2, e.radius, e.bw
+                )
+            })
             .collect()
     }
 
@@ -250,7 +362,14 @@ impl CpuRaster {
     ///
     /// # Safety
     /// `dst` must be valid for writes of `h` rows of `bpr` bytes (`bpr >= 4 w`), and nothing else may access it.
-    pub unsafe fn repair(&mut self, rt: &Rt, rows: &[u128], full: bool, dst: *mut u8, bpr: usize) -> Option<u32> {
+    pub unsafe fn repair(
+        &mut self,
+        rt: &Rt,
+        rows: &[u128],
+        full: bool,
+        dst: *mut u8,
+        bpr: usize,
+    ) -> Option<u32> {
         let (w, h) = (rt.win_w, rt.win_h);
         if !self.stage(rt, rows, full, w, h) {
             self.stats.refused += 1;
@@ -305,9 +424,14 @@ impl CpuRaster {
                                 continue;
                             }
                             let ax = (e.uv[0] as u32 + tx as u32).min(lx);
-                            let cov = self.cov[atlas.pixels[(ay * atlas.width + ax) as usize] as usize];
+                            let cov =
+                                self.cov[atlas.pixels[(ay * atlas.width + ax) as usize] as usize];
                             let sh = e.pm.map(|v| v * cov);
-                            blend_px(&mut row[(x * 4) as usize..(x * 4 + 4) as usize], sh, self.two_roundings);
+                            blend_px(
+                                &mut row[(x * 4) as usize..(x * 4 + 4) as usize],
+                                sh,
+                                self.two_roundings,
+                            );
                         }
                     }
                     _ => {
@@ -329,7 +453,11 @@ impl CpuRaster {
                                     [0, 1, 2, 3].map(|i| e.pm[i].mul_add(h1, e.pm2[i] * h2))
                                 }
                             };
-                            blend_px(&mut row[(x * 4) as usize..(x * 4 + 4) as usize], sh, self.two_roundings);
+                            blend_px(
+                                &mut row[(x * 4) as usize..(x * 4 + 4) as usize],
+                                sh,
+                                self.two_roundings,
+                            );
                         }
                     }
                 }
@@ -344,7 +472,10 @@ impl CpuRaster {
             let xn = (w - o[0]).min(32);
             // SAFETY: row gy < h, pixels [o.x, o.x + xn) < w: inside the caller's surface.
             let out = unsafe { dst.add(gy as usize * bpr + o[0] as usize * 4) };
-            store_row(&self.acc[(y * 32 * 4) as usize..(y * 32 * 4 + xn * 4) as usize], out);
+            store_row(
+                &self.acc[(y * 32 * 4) as usize..(y * 32 * 4 + xn * 4) as usize],
+                out,
+            );
         }
     }
 }
@@ -378,7 +509,11 @@ fn blend_span(row: &mut [f16], x0: i32, x1: i32, sh: [f16; 4], two: bool) {
 fn blend_px(px: &mut [f16], sh: [f16; 4], two: bool) {
     let k: f16 = 1.0 - sh[3];
     for i in 0..4 {
-        px[i] = if two { sh[i] + px[i] * k } else { px[i].mul_add(k, sh[i]) };
+        px[i] = if two {
+            sh[i] + px[i] * k
+        } else {
+            px[i].mul_add(k, sh[i])
+        };
     }
 }
 
@@ -388,6 +523,13 @@ fn store_row(acc: &[f16], out: *mut u8) {
     let u = |v: f16| -> u8 { ((v as f32).clamp(0.0, 1.0) * 255.0).round_ties_even() as u8 };
     for (i, px) in acc.chunks_exact(4).enumerate() {
         // SAFETY: the caller sized `out` for `acc.len() / 4` pixels.
-        unsafe { (out.add(i * 4) as *mut [u8; 4]).write_unaligned([u(px[2]), u(px[1]), u(px[0]), u(px[3])]) };
+        unsafe {
+            (out.add(i * 4) as *mut [u8; 4]).write_unaligned([
+                u(px[2]),
+                u(px[1]),
+                u(px[0]),
+                u(px[3]),
+            ])
+        };
     }
 }
