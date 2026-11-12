@@ -1127,6 +1127,41 @@ impl<V: View> App<V> {
     /// the repair of the damaged tiles, then `present` with the damage against what is on screen.
     fn draw_target(&mut self, i: usize, epoch: u32, full: bool, copy: &bough_frame::SlotCopy) {
         self.prof.mark(PH_CULL);
+        let (mut full, mut copy) = (full, *copy);
+        let copy = &mut copy;
+        // the integer kernel (`BOUGH_REPAIR=kernel`, kernel_backend.rs): its CPU executors, or its GPU executor
+        // (Vulkan on Linux, when pinned) writing the target's memory in place
+        if self.repair == Repair::Kernel {
+            let kb = self.kernel.get_or_insert_with(Default::default);
+            if kb.stage(&self.rt, &self.rows, full) {
+                let t = self.target.as_mut().expect("draw_target without a target");
+                if !full && !copy.is_none() {
+                    let (src, sbpr) = t.pixels(copy.src as usize);
+                    let (dst, dbpr) = t.pixels(i);
+                    // SAFETY: as below (the surface on screen as the source, possibly the target itself).
+                    unsafe { crate::backend::surfaces::copy_rect(src, sbpr, dst, dbpr, copy) };
+                }
+                let (p, bpr) = t.pixels(i);
+                let alloc = bpr * self.rt.win_h as usize;
+                // SAFETY: the target's contract: `p` holds the window's rows at `bpr` for as long as the surface
+                // lives (a resize re-wraps: the address changes), and nothing else touches it while not in use.
+                self.repaired_tiles = unsafe { kb.run(&self.rt, full, p, bpr, alloc, i) };
+                self.surf_stats.cpu += 1;
+                let all = self.damage_since_shown(epoch);
+                self.add_copy_damage(full, copy);
+                let t = self.target.as_mut().unwrap();
+                t.present(i, &self.shown_rows, full || all);
+                return;
+            }
+            // something the kernel does not draw yet: the CPU model takes over for good, and since the two do not
+            // share arithmetic every surface is repainted whole from here
+            kb.stats.refused += 1;
+            self.repair = Repair::Cpu;
+            self.held.iter_mut().for_each(|h| *h = None);
+            full = true;
+            *copy = bough_frame::SlotCopy::NONE;
+            self.last_full = true;
+        }
         let t = self.target.as_mut().expect("draw_target without a target");
         if !full && !copy.is_none() {
             let (src, sbpr) = t.pixels(copy.src as usize);
@@ -1145,6 +1180,13 @@ impl<V: View> App<V> {
         self.repaired_tiles = r.unwrap_or_else(|| panic!("the CPU executor refused a frame (a record kind or transform it does not model: {:?})", self.cpu.stats));
         self.surf_stats.cpu += 1;
         let all = self.damage_since_shown(epoch);
+        self.add_copy_damage(full, copy);
+        let t = self.target.as_mut().unwrap();
+        t.present(i, &self.shown_rows, full || all);
+    }
+
+    /// A scroll copy changed every pixel of its rect against the surface on screen: its tiles join the damage.
+    fn add_copy_damage(&mut self, full: bool, copy: &bough_frame::SlotCopy) {
         if !copy.is_none() && !full {
             let r = copy.rect;
             let (tx0, ty0, tx1, ty1) = ((r[0] >> 5) as u32, (r[1] >> 5) as u32, ((r[2] + 31) >> 5) as u32, ((r[3] + 31) >> 5) as u32);
@@ -1154,8 +1196,6 @@ impl<V: View> App<V> {
                 *row |= m;
             }
         }
-        let t = self.target.as_mut().unwrap();
-        t.present(i, &self.shown_rows, full || all);
     }
 
     /// Release what a calm window does not need: every drawn surface except the one on screen becomes

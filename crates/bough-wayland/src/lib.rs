@@ -327,8 +327,9 @@ impl Shell {
     /// next `resize_buffers`.
     pub fn pixels(&mut self, i: usize) -> (*mut u8, usize) {
         let g = self.state.gens.last().expect("pixels before resize_buffers");
-        // SAFETY: buffer `i` occupies [i * stride * h, (i + 1) * stride * h) of the mapping.
-        (unsafe { g.map.add(i * g.stride * g.h as usize) }, g.stride)
+        // SAFETY: buffer `i` occupies [i * one, i * one + stride * h) of the mapping, one = stride * h rounded
+        // up to a page (`resize_buffers`).
+        (unsafe { g.map.add(i * (g.stride * g.h as usize).next_multiple_of(4096)) }, g.stride)
     }
 
     /// Make a new generation of buffers of `w` x `h` px (the old one is destroyed once the compositor released
@@ -339,7 +340,9 @@ impl Shell {
         }
         let st = &mut self.state;
         let stride = w as usize * 4;
-        let one = stride * h as usize;
+        // each buffer starts on a page: a GPU executor imports a buffer's pages as its output (Vulkan's
+        // host-pointer import is page granular), and a page-aligned buffer is also the cheapest to copy
+        let one = (stride * h as usize).next_multiple_of(4096);
         let len = one * st.nbufs;
         let name = c"bough-shm";
         // SAFETY: a NUL-terminated name; the fd is owned below.

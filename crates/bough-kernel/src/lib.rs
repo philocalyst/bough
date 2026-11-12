@@ -29,6 +29,16 @@ pub mod vulkan;
 pub use metal as gpu;
 #[cfg(target_os = "linux")]
 pub use vulkan as gpu;
+
+/// This platform's GPU executor over the kernel (Metal from its MSL, Vulkan from its SPIR-V); `None` without a
+/// device.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn gpu_executor() -> Option<gpu::Gpu> {
+    #[cfg(target_os = "macos")]
+    return metal::Gpu::new(KERNEL_MSL);
+    #[cfg(target_os = "linux")]
+    return vulkan::Gpu::new(KERNEL_SPIRV);
+}
 pub mod scenes;
 pub mod stage;
 
