@@ -39,6 +39,9 @@ pub mod on {
 /// Added to the slot of a span nested in another span: it is read only when `BOUGH_ATTR_NEST` is set, so that
 /// by default an outer span is not inflated by the counter reads of the spans inside it.
 pub const NEST: usize = 100;
+/// 1 while reading a whole-stage span whose inner spans are then switched off (`BOUGH_ATTR_OUTER`): unused
+/// in normal builds.
+pub const OUTER: usize = 1;
 
 /// `span!(slot, expr)`: evaluate `expr`, charging its instructions to `slot` when the `attr` feature is on.
 #[macro_export]

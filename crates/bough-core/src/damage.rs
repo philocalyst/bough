@@ -319,6 +319,8 @@ pub struct DamageRing {
     planes: Box<[Plane; RING]>,
     /// One scroll record per epoch (`epoch % RING`), next to its plane; cleared with it.
     scrolls: [Option<ScrollRec>; RING],
+    /// Bit `e % RING`: that epoch has a scroll record (so "no scroll in the ring" is one test).
+    scroll_bits: u8,
     /// `&mut planes[epoch % RING]`, kept so a mark does no index arithmetic.
     cur: *mut Plane,
     pub epoch: u32,
@@ -344,7 +346,7 @@ impl DamageRing {
         }
         let window = NRect::new(0, 0, w, h);
         let cur = &mut planes[1 % RING] as *mut Plane;
-        DamageRing { planes, scrolls: [None; RING], cur, epoch: 1, window, wthresh: Thresh::of_rect(window), tw: ((w + TILE - 1) >> TILE_SHIFT) as u32, rows }
+        DamageRing { planes, scrolls: [None; RING], scroll_bits: 0, cur, epoch: 1, window, wthresh: Thresh::of_rect(window), tw: ((w + TILE - 1) >> TILE_SHIFT) as u32, rows }
     }
     /// Mark a rect (any form; empty and off-window rects mark nothing), clipped to the window, into
     /// the current epoch. Clipping is done in tile units: the window starts at 0 and its last tile
@@ -399,7 +401,41 @@ impl DamageRing {
         let e = self.epoch as usize % RING;
         self.planes[e].clear();
         self.scrolls[e] = None;
+        self.scroll_bits &= !(1 << e);
         self.cur = &mut self.planes[e] as *mut Plane;
+    }
+    /// Does any epoch still in the ring have a scroll record?
+    #[inline(always)]
+    pub fn any_scroll(&self) -> bool {
+        self.scroll_bits != 0
+    }
+    /// OR the planes of the last `age` epochs (1..=RING) into `rows` (tile rows, at least the window's):
+    /// only each plane's occupied rows are read. Returns the row range that was written (empty when nothing
+    /// is damaged) and whether any tile is set. The work is the damaged rows of those planes.
+    #[inline]
+    pub fn or_last_into(&self, age: u32, rows: &mut [u128]) -> (usize, usize, bool) {
+        assert!((1..=RING as u32).contains(&age) && rows.len() >= self.rows as usize);
+        let n = self.rows as usize;
+        let (mut lo, mut hi, mut any) = (n, 0usize, 0u128);
+        for k in 0..age as usize {
+            let p = &self.planes[(self.epoch as usize + RING - k) % RING];
+            let (a, b) = (p.y0 as usize, (p.y1 as usize).min(n));
+            let mut y = a;
+            while y < b {
+                // SAFETY: y < b <= n <= rows.len() (asserted) and n <= MAX_TILES_Y = p.rows.len().
+                unsafe {
+                    let m = *p.rows.get_unchecked(y);
+                    *rows.get_unchecked_mut(y) |= m;
+                    any |= m;
+                }
+                y += 1;
+            }
+            if a < b {
+                lo = lo.min(a);
+                hi = hi.max(b);
+            }
+        }
+        if lo < hi { (lo, hi, any != 0) } else { (0, 0, false) }
     }
     /// The scroll record of the epoch `back` epochs ago (0 = current).
     #[inline]
@@ -409,7 +445,9 @@ impl DamageRing {
     /// Set (or clear) the current epoch's scroll record.
     #[inline]
     pub fn set_scroll(&mut self, r: Option<ScrollRec>) {
-        self.scrolls[self.epoch as usize % RING] = r;
+        let e = self.epoch as usize % RING;
+        self.scroll_bits = (self.scroll_bits & !(1 << e)) | (r.is_some() as u8) << e;
+        self.scrolls[e] = r;
     }
     /// [`Plane::shift_within`] on the current epoch's plane.
     #[inline]
@@ -425,6 +463,7 @@ impl DamageRing {
             (d.y0, d.y1, d.solid, d.n) = (s.y0, s.y1, s.solid, s.n);
         }
         self.scrolls = o.scrolls;
+        self.scroll_bits = o.scroll_bits;
         self.epoch = o.epoch;
         self.cur = &mut self.planes[self.epoch as usize % RING] as *mut Plane;
     }

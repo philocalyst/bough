@@ -13,16 +13,16 @@
 //! Nothing is mirrored: a colour write is 4 bytes into an instance, a digit change is one `u16` per glyph
 //! slot, a scroll is one space entry plus bough-core's page offsets.
 //!
-//! Damage has two rings, both bough-core `DamageRing`s advanced in lockstep: the Bough's own (every
-//! geometry, structure and text mark) and the **paint** ring (paint-only writes: colours, glyph alphas).
-//! The split exists for content addressing: a paint write's pixels are a function of the record and its
-//! new state alone, so each epoch keeps a short log of its paint writes as (record, old state hash, new
-//! state hash). A surface drawn at epoch `e` holds the current pixels iff no epoch since `e` had non-paint
-//! damage and every record's composed change since `e` is the identity (`App::pick`): O(1) per paint
-//! write, no per-tile state.
+//! Damage is one ring of tile planes (bough-core `DamageRing`) fed from two forms. Geometry, structure and
+//! text mark tiles as they happen. **Paint-only** writes (colours, glyph alphas) are record-space: a bit per
+//! record in the epoch's paint plane (`Bough::mark_paint`), projected onto the epoch's tile plane once,
+//! before the frame reads it (`paint_resolve`). The frame asks "did this epoch have damage other than paint"
+//! before that projection, which is what content addressing needs: a paint write's pixels are a function of
+//! the record and its new state alone, so each epoch keeps a short log of its paint writes as (record, old
+//! state hash, new state hash). A surface drawn at epoch `e` holds the current pixels iff no epoch since `e`
+//! had non-paint damage and every record's composed change since `e` is the identity (`App::pick`).
 use crate::text::TextSys;
 use bough_core::bough::Columns;
-use bough_core::damage::DamageRing;
 use bough_core::page::Page;
 use bough_core::nrect::WRect;
 use bough_core::{Bough, Handle, NRect, RecordInit};
@@ -539,8 +539,6 @@ pub struct Rt {
     space_parent: Vec<u16>,
     space_kids: Vec<Vec<u16>>,
     pub(crate) space_regs: Vec<Vec<u32>>,
-    /// Paint-only damage, advanced with the Bough's ring.
-    pub paint: DamageRing,
     /// Per epoch (`epoch % RING`): its paint writes, see the module docs.
     pub paint_log: [PaintLog; bough_core::damage::RING],
     pub tiles_x: usize,
@@ -726,7 +724,6 @@ impl Rt {
             space_parent: Vec::new(),
             space_kids: Vec::new(),
             space_regs: Vec::new(),
-            paint: DamageRing::new(win_w, win_h),
             paint_log: Default::default(),
             tiles_x: tx,
             tiles_y: ty,
@@ -831,7 +828,6 @@ impl Rt {
         l.many(G, "virtual-list regions (raw)", Content, rg, rg);
         let sp: usize = (self.space_free.capacity() + self.space_parent.capacity()) * 2 + self.space_kids.iter().map(|k| k.capacity() * 2 + 24).sum::<usize>() + self.space_regs.iter().map(|k| k.capacity() * 4 + 24).sum::<usize>() + self.clip_dedupe.capacity() * 12;
         l.many(G, "spaces and clip dedupe", Content, sp, sp);
-        l.many(G, "paint damage ring", Window, self.paint.heap_bytes(), self.paint.heap_bytes());
         let rq: usize = self.reclaim_q.iter().map(sb).sum::<usize>() + self.reclaim_q.capacity() * size_of::<Scope>();
         l.many(G, "reclaim queue", Content, rq, rq);
         self.lay.ledger(l);
@@ -854,7 +850,6 @@ impl Rt {
     /// Positions are integral device px by construction: spaces are `[i32; 2]` and every scroll offset is
     /// rounded to device px before the delta is taken, so the copied pixels are the moved content exactly.
     pub fn scroll_copy(&mut self, start: usize, len: usize, dy: i32, vp: NRect) {
-        self.paint.shift_within(vp, 0, dy);
         let inst = &self.inst;
         self.bough.scroll_run_copy(start, len, 0, dy, vp, |kind, payload| scroll_band(inst, kind, payload));
     }
@@ -1540,7 +1535,7 @@ impl Rt {
     /// each record has then.
     #[inline(always)]
     pub fn paint_write(&mut self, h: Handle, old: u64, new: u64) {
-        let l = &mut self.paint_log[self.paint.epoch as usize % bough_core::damage::RING];
+        let l = &mut self.paint_log[self.bough.epoch() as usize % bough_core::damage::RING];
         if (l.n as usize) < PAINT_LOG {
             l.e[l.n as usize] = ((h.idx as u64) << 32 | h.generation as u64, old, new);
             l.n += 1;
@@ -1550,13 +1545,12 @@ impl Rt {
         self.bough.mark_paint(h.idx);
     }
 
-    /// Project the epoch's record-space paint plane onto the paint ring's tile plane (`Bough::project_paint`).
-    /// Called before anything reads the paint ring (`App::frame_as`).
+    /// Project the epoch's record-space paint plane onto the damage ring's current tile plane
+    /// (`Bough::project_paint`); returns whether paint damaged any tile. There is one damage ring: whether
+    /// the epoch had damage other than paint is asked before this is called (`App::frame_as`).
     #[inline(always)]
-    pub fn paint_resolve(&mut self) {
-        if self.bough.paint_pending() {
-            self.bough.project_paint(&mut self.paint);
-        }
+    pub fn paint_resolve(&mut self) -> bool {
+        self.bough.paint_pending() && self.bough.project_paint()
     }
 
     /// The text-mark sink of the current epoch.

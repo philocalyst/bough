@@ -23,7 +23,7 @@
 use crate::elem::{Element, Mounter};
 use crate::rt::*;
 use bough_core::damage::RING;
-use bough_core::{Plane, RecordInit};
+use bough_core::RecordInit;
 
 /// A view: a plain struct whose fields are the state (`designs/reactivity/final/00-model.md` §3). `view`
 /// describes it; `Signal` fields bound into operands are direct ports, so publishing one patches its
@@ -193,8 +193,8 @@ pub struct App<V: View> {
     pub repaired_tiles: u32,
     pub surf_stats: SurfStats,
     rows: Vec<u128>,
-    pa: Box<Plane>,
-    pb: Box<Plane>,
+    /// The row range outside which `rows` is zero (`repair_rows`).
+    occ: (usize, usize),
     /// Per epoch (`epoch % RING`): did it have non-paint damage?
     core_epochs: [bool; RING],
     /// `frames` value when each ring slot was last drawn into.
@@ -424,8 +424,7 @@ impl<V: View> App<V> {
             repaired_tiles: 0,
             surf_stats: SurfStats::default(),
             rows: vec![0; ty],
-            pa: Box::new(Plane::EMPTY),
-            pb: Box::new(Plane::EMPTY),
+            occ: (0, 0),
             core_epochs: [false; RING],
             last_use: vec![0; ring],
             trim_mark: 0,
@@ -473,6 +472,7 @@ impl<V: View> App<V> {
     /// The window is now `w` x `h` device px: the tile-row buffer follows and every surface is stale.
     pub(crate) fn resized(&mut self, w: i32, h: i32) {
         self.rows = vec![0; (h as usize).div_ceil(32)];
+        self.occ = (0, 0);
         for e in &mut self.held {
             *e = None;
         }
@@ -585,23 +585,15 @@ impl<V: View> App<V> {
         }
     }
 
-    /// OR of the last `age` planes of both damage rings into `self.rows` (`false`: nothing damaged).
+    /// OR of the last `age` planes of both damage rings into `self.rows` (`false`: nothing damaged), straight
+    /// from the planes' occupied row ranges: the work is the damaged rows of those planes, not the window's
+    /// rows. `self.occ` is the row range outside which `self.rows` is zero (the next call clears only that).
     fn repair_rows(&mut self, age: u32) -> bool {
-        self.rt.bough.repair_into(age, &mut self.pa);
-        self.rt.paint.repair_into(age, &mut self.pb);
-        let (a0, a1) = self.pa.occ_range();
-        let (b0, b1) = self.pb.occ_range();
-        self.rows.fill(0);
-        let mut any = 0u128;
-        for y in a0..a1.min(self.rows.len()) {
-            self.rows[y] = self.pa.rows[y];
-            any |= self.pa.rows[y];
-        }
-        for y in b0..b1.min(self.rows.len()) {
-            self.rows[y] |= self.pb.rows[y];
-            any |= self.pb.rows[y];
-        }
-        any != 0
+        let (l0, h0) = self.occ;
+        self.rows[l0..h0].fill(0);
+        let (lo, hi, any) = self.rt.bough.or_last_into(age, &mut self.rows);
+        self.occ = (lo, hi);
+        any
     }
 
     /// Scroll by copy (bough-metal RESULTS §15) for target `i` of age `age` at `epoch`, after `repair_rows`.
@@ -615,7 +607,12 @@ impl<V: View> App<V> {
     fn copy_plan(&mut self, i: usize, epoch: u32, age: u32) -> bough_metal::fused::SlotCopy {
         use bough_metal::fused::SlotCopy;
         let b = &self.rt.bough;
+        if !b.any_scroll() {
+            return SlotCopy::NONE;
+        }
         let Some((b0, r0)) = (0..age).find_map(|k| b.scroll_rec(k).map(|r| (k, r))) else { return SlotCopy::NONE };
+        // a scroll in the window marks and clears rows by its clips: the occupied range is no longer known
+        self.occ = (0, self.rows.len());
         let src = self.shown.filter(|&s| s != i && self.held[s] == Some(epoch - 1));
         let rows = self.rows.len();
         let mark = |out: &mut [u128], c: bough_core::NRect| {
@@ -659,9 +656,9 @@ impl<V: View> App<V> {
         // this epoch's own marks on every tile meeting C
         let (tx0, ty0, tx1, ty1) = bough_core::damage::tile_span(c);
         let span = (u128::MAX >> (128 - (tx1 - tx0))) << tx0;
-        let (p, q) = (b.plane(0), self.rt.paint.plane(0));
+        let p = b.plane(0);
         for y in ty0 as usize..(ty1 as usize).min(rows) {
-            self.rows[y] |= (p.rows[y] | q.rows[y]) & span;
+            self.rows[y] |= p.rows[y] & span;
         }
         for k in b0 + 1..age {
             if let Some(r) = b.scroll_rec(k) {
@@ -807,10 +804,9 @@ impl<V: View> App<V> {
 
     /// The publication policy is chosen by the turn's source at compile time (`PACED`), never per frame.
     pub fn frame_as<const PACED: bool>(&mut self) -> bool {
-        crate::span!(6, ());
-        crate::span!(5, self.rt.paint_resolve());
+        // one ring: "did this epoch have damage other than paint" is read before paint is projected into it
         let core = !self.rt.bough.plane(0).is_clear();
-        let paint = !self.rt.paint.plane(0).is_clear();
+        let paint = crate::span!(5, self.rt.paint_resolve());
         if !core && !paint {
             // an idle frame returns released subtrees' resources (`Rt::reclaim`), a budget at a time
             if self.reclaiming() {
@@ -821,7 +817,7 @@ impl<V: View> App<V> {
         self.prof.reset();
         let epoch = self.rt.bough.epoch();
         self.core_epochs[epoch as usize % RING] = core;
-        let pick = self.pick(epoch, !core);
+        let pick = crate::span!(7, self.pick(epoch, !core));
         self.surf_stats.frames += 1;
         match pick {
             Pick::OnScreen => {
@@ -839,12 +835,13 @@ impl<V: View> App<V> {
                 self.shown = Some(i);
                 self.last_surface = i;
             }
-            Pick::Draw(i) => self.draw::<PACED>(i, epoch),
+            Pick::Draw(i) => crate::span!(8 + crate::attr::NEST * (1 - crate::attr::OUTER), self.draw::<PACED>(i, epoch)),
         }
         self.prof.mark(PH_PRESENT);
-        self.rt.bough.next_epoch();
-        self.rt.paint.advance();
-        self.rt.paint_log[self.rt.paint.epoch as usize % RING].clear();
+        crate::span!(4, {
+            self.rt.bough.next_epoch();
+            self.rt.paint_log[self.rt.bough.epoch() as usize % RING].clear();
+        });
         self.frames += 1;
         true
     }
@@ -883,8 +880,8 @@ impl<V: View> App<V> {
         let mut copy = bough_metal::fused::SlotCopy::NONE;
         self.last_full = full;
         if !full {
-            self.repair_rows(age.unwrap());
-            copy = self.copy_plan(i, epoch, age.unwrap());
+            crate::span!(9, self.repair_rows(age.unwrap()));
+            copy = crate::span!(10, self.copy_plan(i, epoch, age.unwrap()));
         }
         self.prof.mark(PH_DAMAGE);
         let n_dir = self.rt.bough.dir_len() as u32;
@@ -931,13 +928,16 @@ impl<V: View> App<V> {
             // the GPU's views of the region's columns cover what the CPU wrote (seven compares; a growth is cold)
             #[cfg(not(feature = "wgpu"))]
             g.ensure_columns(&self.rt.column_needs());
-            self.repaired_tiles = g.draw::<PACED>(i, &self.rows, full, n_dir, &copy);
+            // the rows a partial repair can have set are `occ` (the slot's writer reads no other)
+            let (lo, hi) = if full { (0, self.rows.len()) } else { self.occ };
+            self.repaired_tiles = g.draw_in::<PACED>(i, &self.rows[..hi], full, n_dir, &copy, lo);
             drawn = true;
         }
         if !drawn {
             // headless: the CPU side of the frame ends at the tile list in the region's frame slot
             // SAFETY: the runtime's region, laid out by `rt.layout`; headless, so no GPU reads it.
-            let (nt, _) = unsafe { bough_metal::fused::write_slot(self.rt.region_base(), &self.rt.layout, (self.frames % 2) as usize, i as u32, &self.rows, full, &copy) };
+            let (lo, hi) = if full { (0, self.rows.len()) } else { self.occ };
+            let (nt, _) = crate::span!(11, unsafe { bough_metal::fused::write_slot_in(self.rt.region_base(), &self.rt.layout, (self.frames % 2) as usize, i as u32, &self.rows[..hi], full, &copy, lo) });
             self.repaired_tiles = nt;
             self.prof.mark(PH_CULL);
         }
@@ -981,7 +981,7 @@ impl<V: View> App<V> {
     pub(crate) fn ledger_app(&self, l: &mut bough_mem::Ledger) {
         use bough_mem::Scales;
         l.vec("app", "re-description tape", &self.tape, self.tape.capacity(), Scales::Content);
-        let rows = self.rows.capacity() * 16 + 2 * size_of::<Plane>() + self.held.capacity() * 8 + self.last_use.capacity() * 8;
+        let rows = self.rows.capacity() * 16 + self.held.capacity() * 8 + self.last_use.capacity() * 8;
         l.many("app", "tile-row buffer and repair planes", Scales::Window, rows, rows);
     }
 

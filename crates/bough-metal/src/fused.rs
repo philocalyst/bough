@@ -1366,6 +1366,11 @@ impl Fused {
     /// no thread wake, no completion wait); otherwise the publisher thread commits it in this refresh.
     /// `copy`: a scroll copy from another surface first (RESULTS §15; `SlotCopy::NONE` for none).
     pub fn draw<const PACED: bool>(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32, copy: &SlotCopy) -> u32 {
+        self.draw_in::<PACED>(target, rows, full, n_dir, copy, 0)
+    }
+
+    /// [`Fused::draw`] with the first tile row that may be set (`write_slot_in`).
+    pub fn draw_in<const PACED: bool>(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32, copy: &SlotCopy, y0: usize) -> u32 {
         self.sync();
         // a bindless frame reaches its target only through the residency set
         if !self.surfs[target].touched.get() {
@@ -1376,7 +1381,8 @@ impl Fused {
         unsafe { (*(self.pool_ptr as *mut FHdr)).n_dir = n_dir };
         // the slot names the target; the pre-encoded frame names none
         debug_assert!(copy.is_none() || (copy.src as usize != target && self.surfs[copy.src as usize].touched.get()));
-        let (nt, _) = self.write_slot(k, target as u32, rows, full, copy);
+        // SAFETY: the pool is the region laid out by `self.lay`; the GPU is idle (sync()).
+        let (nt, _) = unsafe { write_slot_in(self.pool_ptr, &self.lay, k, target as u32, rows, full, copy, y0) };
         self.release(k, nt);
         if self.publish {
             if PACED {
@@ -1692,7 +1698,20 @@ fn vm_page() -> usize {
 /// `region` must be a region laid out by `l` (slots reserved with `Layout::slot_bytes` for its window), not
 /// read by the GPU while this writes.
 pub unsafe fn write_slot(region: *mut u8, l: &Layout, k: usize, target: u32, rows: &[u128], full: bool, copy: &SlotCopy) -> (u32, u32) {
+    // SAFETY: the caller's contract.
+    unsafe { write_slot_in(region, l, k, target, rows, full, copy, 0) }
+}
+
+/// [`write_slot`] for a caller that knows the tile rows below `y0` are clear (and passes `rows` cut after the
+/// last row that may be set): the pass visits `rows[y0..]` only, so a frame's slot costs its damaged rows, not
+/// the window's. `full` ignores `y0`.
+///
+/// # Safety
+/// As [`write_slot`].
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn write_slot_in(region: *mut u8, l: &Layout, k: usize, target: u32, rows: &[u128], full: bool, copy: &SlotCopy, y0: usize) -> (u32, u32) {
     let (tx, ty) = (l.tiles_x(), l.tiles_y());
+    let (y0, y1) = if full { (0, ty as usize) } else { (y0, (ty as usize).min(rows.len())) };
     let all = if tx >= 128 { u128::MAX } else { (1u128 << tx) - 1 };
     // SAFETY: see the function contract.
     unsafe {
@@ -1717,7 +1736,7 @@ pub unsafe fn write_slot(region: *mut u8, l: &Layout, k: usize, target: u32, row
         *s.add(10) = 1;
         let rec = s.add(SLOT_HDR / 4);
         let (mut nt, mut nr) = (0u32, 0u32);
-        for y in 0..ty as usize {
+        for y in y0..y1 {
             let row = if full { all } else { rows.get(y).copied().unwrap_or(0) & all };
             if row == 0 {
                 continue;

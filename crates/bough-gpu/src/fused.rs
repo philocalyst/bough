@@ -1049,6 +1049,12 @@ impl Fused {
     /// `PACED`: a clock-driven turn: published at the next `sync` on the calling thread (one refresh later,
     /// no thread wake, no completion wait); otherwise the publisher thread commits it in this refresh.
     /// `copy`: a scroll copy from another surface first (RESULTS §15; `SlotCopy::NONE` for none).
+    /// `draw` for a caller that knows the first tile row that may be set (bough-metal `Fused::draw_in`); this
+    /// presenter's slot writer visits every row of `rows`.
+    pub fn draw_in<const PACED: bool>(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32, copy: &SlotCopy, _y0: usize) -> u32 {
+        self.draw::<PACED>(target, rows, full, n_dir, copy)
+    }
+
     pub fn draw<const PACED: bool>(&mut self, target: usize, rows: &[u128], full: bool, n_dir: u32, copy: &SlotCopy) -> u32 {
         self.sync();
         // a bindless frame reaches its target only through the residency set

@@ -2522,6 +2522,17 @@ impl Bough {
         self.ring.set_scroll(Some(rec));
     }
 
+    /// `DamageRing::or_last_into` on this Bough's ring: the last `age` epochs' damaged tile rows OR-ed into
+    /// `rows`; returns (first row, end row, any tile set).
+    #[inline]
+    pub fn or_last_into(&self, age: u32, rows: &mut [u128]) -> (usize, usize, bool) {
+        self.ring.or_last_into(age, rows)
+    }
+    /// Does any epoch still in the ring have a scroll-by-copy record?
+    #[inline(always)]
+    pub fn any_scroll(&self) -> bool {
+        self.ring.any_scroll()
+    }
     /// The scroll-by-copy record of the epoch `back` epochs ago (0 = current), if it had one.
     #[inline]
     pub fn scroll_rec(&self, back: u32) -> Option<ScrollRec> {
@@ -2866,12 +2877,22 @@ impl Bough {
     pub fn paint_pending(&self) -> bool {
         self.dirty.any(crate::dirty::PAINT)
     }
-    /// Project the record-space paint plane onto `out`'s current tile plane and clear it: for every marked
-    /// record that is still bound, its visible ink (ink ∩ clip ∩ window) at the place it has now. A record
-    /// released since its mark is skipped (its removal damaged its ink); an index reissued since marks the new
-    /// record (which its mount damaged anyway).
-    pub fn project_paint(&mut self, out: &mut DamageRing) {
+    /// Project the record-space paint plane onto the current epoch's tile plane and clear it: for every
+    /// marked record that is still bound, its visible ink (ink ∩ clip ∩ window) at the place it has now. A
+    /// record released since its mark is skipped (its removal damaged its ink); an index reissued since marks
+    /// the new record (which its mount damaged anyway). Returns whether any tile was marked.
+    ///
+    /// There is one damage ring: a caller that must know whether an epoch had damage other than paint (content
+    /// addressing) asks `plane(0).is_clear()` before calling this.
+    pub fn project_paint(&mut self) -> bool {
+        // SAFETY: `cur_mut` is the ring's current plane; nothing else of the ring is touched meanwhile.
+        let plane: *mut Plane = self.ring.cur_mut();
+        self.project_paint_onto(unsafe { &mut *plane })
+    }
+    /// `project_paint` onto a plane of the caller's (tests compare it with marks made one record at a time).
+    pub fn project_paint_onto(&mut self, out: &mut Plane) -> bool {
         let (htab, clips, win) = (&self.htab, &self.clips, self.ring.window);
+        let mut any = false;
         self.dirty.drain(crate::dirty::PAINT, |base, mut m| {
             while m != 0 {
                 let idx = base + m.trailing_zeros();
@@ -2898,9 +2919,11 @@ impl Bough {
                     continue;
                 }
                 let (tx0, ty0, tx1, ty1) = crate::damage::tile_span(v);
-                out.cur_mut().mark_span(tx0, ty0, tx1, ty1);
+                out.mark_span(tx0, ty0, tx1, ty1);
+                any = true;
             }
         });
+        any
     }
 
     /// Mark the record's ink damaged (a paint-only write: colour, glyph content, image).

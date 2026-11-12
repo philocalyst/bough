@@ -1558,7 +1558,6 @@ impl<V: View> App<V> {
         self.rt.win_w = w;
         self.rt.win_h = h;
         self.rt.bough.set_window(w, h);
-        self.rt.paint.set_window(w, h);
         self.rt.layout.w = w as u32;
         self.rt.layout.h = h as u32;
         self.rt.tiles_x = self.rt.layout.tiles_x() as usize;

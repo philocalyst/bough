@@ -57,12 +57,13 @@ fn projection_equals_marks_at_the_final_place() {
         for &h in &dirty {
             mark_now(&b, &mut want, h);
         }
-        b.project_paint(&mut got);
+        let any = b.project_paint_onto(got.cur_mut());
         assert!(!b.paint_pending());
         assert_eq!(got.plane(0).rows, want.plane(0).rows, "round {round}");
+        assert_eq!(any, !want.plane(0).is_clear());
         // the plane is empty afterwards: a second projection marks nothing
         let mut again = DamageRing::new(W, H);
-        b.project_paint(&mut again);
+        assert!(!b.project_paint_onto(again.cur_mut()));
         assert!(again.plane(0).is_clear());
     }
 }
@@ -77,7 +78,13 @@ fn a_translated_record_is_projected_where_it_is() {
     b.mark_paint(h.idx);
     b.translate_run(0, 1, 640, 320);
     let mut got = DamageRing::new(W, H);
-    b.project_paint(&mut got);
+    b.project_paint_onto(got.cur_mut());
     assert!(got.plane(0).tile(20, 10), "the tile of the record's new place");
     assert!(!got.plane(0).tile(0, 0), "not the tile of its old place");
+    // the Bough's own ring takes the same marks
+    b.mark_paint(h.idx);
+    b.next_epoch();
+    assert!(b.plane(0).is_clear());
+    assert!(b.project_paint());
+    assert!(b.plane(0).tile(20, 10));
 }
