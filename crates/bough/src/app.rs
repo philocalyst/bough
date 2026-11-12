@@ -701,14 +701,6 @@ impl<V: View> App<V> {
                 }
                 return Pick::Draw(c);
             }
-            // every surface held: a publication still queued (not yet taken by the publisher) is superseded by
-            // this frame anyway, so its surface is taken back and drawn into
-            #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
-            if let Some(c) = self.gpu.as_mut().and_then(|g| g.reclaim_queued()) {
-                if Some(c) != self.shown {
-                    return Pick::Draw(c);
-                }
-            }
             // all four held by the compositor: wait for a release (never skip)
             if !waited {
                 waited = true;
