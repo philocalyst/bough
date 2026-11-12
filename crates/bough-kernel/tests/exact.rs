@@ -1,7 +1,8 @@
 //! The exactness gate: three executors, one kernel source, equal bytes.
 //! (a) `cpu::naive`: the kernel's definition, pixel by pixel, every command, no binning;
 //! (b) `cpu::raster`: tile programs with the cut, cores, spans, flat rows, on one and on several cores;
-//! (c) `metal::Gpu`: naga's MSL of the same source (macOS; skipped where there is no Metal device).
+//! (c) `metal::Gpu`: naga's MSL of the same source (macOS; skipped where there is no Metal device), or
+//!     `vulkan::Gpu`: naga's SPIR-V of the same source (Linux; skipped where there is no Vulkan adapter).
 //! `BOUGH_EXACT_SEEDS` sets the number of scenes (default 24; 125 scenes are 10,000 tiles).
 use bough_kernel::cpu::{self, Atlas, Binner, Damage, Opt, Pool, Prog};
 use bough_kernel::{k, scenes, stage};
@@ -30,6 +31,12 @@ fn executors_agree() {
     let words = STRIDE * FH as usize;
     #[cfg(target_os = "macos")]
     let mut gpu = bough_kernel::metal::Gpu::new(bough_kernel::KERNEL_MSL);
+    #[cfg(target_os = "linux")]
+    let mut gpu = bough_kernel::vulkan::Gpu::new(bough_kernel::KERNEL_SPIRV);
+    #[cfg(target_os = "linux")]
+    if let Some(g) = gpu.as_ref() {
+        eprintln!("exact: the GPU executor is Vulkan on {} ({:?})", g.info.name, g.info.device_type);
+    }
     let (mut bin, mut prog) = (Binner::default(), Prog::default());
     let (mut tiles, mut gpu_tiles) = (0u64, 0u64);
     let mut h = 0u64;
@@ -69,7 +76,7 @@ fn executors_agree() {
             }
         };
         check_subset(&out, "cpu");
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         if let Some(g) = gpu.as_mut() {
             g.upload(&scene, &atlas, &prog);
             let sentinel = vec![0x5a5a_5a5au32; words];
@@ -215,4 +222,44 @@ fn translation_invariance() {
             }
         }
     }
+}
+
+/// The Vulkan executor's negative control: the same rounding constant changed in the SPIR-V (an `OpConstant`
+/// of 16384, shared by every use, changed to 16383) must make the gate fail.
+#[cfg(target_os = "linux")]
+#[test]
+fn vulkan_rounding_mutant_is_caught() {
+    let mut words = bough_kernel::vulkan::spirv_words(bough_kernel::KERNEL_SPIRV);
+    let mut i = 5;
+    let mut site = None;
+    while i < words.len() {
+        let (wc, op) = ((words[i] >> 16) as usize, words[i] & 0xffff);
+        if op == 43 && wc == 4 && words[i + 3] == 16384 {
+            site = Some(i + 3);
+            break;
+        }
+        i += wc.max(1);
+    }
+    let site = site.expect("the mutation site moved: no OpConstant 16384 in the kernel's SPIR-V");
+    words[site] = 16383;
+    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let Some(mut gpu) = bough_kernel::vulkan::Gpu::new(&bytes) else { return };
+    let atlas_px = scenes::atlas();
+    let img_px = scenes::images();
+    let atlas = Atlas::new(&atlas_px, scenes::ATLAS_W).with_images(&img_px, scenes::IMG_W);
+    let words = STRIDE * FH as usize;
+    let (mut bin, mut prog) = (Binner::default(), Prog::default());
+    let mut caught = 0;
+    for seed in 0..4 {
+        let scene = scenes::adversarial(seed, FW, FH, 110);
+        let mut spec = vec![0u32; words];
+        cpu::naive(&scene, FW, FH, &atlas, 0, &mut spec, STRIDE);
+        bin.bin(&scene, FW, FH, STRIDE as u32, &atlas, 0, &Damage::All, true, &mut prog);
+        gpu.upload(&scene, &atlas, &prog);
+        gpu.clear_out(words);
+        gpu.render(prog.tiles(), words);
+        caught += first_diff(gpu.out(words), &spec).is_some() as u32;
+    }
+    eprintln!("vulkan rounding mutant: caught in {caught} of 4 scenes");
+    assert!(caught >= 1, "a Vulkan kernel with a different rounding constant passed the gate");
 }

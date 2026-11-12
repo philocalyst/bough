@@ -171,7 +171,12 @@ fn heavy_numeric_labels_over_consecutive_ticks() {
         100. * (w.marked_tiles as f64 / w.oracle_tiles as f64 - 1.),
         w.pool.stats
     );
+    // The class patch (`patch16`) is a NEON kernel with no x86-64 twin yet: elsewhere every update takes the window
+    // or replacement paths, and the exactness checks above are what this test establishes.
+    #[cfg(target_arch = "aarch64")]
     assert!(patched > w.updates / 2, "most heavy updates must be digit patches");
+    #[cfg(not(target_arch = "aarch64"))]
+    assert_eq!(patched, 0, "no class patch exists off aarch64; a new one needs this test to require it");
     eprintln!("class-patch tiles beyond the oracle: {}", w.patch_over);
     assert!(w.patch_over * 100 < 3 * w.oracle_tiles, "digit patches mark the digit cell: within 3% of the oracle");
 }
@@ -237,7 +242,11 @@ fn random_edits_all_paths() {
         100. * (w.marked_tiles as f64 / w.oracle_tiles.max(1) as f64 - 1.),
         w.pool.stats
     );
+    #[cfg(target_arch = "aarch64")]
     assert!(w.pool.stats.iter().all(|&c| c > 0), "every path exercised: {:?}", w.pool.stats);
+    // No class patch off aarch64 (see heavy_numeric_labels_over_consecutive_ticks): every other path is exercised.
+    #[cfg(not(target_arch = "aarch64"))]
+    assert!(w.pool.stats[0] == 0 && w.pool.stats[1..].iter().all(|&c| c > 0), "paths: {:?}", w.pool.stats);
 }
 
 #[test]

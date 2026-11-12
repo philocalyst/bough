@@ -11,7 +11,7 @@ fn main() {
     let mut app = App::new(Dash::new(&work), config(2.0), true);
     let t1 = t0.elapsed();
     app.frame();
-    app.gpu.as_mut().unwrap().sync();
+    app.wait_presented();
     let t2 = t0.elapsed();
     let epoch = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros();
     println!("first_pixel app_new_ms={:.2} first_frame_ms={:.2} total_ms={:.2} epoch_us={epoch}", t1.as_secs_f64() * 1e3, (t2 - t1).as_secs_f64() * 1e3, t2.as_secs_f64() * 1e3);

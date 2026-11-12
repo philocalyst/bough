@@ -1,3 +1,4 @@
+#![cfg_attr(not(target_os = "macos"), allow(unused_imports))]
 //! GPU kernel A/B on the lab's real damage (bough-metal RESULTS Part IV): the lab is ticked like the windowed
 //! adapter (scale 2, a ring of 2: age-2 repairs), then the last frame's repair rows and a full redraw are
 //! rendered `REPS` times back to back in one command buffer (`Fused::bench_frames`: the GPU saturated, so
@@ -7,6 +8,7 @@ use bough::raw::*;
 use bough_scenes::*;
 use zgx_workload::{Mode, Workload};
 
+#[cfg(target_os = "macos")]
 fn main() {
     let mode = match std::env::var("ZGX_MODE").as_deref() {
         Ok("scroll") => Mode::Scroll,
@@ -32,16 +34,22 @@ fn main() {
     let target = app.last_surface;
     let g = app.gpu.as_mut().unwrap();
     for &d in &debugs {
-        let mut part: Vec<f64> = (0..5).map(|_| g.bench_frames(target, &rows, false, n_dir, reps, d, &bough_metal::fused::SlotCopy::NONE)).collect();
-        let mut full: Vec<f64> = (0..5).map(|_| g.bench_frames(target, &rows, true, n_dir, reps, d, &bough_metal::fused::SlotCopy::NONE)).collect();
+        let mut part: Vec<f64> = (0..5).map(|_| g.bench_frames(target, &rows, false, n_dir, reps, d, &bough::frame::SlotCopy::NONE)).collect();
+        let mut full: Vec<f64> = (0..5).map(|_| g.bench_frames(target, &rows, true, n_dir, reps, d, &bough::frame::SlotCopy::NONE)).collect();
         part.sort_by(|a, b| a.partial_cmp(b).unwrap());
         full.sort_by(|a, b| a.partial_cmp(b).unwrap());
         println!("{mode:?} debug {d}: repair ({tiles} tiles) {:.4} ms [{:.4}..{:.4}]   full redraw {:.4} ms [{:.4}..{:.4}]", part[2], part[0], part[4], full[2], full[0], full[4]);
     }
     // the scroll copy alone (RESULTS §15): the whole window from the other surface moved 28 px up, no repair
     let (w, h) = (g.w as i32, g.h as i32);
-    let copy = bough_metal::fused::SlotCopy { src: (1 - target) as u32, rect: [0, 0, w, h - 28], dx: 0, dy: -28 };
+    let copy = bough::frame::SlotCopy { src: (1 - target) as u32, rect: [0, 0, w, h - 28], dx: 0, dy: -28 };
     let mut c: Vec<f64> = (0..5).map(|_| g.bench_frames(target, &[], false, n_dir, reps, 2, &copy)).collect();
     c.sort_by(|a, b| a.partial_cmp(b).unwrap());
     println!("copy {w}x{} px (debug 2: no tile pass): {:.4} ms [{:.4}..{:.4}]", h - 28, c[2], c[0], c[4]);
+}
+
+/// Metal / AppKit only (round 7, platform lane: the workspace builds on Linux).
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!("kernel_bench: macOS only");
 }

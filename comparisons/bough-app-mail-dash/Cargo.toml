@@ -8,9 +8,12 @@ description = "zgx's example apps mail and dashboard (zgx-script examples) on bo
 [dependencies]
 bough = { path = "../../crates/bough" }
 bough-core = { path = "../../crates/bough-core" }
-bough-metal = { path = "../../crates/bough-metal" }
 bough-text = { path = "../../crates/bough-text" }
 zgx-workload = { git = "https://github.com/zeronsh/zgx", rev = "06debe9df86dbcb0a82d6074d01f98ace98a65b3" }
+
+# the Metal presenter (macOS) for the tools that drive it directly
+[target.'cfg(target_os = "macos")'.dependencies]
+bough-metal = { path = "../../crates/bough-metal" }
 
 [[bin]]
 name = "apps_bench"

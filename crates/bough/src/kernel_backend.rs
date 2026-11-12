@@ -52,11 +52,11 @@ pub struct KernelBackend {
     force: Force,
     /// `BOUGH_KERNEL_TRACE`: one line per frame on stderr.
     pub trace: bool,
-    #[cfg(target_os = "macos")]
-    gpu: Option<bough_kernel::metal::Gpu>,
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    gpu: Option<bough_kernel::gpu::Gpu>,
     /// Per surface: the address its target buffer wraps, and the buffer.
-    #[cfg(target_os = "macos")]
-    targets: Vec<Option<(usize, bough_kernel::metal::Target)>>,
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    targets: Vec<Option<(usize, bough_kernel::gpu::Target)>>,
     /// The atlases' stamps at their last upload to the GPU executor.
     uploaded: Option<(u64, usize, u64)>,
     /// When the GPU executor last ran (its fixed cost depends on whether it has clocked down).
@@ -92,9 +92,9 @@ impl KernelBackend {
             tiles: Vec::new(),
             force,
             trace: std::env::var_os("BOUGH_KERNEL_TRACE").is_some(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             gpu: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             targets: Vec::new(),
             uploaded: None,
             last_gpu: None,
@@ -206,7 +206,7 @@ impl KernelBackend {
             let (x, y, w, h) = (q.pos[0] + off[0], q.pos[1] + off[1], q.size[0], q.size[1]);
             // a transformed record is staged in its own frame, unclipped, and then placed (`stage::xf`)
             let lc = if xf.is_some() { &stage::NO_CLIP } else { &cl };
-            let iw = bough_metal::fused::IMG_W;
+            let iw = bough_frame::IMG_W;
             let c = match q.kind {
                 0 => stage::solid(x, y, w, h, q.color, lc),
                 1 => stage::rrect(x, y, w, h, q.radius, q.color, lc),
@@ -246,7 +246,7 @@ impl KernelBackend {
     pub unsafe fn run(&mut self, rt: &Rt, full: bool, dst: *mut u8, bpr: usize, alloc: usize, surf: usize) -> u32 {
         let (w, h) = (rt.win_w as u32, rt.win_h as u32);
         let a = &rt.text.cache.atlas;
-        let atlas = Atlas::new(&a.pixels, a.width).with_images(rt.images.pixels(), bough_metal::fused::IMG_W);
+        let atlas = Atlas::new(&a.pixels, a.width).with_images(rt.images.pixels(), bough_frame::IMG_W);
         let stride = bpr / 4;
         let damage = if full { Damage::All } else { Damage::Tiles(&self.tiles) };
         #[cfg(target_os = "macos")]
@@ -255,10 +255,9 @@ impl KernelBackend {
         #[cfg(target_os = "macos")]
         let i1 = if self.trace { instrs() } else { 0 };
         let (tiles, entries) = (self.prog.tiles() as u64, self.prog.entries() as u64);
-        #[cfg(target_os = "macos")]
-        let gpu_able = true;
-        #[cfg(not(target_os = "macos"))]
-        let gpu_able = false;
+        // the cost model's GPU is Apple's; on Linux the GPU executor (Vulkan) runs only when pinned
+        // (`BOUGH_KERNEL_EXEC=gpu`): the device there may be a CPU rasteriser (lavapipe)
+        let gpu_able = cfg!(target_os = "macos");
         let warm = self.last_gpu.is_some_and(|t| t.elapsed().as_millis() < 50);
         let mut exec = match self.force {
             Force::Auto => cpu::choose(self.bin.est_cpu_ns, tiles, entries, self.pool.workers(), gpu_able, warm, &cpu::COSTS),
@@ -266,10 +265,10 @@ impl KernelBackend {
             Force::CpuN => Exec::CpuN(self.pool.workers()),
             Force::Gpu => Exec::Gpu,
         };
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         if exec == Exec::Gpu && tiles > 0 {
             if self.gpu.is_none() {
-                self.gpu = bough_kernel::metal::Gpu::new(bough_kernel::KERNEL_MSL);
+                self.gpu = bough_kernel::gpu_executor();
             }
             let ok = match self.gpu.as_mut() {
                 Some(g) => {
@@ -278,7 +277,7 @@ impl KernelBackend {
                     }
                     if self.targets[surf].as_ref().is_none_or(|t| t.0 != dst as usize) {
                         // SAFETY: the caller's contract (mapped for the backend's life, page aligned).
-                        self.targets[surf] = unsafe { g.wrap(dst, alloc.next_multiple_of(16384)) }.map(|t| (dst as usize, t));
+                        self.targets[surf] = unsafe { g.wrap(dst, alloc.next_multiple_of(PAGE)) }.map(|t| (dst as usize, t));
                     }
                     match &self.targets[surf] {
                         Some((_, t)) => {
@@ -359,21 +358,22 @@ impl KernelBackend {
         self.stage(rt, &[], true);
         let (w, h) = (rt.win_w as u32, rt.win_h as u32);
         let a = &rt.text.cache.atlas;
-        let atlas = Atlas::new(&a.pixels, a.width).with_images(rt.images.pixels(), bough_metal::fused::IMG_W);
+        let atlas = Atlas::new(&a.pixels, a.width).with_images(rt.images.pixels(), bough_frame::IMG_W);
         let mut out = vec![0u32; (w * h) as usize];
         cpu::reference(&self.scene, w, h, &atlas, 0, &mut out, w as usize, &self.pool);
         out.iter().flat_map(|p| p.to_le_bytes()).collect()
     }
 }
 
-/// Retired instructions of this process so far (trace only; the call itself costs a few thousand).
+/// The import granule of a surface's memory (Apple's VM page; Linux's page, which Vulkan's host-pointer import
+/// alignment equals on every driver we run).
 #[cfg(target_os = "macos")]
+const PAGE: usize = 16384;
+#[cfg(not(target_os = "macos"))]
+const PAGE: usize = 4096;
+
+/// Retired instructions of this process so far (trace only; bough-sys's counters: proc_pid_rusage on macOS,
+/// perf_event_open on Linux).
 pub fn instrs() -> u64 {
-    unsafe extern "C" {
-        fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut u64) -> i32;
-    }
-    let mut b = [0u64; 64];
-    // SAFETY: flavor 4 (RUSAGE_INFO_V4) writes 296 bytes; the buffer holds 512.
-    unsafe { proc_pid_rusage(std::process::id() as i32, 4, b.as_mut_ptr()) };
-    b[31]
+    bough_sys::perf::snap().instrs
 }

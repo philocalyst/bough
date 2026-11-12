@@ -34,10 +34,8 @@ fn main() {
         a.turn(|v| _ = v.stream.set(visible));
         a.frame();
         if tick == 60 || tick == 1199 {
-            if let Some(g) = a.gpu.as_mut() {
-                g.sync();
-            }
-            let s = bough_metal::perf::snap();
+            a.wait_presented();
+            let s = bough::sys::perf::snap();
             println!("tick {tick:4}: rss {:.0} MB, footprint {:.0} MB, glyph atlas {}x{}", mb(s.rss), mb(s.footprint), a.rt.text.cache.atlas.width, a.rt.text.cache.atlas.height);
         }
     }

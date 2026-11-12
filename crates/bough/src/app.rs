@@ -54,16 +54,7 @@ pub struct Config {
 
 impl Config {
     pub fn new(width_pt: f32, height_pt: f32, scale: f32, font: Vec<u8>) -> Config {
-        Config {
-            width_pt,
-            height_pt,
-            scale,
-            font,
-            ring: 0,
-            caps: Caps::DEFAULT,
-            faces: Vec::new(),
-            mount_once: false,
-        }
+        Config { width_pt, height_pt, scale, font, ring: 0, caps: Caps::DEFAULT, faces: Vec::new(), mount_once: false }
     }
     /// Surfaces of the ring.
     pub fn surfaces(&self) -> usize {
@@ -95,29 +86,24 @@ pub struct Prof {
 }
 impl Prof {
     fn new() -> Prof {
-        Prof {
-            on: false,
-            acc: [0; 5],
-            last: 0,
-            ovh: 0,
-        }
+        Prof { on: false, acc: [0; 5], last: 0, ovh: 0 }
     }
     pub fn enable(&mut self) {
         self.on = true;
-        self.ovh = bough_metal::perf::snap_overhead();
+        self.ovh = bough_sys::perf::snap_overhead();
     }
     #[inline]
     pub fn reset(&mut self) {
         if self.on {
-            self.last = bough_metal::perf::snap().instrs;
+            self.last = bough_sys::perf::snap().instrs;
         }
     }
     #[inline]
     pub fn mark(&mut self, i: usize) {
         if self.on {
-            let s = bough_metal::perf::snap().instrs;
+            let s = bough_sys::perf::snap().instrs;
             self.acc[i] += (s - self.last).saturating_sub(self.ovh);
-            self.last = bough_metal::perf::snap().instrs;
+            self.last = bough_sys::perf::snap().instrs;
         }
     }
 }
@@ -212,6 +198,7 @@ pub struct App<V: View> {
     core_epochs: [bool; RING],
     /// `frames` value when each ring slot was last drawn into.
     last_use: Vec<u64>,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     trim_mark: u64,
     /// How the mount overlapped the GPU's preparation (see [`prepare`]).
     pub startup: Startup,
@@ -225,6 +212,11 @@ pub struct App<V: View> {
     pub repair: Repair,
     /// `Repair::Kernel`: the integer kernel's executors (kernel_backend.rs), made at the first frame.
     pub kernel: Option<Box<crate::kernel_backend::KernelBackend>>,
+    /// Surfaces the CPU executor draws every frame into, where there is no GPU presenter (`backend::Surfaces`: a
+    /// window host's buffers, or memory offscreen). `None` with a GPU presenter or headless.
+    pub target: Option<Box<dyn crate::backend::Surfaces>>,
+    /// The tile rows a presented frame differs from the one on screen by (the target's damage).
+    shown_rows: Vec<u128>,
 }
 
 /// Per raster worker started by [`prepare`]: (strikes, glyphs, instructions, ns), for those finished.
@@ -255,36 +247,20 @@ pub struct Startup {
 /// threads: the Metal device, queues and pipelines on one, and the glyphs of the document's static text
 /// (`strikes`: pixel size and text, in the order the mount meets them) on `raster_threads` more. The next
 /// [`App::new`] mounts while they run and takes their results.
-pub fn prepare(
-    cfg: &Config,
-    strikes: &[(f32, &str, u8)],
-    svgs: &[(&'static str, f32, f32)],
-    raster_threads: usize,
-) {
+pub fn prepare(cfg: &Config, strikes: &[(f32, &str, u8)], svgs: &[(&'static str, f32, f32)], raster_threads: usize) {
     #[cfg(target_os = "macos")]
     {
-        let (w, h) = (
-            (cfg.width_pt * cfg.scale).round() as usize,
-            (cfg.height_pt * cfg.scale).round() as usize,
-        );
+        let (w, h) = ((cfg.width_pt * cfg.scale).round() as usize, (cfg.height_pt * cfg.scale).round() as usize);
         bough_metal::fused::prepare_in_background(Some((w, h, cfg.surfaces(), BIN_CAP)));
     }
     crate::text::prepare_faces(&cfg.faces);
     if !strikes.is_empty() && raster_threads > 0 {
         // faces by logical id: the configured font, or the regular one when the face is absent
-        let font_of = |l: u8| {
-            cfg.faces
-                .iter()
-                .find(|f| f.0 == l)
-                .map_or(&cfg.font[..], |f| &f.1[..])
-        };
+        let font_of = |l: u8| cfg.faces.iter().find(|f| f.0 == l).map_or(&cfg.font[..], |f| &f.1[..]);
         let fonts: Vec<&[u8]> = (0..4u8).map(font_of).collect();
         // each strike is ASCII-complete from its creation (text.rs), so its whole printable alphabet too
         const ASCII: &str = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
-        let mut px: Vec<(f32, &str, usize)> = strikes
-            .iter()
-            .map(|&(s, t, f)| (s * cfg.scale, t, f as usize & 3))
-            .collect();
+        let mut px: Vec<(f32, &str, usize)> = strikes.iter().map(|&(s, t, f)| (s * cfg.scale, t, f as usize & 3)).collect();
         let mut seen: Vec<(u32, usize)> = Vec::new();
         for &(s, _, f) in strikes {
             if !seen.contains(&(s.to_bits(), f as usize)) {
@@ -295,21 +271,13 @@ pub fn prepare(
         bough_text::atlas::prerender_in_background(&fonts, &px, raster_threads);
     }
     if !svgs.is_empty() && raster_threads > 0 {
-        let items = svgs
-            .iter()
-            .map(|&(s, w, h)| {
-                (
-                    s,
-                    (w * cfg.scale).round().max(1.0) as u32,
-                    (h * cfg.scale).round().max(1.0) as u32,
-                )
-            })
-            .collect();
+        let items = svgs.iter().map(|&(s, w, h)| (s, (w * cfg.scale).round().max(1.0) as u32, (h * cfg.scale).round().max(1.0) as u32)).collect();
         crate::deco::prerender_svgs(items, raster_threads);
     }
 }
 
 /// Bin capacity per tile row the presenter starts with.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const BIN_CAP: u32 = 1024;
 
 /// Repair-backend limits (damaged tiles per frame below which the CPU backend repairs): provisional values until
@@ -320,20 +288,21 @@ impl<V: View> App<V> {
     /// region is heap memory and `frame` stops after the tile list (the RENDER=0 shape).
     pub fn new(view: V, cfg: Config, gpu: bool) -> App<V> {
         let t_mount = std::time::Instant::now();
-        #[cfg(target_os = "macos")]
-        let i_mount = bough_metal::fused::thread_instructions();
-        let (win_w, win_h) = (
-            (cfg.width_pt * cfg.scale).round() as i32,
-            (cfg.height_pt * cfg.scale).round() as i32,
-        );
+        let i_mount = bough_sys::perf::thread_instructions();
+        let (win_w, win_h) = ((cfg.width_pt * cfg.scale).round() as i32, (cfg.height_pt * cfg.scale).round() as i32);
         let ring = cfg.surfaces();
         // direct Metal: the GPU sees each column through a view of its used prefix (bough-metal
         // `Fused::new_views`), so the region reserves the record format's limits as address space; the wgpu-hal
         // presenter wraps the whole region in one buffer and keeps the configured capacities
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
         let caps = if gpu { cfg.caps.reserve() } else { cfg.caps };
-        #[cfg(not(all(target_os = "macos", not(feature = "wgpu"))))]
+        // the wgpu-hal presenter wraps the region in one buffer of the configured size
+        #[cfg(all(target_os = "macos", feature = "wgpu"))]
         let caps = cfg.caps;
+        // no GPU presenter: the CPU executor reads the region in place, which is lazily backed memory, so it
+        // reserves the record format's limits as address space too (only what is written becomes resident)
+        #[cfg(not(target_os = "macos"))]
+        let caps = cfg.caps.reserve();
         let bytes = caps.region_bytes(win_w as u32, win_h as u32);
         // wgpu (`--features wgpu`): the device boots on another thread (the OS's driver load, ~22 ms cold) while this
         // thread mounts, lays out and shapes into region memory the presenter then adopts without a copy (bough-gpu
@@ -384,24 +353,11 @@ impl<V: View> App<V> {
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
         let views = |rt: &Rt| {
             let (p, len, keep) = rt.region_mem();
-            let base = rt.layout.slot[2] as usize
-                + bough_metal::fused::Layout::slot_bytes(rt.layout.w, rt.layout.h.max(MAX_WINDOW));
+            let base = rt.layout.slot[2] as usize + bough_frame::Layout::slot_bytes(rt.layout.w, rt.layout.h.max(MAX_WINDOW));
             // SAFETY: the runtime's region: page-aligned (mmap), `len` bytes, alive while `keep` (a share of it)
             // is, which the presenter holds as long as its buffers; every GPU-read column was carved on a page
             // boundary (`Rt::new`) and `region_bytes` leaves a page after each.
-            unsafe {
-                bough_metal::fused::Fused::new_views(
-                    p,
-                    len,
-                    keep,
-                    base,
-                    win_w as usize,
-                    win_h as usize,
-                    cfg.scale as f64,
-                    ring,
-                    BIN_CAP,
-                )
-            }
+            unsafe { bough_metal::fused::Fused::new_views(p, len, keep, base, win_w as usize, win_h as usize, cfg.scale as f64, ring, BIN_CAP) }
         };
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
         let metal = match metal {
@@ -427,29 +383,8 @@ impl<V: View> App<V> {
         rt.owner = ptr as *const u8;
         {
             let el = owner.view();
-            let tp: *mut Vec<u32> = if once {
-                std::ptr::null_mut()
-            } else {
-                &mut tape
-            };
-            let mut m = Mounter {
-                rt: &mut rt,
-                owner: ptr,
-                recs: &mut recs,
-                scope: &mut scope,
-                depth: 0,
-                ox: 0.0,
-                oy: 0.0,
-                space: 0,
-                clip: 0,
-                pending_num: None,
-                cls: 0,
-                tape: tp,
-                ti: 0,
-                pos: 0,
-                kid: 0,
-                keep: false,
-            };
+            let tp: *mut Vec<u32> = if once { std::ptr::null_mut() } else { &mut tape };
+            let mut m = Mounter { rt: &mut rt, owner: ptr, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None, cls: 0, tape: tp, ti: 0, pos: 0, kid: 0, keep: false };
             el.mount(&mut m);
         }
         rt.bough.insert_run(0, &recs);
@@ -461,44 +396,31 @@ impl<V: View> App<V> {
         unsafe { rt.settle(&mut *owner as *mut V as *const u8) };
         rt.lay_flush();
         drop(scope); // the root scope lives as long as the app: nothing of it is ever released
-        let mut startup = Startup {
-            mount_ns: t_mount.elapsed().as_nanos() as u64,
-            ..Startup::default()
-        };
-        #[cfg(target_os = "macos")]
-        {
-            startup.mount_instr = bough_metal::fused::thread_instructions() - i_mount;
-        }
+        #[allow(unused_mut)]
+        let mut startup = Startup { mount_ns: t_mount.elapsed().as_nanos() as u64, mount_instr: bough_sys::perf::thread_instructions() - i_mount, ..Startup::default() };
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
         if overlapped {
             let t = std::time::Instant::now();
             let (mut f, instr, ns) = views(&rt);
             f.set_layout(rt.layout);
-            startup = Startup {
-                gpu_prep_instr: instr,
-                gpu_prep_ns: ns,
-                gpu_wait_ns: t.elapsed().as_nanos() as u64,
-                ..startup
-            };
+            startup = Startup { gpu_prep_instr: instr, gpu_prep_ns: ns, gpu_wait_ns: t.elapsed().as_nanos() as u64, ..startup };
             metal = Some(f);
         }
         #[cfg(all(target_os = "macos", feature = "wgpu"))]
         if let (Some(b), Some(m)) = (boot, mem) {
             let t = std::time::Instant::now();
-            let mut f = presenter::Fused::adopt(
-                b.join().expect("device boot"),
-                win_w as usize,
-                win_h as usize,
-                cfg.scale as f64,
-                m,
-                ring,
-                BIN_CAP,
-            );
+            let mut f = presenter::Fused::adopt(b.join().expect("device boot"), win_w as usize, win_h as usize, cfg.scale as f64, m, ring, BIN_CAP);
             f.set_layout(rt.layout);
             startup.gpu_wait_ns = t.elapsed().as_nanos() as u64;
             metal = Some(f);
         }
         let ty = rt.tiles_y;
+        // no GPU presenter on this platform: the CPU executor draws every frame, offscreen until a host gives the
+        // app its window's surfaces
+        #[cfg(not(target_os = "macos"))]
+        let target = gpu.then(|| Box::new(crate::backend::MemSurfaces::new(win_w as u32, win_h as u32, ring)) as Box<dyn crate::backend::Surfaces>);
+        #[cfg(target_os = "macos")]
+        let target = None;
         App {
             owner,
             rt,
@@ -525,16 +447,19 @@ impl<V: View> App<V> {
             once,
             repair: Repair::from_env(),
             kernel: None,
+            target,
+            shown_rows: vec![0; ty],
         }
     }
 
     /// Frames per pre-armed command buffer. Every frame goes through the pre-armed stream (bough-metal
     /// RESULTS Part IV: released by a shared event, published in the same turn); this only sizes its batches.
-    #[cfg(target_os = "macos")]
     pub fn stream(&mut self, k: usize) {
+        #[cfg(target_os = "macos")]
         if let Some(g) = self.gpu.as_mut() {
             g.set_batch(k);
         }
+        let _ = k;
     }
 
     #[cfg(target_os = "macos")]
@@ -554,8 +479,12 @@ impl<V: View> App<V> {
     /// The window is now `w` x `h` device px: the tile-row buffer follows and every surface is stale.
     pub(crate) fn resized(&mut self, w: i32, h: i32) {
         self.rows = vec![0; (h as usize).div_ceil(32)];
+        self.shown_rows = vec![0; (h as usize).div_ceil(32)];
         for e in &mut self.held {
             *e = None;
+        }
+        if let Some(t) = self.target.as_mut() {
+            t.resize(w as u32, h as u32);
         }
         #[cfg(target_os = "macos")]
         if let Some(g) = self.gpu.as_mut() {
@@ -584,6 +513,7 @@ impl<V: View> App<V> {
         self.redescribe();
         self.prof.mark(PH_UPDATE);
         self.rt.lay_flush();
+        self.rehover();
         self.prof.mark(PH_TEXT);
     }
 
@@ -595,6 +525,24 @@ impl<V: View> App<V> {
     /// Wait until the GPU has finished every frame submitted so far (the last one is presented).
     pub fn wait_presented(&mut self) {
         self.sync();
+    }
+
+    /// Frames reach surfaces (a GPU presenter or a CPU target): false headless (the frame ends at the tile list).
+    pub fn has_surfaces(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        if self.gpu.is_some() {
+            return true;
+        }
+        self.target.is_some()
+    }
+
+    /// The width in pixels of the surfaces frames are drawn into (the window's, headless).
+    pub fn surface_width(&self) -> usize {
+        #[cfg(target_os = "macos")]
+        if let Some(g) = self.gpu.as_ref() {
+            return g.w;
+        }
+        self.target.as_ref().map_or(self.rt.win_w as usize, |t| t.size().0 as usize)
     }
 
     /// The handler half of a turn alone: mutate the view's signals (no settling). Pair with `flush`.
@@ -611,6 +559,7 @@ impl<V: View> App<V> {
         self.effects();
         self.redescribe();
         self.rt.lay_flush();
+        self.rehover();
     }
 
     /// A turn with no handler: admit async completions (a committed cohort's wires run in this turn).
@@ -629,11 +578,7 @@ impl<V: View> App<V> {
             if self.rt.pubs.is_empty() && self.rt.asy.committed.is_empty() {
                 return;
             }
-            let d = crate::changed::Changed {
-                pubs: &self.rt.pubs,
-                readers: &self.rt.asy.committed,
-                _v: std::marker::PhantomData,
-            };
+            let d = crate::changed::Changed { pubs: &self.rt.pubs, readers: &self.rt.asy.committed, _v: std::marker::PhantomData };
             self.owner.changed(d);
             // other owners (list rows, entities, row-owned readers) whose own boundaries published
             let owners = std::mem::take(&mut self.rt.pubs.owners);
@@ -653,9 +598,7 @@ impl<V: View> App<V> {
             // SAFETY: as in `turn`.
             unsafe { self.rt.settle(owner) };
         }
-        panic!(
-            "View::changed did not settle in 8 waves (a cycle between changed and its own boundaries)"
-        );
+        panic!("View::changed did not settle in 8 waves (a cycle between changed and its own boundaries)");
     }
 
     /// Describe the view again and patch the retained records (`describe.rs`); not when mounted once.
@@ -693,15 +636,12 @@ impl<V: View> App<V> {
     /// meeting C (they include the exposed strip and the static bands), and every other record's clip whole.
     /// No source (ring of 1: the target IS `shown`) or a clip that changed inside the window: those clips are
     /// marked whole. Bounds conditions of the copy's one source and one rect, not a policy.
-    fn copy_plan(&mut self, i: usize, epoch: u32, age: u32) -> bough_metal::fused::SlotCopy {
-        use bough_metal::fused::SlotCopy;
+    fn copy_plan(&mut self, i: usize, epoch: u32, age: u32) -> bough_frame::SlotCopy {
+        use bough_frame::SlotCopy;
         let b = &self.rt.bough;
-        let Some((b0, r0)) = (0..age).find_map(|k| b.scroll_rec(k).map(|r| (k, r))) else {
-            return SlotCopy::NONE;
-        };
-        let src = self
-            .shown
-            .filter(|&s| s != i && self.held[s] == Some(epoch - 1));
+        let Some((b0, r0)) = (0..age).find_map(|k| b.scroll_rec(k).map(|r| (k, r))) else { return SlotCopy::NONE };
+        // (the CPU target moves the clip in place when it repairs the surface on screen: `copy_rect` is a memmove)
+        let src = self.shown.filter(|&s| (s != i || self.target.is_some()) && self.held[s] == Some(epoch - 1));
         let rows = self.rows.len();
         let mark = |out: &mut [u128], c: bough_core::NRect| {
             if c.is_empty() {
@@ -759,21 +699,14 @@ impl<V: View> App<V> {
         if dst.is_empty() {
             return SlotCopy::NONE;
         }
-        SlotCopy {
-            src: s as u32,
-            rect: dst.to_xyxy(),
-            dx,
-            dy,
-        }
+        SlotCopy { src: s as u32, rect: dst.to_xyxy(), dx, dy }
     }
 
     /// Does surface `s` hold every pixel of the current state (epoch `epoch`, which has only paint damage)?
     /// No epoch since it was drawn may have had non-paint damage, none may have overflowed its paint log,
     /// and the logged paint writes since then must compose to the identity for every record.
     fn holds_current(&self, s: usize, epoch: u32) -> bool {
-        let Some(last) = self.held[s] else {
-            return false;
-        };
+        let Some(last) = self.held[s] else { return false };
         let age = epoch - last;
         if age as usize > RING || age == 0 {
             return age == 0;
@@ -802,13 +735,12 @@ impl<V: View> App<V> {
         net[..n].iter().all(|x| x.1 == x.2)
     }
 
-    #[cfg(target_os = "macos")]
     fn in_use(&self, i: usize) -> bool {
-        self.gpu.as_ref().is_some_and(|g| g.is_in_use(i))
-    }
-    #[cfg(not(target_os = "macos"))]
-    fn in_use(&self, _: usize) -> bool {
-        false
+        #[cfg(target_os = "macos")]
+        if self.gpu.as_ref().is_some_and(|g| g.is_in_use(i)) {
+            return true;
+        }
+        self.target.as_ref().is_some_and(|t| t.in_use(i))
     }
 
     fn pick(&mut self, epoch: u32, paint_only: bool) -> Pick {
@@ -832,7 +764,9 @@ impl<V: View> App<V> {
             let mut best: Option<(usize, u32)> = None;
             let mut fresh: Option<usize> = None;
             for c in 0..n {
-                if Some(c) == self.shown {
+                // the surface on screen is never drawn while the compositor may read it; a CPU target's surface the
+                // compositor released (it copied it) is the smallest repair of all (age 1)
+                if Some(c) == self.shown && (self.target.is_none() || self.in_use(c)) {
                     continue;
                 }
                 match self.held[c] {
@@ -862,8 +796,7 @@ impl<V: View> App<V> {
                     self.surf_stats.grew += 1;
                     #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
                     if let Some(g) = self.gpu.as_ref() {
-                        for d in (0..n).filter(|&d| Some(d) != self.shown && self.held[d].is_some())
-                        {
+                        for d in (0..n).filter(|&d| Some(d) != self.shown && self.held[d].is_some()) {
                             let w = g.in_use_why(d);
                             for k in 0..5 {
                                 self.surf_stats.grew_why[k] += (w >> k & 1) as u64;
@@ -882,6 +815,12 @@ impl<V: View> App<V> {
             let w = t0.elapsed().as_micros() as u64;
             self.surf_stats.max_wait_us = self.surf_stats.max_wait_us.max(w);
         }
+    }
+
+    /// Does the current epoch have damage (would `frame` draw)? A host that paces frames (Wayland frame
+    /// callbacks) asks this to decide whether it needs to draw when the compositor is ready.
+    pub fn dirty(&self) -> bool {
+        !self.rt.bough.plane(0).is_clear() || !self.rt.paint.plane(0).is_clear()
     }
 
     /// Damage -> surface -> tile list -> GPU repair -> present, for an input-driven turn: the frame reaches
@@ -926,6 +865,11 @@ impl<V: View> App<V> {
                 if let Some(g) = self.gpu.as_mut() {
                     g.show_held::<PACED>(i);
                 }
+                if self.target.is_some() {
+                    let full = self.damage_since_shown(epoch);
+                    let t = self.target.as_mut().unwrap();
+                    t.present(i, &self.shown_rows, full);
+                }
                 self.held[i] = Some(epoch);
                 self.shown = Some(i);
                 self.last_surface = i;
@@ -940,6 +884,7 @@ impl<V: View> App<V> {
         true
     }
 
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables, unused_mut))]
     fn draw<const PACED: bool>(&mut self, i: usize, epoch: u32) {
         let mut purged = false;
         // a CPU-repairable frame must not make the surface resident (a first residency drains the pre-armed
@@ -966,7 +911,7 @@ impl<V: View> App<V> {
         }
         let age = self.held[i].map(|l| epoch - l);
         let full = !matches!(age, Some(a) if a as usize <= RING);
-        let mut copy = bough_metal::fused::SlotCopy::NONE;
+        let mut copy = bough_frame::SlotCopy::NONE;
         self.last_full = full;
         if !full {
             self.repair_rows(age.unwrap());
@@ -979,6 +924,10 @@ impl<V: View> App<V> {
         self.last_use[i] = self.frames;
         #[allow(unused_mut)]
         let mut drawn = false;
+        if self.target.is_some() {
+            self.draw_target(i, epoch, full, &copy);
+            drawn = true;
+        }
         // the kernel backend (kernel_backend.rs): every executor writes the surface's memory in place
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
         if self.repair == Repair::Kernel {
@@ -1047,23 +996,75 @@ impl<V: View> App<V> {
         if !drawn {
             // headless: the CPU side of the frame ends at the tile list in the region's frame slot
             // SAFETY: the runtime's region, laid out by `rt.layout`; headless, so no GPU reads it.
-            let (nt, _) = unsafe {
-                bough_metal::fused::write_slot(
-                    self.rt.region_base(),
-                    &self.rt.layout,
-                    (self.frames % 2) as usize,
-                    i as u32,
-                    &self.rows,
-                    full,
-                    &copy,
-                )
-            };
+            let (nt, _) = unsafe { bough_frame::write_slot(self.rt.region_base(), &self.rt.layout, (self.frames % 2) as usize, i as u32, &self.rows, full, &copy) };
             self.repaired_tiles = nt;
             self.prof.mark(PH_CULL);
         }
         self.held[i] = Some(epoch);
         self.shown = Some(i);
         self.last_surface = i;
+    }
+
+    /// The tiles where the current state differs from the surface on screen, into `shown_rows` (the damage a
+    /// presented surface carries: a host's compositor repaints only it). `true`: everything (nothing shown yet,
+    /// or the surface on screen is older than the damage rings).
+    fn damage_since_shown(&mut self, epoch: u32) -> bool {
+        let Some(age) = self.shown.and_then(|s| self.held[s]).map(|e| epoch - e) else { return true };
+        if age as usize > RING || age == 0 {
+            return age != 0;
+        }
+        self.rt.bough.repair_into(age, &mut self.pa);
+        self.rt.paint.repair_into(age, &mut self.pb);
+        self.shown_rows.fill(0);
+        let n = self.shown_rows.len();
+        for p in [&self.pa, &self.pb] {
+            let (a0, a1) = p.occ_range();
+            for y in a0..a1.min(n) {
+                self.shown_rows[y] |= p.rows[y];
+            }
+        }
+        false
+    }
+
+    /// A frame through the kernel backend into the target's surface `i`: the scroll copy from the surface on
+    /// screen, the repair of the damaged tiles by whichever executor the costs favour (this thread, the pool,
+    /// the GPU where the platform has one), then `present` with the damage against what is on screen.
+    fn draw_target(&mut self, i: usize, epoch: u32, full: bool, copy: &bough_frame::SlotCopy) {
+        self.prof.mark(PH_CULL);
+        let kb = self.kernel.get_or_insert_with(Default::default);
+        kb.stage(&self.rt, &self.rows, full);
+        let t = self.target.as_mut().expect("draw_target without a target");
+        if !full && !copy.is_none() {
+            let (src, sbpr) = t.pixels(copy.src as usize);
+            let (dst, dbpr) = t.pixels(i);
+            // SAFETY: the copy plan names the surface on screen as the source (the target itself when it repairs that
+            // one in place: same pointer and stride); both are the target's surfaces of the window's size, and the
+            // plan's rect minus the move lies in the window.
+            unsafe { crate::backend::surfaces::copy_rect(src, sbpr, dst, dbpr, copy) };
+        }
+        let (p, bpr) = t.pixels(i);
+        let alloc = bpr * self.rt.win_h as usize;
+        // SAFETY: the target's contract: `p` holds the window's rows at `bpr` for as long as the surface
+        // lives (a resize re-wraps: the address changes), and nothing else touches it while not in use.
+        self.repaired_tiles = unsafe { kb.run(&self.rt, full, p, bpr, alloc, i) };
+        self.surf_stats.cpu += 1;
+        let all = self.damage_since_shown(epoch);
+        self.add_copy_damage(full, copy);
+        let t = self.target.as_mut().unwrap();
+        t.present(i, &self.shown_rows, full || all);
+    }
+
+    /// A scroll copy changed every pixel of its rect against the surface on screen: its tiles join the damage.
+    fn add_copy_damage(&mut self, full: bool, copy: &bough_frame::SlotCopy) {
+        if !copy.is_none() && !full {
+            let r = copy.rect;
+            let (tx0, ty0, tx1, ty1) = ((r[0] >> 5) as u32, (r[1] >> 5) as u32, ((r[2] + 31) >> 5) as u32, ((r[3] + 31) >> 5) as u32);
+            let m = if tx1 - tx0 >= 128 { u128::MAX } else { ((1u128 << (tx1 - tx0)) - 1) << tx0 };
+            let n = self.shown_rows.len();
+            for row in &mut self.shown_rows[(ty0 as usize).min(n)..(ty1 as usize).min(n)] {
+                *row |= m;
+            }
+        }
     }
 
     /// Release what a calm window does not need: every drawn surface except the one on screen becomes
@@ -1092,11 +1093,7 @@ impl<V: View> App<V> {
     pub fn needs_trim(&self) -> bool {
         #[cfg(target_os = "macos")]
         if let Some(g) = self.gpu.as_ref() {
-            return (0..self.held.len()).any(|i| {
-                Some(i) != self.shown
-                    && (g.surfs[i].touched.get() || g.surfs[i].cpu_written.get())
-                    && !g.surfs[i].volatile.get()
-            });
+            return (0..self.held.len()).any(|i| Some(i) != self.shown && (g.surfs[i].touched.get() || g.surfs[i].cpu_written.get()) && !g.surfs[i].volatile.get());
         }
         false
     }
@@ -1104,24 +1101,9 @@ impl<V: View> App<V> {
     /// The App's own tables (re-description tape, tile-row buffers), as memory-ledger lines (`ledger.rs`).
     pub(crate) fn ledger_app(&self, l: &mut bough_mem::Ledger) {
         use bough_mem::Scales;
-        l.vec(
-            "app",
-            "re-description tape",
-            &self.tape,
-            self.tape.capacity(),
-            Scales::Content,
-        );
-        let rows = self.rows.capacity() * 16
-            + 2 * size_of::<Plane>()
-            + self.held.capacity() * 8
-            + self.last_use.capacity() * 8;
-        l.many(
-            "app",
-            "tile-row buffer and repair planes",
-            Scales::Window,
-            rows,
-            rows,
-        );
+        l.vec("app", "re-description tape", &self.tape, self.tape.capacity(), Scales::Content);
+        let rows = self.rows.capacity() * 16 + 2 * size_of::<Plane>() + self.held.capacity() * 8 + self.last_use.capacity() * 8;
+        l.many("app", "tile-row buffer and repair planes", Scales::Window, rows, rows);
     }
 
     /// Surfaces in the ring.
@@ -1145,16 +1127,40 @@ impl<V: View> App<V> {
     }
 
     /// Pixels (BGRA) of the surface the last frame showed.
-    #[cfg(target_os = "macos")]
     pub fn presented_pixels(&mut self) -> Vec<u8> {
         self.sync();
         let i = self.last_surface;
-        self.gpu.as_mut().unwrap().surface_pixels(i)
+        if let Some(t) = self.target.as_mut() {
+            let (w, h) = t.size();
+            let (p, bpr) = t.pixels(i);
+            let mut v = vec![0u8; w as usize * 4 * h as usize];
+            for y in 0..h as usize {
+                // SAFETY: the target's contract: `h` rows of `bpr >= 4 w` bytes at `p`.
+                let row = unsafe { std::slice::from_raw_parts(p.add(y * bpr), w as usize * 4) };
+                v[y * w as usize * 4..(y + 1) * w as usize * 4].copy_from_slice(row);
+            }
+            return v;
+        }
+        #[cfg(target_os = "macos")]
+        return self.gpu.as_mut().unwrap().surface_pixels(i);
+        #[cfg(not(target_os = "macos"))]
+        panic!("presented_pixels: no surfaces (headless App)")
     }
 
     /// A from-scratch full redraw of the current retained state (every tile, the same kernels).
-    #[cfg(target_os = "macos")]
     pub fn reference_pixels(&mut self) -> Vec<u8> {
+        // the kernel backend's frames are judged by the kernel's own definition (`cpu::reference`)
+        if self.target.is_some() || self.repair == Repair::Kernel {
+            return self.kernel.get_or_insert_with(Default::default).reference(&self.rt);
+        }
+        #[cfg(target_os = "macos")]
+        return self.reference_pixels_gpu();
+        #[cfg(not(target_os = "macos"))]
+        panic!("reference_pixels: no surfaces (headless App)")
+    }
+
+    #[cfg(target_os = "macos")]
+    fn reference_pixels_gpu(&mut self) -> Vec<u8> {
         #[cfg(not(feature = "wgpu"))]
         if self.repair == Repair::Kernel {
             return self.kernel.get_or_insert_with(Default::default).reference(&self.rt);
@@ -1173,19 +1179,23 @@ impl<V: View> App<V> {
         g.reference_pixels(n_dir)
     }
 
-    /// Did a GPU row bin overflow in the last frame? (tests)
-    #[cfg(target_os = "macos")]
+    /// Did a GPU row bin overflow in the last frame? (tests; the CPU executor has no bins)
     pub fn bins_overflowed(&mut self) -> bool {
         self.sync();
-        self.gpu.as_ref().is_some_and(|g| g.bins_overflowed())
+        #[cfg(target_os = "macos")]
+        return self.gpu.as_ref().is_some_and(|g| g.bins_overflowed());
+        #[cfg(not(target_os = "macos"))]
+        false
     }
 
-    /// Shrink the GPU row bins to `cap` entries per row (tests: forces the grow-and-redraw path).
-    #[cfg(target_os = "macos")]
+    /// Shrink the GPU row bins to `cap` entries per row (tests: forces the grow-and-redraw path; nothing without
+    /// a GPU presenter).
     pub fn reset_bins(&mut self, cap: u32) {
+        #[cfg(target_os = "macos")]
         if let Some(g) = self.gpu.as_mut() {
             g.sync();
             g.reset_bins(cap);
         }
+        let _ = cap;
     }
 }

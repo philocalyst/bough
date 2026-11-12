@@ -24,6 +24,23 @@ pub mod cpu;
 pub mod simd;
 #[cfg(target_os = "macos")]
 pub mod metal;
+#[cfg(target_os = "linux")]
+pub mod vulkan;
+/// The GPU executor of this platform: Metal on macOS, Vulkan on Linux (the same API).
+#[cfg(target_os = "macos")]
+pub use metal as gpu;
+#[cfg(target_os = "linux")]
+pub use vulkan as gpu;
+
+/// This platform's GPU executor over the kernel (Metal from its MSL, Vulkan from its SPIR-V); `None` without a
+/// device.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn gpu_executor() -> Option<gpu::Gpu> {
+    #[cfg(target_os = "macos")]
+    return metal::Gpu::new(KERNEL_MSL);
+    #[cfg(target_os = "linux")]
+    return vulkan::Gpu::new(KERNEL_SPIRV);
+}
 pub mod scenes;
 pub mod stage;
 
@@ -33,6 +50,8 @@ pub use k::Cmd;
 
 /// The kernel as naga translated it (compiled by Metal at run time).
 pub const KERNEL_MSL: &str = include_str!(concat!(env!("OUT_DIR"), "/kernel.metal"));
+/// The kernel as naga's SPIR-V 1.3 (the Vulkan executor's module), little-endian words.
+pub const KERNEL_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kernel.spv"));
 /// The kernel as wgsl-rs emitted it.
 pub const KERNEL_WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/kernel.wgsl"));
 

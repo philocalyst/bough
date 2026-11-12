@@ -55,7 +55,7 @@ pub fn mono_metrics(font: &[u8]) -> (u32, u32) {
 /// Instructions retired by this process so far (`proc_pid_rusage` `ri_instructions`).
 #[inline]
 pub fn instructions() -> u64 {
-    bough_metal::perf::snap().instrs
+    bough::sys::perf::snap().instrs
 }
 
 /// A size from the environment, else `default`.

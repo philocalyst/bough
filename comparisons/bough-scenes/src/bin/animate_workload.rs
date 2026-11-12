@@ -1,6 +1,6 @@
 //! The windowed animation scene: dots + shimmer redrawn on every display refresh at the frame's time.
 //! `ZGX_SECONDS` (30); ends with `animation_frames=N fps=F` on stderr.
-use bough::backend::host::run_window_linked;
+use bough::backend::run_window_linked;
 use bough_scenes::*;
 use std::cell::Cell;
 use std::rc::Rc;

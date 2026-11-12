@@ -9,7 +9,10 @@ description = "bough: the public facade (Signal, View, typed builders, turns) ov
 bough-core = { path = "../bough-core" }
 bough-mem = { path = "../bough-mem" }
 bough-text = { path = "../bough-text" }
-bough-metal = { path = "../bough-metal" }
+# The frame contract every executor reads, and the OS counters (portable).
+bough-frame = { path = "../bough-frame" }
+bough-sys = { path = "../bough-sys" }
+# The one integer raster kernel (compute lane): the CPU executors and the GPU kernel source.
 bough-kernel = { path = "../bough-kernel" }
 rustybuzz = "0.20"
 ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
@@ -21,7 +24,13 @@ png = "0.17"
 # cephal: the user's retained, incremental CSS layout engine (separate repo, used unmodified, by path)
 cephal = { path = "../../vendor/cephal", default-features = false, features = ["flex", "block", "grid"] }
 
+# Linux backend: the Wayland host (the CPU executor draws into its wl_shm buffers).
+[target.'cfg(target_os = "linux")'.dependencies]
+bough-wayland = { path = "../bough-wayland" }
+
+# macOS backend: the Metal presenter and the AppKit host.
 [target.'cfg(target_os = "macos")'.dependencies]
+bough-metal = { path = "../bough-metal" }
 bough-gpu = { path = "../bough-gpu", optional = true }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["block2"] }

@@ -39,7 +39,7 @@ fn main() {
     let measure = |ctx: &mut u32, input: MeasureInput, _: &Style| MeasureOutput::from_size(Size { width: input.known_dimensions.width.unwrap_or(20.0), height: input.known_dimensions.height.unwrap_or(*ctx as f32 * 3.0) });
     tree.compute_layout_with_measure(root, avail, measure);
     let edited = edited.unwrap();
-    let snap = || bough_metal::perf::snap().instrs;
+    let snap = || bough::sys::perf::snap().instrs;
     for w in 0..20u32 {
         *tree.context_mut(edited).unwrap() = 1 + (w & 1);
         tree.invalidate(edited);

@@ -25,7 +25,7 @@ use bough::layout::prelude::*;
 use bough::layout::Dim;
 use bough::raw::*;
 use bough::rt::{Rt, KIND_BORDER, KIND_RRECT, KIND_SOLID};
-use bough_metal::instance::Instance;
+use bough::frame::Instance;
 use model::*;
 
 pub const WIDTH: f32 = 1240.0;

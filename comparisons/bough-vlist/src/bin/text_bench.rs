@@ -7,7 +7,7 @@ use bough::text::TextSys;
 use zgx_workload::vlist;
 
 fn instrs() -> u64 {
-    bough_metal::perf::snap().instrs
+    bough::sys::perf::snap().instrs
 }
 fn per<F: FnMut()>(name: &str, n: usize, mut f: F) {
     for _ in 0..50 {

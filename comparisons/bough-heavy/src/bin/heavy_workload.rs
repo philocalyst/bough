@@ -2,7 +2,7 @@
 //! `ZGX_SECONDS` (30), `ZGX_FONT_FILE`, `ZGX_PARITY`; one 1280x800 pt window titled "bough heavy";
 //! the workload advances once per `PERIOD` by the wall clock; the run ends with
 //! `{"framework":"bough","scene":"heavy","ticks":N}` on stdout.
-use bough::backend::host::run_window;
+use bough::backend::run_window;
 use bough_heavy::*;
 use std::cell::Cell;
 use std::rc::Rc;

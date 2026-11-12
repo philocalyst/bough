@@ -5,7 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "Direct-Metal presenter prototype: uber-shader, buffer-age repair, IOSurface ring"
 
-[dependencies]
+# The presenter is Metal and AppKit: on any other target this crate is empty (lib.rs), so the workspace builds there.
+[target.'cfg(target_os = "macos")'.dependencies]
+bough-frame = { path = "../bough-frame" }
+bough-sys = { path = "../bough-sys" }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3" }
 objc2-metal = { version = "0.3", features = ["objc2-io-surface", "dispatch2", "block2", "objc2-core-foundation"] }

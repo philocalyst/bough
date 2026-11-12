@@ -21,8 +21,8 @@ use crate::elem::{Apply, IntoProp, Mounter};
 use crate::rt::*;
 use crate::elem::Element;
 use bough_core::{NRect, RecordInit, KF_NOHIT};
-use bough_metal::fused::{IMG_H, IMG_W};
-use bough_metal::instance::Instance;
+use bough_frame::{IMG_H, IMG_W};
+use bough_frame::Instance;
 use std::collections::HashMap;
 
 pub const KIND_IMAGE: u8 = 4;
@@ -117,7 +117,7 @@ pub fn prerender_svgs(mut items: Vec<(&'static str, u32, u32)>, threads: usize) 
         std::thread::Builder::new()
             .name(format!("bough-svg-{w}"))
             .spawn(move || {
-                let (i0, t0) = (bough_metal::fused::thread_instructions(), std::time::Instant::now());
+                let (i0, t0) = (bough_sys::perf::thread_instructions(), std::time::Instant::now());
                 let mut k = 0;
                 for i in 0..p.items.len() {
                     if p.state[i].compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
@@ -131,7 +131,7 @@ pub fn prerender_svgs(mut items: Vec<(&'static str, u32, u32)>, threads: usize) 
                 }
                 let mut st = p.stats.lock().unwrap();
                 st[0] += k;
-                st[1] += bough_metal::fused::thread_instructions() - i0;
+                st[1] += bough_sys::perf::thread_instructions() - i0;
                 st[2] += t0.elapsed().as_nanos() as u64;
             })
             .expect("svg thread");
@@ -257,7 +257,7 @@ impl Images {
     pub fn svg(&mut self, svg: &str, w: u32, h: u32) -> [u16; 4] {
         let key = hash(svg.as_bytes());
         let mut n = 0;
-        let i0 = bough_metal::fused::thread_instructions();
+        let i0 = bough_sys::perf::thread_instructions();
         let r = self.put(key, w.max(1), h.max(1), |buf| {
             n = 1;
             let px = take_prepared(svg, w.max(1), h.max(1)).unwrap_or_else(|| render_svg(svg, w, h));
@@ -265,7 +265,7 @@ impl Images {
         });
         self.rasterised += n;
         if n != 0 {
-            self.svg_instr += bough_metal::fused::thread_instructions() - i0;
+            self.svg_instr += bough_sys::perf::thread_instructions() - i0;
         }
         r
     }

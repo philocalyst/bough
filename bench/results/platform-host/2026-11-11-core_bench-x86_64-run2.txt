@@ -1,0 +1,340 @@
+# bough-core bench (optimized)
+loop baseline: 5.0 instr, 0.40 ns per empty iteration (subtracted from all rows)
+page-start prefix: blocked (2-level), eager
+  dashboard  write1+cull(repair1)         bough     1886 instr       169 ns | arena      5086 instr       555 ns
+  dashboard  write80+cull(repair1)        bough   121227 instr      9083 ns | arena    265305 instr     27244 ns
+  dashboard  translate1016                bough    29150 instr      2088 ns | arena    723136 instr     53772 ns
+  dashboard  layout200                    bough   113417 instr      7405 ns | arena    146459 instr     12906 ns
+  dashboard  VAR layout200 batch             65522 instr
+  dashboard  splice8 front                 bough     3943 instr       320 ns | arena      5451 instr       458 ns
+  dashboard  hit                          bough      915 instr        67 ns | arena      3619 instr       321 ns
+  dashboard  repair3                      bough      961 instr        55 ns | arena      5988 instr       397 ns
+  dashboard  repair3+cull                 bough    79053 instr      5448 ns | arena     54008 instr      5684 ns
+  dashboard  cull(full window)            bough    28179 instr      2108 ns | arena    173068 instr     12894 ns
+  dashboard  subtree_end                  bough      121 instr         9 ns | arena       113 instr        10 ns
+  dashboard  parent                       bough      133 instr         8 ns | arena        25 instr         1 ns
+  dashboard  children(count) of a deep-ish node bough      250 instr        19 ns | arena        23 instr         1 ns
+  dashboard  ancestors(pos) (event bubbling path) bough      865 instr        78 ns | arena        79 instr         8 ns
+  dashboard  VAR children_into(count)           185 instr
+  dashboard  VAR freeze after write1             1484 instr (0.0 pages copied)
+  dashboard  VAR set_inks80+freeze              48172 instr (23.4 pages copied), without freeze    42526
+  list       write1+cull(repair1)         bough     1450 instr       122 ns | arena      7410 instr       783 ns
+  list       write80+cull(repair1)        bough    52117 instr      3822 ns | arena    148727 instr     20941 ns
+  list       scroll-step(ins8+rm8)+cull   bough     9252 instr       794 ns | arena     11439 instr       991 ns
+  list       scroll-step+translate+cull   bough    21042 instr      1813 ns | arena    181587 instr     14463 ns
+  list       layout200                    bough   112547 instr      7641 ns | arena    139092 instr     10748 ns
+  list       VAR layout200 batch             60344 instr
+  list       splice8 front                 bough     3949 instr       355 ns | arena      5468 instr       509 ns
+  list       hit                          bough     1073 instr       100 ns | arena      4913 instr       404 ns
+  list       repair3                      bough     1035 instr        58 ns | arena      6061 instr       436 ns
+  list       repair3+cull                 bough    33875 instr      2525 ns | arena     44393 instr      4558 ns
+  list       cull(full window)            bough    14204 instr      1162 ns | arena     56043 instr      4205 ns
+  list       subtree_end                  bough      101 instr         7 ns | arena       168 instr        12 ns
+  list       parent                       bough      146 instr         9 ns | arena        25 instr         1 ns
+  list       children(count) of a deep-ish node bough      138 instr        10 ns | arena        23 instr         1 ns
+  list       ancestors(pos) (event bubbling path) bough      663 instr        77 ns | arena        56 instr         5 ns
+  list       VAR children_into(count)           132 instr
+  list       VAR freeze after write1             1074 instr (0.0 pages copied)
+  list       VAR set_inks80+freeze              35166 instr (8.0 pages copied), without freeze    32586
+  flat100k   write1+cull(repair1)         bough     2933 instr       208 ns | arena    160282 instr     17567 ns
+  flat100k   write80+cull(repair1)        bough   223692 instr     19054 ns | arena    613037 instr     62059 ns
+  flat100k   translate1000                bough    33708 instr      2452 ns | arena   1141616 instr     78326 ns
+  flat100k   layout200                    bough   119903 instr      9137 ns | arena     92949 instr      7206 ns
+  flat100k   VAR layout200 batch             97761 instr
+  flat100k   splice8 front                 bough     4708 instr       407 ns | arena      6940 instr       586 ns
+  flat100k   hit                          bough     1962 instr       124 ns | arena     83542 instr      6580 ns
+  flat100k   repair3                      bough     1002 instr        71 ns | arena      5915 instr       487 ns
+  flat100k   repair3+cull                 bough   145517 instr     12566 ns | arena    719211 instr     89154 ns
+  flat100k   cull(full window)            bough    52677 instr      3954 ns | arena    353435 instr     23524 ns
+  flat100k   subtree_end                  bough      162 instr        14 ns | arena      4250 instr       344 ns
+  flat100k   parent                       bough      547 instr        34 ns | arena        25 instr         2 ns
+  flat100k   children(count) of a deep-ish node bough      170 instr        14 ns | arena        23 instr         2 ns
+  flat100k   ancestors(pos) (event bubbling path) bough     3826 instr       295 ns | arena        47 instr         4 ns
+  flat100k   VAR children_into(count)           196 instr
+  flat100k   VAR freeze after write1            49415 instr (0.0 pages copied)
+  flat100k   VAR set_inks80+freeze             105339 instr (35.1 pages copied), without freeze    49768
+  deep40     write1+cull(repair1)         bough     2322 instr       186 ns | arena     16125 instr      1678 ns
+  deep40     write80+cull(repair1)        bough    39865 instr      2796 ns | arena    106564 instr     19362 ns
+  deep40     translate156                 bough    12959 instr       909 ns | arena    102975 instr      7347 ns
+  deep40     layout200                    bough    90298 instr      5868 ns | arena    166355 instr     21308 ns
+  deep40     VAR layout200 batch             50535 instr
+  deep40     splice8 front                 bough     3895 instr       316 ns | arena      5468 instr       478 ns
+  deep40     hit                          bough     1054 instr       116 ns | arena     11356 instr       893 ns
+  deep40     repair3                      bough      993 instr        57 ns | arena      4529 instr       301 ns
+  deep40     repair3+cull                 bough    26038 instr      1632 ns | arena     34066 instr      3179 ns
+  deep40     cull(full window)            bough     3638 instr       271 ns | arena     19525 instr      1368 ns
+  deep40     subtree_end                  bough      158 instr         9 ns | arena        79 instr         6 ns
+  deep40     parent                       bough      239 instr        13 ns | arena        25 instr         1 ns
+  deep40     children(count) of a deep-ish node bough      291 instr        18 ns | arena        23 instr         1 ns
+  deep40     ancestors(pos) (event bubbling path) bough      742 instr        65 ns | arena       239 instr        33 ns
+  deep40     VAR children_into(count)           201 instr
+  deep40     VAR freeze after write1              834 instr (0.0 pages copied)
+  deep40     VAR set_inks80+freeze              30300 instr (4.0 pages copied), without freeze    28647
+
+## Per-operation cost (Bough vs ArenaTree), loop baseline subtracted
+
+### write1+cull(repair1)
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dashboard | 1886 | 169 | 612 | 5086 | 555 | 2279 | 2.7x | 3.3x |
+| list | 1450 | 122 | 483 | 7410 | 783 | 3198 | 5.1x | 6.4x |
+| flat100k | 2933 | 208 | 850 | 160282 | 17567 | 72091 | 54.6x | 84.5x |
+| deep40 | 2322 | 186 | 751 | 16125 | 1678 | 6782 | 6.9x | 9.0x |
+
+variants:
+
+| shape | variant | instr | ns | cyc |
+|---|---|---:|---:|---:|
+| dashboard | write+repair_into (no cull) | 471 | 38 | 157 |
+| dashboard | touch(pos) instead of handle | 1937 | 145 | 599 |
+| dashboard | bbox-only cull (superset) | 1873 | 145 | 596 |
+| dashboard | write only (touch_handle+next_epoch) | 205 | 17 | 70 |
+| dashboard | ARENA write only (mark_paint+flush) | 496 | 47 | 195 |
+| list | write+repair_into (no cull) | 477 | 39 | 160 |
+| list | touch(pos) instead of handle | 1481 | 118 | 482 |
+| list | bbox-only cull (superset) | 1443 | 117 | 478 |
+| list | write only (touch_handle+next_epoch) | 206 | 16 | 68 |
+| list | ARENA write only (mark_paint+flush) | 462 | 33 | 137 |
+| flat100k | write+repair_into (no cull) | 469 | 38 | 157 |
+| flat100k | touch(pos) instead of handle | 3038 | 217 | 886 |
+| flat100k | bbox-only cull (superset) | 2922 | 207 | 843 |
+| flat100k | write only (touch_handle+next_epoch) | 205 | 17 | 71 |
+| flat100k | ARENA write only (mark_paint+flush) | 447 | 35 | 141 |
+| deep40 | write+repair_into (no cull) | 473 | 39 | 157 |
+| deep40 | touch(pos) instead of handle | 2343 | 186 | 753 |
+| deep40 | bbox-only cull (superset) | 2314 | 182 | 737 |
+| deep40 | write only (touch_handle+next_epoch) | 206 | 17 | 69 |
+| deep40 | ARENA write only (mark_paint+flush) | 733 | 90 | 366 |
+
+### write80+cull(repair1)
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dashboard | 121227 | 9083 | 37298 | 265305 | 27244 | 112458 | 2.2x | 3.0x |
+| list | 52117 | 3822 | 15780 | 148727 | 20941 | 86378 | 2.9x | 5.5x |
+| flat100k | 223692 | 19054 | 77414 | 613037 | 62059 | 252201 | 2.7x | 3.3x |
+| deep40 | 39865 | 2796 | 11262 | 106564 | 19362 | 77888 | 2.7x | 6.9x |
+
+variants:
+
+| shape | variant | instr | ns | cyc |
+|---|---|---:|---:|---:|
+| dashboard | bbox-only cull (superset) | 43055 | 3400 | 13972 |
+| list | bbox-only cull (superset) | 28268 | 2801 | 9379 |
+| flat100k | bbox-only cull (superset) | 67055 | 5154 | 21083 |
+| deep40 | bbox-only cull (superset) | 18451 | 1522 | 6128 |
+
+### translate1016
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dashboard | 29150 | 2088 | 8582 | 723136 | 53772 | 221264 | 24.8x | 25.8x |
+
+variants:
+
+| shape | variant | instr | ns | cyc |
+|---|---|---:|---:|---:|
+| dashboard | translate only (no cull) | 7183 | 463 | 1902 |
+| dashboard | ARENA translate only (no cull) | 459598 | 33215 | 136914 |
+
+### layout200: set_ink x200 (one call each), sorted positions
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dashboard | 113417 | 7405 | 30362 | 146459 | 12906 | 52438 | 1.3x | 1.7x |
+| list | 112547 | 7641 | 30169 | 139092 | 10748 | 42357 | 1.2x | 1.4x |
+| flat100k | 119903 | 9137 | 36554 | 92949 | 7206 | 28965 | 0.8x | 0.8x |
+| deep40 | 90298 | 5868 | 23784 | 166355 | 21308 | 85805 | 1.8x | 3.6x |
+
+variants:
+
+| shape | variant | instr | ns | cyc |
+|---|---|---:|---:|---:|
+| dashboard | set_inks batch (one call) | 65522 | 3812 | 15658 |
+| list | set_inks batch (one call) | 60344 | 3547 | 14002 |
+| flat100k | set_inks batch (one call) | 97761 | 6793 | 27221 |
+| deep40 | set_inks batch (one call) | 50535 | 2951 | 12017 |
+
+### splice8-front (insert 8 + remove 8 at the front, no cull)
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dashboard | 3943 | 320 | 1305 | 5451 | 458 | 1888 | 1.4x | 1.4x |
+| list | 3949 | 355 | 1287 | 5468 | 509 | 2126 | 1.4x | 1.4x |
+| flat100k | 4708 | 407 | 1644 | 6940 | 586 | 2361 | 1.5x | 1.4x |
+| deep40 | 3895 | 316 | 1280 | 5468 | 478 | 1923 | 1.4x | 1.5x |
+
+### hit
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dashboard | 915 | 67 | 277 | 3619 | 321 | 1332 | 4.0x | 4.8x |
+| list | 1073 | 100 | 397 | 4913 | 404 | 1660 | 4.6x | 4.0x |
+| flat100k | 1962 | 124 | 500 | 83542 | 6580 | 26452 | 42.6x | 53.1x |
+| deep40 | 1054 | 116 | 468 | 11356 | 893 | 3618 | 10.8x | 7.7x |
+
+variants:
+
+| shape | variant | instr | ns | cyc |
+|---|---|---:|---:|---:|
+| dashboard | ARENA reverse early-exit hit | 1356 | 115 | 476 |
+| list | ARENA reverse early-exit hit | 2088 | 157 | 645 |
+| flat100k | ARENA reverse early-exit hit | 65086 | 6264 | 20910 |
+| deep40 | ARENA reverse early-exit hit | 7238 | 554 | 2245 |
+
+### repair3
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dashboard | 961 | 55 | 223 | 5988 | 397 | 1621 | 6.2x | 7.3x |
+| list | 1035 | 58 | 236 | 6061 | 436 | 1712 | 5.9x | 7.5x |
+| flat100k | 1002 | 71 | 233 | 5915 | 487 | 1602 | 5.9x | 6.9x |
+| deep40 | 993 | 57 | 228 | 4529 | 301 | 1200 | 4.6x | 5.3x |
+
+### repair3+cull
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dashboard | 79053 | 5448 | 22457 | 54008 | 5684 | 23475 | 0.7x | 1.0x |
+| list | 33875 | 2525 | 9955 | 44393 | 4558 | 17900 | 1.3x | 1.8x |
+| flat100k | 145517 | 12566 | 41301 | 719211 | 89154 | 293559 | 4.9x | 7.1x |
+| deep40 | 26038 | 1632 | 6600 | 34066 | 3179 | 12894 | 1.3x | 1.9x |
+
+### cull(full window)
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dashboard | 28179 | 2108 | 8591 | 173068 | 12894 | 52966 | 6.1x | 6.1x |
+| list | 14204 | 1162 | 4584 | 56043 | 4205 | 16586 | 3.9x | 3.6x |
+| flat100k | 52677 | 3954 | 15898 | 353435 | 23524 | 94703 | 6.7x | 5.9x |
+| deep40 | 3638 | 271 | 1089 | 19525 | 1368 | 5583 | 5.4x | 5.0x |
+
+### subtree_end
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dashboard | 121 | 9 | 38 | 113 | 10 | 42 | 0.9x | 1.1x |
+| list | 101 | 7 | 29 | 168 | 12 | 50 | 1.7x | 1.7x |
+| flat100k | 162 | 14 | 56 | 4250 | 344 | 1388 | 26.2x | 25.2x |
+| deep40 | 158 | 9 | 37 | 79 | 6 | 23 | 0.5x | 0.6x |
+
+### parent
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dashboard | 133 | 8 | 35 | 25 | 1 | 6 | 0.2x | 0.2x |
+| list | 146 | 9 | 36 | 25 | 1 | 6 | 0.2x | 0.2x |
+| flat100k | 547 | 34 | 140 | 25 | 2 | 7 | 0.0x | 0.1x |
+| deep40 | 239 | 13 | 54 | 25 | 1 | 6 | 0.1x | 0.1x |
+
+### children(count) of a deep-ish node
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dashboard | 250 | 19 | 81 | 23 | 1 | 5 | 0.1x | 0.1x |
+| list | 138 | 10 | 39 | 23 | 1 | 5 | 0.2x | 0.1x |
+| flat100k | 170 | 14 | 58 | 23 | 2 | 7 | 0.1x | 0.1x |
+| deep40 | 291 | 18 | 72 | 23 | 1 | 5 | 0.1x | 0.1x |
+
+variants:
+
+| shape | variant | instr | ns | cyc |
+|---|---|---:|---:|---:|
+| dashboard | children_into (one forward depth scan) | 185 | 13 | 54 |
+| list | children_into (one forward depth scan) | 132 | 8 | 34 |
+| flat100k | children_into (one forward depth scan) | 196 | 15 | 60 |
+| deep40 | children_into (one forward depth scan) | 201 | 12 | 47 |
+
+### ancestors(pos) (event bubbling path)
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dashboard | 865 | 78 | 326 | 79 | 8 | 34 | 0.1x | 0.1x |
+| list | 663 | 77 | 256 | 56 | 5 | 17 | 0.1x | 0.1x |
+| flat100k | 3826 | 295 | 1190 | 47 | 4 | 18 | 0.0x | 0.0x |
+| deep40 | 742 | 65 | 264 | 239 | 33 | 136 | 0.3x | 0.5x |
+
+### epoch snapshot: touch_handle + freeze_into (UI turn handing a frozen replica to a render thread)
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dashboard | 1484 | 141 | 581 | 0 | 0 | 0 | 0.0x | 0.0x |
+| list | 1074 | 109 | 449 | 0 | 0 | 0 | 0.0x | 0.0x |
+| flat100k | 49415 | 5839 | 23646 | 0 | 0 | 0 | 0.0x | 0.0x |
+| deep40 | 834 | 77 | 312 | 0 | 0 | 0 | 0.0x | 0.0x |
+
+variants:
+
+| shape | variant | instr | ns | cyc |
+|---|---|---:|---:|---:|
+| dashboard | 80 scattered set_inks + freeze_into | 48172 | 3904 | 16096 |
+| dashboard | 80 scattered set_inks, no freeze | 42526 | 3100 | 12833 |
+| list | 80 scattered set_inks + freeze_into | 35166 | 2850 | 11659 |
+| list | 80 scattered set_inks, no freeze | 32586 | 2548 | 10445 |
+| flat100k | 80 scattered set_inks + freeze_into | 105339 | 11248 | 45550 |
+| flat100k | 80 scattered set_inks, no freeze | 49768 | 3726 | 15063 |
+| deep40 | 80 scattered set_inks + freeze_into | 30300 | 2522 | 10200 |
+| deep40 | 80 scattered set_inks, no freeze | 28647 | 2359 | 9531 |
+
+### scroll-step(ins8+rm8)+cull
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| list | 9252 | 794 | 3228 | 11439 | 991 | 4081 | 1.2x | 1.2x |
+
+### scroll-step+translate+cull
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| list | 21042 | 1813 | 7158 | 181587 | 14463 | 57093 | 8.6x | 8.0x |
+
+### insert row at top + remove last (structure+damage only, no cull)
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| list | 6144 | 542 | 2138 | 6387 | 519 | 2051 | 1.0x | 1.0x |
+
+### translate1000
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| flat100k | 33708 | 2452 | 9849 | 1141616 | 78326 | 322859 | 33.9x | 31.9x |
+
+variants:
+
+| shape | variant | instr | ns | cyc |
+|---|---|---:|---:|---:|
+| flat100k | translate only (no cull) | 11161 | 739 | 3034 |
+| flat100k | ARENA translate only (no cull) | 694822 | 49710 | 201873 |
+
+### translate156
+
+| shape | Bough instr | Bough ns | Bough cyc | Arena instr | Arena ns | Arena cyc | instr ratio (Arena/Bough) | ns ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| deep40 | 12959 | 909 | 3657 | 102975 | 7347 | 29621 | 7.9x | 8.1x |
+
+variants:
+
+| shape | variant | instr | ns | cyc |
+|---|---|---:|---:|---:|
+| deep40 | translate only (no cull) | 8393 | 538 | 2193 |
+| deep40 | ARENA translate only (no cull) | 69139 | 4861 | 19674 |
+
+### Mount (build whole tree from specs)
+
+| shape | nodes | Bough instr/node | Bough ns/node | Arena instr/node | Arena ns/node |
+|---|---:|---:|---:|---:|---:|
+| dashboard | 1474 | 189 | 17 | 677 | 58 |
+| list | 459 | 222 | 17 | 627 | 49 |
+| flat100k | 100001 | 187 | 14 | 404 | 36 |
+| deep40 | 160 | 233 | 18 | 834 | 92 |
+
+### Retained memory
+
+| shape | nodes | Bough pages | page fill | Bough bytes/node | Arena bytes/node (lean model) | arena size_of Slot |
+|---|---:|---:|---:|---:|---:|---:|
+| dashboard | 1474 | 24 | 96% | 34.4 | 163.5 | 96 B |
+| list | 459 | 8 | 90% | 57.8 | 137.8 | 96 B |
+| flat100k | 100001 | 1563 | 100% | 23.9 | 144.5 | 96 B |
+| deep40 | 160 | 3 | 83% | 99.5 | 193.6 | 96 B |

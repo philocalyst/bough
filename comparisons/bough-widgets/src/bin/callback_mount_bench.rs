@@ -4,7 +4,7 @@
 //! reactive layout-size operand on this branch), so both variants run the same program.
 //! Run: callback_mount_bench [rows]
 use bough::raw::App;
-use bough_metal::perf::snap;
+use bough::sys::perf::snap;
 use bough_widgets::*;
 use std::time::Instant;
 

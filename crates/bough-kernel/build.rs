@@ -40,4 +40,16 @@ fn main() {
         }
     }
     std::fs::write(format!("{out}/kernel.metal"), text).unwrap();
+    // SPIR-V 1.3 for the Vulkan executor (src/vulkan.rs): bindings keep WGSL's group 0, binding 0..5; runtime
+    // array lengths are SPIR-V's own (no sizes buffer)
+    let spv_options = naga::back::spv::Options {
+        lang_version: (1, 3),
+        flags: naga::back::spv::WriterFlags::empty(),
+        bounds_check_policies: naga::proc::BoundsCheckPolicies::default(),
+        zero_initialize_workgroup_memory: naga::back::spv::ZeroInitializeWorkgroupMemoryMode::None,
+        ..Default::default()
+    };
+    let pipeline = naga::back::spv::PipelineOptions { shader_stage: naga::ShaderStage::Compute, entry_point: "fs_ktile".to_string() };
+    let words = naga::back::spv::write_vec(&module, &info, &spv_options, Some(&pipeline)).unwrap_or_else(|e| panic!("naga spv: {e:?}"));
+    std::fs::write(format!("{out}/kernel.spv"), words.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>()).unwrap();
 }

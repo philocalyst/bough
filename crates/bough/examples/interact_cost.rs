@@ -39,7 +39,7 @@ impl View for Rows {
 }
 
 fn instrs() -> u64 {
-    bough_metal::perf::snap().instrs
+    bough_sys::perf::snap().instrs
 }
 
 fn med(mut v: Vec<f64>) -> f64 {

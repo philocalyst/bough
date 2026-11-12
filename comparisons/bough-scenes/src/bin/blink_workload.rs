@@ -1,6 +1,6 @@
 //! The blink scene: a 2x20 pt caret shown/hidden every 530 ms in a still window. `ZGX_SECONDS` (30);
 //! ends with `blink_frames=N workload_ticks=0` on stderr.
-use bough::backend::host::run_window;
+use bough::backend::run_window;
 use bough_scenes::*;
 use std::cell::Cell;
 use std::rc::Rc;

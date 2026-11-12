@@ -8,8 +8,8 @@ use crate::rt::*;
 use crate::signal::{Num, Signal, WMap, Wired};
 use crate::text::{TShape, TextNode};
 use bough_core::{Handle, NRect, RecordInit};
-use bough_metal::fused::pay_irun;
-use bough_metal::instance::Instance;
+use bough_frame::pay_irun;
+use bough_frame::Instance;
 use std::marker::PhantomData;
 use std::ops::Range;
 
