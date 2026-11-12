@@ -371,6 +371,10 @@ fn what_cannot_be_a_run_mounts_eagerly_and_nested_parts_nest() {
     let mut cfg = Config::new(300.0, 260.0, 1.0, FONT.to_vec());
     cfg.caps.instances = 1 << 15;
     let mut app = App::new(Shapes { n: 300, y: Signal::new(0.0) }, cfg, false);
+    // the seed items that turned out unexposed are released once their hold has passed
+    for _ in 0..4 {
+        app.turn(|_| {});
+    }
     let parts = app.rt.parts();
     let eager: Vec<_> = parts.iter().filter(|p| !p.dormant).collect();
     assert_eq!(eager.len(), 3, "{parts:?}");
@@ -395,6 +399,87 @@ fn what_cannot_be_a_run_mounts_eagerly_and_nested_parts_nest() {
     assert!(outer.ranges.iter().any(|r| r.0 <= 2 && r.1 > 2), "{outer:?}");
     assert!(app.record_count() < 750 + 150, "{} records", app.record_count());
     assert!(parts.iter().filter(|p| p.dormant).map(|p| p.realised).sum::<u32>() < 60, "{parts:?}");
+    assert_eq!(app.rt.dorm.stats.unconverged, 0);
+}
+
+// ------------------------------------------------------------------ holds, traversal
+
+/// Rows that take focus.
+struct Form {
+    n: usize,
+    y: Signal<f32>,
+}
+impl View for Form {
+    fn view(&self) -> impl Element<Self> + '_ {
+        let line = |i: usize| row((text(i).w(48.0),)).w(200.0).h(24.0).bg(if i % 2 == 0 { rgb(0x303030) } else { rgb(0x505050) }).focusable();
+        column((text("form").color(rgb(0xffffff)), div().w(220.0).h(160.0).scroll(sig!(self.y)).child(each((0..self.n).map(line))))).bg(rgb(0x101010))
+    }
+}
+fn form(n: usize, y: f32, eager: bool) -> App<Form> {
+    let mut c = Config::new(260.0, 200.0, 2.0, FONT.to_vec());
+    c.eager_parts = eager;
+    App::new(Form { n, y: Signal::new(y) }, c, true)
+}
+fn form_part(a: &App<Form>) -> bough::dormant::PartView {
+    a.rt.parts().into_iter().find(|p| p.dormant).unwrap()
+}
+
+/// The focused row stays realised (and focused) however far it is scrolled away, and is exact when it comes
+/// back; Tab from it walks into rows that were dormant.
+#[test]
+fn a_focused_item_is_held_and_traversal_enters_dormant_rows() {
+    if mutant() != Mutant::None {
+        return;
+    }
+    let mut app = form(20_000, 0.0, false);
+    app.frame();
+    // Tab: row 0, 1, 2
+    for _ in 0..3 {
+        app.key_down(Key::Tab, Mods::default());
+    }
+    app.frame();
+    let focus = app.rt.input.focus.expect("a focused row");
+    // far away: 15,000 rows down (720,000 device px)
+    for y in [3000.0, 90_000.0, 360_000.0] {
+        app.turn(|f| {
+            f.y.set(y);
+        });
+        app.frame();
+        for _ in 0..4 {
+            app.turn(|_| {});
+        }
+        assert_eq!(app.rt.input.focus, Some(focus), "the focus was dropped at offset {y}");
+        let p = form_part(&app);
+        assert!(p.ranges.iter().any(|r| r.0 <= 2 && r.1 > 2), "the focused row was released at offset {y}: {:?}", p.ranges);
+        assert!(p.realised < 40, "{p:?}");
+    }
+    // back: the held row is where a fresh mount puts it
+    app.turn(|f| {
+        f.y.set(10.0);
+    });
+    // (the focus ring follows its element at the end of an input turn, not of `turn`)
+    app.pointer_leave();
+    app.frame();
+    let retained = app.reference_pixels();
+    assert_eq!(diff(&app.presented_pixels(), &retained), 0);
+    // every item mounted: the same first rows of a shorter list (20,000 rows do not mount eagerly)
+    let mut fresh = form(300, 10.0, true);
+    for _ in 0..3 {
+        fresh.key_down(Key::Tab, Mods::default());
+    }
+    fresh.frame();
+    assert_eq!(diff(&retained, &fresh.reference_pixels()), 0, "the held row came back wrong");
+    // Tab through the bottom of what is realised and on: every press lands on the next row, realising it
+    let mut eager = fresh;
+    for step in 0..40 {
+        app.key_down(Key::Tab, Mods::default());
+        eager.key_down(Key::Tab, Mods::default());
+        let (a, b) = (app.rt.input.focus.and_then(|h| app.rt.bough.pos_of(h)), eager.rt.input.focus.and_then(|h| eager.rt.bough.pos_of(h)));
+        assert!(a.is_some() && b.is_some(), "step {step}: the focus left the rows");
+        let p = form_part(&app);
+        let k = 3 + step;
+        assert!(p.ranges.iter().any(|r| r.0 <= k && r.1 > k), "step {step}: row {k} is not realised: {:?}", p.ranges);
+    }
     assert_eq!(app.rt.dorm.stats.unconverged, 0);
 }
 

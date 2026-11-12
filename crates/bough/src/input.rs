@@ -1489,6 +1489,20 @@ impl<V: View> App<V> {
             break;
         }
         self.settle_input();
+        self.rehover();
+    }
+
+    /// The content moved under a pointer that did not: the hover chain is what is under it now (OVERFIT
+    /// finding 8: the row that scrolled away stayed highlighted).
+    fn rehover(&mut self) {
+        let Some((px, py)) = self.rt.input.pointer else { return };
+        if self.rt.input.pressed != 0 && self.rt.input.dragging {
+            return;
+        }
+        let s = self.rt.scale;
+        if self.update_hover(px, py, px as f32 / s, py as f32 / s) {
+            self.settle_input();
+        }
     }
 
     /// Is a glide (or any input animation) running?
@@ -1534,6 +1548,7 @@ impl<V: View> App<V> {
         // list moves (listview.rs): space writes and record translations, no layout
         self.rt.lists_tick(dt);
         self.settle_input();
+        self.rehover();
         true
     }
 
@@ -1542,10 +1557,28 @@ impl<V: View> App<V> {
     pub fn key_down(&mut self, key: Key, mods: Mods) {
         self.sync_pub();
         if key == Key::Tab {
-            let cur = self.rt.input.focus.and_then(|h| self.rt.bough.pos_of(h));
-            let next = self.rt.bough.next_flagged(cur, KF_FOCUS, mods.shift);
-            let h = next.and_then(|p| self.rt.bough.handle_at(p));
+            // the scan is over records; a dormant run on the way has none, so its nearest item is realised
+            // first (pinned until the focus, which then holds it, has moved) and the scan runs again: a few
+            // items at most per key, so rows without anything focusable do not realise the whole part
+            let mut pinned: [u32; 4] = [NONE; 4];
+            let mut tries = 0;
+            let h = loop {
+                let cur = self.rt.input.focus.and_then(|h| self.rt.bough.pos_of(h));
+                let next = self.rt.bough.next_flagged(cur, KF_FOCUS, mods.shift);
+                match self.rt.dorm.any().then(|| self.rt.dorm_run_toward(cur, next, mods.shift)).flatten() {
+                    Some((part, i)) if tries < pinned.len() => {
+                        self.rt.dorm_pin(part, i);
+                        self.expose();
+                        pinned[tries] = part;
+                        tries += 1;
+                    }
+                    _ => break next.and_then(|p| self.rt.bough.handle_at(p)),
+                }
+            };
             self.set_focus(h, true);
+            for &part in &pinned[..tries] {
+                self.rt.dorm_unpin(part);
+            }
             self.settle_input();
             return;
         }

@@ -50,7 +50,7 @@ pub const SEED: u32 = 8;
 pub const HOLD: u32 = 3;
 /// Beyond this distance from the visible rect (device px) an item is released at once, held or not: its
 /// records' inks are absolute `i16` (bough-core `NRect`), so they must stay inside the domain.
-pub const FAR: f32 = 12000.0;
+pub const FAR: f32 = f32::INFINITY;
 /// Bound of the scan / walk / layout fixed point of one `App::expose`.
 pub const MAX_PASSES: u32 = 12;
 
@@ -767,6 +767,14 @@ impl Rt {
             }
             j0 += 64;
         }
+        if p.pin < p.n && !p.est.is_nan() {
+            // "realise item i now": demanded wherever it is
+            let j = p.first.partition_point(|&f| f <= p.pin) - 1;
+            if old[j].run != 0 && !p.want.iter().any(|w| w.0 <= p.pin && w.1 > p.pin) {
+                let at = p.want.partition_point(|w| w.0 < p.pin);
+                p.want.insert(at, (p.pin, p.pin + 1));
+            }
+        }
         if p.est.is_nan() && p.runs > 0 && p.measured == 0 {
             // nothing realised to measure: the first items of the first run are the seed
             let c = old.iter().find(|e| e.run != 0).map_or(0, |e| e.run);
@@ -902,6 +910,38 @@ impl Rt {
             let slot = p.slot;
             self.dorm.rescan(slot);
         }
+    }
+
+    /// The dormant item focus traversal meets first going from record `cur` to the next focusable record
+    /// `next` (`back`: backwards): the nearest item of the nearest run between them in paint order, as (part,
+    /// item). A dormant item has no records, so a traversal that scans records would step over it.
+    pub(crate) fn dorm_run_toward(&self, cur: Option<usize>, next: Option<usize>, back: bool) -> Option<(u32, u32)> {
+        let (lo, hi) = if back {
+            (match next { Some(n) if cur.is_none_or(|c| n < c) => n + 1, _ => 0 }, cur.unwrap_or(usize::MAX))
+        } else {
+            (cur.map_or(0, |c| c + 1), match next { Some(n) if cur.is_none_or(|c| n > c) => n, _ => usize::MAX })
+        };
+        let mut best: Option<(usize, u32, u32)> = None;
+        for &d in &self.dorm.live {
+            let Some(p) = self.dyns.dorm.get(d as usize).and_then(|p| p.as_deref()) else { continue };
+            if p.runs == 0 {
+                continue;
+            }
+            let mut i = 0u32;
+            for e in &self.dyns.parts[d as usize] {
+                if e.run == 0 {
+                    i += 1;
+                    continue;
+                }
+                if let Some(pos) = self.bough.pos_of(self.bough.handle_gen(e.head)) {
+                    if pos >= lo && pos < hi && best.is_none_or(|b| if back { pos > b.0 } else { pos < b.0 }) {
+                        best = Some((pos, d, if back { i + e.run - 1 } else { i }));
+                    }
+                }
+                i += e.run;
+            }
+        }
+        best.map(|b| (b.1, b.2))
     }
 
     /// The top of item `i` of part `part` in its container's content (device px from the container's top),
