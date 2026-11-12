@@ -54,7 +54,16 @@ pub struct Config {
 
 impl Config {
     pub fn new(width_pt: f32, height_pt: f32, scale: f32, font: Vec<u8>) -> Config {
-        Config { width_pt, height_pt, scale, font, ring: 0, caps: Caps::DEFAULT, faces: Vec::new(), mount_once: false }
+        Config {
+            width_pt,
+            height_pt,
+            scale,
+            font,
+            ring: 0,
+            caps: Caps::DEFAULT,
+            faces: Vec::new(),
+            mount_once: false,
+        }
     }
     /// Surfaces of the ring.
     pub fn surfaces(&self) -> usize {
@@ -86,7 +95,12 @@ pub struct Prof {
 }
 impl Prof {
     fn new() -> Prof {
-        Prof { on: false, acc: [0; 5], last: 0, ovh: 0 }
+        Prof {
+            on: false,
+            acc: [0; 5],
+            last: 0,
+            ovh: 0,
+        }
     }
     pub fn enable(&mut self) {
         self.on = true;
@@ -211,6 +225,8 @@ pub struct App<V: View> {
     /// The repair backends' choice and the CPU backend (cpu_raster.rs).
     pub repair: Repair,
     pub cpu: crate::cpu_raster::CpuRaster,
+    /// `BOUGH_CPU_VERIFY`: compare every CPU-repaired frame with the GPU's full redraw and report (diagnostics).
+    cpu_verify: bool,
 }
 
 /// Per raster worker started by [`prepare`]: (strikes, glyphs, instructions, ns), for those finished.
@@ -241,20 +257,36 @@ pub struct Startup {
 /// threads: the Metal device, queues and pipelines on one, and the glyphs of the document's static text
 /// (`strikes`: pixel size and text, in the order the mount meets them) on `raster_threads` more. The next
 /// [`App::new`] mounts while they run and takes their results.
-pub fn prepare(cfg: &Config, strikes: &[(f32, &str, u8)], svgs: &[(&'static str, f32, f32)], raster_threads: usize) {
+pub fn prepare(
+    cfg: &Config,
+    strikes: &[(f32, &str, u8)],
+    svgs: &[(&'static str, f32, f32)],
+    raster_threads: usize,
+) {
     #[cfg(target_os = "macos")]
     {
-        let (w, h) = ((cfg.width_pt * cfg.scale).round() as usize, (cfg.height_pt * cfg.scale).round() as usize);
+        let (w, h) = (
+            (cfg.width_pt * cfg.scale).round() as usize,
+            (cfg.height_pt * cfg.scale).round() as usize,
+        );
         bough_metal::fused::prepare_in_background(Some((w, h, cfg.surfaces(), BIN_CAP)));
     }
     crate::text::prepare_faces(&cfg.faces);
     if !strikes.is_empty() && raster_threads > 0 {
         // faces by logical id: the configured font, or the regular one when the face is absent
-        let font_of = |l: u8| cfg.faces.iter().find(|f| f.0 == l).map_or(&cfg.font[..], |f| &f.1[..]);
+        let font_of = |l: u8| {
+            cfg.faces
+                .iter()
+                .find(|f| f.0 == l)
+                .map_or(&cfg.font[..], |f| &f.1[..])
+        };
         let fonts: Vec<&[u8]> = (0..4u8).map(font_of).collect();
         // each strike is ASCII-complete from its creation (text.rs), so its whole printable alphabet too
         const ASCII: &str = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
-        let mut px: Vec<(f32, &str, usize)> = strikes.iter().map(|&(s, t, f)| (s * cfg.scale, t, f as usize & 3)).collect();
+        let mut px: Vec<(f32, &str, usize)> = strikes
+            .iter()
+            .map(|&(s, t, f)| (s * cfg.scale, t, f as usize & 3))
+            .collect();
         let mut seen: Vec<(u32, usize)> = Vec::new();
         for &(s, _, f) in strikes {
             if !seen.contains(&(s.to_bits(), f as usize)) {
@@ -265,7 +297,16 @@ pub fn prepare(cfg: &Config, strikes: &[(f32, &str, u8)], svgs: &[(&'static str,
         bough_text::atlas::prerender_in_background(&fonts, &px, raster_threads);
     }
     if !svgs.is_empty() && raster_threads > 0 {
-        let items = svgs.iter().map(|&(s, w, h)| (s, (w * cfg.scale).round().max(1.0) as u32, (h * cfg.scale).round().max(1.0) as u32)).collect();
+        let items = svgs
+            .iter()
+            .map(|&(s, w, h)| {
+                (
+                    s,
+                    (w * cfg.scale).round().max(1.0) as u32,
+                    (h * cfg.scale).round().max(1.0) as u32,
+                )
+            })
+            .collect();
         crate::deco::prerender_svgs(items, raster_threads);
     }
 }
@@ -285,7 +326,10 @@ impl<V: View> App<V> {
         let t_mount = std::time::Instant::now();
         #[cfg(target_os = "macos")]
         let i_mount = bough_metal::fused::thread_instructions();
-        let (win_w, win_h) = ((cfg.width_pt * cfg.scale).round() as i32, (cfg.height_pt * cfg.scale).round() as i32);
+        let (win_w, win_h) = (
+            (cfg.width_pt * cfg.scale).round() as i32,
+            (cfg.height_pt * cfg.scale).round() as i32,
+        );
         let ring = cfg.surfaces();
         // direct Metal: the GPU sees each column through a view of its used prefix (bough-metal
         // `Fused::new_views`), so the region reserves the record format's limits as address space; the wgpu-hal
@@ -344,11 +388,24 @@ impl<V: View> App<V> {
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
         let views = |rt: &Rt| {
             let (p, len, keep) = rt.region_mem();
-            let base = rt.layout.slot[2] as usize + bough_metal::fused::Layout::slot_bytes(rt.layout.w, rt.layout.h.max(MAX_WINDOW));
+            let base = rt.layout.slot[2] as usize
+                + bough_metal::fused::Layout::slot_bytes(rt.layout.w, rt.layout.h.max(MAX_WINDOW));
             // SAFETY: the runtime's region: page-aligned (mmap), `len` bytes, alive while `keep` (a share of it)
             // is, which the presenter holds as long as its buffers; every GPU-read column was carved on a page
             // boundary (`Rt::new`) and `region_bytes` leaves a page after each.
-            unsafe { bough_metal::fused::Fused::new_views(p, len, keep, base, win_w as usize, win_h as usize, cfg.scale as f64, ring, BIN_CAP) }
+            unsafe {
+                bough_metal::fused::Fused::new_views(
+                    p,
+                    len,
+                    keep,
+                    base,
+                    win_w as usize,
+                    win_h as usize,
+                    cfg.scale as f64,
+                    ring,
+                    BIN_CAP,
+                )
+            }
         };
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
         let metal = match metal {
@@ -374,8 +431,29 @@ impl<V: View> App<V> {
         rt.owner = ptr as *const u8;
         {
             let el = owner.view();
-            let tp: *mut Vec<u32> = if once { std::ptr::null_mut() } else { &mut tape };
-            let mut m = Mounter { rt: &mut rt, owner: ptr, recs: &mut recs, scope: &mut scope, depth: 0, ox: 0.0, oy: 0.0, space: 0, clip: 0, pending_num: None, cls: 0, tape: tp, ti: 0, pos: 0, kid: 0, keep: false };
+            let tp: *mut Vec<u32> = if once {
+                std::ptr::null_mut()
+            } else {
+                &mut tape
+            };
+            let mut m = Mounter {
+                rt: &mut rt,
+                owner: ptr,
+                recs: &mut recs,
+                scope: &mut scope,
+                depth: 0,
+                ox: 0.0,
+                oy: 0.0,
+                space: 0,
+                clip: 0,
+                pending_num: None,
+                cls: 0,
+                tape: tp,
+                ti: 0,
+                pos: 0,
+                kid: 0,
+                keep: false,
+            };
             el.mount(&mut m);
         }
         rt.bough.insert_run(0, &recs);
@@ -387,7 +465,10 @@ impl<V: View> App<V> {
         unsafe { rt.settle(&mut *owner as *mut V as *const u8) };
         rt.lay_flush();
         drop(scope); // the root scope lives as long as the app: nothing of it is ever released
-        let mut startup = Startup { mount_ns: t_mount.elapsed().as_nanos() as u64, ..Startup::default() };
+        let mut startup = Startup {
+            mount_ns: t_mount.elapsed().as_nanos() as u64,
+            ..Startup::default()
+        };
         #[cfg(target_os = "macos")]
         {
             startup.mount_instr = bough_metal::fused::thread_instructions() - i_mount;
@@ -397,13 +478,26 @@ impl<V: View> App<V> {
             let t = std::time::Instant::now();
             let (mut f, instr, ns) = views(&rt);
             f.set_layout(rt.layout);
-            startup = Startup { gpu_prep_instr: instr, gpu_prep_ns: ns, gpu_wait_ns: t.elapsed().as_nanos() as u64, ..startup };
+            startup = Startup {
+                gpu_prep_instr: instr,
+                gpu_prep_ns: ns,
+                gpu_wait_ns: t.elapsed().as_nanos() as u64,
+                ..startup
+            };
             metal = Some(f);
         }
         #[cfg(all(target_os = "macos", feature = "wgpu"))]
         if let (Some(b), Some(m)) = (boot, mem) {
             let t = std::time::Instant::now();
-            let mut f = presenter::Fused::adopt(b.join().expect("device boot"), win_w as usize, win_h as usize, cfg.scale as f64, m, ring, BIN_CAP);
+            let mut f = presenter::Fused::adopt(
+                b.join().expect("device boot"),
+                win_w as usize,
+                win_h as usize,
+                cfg.scale as f64,
+                m,
+                ring,
+                BIN_CAP,
+            );
             f.set_layout(rt.layout);
             startup.gpu_wait_ns = t.elapsed().as_nanos() as u64;
             metal = Some(f);
@@ -435,6 +529,7 @@ impl<V: View> App<V> {
             once,
             repair: Repair::from_env(),
             cpu: crate::cpu_raster::CpuRaster::new(),
+            cpu_verify: std::env::var_os("BOUGH_CPU_VERIFY").is_some(),
         }
     }
 
@@ -443,7 +538,11 @@ impl<V: View> App<V> {
     /// drvprobe) and the driver's 69 MiB, so the CPU takes much larger frames.
     #[inline]
     fn repair_limit(&self, gpu_warm: bool) -> u32 {
-        if gpu_warm { CPU_TILES_WARM } else { CPU_TILES_COLD }
+        if gpu_warm {
+            CPU_TILES_WARM
+        } else {
+            CPU_TILES_COLD
+        }
     }
 
     /// Frames per pre-armed command buffer. Every frame goes through the pre-armed stream (bough-metal
@@ -547,7 +646,11 @@ impl<V: View> App<V> {
             if self.rt.pubs.is_empty() && self.rt.asy.committed.is_empty() {
                 return;
             }
-            let d = crate::changed::Changed { pubs: &self.rt.pubs, readers: &self.rt.asy.committed, _v: std::marker::PhantomData };
+            let d = crate::changed::Changed {
+                pubs: &self.rt.pubs,
+                readers: &self.rt.asy.committed,
+                _v: std::marker::PhantomData,
+            };
             self.owner.changed(d);
             // other owners (list rows, entities, row-owned readers) whose own boundaries published
             let owners = std::mem::take(&mut self.rt.pubs.owners);
@@ -567,7 +670,9 @@ impl<V: View> App<V> {
             // SAFETY: as in `turn`.
             unsafe { self.rt.settle(owner) };
         }
-        panic!("View::changed did not settle in 8 waves (a cycle between changed and its own boundaries)");
+        panic!(
+            "View::changed did not settle in 8 waves (a cycle between changed and its own boundaries)"
+        );
     }
 
     /// Describe the view again and patch the retained records (`describe.rs`); not when mounted once.
@@ -608,8 +713,12 @@ impl<V: View> App<V> {
     fn copy_plan(&mut self, i: usize, epoch: u32, age: u32) -> bough_metal::fused::SlotCopy {
         use bough_metal::fused::SlotCopy;
         let b = &self.rt.bough;
-        let Some((b0, r0)) = (0..age).find_map(|k| b.scroll_rec(k).map(|r| (k, r))) else { return SlotCopy::NONE };
-        let src = self.shown.filter(|&s| s != i && self.held[s] == Some(epoch - 1));
+        let Some((b0, r0)) = (0..age).find_map(|k| b.scroll_rec(k).map(|r| (k, r))) else {
+            return SlotCopy::NONE;
+        };
+        let src = self
+            .shown
+            .filter(|&s| s != i && self.held[s] == Some(epoch - 1));
         let rows = self.rows.len();
         let mark = |out: &mut [u128], c: bough_core::NRect| {
             if c.is_empty() {
@@ -667,14 +776,21 @@ impl<V: View> App<V> {
         if dst.is_empty() {
             return SlotCopy::NONE;
         }
-        SlotCopy { src: s as u32, rect: dst.to_xyxy(), dx, dy }
+        SlotCopy {
+            src: s as u32,
+            rect: dst.to_xyxy(),
+            dx,
+            dy,
+        }
     }
 
     /// Does surface `s` hold every pixel of the current state (epoch `epoch`, which has only paint damage)?
     /// No epoch since it was drawn may have had non-paint damage, none may have overflowed its paint log,
     /// and the logged paint writes since then must compose to the identity for every record.
     fn holds_current(&self, s: usize, epoch: u32) -> bool {
-        let Some(last) = self.held[s] else { return false };
+        let Some(last) = self.held[s] else {
+            return false;
+        };
         let age = epoch - last;
         if age as usize > RING || age == 0 {
             return age == 0;
@@ -763,7 +879,8 @@ impl<V: View> App<V> {
                     self.surf_stats.grew += 1;
                     #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
                     if let Some(g) = self.gpu.as_ref() {
-                        for d in (0..n).filter(|&d| Some(d) != self.shown && self.held[d].is_some()) {
+                        for d in (0..n).filter(|&d| Some(d) != self.shown && self.held[d].is_some())
+                        {
                             let w = g.in_use_why(d);
                             for k in 0..5 {
                                 self.surf_stats.grew_why[k] += (w >> k & 1) as u64;
@@ -887,7 +1004,11 @@ impl<V: View> App<V> {
         // the CPU backend (cpu_raster.rs): the damaged tiles written into the surface directly, no GPU work
         #[cfg(all(target_os = "macos", not(feature = "wgpu")))]
         if cpu_able && copy.is_none() {
-            let tiles = if full { self.rt.layout.tiles_x() * self.rt.layout.tiles_y() } else { self.rows.iter().map(|r| r.count_ones()).sum() };
+            let tiles = if full {
+                self.rt.layout.tiles_x() * self.rt.layout.tiles_y()
+            } else {
+                self.rows.iter().map(|r| r.count_ones()).sum()
+            };
             let warm = self.gpu.as_ref().is_some_and(|g| g.gpu_used());
             let limit = self.repair_limit(warm);
             if let Some(g) = self.gpu.as_mut() {
@@ -899,6 +1020,40 @@ impl<V: View> App<V> {
                     g.write_end(i);
                     if let Some(nt) = r {
                         self.repaired_tiles = nt;
+                        if self.cpu_verify {
+                            // diagnostics (BOUGH_CPU_VERIFY): the CPU frame against the GPU's full redraw, now
+                            let a = &mut self.rt.text.cache.atlas;
+                            if g.sync_atlas(a.width, a.height, &a.pixels, a.dirty_bytes != 0) {
+                                a.dirty_bytes = 0;
+                            }
+                            if let Some(rows) = self.rt.images.take_dirty() {
+                                g.sync_images(self.rt.images.pixels(), rows);
+                            }
+                            g.ensure_columns(&self.rt.column_needs());
+                            let reference = g.reference_pixels(self.rt.bough.num_pages() as u32);
+                            let px = g.surface_pixels(i);
+                            let w = self.rt.win_w as usize;
+                            if let Some(k) = px
+                                .chunks_exact(4)
+                                .zip(reference.chunks_exact(4))
+                                .position(|(a, b)| a != b)
+                            {
+                                let (x, y) = (k % w, k / w);
+                                eprintln!(
+                                    "cpu-verify: frame {} surface {i} age {age:?} full {full} tiles {nt}: ({x},{y}) cpu {:?} gpu {:?}; tile damaged: {}",
+                                    self.frames,
+                                    &px[k * 4..k * 4 + 4],
+                                    &reference[k * 4..k * 4 + 4],
+                                    full || self
+                                        .rows
+                                        .get(y / 32)
+                                        .is_some_and(|r| r >> (x / 32) & 1 != 0)
+                                );
+                                for e in self.cpu.entries_at(x as i32, y as i32) {
+                                    eprintln!("  {e}");
+                                }
+                            }
+                        }
                         g.show_held::<PACED>(i);
                         self.surf_stats.cpu += 1;
                         drawn = true;
@@ -928,7 +1083,17 @@ impl<V: View> App<V> {
         if !drawn {
             // headless: the CPU side of the frame ends at the tile list in the region's frame slot
             // SAFETY: the runtime's region, laid out by `rt.layout`; headless, so no GPU reads it.
-            let (nt, _) = unsafe { bough_metal::fused::write_slot(self.rt.region_base(), &self.rt.layout, (self.frames % 2) as usize, i as u32, &self.rows, full, &copy) };
+            let (nt, _) = unsafe {
+                bough_metal::fused::write_slot(
+                    self.rt.region_base(),
+                    &self.rt.layout,
+                    (self.frames % 2) as usize,
+                    i as u32,
+                    &self.rows,
+                    full,
+                    &copy,
+                )
+            };
             self.repaired_tiles = nt;
             self.prof.mark(PH_CULL);
         }
@@ -963,7 +1128,11 @@ impl<V: View> App<V> {
     pub fn needs_trim(&self) -> bool {
         #[cfg(target_os = "macos")]
         if let Some(g) = self.gpu.as_ref() {
-            return (0..self.held.len()).any(|i| Some(i) != self.shown && (g.surfs[i].touched.get() || g.surfs[i].cpu_written.get()) && !g.surfs[i].volatile.get());
+            return (0..self.held.len()).any(|i| {
+                Some(i) != self.shown
+                    && (g.surfs[i].touched.get() || g.surfs[i].cpu_written.get())
+                    && !g.surfs[i].volatile.get()
+            });
         }
         false
     }
@@ -971,9 +1140,24 @@ impl<V: View> App<V> {
     /// The App's own tables (re-description tape, tile-row buffers), as memory-ledger lines (`ledger.rs`).
     pub(crate) fn ledger_app(&self, l: &mut bough_mem::Ledger) {
         use bough_mem::Scales;
-        l.vec("app", "re-description tape", &self.tape, self.tape.capacity(), Scales::Content);
-        let rows = self.rows.capacity() * 16 + 2 * size_of::<Plane>() + self.held.capacity() * 8 + self.last_use.capacity() * 8;
-        l.many("app", "tile-row buffer and repair planes", Scales::Window, rows, rows);
+        l.vec(
+            "app",
+            "re-description tape",
+            &self.tape,
+            self.tape.capacity(),
+            Scales::Content,
+        );
+        let rows = self.rows.capacity() * 16
+            + 2 * size_of::<Plane>()
+            + self.held.capacity() * 8
+            + self.last_use.capacity() * 8;
+        l.many(
+            "app",
+            "tile-row buffer and repair planes",
+            Scales::Window,
+            rows,
+            rows,
+        );
     }
 
     /// Surfaces in the ring.
