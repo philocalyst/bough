@@ -39,6 +39,8 @@ pub struct Driver {
     pub cap: usize,
     /// A record was rewritten since the last frame (its damage is unknown until an executor looks).
     pending: bool,
+    /// Tiles the last frame after a record write damaged.
+    seen_set: u32,
 }
 
 impl Driver {
@@ -50,7 +52,7 @@ impl Driver {
         let gpu = if whole.gpu { Gpu::new(&scene, words, cap) } else { None };
         let own = if gpu.is_some() { Vec::new() } else { vec![0; words] };
         // unknown damage is assumed large: the first write to a word goes to the GPU when there is one
-        Driver { scene, gpu, whole, pool: Pool::new(workers), own, shown: U::default(), cpu_current: false, gpu_current: false, seen: [u32::MAX; 64], tiles: Vec::new(), cap, pending: false }
+        Driver { scene, gpu, whole, pool: Pool::new(workers), own, shown: U::default(), cpu_current: false, gpu_current: false, seen: [u32::MAX; 64], tiles: Vec::new(), cap, pending: false, seen_set: 0 }
     }
     pub fn pixels(&self) -> &[u32] {
         let words = (self.scene.fw * self.scene.fh) as usize;
@@ -86,7 +88,10 @@ impl Driver {
             mask |= 1 << U_PICK;
         }
         // predicted damage: the most any changed word damaged last time
-        let predicted = (0..64).filter(|s| mask >> s & 1 != 0).map(|s| self.seen[s]).max().unwrap_or(0);
+        let mut predicted = (0..64).filter(|s| mask >> s & 1 != 0).map(|s| self.seen[s]).max().unwrap_or(0);
+        if self.pending {
+            predicted = predicted.max(self.seen_set);
+        }
         let on_cpu = self.gpu.is_none() || (started && predicted <= self.whole.cpu_tiles);
         let (ran, tiles) = if on_cpu {
             self.cpu_catch_up();
@@ -132,6 +137,9 @@ impl Driver {
                 (Ran::GpuFixed(over), n)
             }
         };
+        if std::mem::take(&mut self.pending) {
+            self.seen_set = tiles;
+        }
         for s in 0..64 {
             if mask >> s & 1 != 0 {
                 self.seen[s] = tiles;

@@ -66,9 +66,44 @@ pub mod ops {
         let t = min(t0, ONE);
         mul15(mul15(t, t), 3u32 * ONE - 2u32 * t)
     }
-    /// One-shot progress (Q15) of a transition started at `t0` lasting `dur` ticks.
-    pub fn x_prog(now: u32, t0: u32, dur: u32) -> u32 {
-        progress(now, t0, max(dur, 1u32), 0u32)
+    /// One-shot progress (Q15) of a transition started at `t0` lasting `dur` ticks: 0 before it starts, ONE
+    /// once it is over. The clock is a wrapping word: "started" means `now` is at most 2^31 ticks after `t0`
+    /// modulo 2^32, so nothing happens to a finished transition when the clock wraps, and a clock pushed
+    /// 2^30 ahead (reduced motion) puts every transition at its end.
+    pub fn x_prog(now: u32, t0: u32, dur0: u32) -> u32 {
+        let mut e = 0u32;
+        if now >= t0 {
+            e = now - t0;
+        } else {
+            e = (0xFFFFFFFFu32 - t0) + now + 1u32;
+        }
+        if e >= 0x80000000u32 {
+            return 0u32;
+        }
+        let dur = clamp(dur0, 1u32, 65535u32);
+        if e >= dur {
+            return ONE;
+        }
+        (e * ONE) / dur
+    }
+    /// Ease in (cubic) of a Q15 progress.
+    pub fn x_ein(t0: u32) -> u32 {
+        let t = min(t0, ONE);
+        mul15(mul15(t, t), t)
+    }
+    /// Ease out (cubic).
+    pub fn x_eout(t0: u32) -> u32 {
+        let u = ONE - min(t0, ONE);
+        ONE - mul15(mul15(u, u), u)
+    }
+    /// Ease in and out (cubic).
+    pub fn x_einout(t0: u32) -> u32 {
+        let t = min(t0, ONE);
+        if t < HALF {
+            return 4u32 * mul15(mul15(t, t), t);
+        }
+        let u = ONE - t;
+        ONE - 4u32 * mul15(mul15(u, u), u)
     }
     pub fn x_rect(a: u32, b: u32, c: u32, d: u32) -> Vec4i {
         vec4i(a as i32, b as i32, c as i32, d as i32)

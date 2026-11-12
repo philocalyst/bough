@@ -6,6 +6,7 @@
 //! * `expr.rs`: expressions as types (a mirror of the expr lane's seam); a combinator is a leaf's name.
 //! * `paint.rs`: primitives and compositions as types; a paint drives a `Sink` by continuation.
 //! * `tile.rs`: the CPU tile rasteriser as sinks, monomorphised per archetype.
+//! * `style.rs`: what a chain of the façade's box modifiers lowers to: one composed paint record.
 //! * `scene.rs`: columns (the GPU's buffers), paint order, the window lane, bins, the CPU frame.
 pub mod expr;
 #[cfg(target_os = "macos")]
@@ -19,6 +20,7 @@ pub mod plan;
 pub mod probe;
 pub mod scene;
 pub mod scenes;
+pub mod style;
 pub mod tile;
 pub use ops::ops as x;
 pub use wgsl_rs::std::{Vec4, Vec4i, Vec4u};

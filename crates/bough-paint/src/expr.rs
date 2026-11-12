@@ -97,6 +97,9 @@ op!(/// A looping there-and-back progress of (now + phase) over `period` ticks, 
     Tri = x_tri(now: N: u32, phase: P: u32, period: D: u32) -> u32; opaque = false);
 op!(Smooth = x_smooth(t: T: u32) -> u32; opaque = false);
 op!(Prog = x_prog(now: N: u32, t0: A: u32, dur: D: u32) -> u32; opaque = false);
+op!(EIn = x_ein(t: T: u32) -> u32; opaque = false);
+op!(EOut = x_eout(t: T: u32) -> u32; opaque = false);
+op!(EInOut = x_einout(t: T: u32) -> u32; opaque = false);
 op!(/// A rect from four words (Q8 x0, y0, x1, y1).
     RectW = x_rect(a: A: u32, b: B: u32, c: C: u32, d: D: u32) -> Vec4i; opaque = false);
 op!(Off = x_off(b: B: Vec4i, dx: X: i32, dy: Y: i32) -> Vec4i; opaque = false);
