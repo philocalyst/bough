@@ -282,3 +282,100 @@ every pick of the gates. The id is today an expression the paint carries (`Hit<P
   shared crate for the expr lane to take.
 * Consequence to keep in mind: an id is a place (column, slot), not a row. `Eq<Focus, Id>` follows the slot;
   when a ring remaps slots the surface lane rewrites `Focus` in the same turn.
+
+## 9. raster: the modifier chain as one paint record (Amendment 2; for the expr lane's element layer)
+
+`crates/bough-paint/src/style.rs`. An element of the façade that paints a box holds a `Bx<B, R, F, L, S, O>`
+(rect, corners, fill, border, shadows, opacity: six type parameters, each changed by one modifier, in any
+order) and its `drive<S: Sink>` ends in `sink.emit(rect, bx.paint())`. `Bx::paint` folds the parameters by
+trait dispatch into one `Paint` value, so the chain is one record of one archetype and the author never sees
+a paint type:
+
+| the author writes | the record's type |
+|---|---|
+| `.bg(c)` | `Solid<B, C>` |
+| `.bg(c).rounded(r)` | `RRect<B, R, C>` |
+| `.bg(c).border(w, l)`, rounded or not | `Border<B, R, W, L, C>` |
+| `.border(w, l)` alone | `Border<B, R, W, L, clear>` |
+| `.gradient(g)` (two-stop linear) | `Grad<B, R, X, Y, C, D>` |
+| `.gradient(g).border(w, l)` | `Over<Grad<..>, Border<.., clear>>` |
+| `.shadow(a).shadow(b)` before any of the above | `Over<Over<Shadow b, Shadow a>, body>` (CSS order: the first is on top) |
+| `.opacity(o)` | every colour above wrapped in `Fade<_, O>` (the façade's meaning: the box's own paint, not its subtree) |
+| `.translate(x, y)` | every rect above wrapped in `Off<_, X, Y>` |
+| `clip(..)` around it | `Clip<P, K>` |
+
+What the element layer has to supply, and nothing more:
+
+* **Operands as expressions.** A constant the author passes as a value (`.bg(theme.panel)`) is one record
+  word (`style::color(c)` = `Pm<Rec>`, `style::len(q8)` = `I<Rec>`); `sig!(self.x)` of Frame state is the lens
+  (`Pm<Un<L>>`); a Rust closure over state is Turn stage and arrives as a record word the store keeps
+  current. Lengths are Q8 device pixels (the façade already snaps to 1/256 px), colours packed RGBA8 with red
+  in the low byte.
+* **No opacity assertion.** Whether the box covers what is beneath (the occlusion cut, and the cut between
+  the record's own shadow and body) used to need a type that said so (`Pmo`). It is now decided per record
+  from the colour's own words (`expr::Alpha::full`: a function of record words and constants only, so it
+  cannot change between frames; mixes and selects of full colours are full; a colour that reads the block for
+  its alpha, or is under `.opacity`, never covers). A plain `.bg(Color)` with alpha 255 covers.
+* **`.transition(curve)`** is an operand, not a mechanism: `style::tr_color(from, to, ease_out(progress(t0,
+  dur)))` (and `tr_i32`, `tr_q15`) is `MixV<Pm<Rec>, Pm<Rec>, EOut<Prog<Time, Rec, Rec>>>`: four record
+  words. The turn that changes the target rewrites the record (`Scene::set`: from = the value now, to, t0 =
+  now); every frame after that is the clock word. `Ease::Linear / InCubic / OutCubic / InOutCubic` have
+  leaves; `Ease::Smooth` (the Hermite retarget from the displayed velocity) does not yet.
+* **A shadow's corner table handle** is a record word the scene fills at `emit` (`Paint::memo`); the element
+  layer does not see it.
+
+Modifiers of today's façade with **no paint yet**: radial and multi-stop gradients (`deco::Grad` ramps;
+only two-stop linear exists); `svg_image` / `image` and their `.angle` (the round-7 kernel has image and
+ramp samplers and a transformed space in `km`, none wrapped as primitives here); `Deco::xform`; text colour
+and glyph runs (the layout lane's glyph-instance columns); `Ease::Smooth`. `LBox` has no `.shadow` today
+(only `DecoBox::shadows` and `ltemplate` declarations): with `Bx` a flow box can have one, which the canvas
+workload listed as missing.
+
+Costs to know: an operand used by several layers is stored once per use (a card's radius appears in its
+shadow and its body; a translate's two words in every layer): `Bx::paint` copies the operand values. A `Let`
+that shares a record word between layers is the fix and is not built.
+
+## 10. raster: driving the CPU kernels per band (for the threads lane)
+
+What exists (`crates/bough-paint/src/scene.rs`, `tile.rs`):
+
+* `Scene::update(&mut self, u) -> FrameStats`: the block compare, the window passes of the columns whose
+  archetype reads a changed word, the bins if a window moved. Leaves the damage as a tile bitmap
+  (`scene.damage`, `Damage::tiles(&mut Vec<u32>)`). One thread; a full canvas costs about 11 M instructions
+  (1 ms), a hover 0.17 M.
+* `Scene::shade(&self, u, tiles: &[u32], out: &mut [u32], stride, pool, extra)`: shades any set of tiles
+  (indices, any order, no duplicates) into the surface's words. It takes `&self`, reads the columns, the
+  window lane, the bins and the corner tables, and writes only the pixels of the tiles it is given. Today it
+  hands chunks of 8 tiles to `bough_kernel::cpu::Pool` workers through one atomic counter: that is the weak
+  form you are replacing.
+
+The interface for bands (I will add it as soon as the measurement holding the machine ends; it is the inner
+loop of `shade` made public):
+
+```rust
+impl Scene {
+    /// One worker's scratch: the 32 x 32 Q15 accumulator and the tile's occlusion masks (about 12 KiB).
+    /// Keep one per core across frames.
+    pub fn worker(&self) -> Tile<'_>;
+    /// Shade `tiles` into `out` with this worker's scratch.
+    /// SAFETY: `out` is the surface (`fh` rows of `stride` words); no other thread writes or reads the
+    /// pixels of these tiles during the call. Tiles given to different callers are disjoint.
+    pub unsafe fn shade_into(&self, u: &U, tiles: &[u32], out: *mut u32, stride: usize, t: &mut Tile);
+    /// What a tile costs, for cutting bands of equal work: its entries weighted by their archetype's cost
+    /// class (`Desc::cost`: Flat 1, Edge 2, PerPixel 6, Wide 24: from the measured per-entry times).
+    pub fn tile_weight(&self, t: u32) -> u32;
+}
+```
+
+A band is then any `&[u32]` of tiles: rows of tiles for a full frame (a core keeps the same rows frame after
+frame, so the surface's lines and the bins' lists stay in its cache), the damaged tiles sorted by row for a
+repair. The split comes from constants plus one prefix sum: `tile_weight` over the damaged tiles, cut into
+`cores` runs of equal weight. The interaction path does not queue: a frame whose damage is under the plan's
+`cpu_tiles` (8 tiles when the scene has blurred content, up to 1,024 when it is flat) is shaded by the
+calling thread with its own `Tile` and never touches the workers.
+
+Two things for your side: (1) the window pass can be banded the same way (one column's pages per worker: it
+writes the window and cover lanes by key, which are disjoint per record, and a per-worker damage bitmap that
+is OR-ed at the end), but it is 1 ms of a 320 ms single-core canvas frame, so it is not where the time is;
+(2) with your published half, `shade_into` reads only the published columns: the `&self` it takes is that
+half's view, and nothing else changes.

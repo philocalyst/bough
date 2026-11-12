@@ -408,14 +408,16 @@ pub struct Scene {
     touched: Vec<u32>,
     /// The corner tables: a region of the arena after the columns (so the GPU reads them from the buffer it
     /// already has), handles by key, and the tables allocated but not yet filled.
+    /// Give memoisable layers their tables (on by default; off: every such layer takes its closed form).
+    pub memoise: bool,
     tab_base: usize,
     tab_used: usize,
     tab_map: std::collections::HashMap<(i32, i32), u32>,
     tab_jobs: Vec<TabJob>,
 }
 
-/// Words reserved for corner tables (4 MiB of address space; pages are touched only when a table is filled).
-pub const TAB_WORDS: usize = 1 << 24;
+/// Words reserved for corner tables (16 MiB of address space; pages are touched only when a table is filled).
+pub const TAB_WORDS: usize = 1 << 22;
 /// A table to fill: its handle (word offset in the table region), key, and entries per side.
 #[derive(Clone, Copy, Debug)]
 pub struct TabJob {
@@ -443,6 +445,7 @@ impl Scene {
             tx,
             ty,
             arena: Arena::new(arena_words + TAB_WORDS),
+            memoise: std::env::var("BOUGH_NO_TABS").is_err(),
             tab_base: arena_words,
             tab_used: 0,
             tab_map: Default::default(),
@@ -525,12 +528,15 @@ impl Scene {
     /// Give the record's memoisable layers their table handles (`Paint::memo`), allocating a table for a
     /// key not seen before. Cold: once per record mount or rewrite.
     fn memo<P: Paint>(&mut self, rect: [i32; 4], mut p: P) -> P {
+        if !self.memoise {
+            return p;
+        }
         let zero = U::default();
         let (map, jobs, used) = (&mut self.tab_map, &mut self.tab_jobs, &mut self.tab_used);
         p.memo(&Cx { u: &zero, rect }, &mut |r, w| {
             *map.entry((r, w)).or_insert_with(|| {
                 let n = crate::ops::ops::t_n(r, w);
-                let words = 2 + (n * n) as usize;
+                let words = 2 + (n * crate::ops::ops::t_stride(n) / 2) as usize;
                 if *used + words > TAB_WORDS {
                     return crate::ops::ops::T_MISS;
                 }
@@ -578,10 +584,11 @@ impl Scene {
         let jobs = self.tab_jobs.clone();
         let words = self.arena.words_mut();
         for j in &jobs {
+            let wpr = crate::ops::ops::t_stride(j.n) / 2;
             for y in 0..j.n {
-                for x in 0..j.n {
-                    let v = crate::ops::ops::x_cfill(j.r, j.w, x, y);
-                    words[tb + j.base as usize + 2 + (y * j.n + x) as usize] = if cfg!(feature = "mutant_tab") { v + 1 } else { v };
+                for k in 0..wpr {
+                    let v = crate::ops::ops::x_cfillw(j.r, j.w, k, y);
+                    words[tb + j.base as usize + 2 + (y * wpr + k) as usize] = if cfg!(feature = "mutant_tab") { v + 1 } else { v };
                 }
             }
         }

@@ -101,12 +101,16 @@ fn build(seed: u64, fw: u32, fh: u32, n: usize) -> Scene {
             }
             5 | 6 => {
                 let blur = q(2.0 * g.f(0.3, 14.0));
+                // half of the cards on whole pixels with whole-pixel shadow offsets: the corner tables' case
+                let grid = g.u(2) == 0;
+                let snap = |v: i32| if grid { (v + 128) & !255 } else { v };
+                let rect = [snap(rect[0]), snap(rect[1]), snap(rect[0]) + snap(rect[2] - rect[0]).max(256), snap(rect[1]) + snap(rect[3] - rect[1]).max(256)];
                 s.push(
                     c_card,
                     rect,
                     Hit {
                         p: Over(
-                            Shadow { b: Off { b: Grow { b: pan(), d: ri(q(g.f(-2.0, 3.0))) }, dx: Ki, dy: ri(q(g.f(0.0, 12.0))) }, r: ri(q(rad)), blur: ri(blur), c: pm(g.color(false)), tab: Tab::NONE },
+                            Shadow { b: Off { b: Grow { b: pan(), d: ri(snap(q(g.f(-2.0, 3.0)))) }, dx: Ki, dy: ri(snap(q(g.f(0.0, 12.0)))) }, r: ri(q(rad)), blur: ri(blur), c: pm(g.color(false)), tab: Tab::NONE },
                             RRect { b: pan(), r: ri(q(rad)), c: themed(g.u(6), c1, c2) },
                         ),
                         id: r(g.u(6)),
@@ -351,7 +355,7 @@ fn corner_tables_are_the_closed_form() {
     let descs: Vec<&bough_paint::scene::Desc> = a.cols.iter().map(|c| c.desc).collect();
     let lays: Vec<(usize, usize)> = a.cols.iter().map(|c| (c.base, c.desc.words)).collect();
     let good = source(&descs, &lays, a.tab_region().0);
-    let bad = good.replacen("= x_cfill(", "= 1u + x_cfill(", 1);
+    let bad = good.replacen("= x_cfillw(", "= 1u + x_cfillw(", 1);
     assert!(bad != good);
     let mut c = build(5, fw, fh, 110);
     let mut m = Gpu::with_source(&c, words, 256, &bad).unwrap();
@@ -362,3 +366,4 @@ fn corner_tables_are_the_closed_form() {
     eprintln!("corner tables: gpu fill mutant: {dm} differing words");
     assert!(dm > 0, "a wrong table entry was not seen");
 }
+

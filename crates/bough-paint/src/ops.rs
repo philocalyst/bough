@@ -26,6 +26,9 @@ pub mod ops {
     pub fn x_i(a: u32) -> i32 {
         a as i32
     }
+    pub fn x_u(a: i32) -> u32 {
+        max(a, 0i32) as u32
+    }
     pub fn x_eq(a: u32, b: u32) -> u32 {
         select(0u32, 1u32, a == b)
     }
@@ -76,10 +79,8 @@ pub mod ops {
     /// modulo 2^32, so nothing happens to a finished transition when the clock wraps, and a clock pushed
     /// 2^30 ahead (reduced motion) puts every transition at its end.
     pub fn x_prog(now: u32, t0: u32, dur0: u32) -> u32 {
-        let mut e = 0u32;
-        if now >= t0 {
-            e = now - t0;
-        } else {
+        let mut e = now - min(t0, now);
+        if now < t0 {
             e = (0xFFFFFFFFu32 - t0) + now + 1u32;
         }
         if e >= 0x80000000u32 {
@@ -253,7 +254,12 @@ pub mod ops {
     pub fn mk_shadow(b: Vec4i, r0: i32, blur: i32, pm: Vec4u, tab: u32, clip: Vec4i) -> Cmd {
         let bw = min(max(blur, 16i32), 32768i32);
         let ext = bw + bw / 2i32 + 256i32;
-        let win = window(b.x() - ext, b.y() - ext, b.z() + ext, b.w() + ext, clip);
+        let mut win = window(b.x() - ext, b.y() - ext, b.z() + ext, b.w() + ext, clip);
+        // a box a negative spread has turned inside out casts no shadow (its profile would be a difference
+        // of the wrong sign)
+        if b.z() <= b.x() || b.w() <= b.y() {
+            win = vec4i(0i32, 0i32, 0i32, 0i32);
+        }
         let r = radius_in(b, r0);
         let inv = (16777216i32 + bw - 1i32) / bw;
         let mut curve = 0i32;
@@ -280,6 +286,11 @@ pub mod ops {
     pub fn t_n(r: i32, w: i32) -> u32 {
         ((t_d(r, w) >> 8u32) + ((w + (w >> 1u32) + 255i32) >> 8u32)) as u32
     }
+    /// Entries are 16 bits (a correction is below 2^16: its largest possible value is about 0.75 ONE), two
+    /// to a word, rows padded to whole words: a row's stride in entries.
+    pub fn t_stride(n: u32) -> u32 {
+        (n + 1u32) & 0xFFFFFFFEu32
+    }
     /// The shadow is one whose corners go through `corner3` (rounded, and not so wide a radius that the
     /// arc's distance profile is used).
     pub fn t_regime(r: i32, w: i32) -> bool {
@@ -289,33 +300,54 @@ pub mod ops {
     pub fn x_tabok(c: Cmd, h0: u32, h1: u32) -> bool {
         t_regime(c.rad.x(), c.rad.y()) && h0 == (c.rad.x() as u32) && h1 == (c.rad.y() as u32)
     }
-    /// The table entry holding corner `q`'s correction at pixel (x, y) (`q`: bit 0 mirrors x, bit 1
-    /// mirrors y, the order `km::shadow` sums them in); `T_ZERO` where the correction is exactly zero;
-    /// `T_MISS` where the closed form must be used.
-    pub fn x_ctap(c: Cmd, x: i32, y: i32, ok: bool, q: u32) -> u32 {
+    /// One corner's table entry from its offset (dx, dy) to the pixel: `T_ZERO` out of the corner's reach
+    /// (`rl` = radius + 1.5 blur widths before it, `lim` = 1.5 blur widths past it), where the correction is
+    /// exactly zero.
+    pub fn t_idx(dx: i32, dy: i32, rl: i32, lim: i32, d: i32, n: u32) -> u32 {
+        if dx <= -rl || dy <= -rl || dx >= lim || dy >= lim {
+            return T_ZERO;
+        }
+        (((dy + d) >> 8u32) as u32) * t_stride(n) + (((dx + d) >> 8u32) as u32)
+    }
+    /// The table entries holding the four corners' corrections at pixel (x, y), in the order `km::shadow`
+    /// sums them (x mirrored on odd, y mirrored on the last two); `T_ZERO` where a correction is exactly
+    /// zero; all `T_MISS` where the closed form must be used (no table for this key, or a box whose corners
+    /// are not on the pixel grid).
+    pub fn x_ctaps(c: Cmd, x: i32, y: i32, ok: bool) -> Vec4u {
         if !ok {
-            return T_MISS;
+            return splat(T_MISS);
         }
         if !inside(c.win, x, y) || inside(c.core, x, y) {
-            return T_ZERO;
+            return splat(T_ZERO);
         }
         let hx = (c.b.z() - c.b.x()) >> 1u32;
         let hy = (c.b.w() - c.b.y()) >> 1u32;
         let px = x * 256i32 + 128i32 - (c.b.x() + hx);
         let py = y * 256i32 + 128i32 - (c.b.y() + hy);
-        let dx = select(px, -px, (q & 1u32) == 1u32) - hx;
-        let dy = select(py, -py, q >= 2u32) - hy;
+        // on the grid: both mirrored offsets of both axes are whole pixels from a pixel centre
+        if (((px - hx) | (-px - hx) | (py - hy) | (-py - hy)) & 255i32) != 128i32 || (((px - hx) & (-px - hx) & (py - hy) & (-py - hy)) & 128i32) == 0i32 {
+            return splat(T_MISS);
+        }
         let r = c.rad.x();
         let w = c.rad.y();
         let lim = w + (w >> 1u32);
-        if dx <= -(r + lim) || dy <= -(r + lim) || dx >= lim || dy >= lim {
-            return T_ZERO;
+        let rl = r + lim;
+        let d = ((rl + 255i32) >> 8u32) << 8u32;
+        let n = ((d >> 8u32) + ((lim + 255i32) >> 8u32)) as u32;
+        vec4u(t_idx(px - hx, py - hy, rl, lim, d, n), t_idx(-px - hx, py - hy, rl, lim, d, n), t_idx(px - hx, -py - hy, rl, lim, d, n), t_idx(-px - hx, -py - hy, rl, lim, d, n))
+    }
+    /// Word `k` of row `j` of the table for (r, w): entries 2k and 2k + 1 of the row.
+    pub fn x_cfillw(r: i32, w: i32, k: u32, j: u32) -> u32 {
+        let mut hi = 0u32;
+        if 2u32 * k + 1u32 < t_n(r, w) {
+            hi = x_cfill(r, w, 2u32 * k + 1u32, j);
         }
-        let d = t_d(r, w);
-        if ((dx + d) & 255i32) != 128i32 || ((dy + d) & 255i32) != 128i32 {
-            return T_MISS;
-        }
-        (((dy + d) >> 8u32) as u32) * t_n(r, w) + (((dx + d) >> 8u32) as u32)
+        (x_cfill(r, w, 2u32 * k, j) & 0xFFFFu32) | (hi << 16u32)
+    }
+    /// Entry `idx` (a `t_idx`) of the table whose words follow: the two words holding it are not read here;
+    /// the caller reads word `idx >> 1` and hands it over.
+    pub fn t_half(word: u32, idx: u32) -> u32 {
+        (word >> ((idx & 1u32) * 16u32)) & 0xFFFFu32
     }
     /// Entry (i, j) of the table for (r, w): `corner3` at that offset from the corner of any box.
     pub fn x_cfill(r: i32, w: i32, i: u32, j: u32) -> u32 {

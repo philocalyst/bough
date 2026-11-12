@@ -21,6 +21,23 @@ fn main() {
         let pool = bough_kernel::cpu::Pool::new(5);
         let mut px = vec![0u32; (s.fw * s.fh) as usize];
         let keys = s.tab_jobs().to_vec();
+        s.fill_tabs();
+        for extra in [0usize, 5] {
+            let mut best = (f64::MAX, 0u64);
+            for _ in 0..3 {
+                s.invalidate();
+                let (i0, _) = bough_mem::pmu::instructions_cycles();
+                let t = std::time::Instant::now();
+                s.frame(&U::default(), &mut px, s.fw as usize, &pool, extra);
+                let w = t.elapsed().as_secs_f64();
+                let (i1, _) = bough_mem::pmu::instructions_cycles();
+                if w < best.0 {
+                    best = (w, i1 - i0);
+                }
+            }
+            println!("cpu full frame, {} thread(s): best of 3 {:.1} ms, {:.1} M instructions on the frame thread", extra + 1, best.0 * 1e3, best.1 as f64 / 1e6);
+        }
+        s.invalidate();
         let fs = s.frame(&U::default(), &mut px, s.fw as usize, &pool, 5);
         println!("tables: {} keys, {} words; frame: {:?}", keys.len(), s.tab_region().1, fs.raster);
         let mut by: std::collections::BTreeMap<i32, (usize, u32)> = Default::default();

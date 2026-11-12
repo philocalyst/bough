@@ -421,15 +421,15 @@ pub struct SpecSink<'a> {
 #[inline(always)]
 pub fn corner_taps(c: Cmd, x: i32, y: i32, ok: bool, tabs: &[u32]) -> [u32; 4] {
     let base = c.par.z as usize;
-    let mut v = [x::T_MISS; 4];
-    for (q, v) in v.iter_mut().enumerate() {
-        let i = x::x_ctap(c, x, y, ok, q as u32);
-        *v = if i == x::T_ZERO {
+    let t = x::x_ctaps(c, x, y, ok);
+    let mut v = [t.x, t.y, t.z, t.w];
+    for v in v.iter_mut() {
+        *v = if *v == x::T_ZERO {
             0
-        } else if i == x::T_MISS {
+        } else if *v == x::T_MISS {
             x::T_MISS
         } else {
-            tabs[base + 2 + i as usize]
+            x::t_half(tabs[base + 2 + (*v >> 1) as usize], *v)
         };
     }
     v

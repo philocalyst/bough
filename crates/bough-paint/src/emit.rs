@@ -232,7 +232,9 @@ impl Fn<'_> {
                 }
                 for [a, x, y, cov] in px {
                     let call = if *tab {
-                        let taps: Vec<String> = (0..4).map(|q| format!("tab_v({tb}c_tab({c}), x_ctap({c}, {x}, {y}, {ok}, {q}u))")).collect();
+                        let t = self.fresh("t");
+                        self.decl(T::V4u, &t, &format!("x_ctaps({c}, {x}, {y}, {ok})"), false);
+                        let taps: Vec<String> = ["x", "y", "z", "w"].iter().map(|q| format!("tab_v({tb}c_tab({c}), {t}.{q})")).collect();
                         format!("{p}m({c}, {x}, {y}, {})", taps.join(", "))
                     } else if *glyph {
                         format!("{p}({c}, {x}, {y}, {cov})")

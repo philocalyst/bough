@@ -72,7 +72,7 @@ static inline uint tab_h(const device uint* T, uint base, uint i) { return base 
 static inline uint tab_v(const device uint* T, uint base, uint idx) {
     if (idx == 0xFFFFFFFEu) { return 0u; }
     if (idx == 0xFFFFFFFFu) { return 0xFFFFFFFFu; }
-    return T[base + 2u + idx];
+    return (T[base + 2u + (idx >> 1u)] >> ((idx & 1u) * 16u)) & 0xFFFFu;
 }
 "#,
     );
@@ -294,9 +294,9 @@ kernel void k_compact(const device uint* META [[buffer(1)]], device uint* TL [[b
         r#"
 // fill one corner table: a thread per entry, the leaf that defines it
 kernel void k_tab(device uint* COLS [[buffer(0)]], const device uint* JOB [[buffer(12)]], metal::uint3 gid [[thread_position_in_grid]]) {
-    uint base = JOB[0], n = JOB[3];
-    if (gid.x >= n || gid.y >= n) { return; }
-    COLS[TABBASE + base + 2u + gid.y * n + gid.x] = x_cfill(int(JOB[1]), int(JOB[2]), gid.x, gid.y);
+    uint base = JOB[0], n = JOB[3], wpr = (n + 1u) >> 1u;
+    if (gid.x >= wpr || gid.y >= n) { return; }
+    COLS[TABBASE + base + 2u + gid.y * wpr + gid.x] = x_cfillw(int(JOB[1]), int(JOB[2]), gid.x, gid.y);
 }
 "#,
     );
@@ -481,7 +481,7 @@ impl Gpu {
         for (k, j) in jobs.iter().enumerate() {
             // SAFETY: buffer 12 holds four words per job; the offset is inside it.
             unsafe { enc.setBuffer_offset_atIndex(self.bufs[12].as_deref(), 16 * k, 12) };
-            enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: (j.n as usize).div_ceil(8), height: (j.n as usize).div_ceil(8), depth: 1 }, MTLSize { width: 8, height: 8, depth: 1 });
+            enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: (j.n as usize).div_ceil(16), height: (j.n as usize).div_ceil(8), depth: 1 }, MTLSize { width: 8, height: 8, depth: 1 });
             entries += (j.n * j.n) as usize;
         }
         enc.endEncoding();
