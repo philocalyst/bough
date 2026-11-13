@@ -1,0 +1,34 @@
+diff --git a/runner/src/cell.rs b/runner/src/cell.rs
+index 5ed17ea..666cc52 100644
+--- a/runner/src/cell.rs
++++ b/runner/src/cell.rs
+@@ -153,8 +153,19 @@ fn start(
+     args: &[String],
+     out: &Path,
+ ) -> anyhow::Result<(Session, App)> {
++    let mut output = OutputConfig::new("DP-1").mode(OUTPUT.0, OUTPUT.1, Hz(cell.hz));
++    // round 8 local patch: GB_TIMING=fixed|unthrottled|vrr:MIN-MAX selects fakeland's timing model (default fixed)
++    match std::env::var("GB_TIMING").ok().as_deref() {
++        None | Some("") | Some("fixed") => {}
++        Some("unthrottled") => output = output.timing(fakeland::TimingConfig::unthrottled()),
++        Some(v) if v.starts_with("vrr:") => {
++            let (lo, hi) = v[4..].split_once('-').context("GB_TIMING=vrr:MIN-MAX")?;
++            output = output.timing(fakeland::TimingConfig::vrr(Hz(lo.parse()?), Hz(hi.parse()?)));
++        }
++        Some(other) => bail!("GB_TIMING={other}: fixed, unthrottled or vrr:MIN-MAX"),
++    }
+     let session = Fakeland::builder()
+-        .output(OutputConfig::new("DP-1").mode(OUTPUT.0, OUTPUT.1, Hz(cell.hz)))
++        .output(output)
+         .app_marks(fw.marks)
+         .sampling(SamplingConfig::every(SAMPLE_INTERVAL))
+         .start()
+@@ -225,7 +236,7 @@ fn check_layout(run: &CellRun) -> anyhow::Result<()> {
+     )?;
+     std::fs::write(run.out.join("screenshot.png"), shot.image.encode_png()?)?;
+     let mut wrong = Vec::new();
+-    for (x, y, want) in run.cell.kind.page().checks(run.cell.rows) {
++    for (x, y, want) in run.cell.kind.checks(run.cell.rows) {
+         let got = shot.image.pixel(x as u32, y as u32).unwrap_or([0; 4]);
+         let want = [(want >> 16) as u8, (want >> 8) as u8, want as u8];
+         let off = (0..3).any(|i| (i32::from(got[i]) - i32::from(want[i])).abs() > LAYOUT_TOLERANCE);

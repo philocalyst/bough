@@ -1,0 +1,23 @@
+--- /root/work/r8/bench/xfer/cell.rs.before-timing	2026-11-12 17:48:40.861905809 -0500
++++ runner/src/cell.rs	2026-11-12 17:48:40.880132094 -0500
+@@ -153,8 +153,19 @@
+     args: &[String],
+     out: &Path,
+ ) -> anyhow::Result<(Session, App)> {
++    let mut output = OutputConfig::new("DP-1").mode(OUTPUT.0, OUTPUT.1, Hz(cell.hz));
++    // round 8 local patch: GB_TIMING=fixed|unthrottled|vrr:MIN-MAX selects fakeland's timing model (default fixed)
++    match std::env::var("GB_TIMING").ok().as_deref() {
++        None | Some("") | Some("fixed") => {}
++        Some("unthrottled") => output = output.timing(fakeland::TimingConfig::unthrottled()),
++        Some(v) if v.starts_with("vrr:") => {
++            let (lo, hi) = v[4..].split_once('-').context("GB_TIMING=vrr:MIN-MAX")?;
++            output = output.timing(fakeland::TimingConfig::vrr(Hz(lo.parse()?), Hz(hi.parse()?)));
++        }
++        Some(other) => bail!("GB_TIMING={other}: fixed, unthrottled or vrr:MIN-MAX"),
++    }
+     let session = Fakeland::builder()
+-        .output(OutputConfig::new("DP-1").mode(OUTPUT.0, OUTPUT.1, Hz(cell.hz)))
++        .output(output)
+         .app_marks(fw.marks)
+         .sampling(SamplingConfig::every(SAMPLE_INTERVAL))
+         .start()

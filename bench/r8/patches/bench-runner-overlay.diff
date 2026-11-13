@@ -1,0 +1,171 @@
+diff --git a/runner/src/cell.rs b/runner/src/cell.rs
+index 5ed17ea..666cc52 100644
+--- a/runner/src/cell.rs
++++ b/runner/src/cell.rs
+@@ -153,8 +153,19 @@ fn start(
+     args: &[String],
+     out: &Path,
+ ) -> anyhow::Result<(Session, App)> {
++    let mut output = OutputConfig::new("DP-1").mode(OUTPUT.0, OUTPUT.1, Hz(cell.hz));
++    // round 8 local patch: GB_TIMING=fixed|unthrottled|vrr:MIN-MAX selects fakeland's timing model (default fixed)
++    match std::env::var("GB_TIMING").ok().as_deref() {
++        None | Some("") | Some("fixed") => {}
++        Some("unthrottled") => output = output.timing(fakeland::TimingConfig::unthrottled()),
++        Some(v) if v.starts_with("vrr:") => {
++            let (lo, hi) = v[4..].split_once('-').context("GB_TIMING=vrr:MIN-MAX")?;
++            output = output.timing(fakeland::TimingConfig::vrr(Hz(lo.parse()?), Hz(hi.parse()?)));
++        }
++        Some(other) => bail!("GB_TIMING={other}: fixed, unthrottled or vrr:MIN-MAX"),
++    }
+     let session = Fakeland::builder()
+-        .output(OutputConfig::new("DP-1").mode(OUTPUT.0, OUTPUT.1, Hz(cell.hz)))
++        .output(output)
+         .app_marks(fw.marks)
+         .sampling(SamplingConfig::every(SAMPLE_INTERVAL))
+         .start()
+@@ -225,7 +236,7 @@ fn check_layout(run: &CellRun) -> anyhow::Result<()> {
+     )?;
+     std::fs::write(run.out.join("screenshot.png"), shot.image.encode_png()?)?;
+     let mut wrong = Vec::new();
+-    for (x, y, want) in run.cell.kind.page().checks(run.cell.rows) {
++    for (x, y, want) in run.cell.kind.checks(run.cell.rows) {
+         let got = shot.image.pixel(x as u32, y as u32).unwrap_or([0; 4]);
+         let want = [(want >> 16) as u8, (want >> 8) as u8, want as u8];
+         let off = (0..3).any(|i| (i32::from(got[i]) - i32::from(want[i])).abs() > LAYOUT_TOLERANCE);
+diff --git a/runner/src/frameworks.rs b/runner/src/frameworks.rs
+index 33133c7..a93eb0a 100644
+--- a/runner/src/frameworks.rs
++++ b/runner/src/frameworks.rs
+@@ -106,6 +106,13 @@ pub const ALL: &[Framework] = &[
+         marks: false,
+         variants: SIGNALS,
+     },
++    Framework {
++        name: "bough",
++        app: "bough",
++        build: "",
++        marks: false,
++        variants: RETAINED,
++    },
+ ];
+ 
+ impl Framework {
+diff --git a/runner/src/main.rs b/runner/src/main.rs
+index 7d20eaa..3a38ccf 100644
+--- a/runner/src/main.rs
++++ b/runner/src/main.rs
+@@ -9,6 +9,7 @@ mod layout;
+ mod limits;
+ mod phases;
+ mod scenarios;
++mod scenes;
+ mod steps;
+ 
+ use std::path::{Path, PathBuf};
+@@ -40,7 +41,7 @@ struct Args {
+     #[arg(
+         long,
+         value_delimiter = ',',
+-        default_value = "zgui,gpui-kit,gpui-kit-fast,freya,freya-056a5b4,vizia,floem,iced,egui,dioxus,dioxus-skia"
++        default_value = "zgui,gpui-kit,gpui-kit-fast,freya,freya-056a5b4,vizia,floem,iced,egui,dioxus,dioxus-skia,bough"
+     )]
+     frameworks: Vec<String>,
+     /// Only these variants of the table and ticker scenarios, comma separated. All by default.
+diff --git a/runner/src/scenarios/measure.rs b/runner/src/scenarios/measure.rs
+index ffe2ecb..ce497b6 100644
+--- a/runner/src/scenarios/measure.rs
++++ b/runner/src/scenarios/measure.rs
+@@ -50,6 +50,7 @@ pub fn run(kind: Kind, run: &mut CellRun) {
+                 steps::measure(r, "typing", "typing", &steps::typing(r))
+             });
+         }
++        Kind::Sheet | Kind::Canvas => unreachable!("scenes measure in crate::scenes"),
+         Kind::Resize => {
+             run.step("resize", |r| {
+                 steps::measure(r, "resize", "resize-storm", &steps::resize_storm(r))
+diff --git a/runner/src/scenarios/mod.rs b/runner/src/scenarios/mod.rs
+index 20dbbf4..8be5672 100644
+--- a/runner/src/scenarios/mod.rs
++++ b/runner/src/scenarios/mod.rs
+@@ -30,11 +30,15 @@ pub enum Kind {
+     Virtual,
+     /// The rows app under a resize storm and a scale switch.
+     Resize,
++    /// bough's standing workloads (`apps/shared/scenes.rs`): a spreadsheet of N x 10 cells.
++    Sheet,
++    /// bough's standing workloads: a design canvas of N layered nodes in 20 frames.
++    Canvas,
+ }
+ 
+ impl Kind {
+     /// Every scenario in run order.
+-    pub const ALL: [Kind; 8] = [
++    pub const ALL: [Kind; 10] = [
+         Kind::Rows,
+         Kind::Table,
+         Kind::Ticker,
+@@ -43,8 +47,20 @@ impl Kind {
+         Kind::Search,
+         Kind::Virtual,
+         Kind::Resize,
++        Kind::Sheet,
++        Kind::Canvas,
+     ];
+ 
++    /// Is this one of the heavy scenes (`crate::scenes`)?
++    pub fn is_scene(self) -> bool {
++        matches!(self, Kind::Sheet | Kind::Canvas)
++    }
++
++    /// Returns the points and colours that the layout check reads.
++    pub fn checks(self, rows: u32) -> Vec<(i32, i32, u32)> {
++        if self.is_scene() { crate::scenes::checks(self) } else { self.page().checks(rows) }
++    }
++
+     /// Returns the name in results and on the command line.
+     pub fn name(self) -> &'static str {
+         match self {
+@@ -56,6 +72,8 @@ impl Kind {
+             Kind::Search => "search",
+             Kind::Virtual => "virtual",
+             Kind::Resize => "resize",
++            Kind::Sheet => "sheet",
++            Kind::Canvas => "canvas",
+         }
+     }
+ 
+@@ -90,7 +108,9 @@ impl Kind {
+         match self {
+             _ if quick => vec![60.0],
+             Kind::Rows | Kind::Ticker | Kind::Spinner | Kind::Virtual => vec![60.0, 144.0],
+-            Kind::Table | Kind::Typing | Kind::Search | Kind::Resize => vec![60.0],
++            Kind::Table | Kind::Typing | Kind::Search | Kind::Resize | Kind::Sheet | Kind::Canvas => {
++                vec![60.0]
++            }
+         }
+     }
+ 
+@@ -106,6 +126,10 @@ impl Kind {
+             (Kind::Virtual, true) => vec![100_000],
+             (Kind::Resize, false) => vec![100, 10000],
+             (Kind::Resize, true) => vec![1000],
++            (Kind::Sheet, false) => vec![1000, 10000],
++            (Kind::Sheet, true) => vec![1000],
++            (Kind::Canvas, false) => vec![1000, 5000],
++            (Kind::Canvas, true) => vec![1000],
+         }
+     }
+ 
+@@ -127,7 +151,11 @@ impl Kind {
+ 
+     /// Runs the measurements of the scenario.
+     pub fn measure(self, run: &mut crate::cell::CellRun) {
+-        measure::run(self, run);
++        if self.is_scene() {
++            crate::scenes::measure(self, run);
++        } else {
++            measure::run(self, run);
++        }
+     }
+ }
+ 

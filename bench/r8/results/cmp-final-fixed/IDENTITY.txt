@@ -1,0 +1,49 @@
+name=cmp-final-fixed timing=fixed host=ilo-prod kernel=6.18.54 start=2026-11-13T08:01:51Z
+cpu=AMD Ryzen 7 3700X 8-Core Processor threads=16 mem=62GiB
+governors=16 powersave boost=1 nmi_watchdog=1 perf_event_paranoid=2
+load_start=1.90 3.97 6.11
+top_procs_start: 37.5 backend-locald 20.7 python3 14.2 ps 1.0 rex
+gui-bench=0fd45107d64b3617f87dd4714f4ac1f63886cbc7 dirty_files=8 fakeland=71695e7c5315c916649f46c1e32376cce75befa3
+runner=/root/work/r8/bench/gb/runner/target/release/gui-bench sha256=39366f5613bbe65f runner_src_timing_patch=93f7ab8f5c6822a3 runner_src_bough_x_patch=bee7ab0c89681776
+GB_TIMING=fixed
+bough=cc65ee215f6d26a6a6dfe7c1a4277bde3617cd25 (facade comparisons/bough-guibench, built from /root/work/r8/closer/app-plain; new core comparisons/bough-guibench-x built with --profile dist)
+binaries (sha256[:16] bytes path):
+  6b705a9c5f21aba1 55883088 apps/bough/target/release/bough-bench
+  e325cf1adde66d7c 1109864 apps/bough-x/target/release/bough-x-bench
+  c2dbcbd2ba36ba63 318275288 apps/dioxus/target/release/dioxus-bench
+  4f2845a95156eb0c 16 apps/dioxus/target/release/.fingerprint/dioxus-bench-c23abf4407997ebd/bin-dioxus-bench
+  8ab9c02176370c3d 588 apps/dioxus/target/release/.fingerprint/dioxus-bench-c23abf4407997ebd/dep-bin-dioxus-bench
+  cc5ffe1abfe728ab 275121960 apps/dioxus/target/skia/release/dioxus-bench
+  27b5b82573fb072d 203869896 apps/egui/target/release/egui-bench
+  bacd714172246d2d 16 apps/egui/target/release/.fingerprint/egui-bench-7a7dc5d9d2052b1f/bin-egui-bench
+  c1add8bcc6e883db 514 apps/egui/target/release/.fingerprint/egui-bench-7a7dc5d9d2052b1f/dep-bin-egui-bench
+  afa1861551f4f690 16 apps/floem/target/release/.fingerprint/floem-bench-ecf329d73c9a4ec3/bin-floem-bench
+  0278686d77823a30 514 apps/floem/target/release/.fingerprint/floem-bench-ecf329d73c9a4ec3/dep-bin-floem-bench
+  3eb46c794e6ecd97 255809480 apps/floem/target/release/floem-bench
+  0ddcff5ac4246b33 16 apps/freya-056a5b4/target/release/.fingerprint/freya-056a5b4-bench-64a059901e580796/bin-freya-056a5b4-bench
+  68e7b579f98035f5 1354 apps/freya-056a5b4/target/release/.fingerprint/freya-056a5b4-bench-64a059901e580796/dep-bin-freya-056a5b4-bench
+  0123e0ece6a3f1a4 182306680 apps/freya-056a5b4/target/release/freya-056a5b4-bench
+  87cc60f9923890e0 16 apps/freya/target/release/.fingerprint/freya-bench-0318384c22f25933/bin-freya-bench
+  19be12fefba42b6b 539 apps/freya/target/release/.fingerprint/freya-bench-0318384c22f25933/dep-bin-freya-bench
+  009b4037a82d7bfd 181951928 apps/freya/target/release/freya-bench
+  26ab1484118b7e2b 16 apps/gpui-kit-fast/target/release/.fingerprint/gpui-kit-fast-bench-6bcb3bf065ecb65c/bin-gpui-kit-fast-bench
+  a9a6c7fd4daa383c 1215 apps/gpui-kit-fast/target/release/.fingerprint/gpui-kit-fast-bench-6bcb3bf065ecb65c/dep-bin-gpui-kit-fast-bench
+  be8a5aef14ff27b8 473485152 apps/gpui-kit-fast/target/release/gpui-kit-fast-bench
+  9c1a3ea916fc1ff8 16 apps/gpui-kit/target/release/.fingerprint/gpui-kit-bench-8535793a3ff8b206/bin-gpui-kit-bench
+  a8f7ef989731e4f7 500 apps/gpui-kit/target/release/.fingerprint/gpui-kit-bench-8535793a3ff8b206/dep-bin-gpui-kit-bench
+  feb49efb0b7c148f 427096256 apps/gpui-kit/target/release/gpui-kit-bench
+  ed4257170206baea 16 apps/iced/target/release/.fingerprint/iced-bench-ee891b5b12b75093/bin-iced-bench
+  2786a86eca94ad18 487 apps/iced/target/release/.fingerprint/iced-bench-ee891b5b12b75093/dep-bin-iced-bench
+  d8be31514d63a566 201130232 apps/iced/target/release/iced-bench
+  9fbf181023f68580 16 apps/vizia/target/release/.fingerprint/vizia-bench-1d4cbe653f8a47e0/bin-vizia-bench
+  d36350d42ae2ccd3 450 apps/vizia/target/release/.fingerprint/vizia-bench-1d4cbe653f8a47e0/dep-bin-vizia-bench
+  c2eeb5581c96e695 151823568 apps/vizia/target/release/vizia-bench
+  9baa3dc66bb84c6d 16 apps/zgui/target/release/.fingerprint/zgui-bench-a70e6f30dd11de6c/bin-zgui-bench
+  5c7fde05e63ef63f 534 apps/zgui/target/release/.fingerprint/zgui-bench-a70e6f30dd11de6c/dep-bin-zgui-bench
+  1f2a2e515528bcbf 394397200 apps/zgui/target/release/zgui-bench
+frameworks=zgui,gpui-kit,gpui-kit-fast,freya,freya-056a5b4,vizia,floem,iced,egui,dioxus,dioxus-skia,bough,bough-x args=
+pin: runner (compositor, apps and children inherit) taskset -c 0-7 nice -n 10
+env: renderer=pixman(fakeland) others=lavapipe(zortax builds) bough=CPU executor into wl_shm
+runner rc=0 end=2026-11-13T12:59:00Z load_end=3.18 3.34 4.81
+load_during: min/max/mean of 1-min load samples: 0.61 22.31 5.71 (n=1185)
+flatten rc=0 flat=52644 metric rows

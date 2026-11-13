@@ -1,0 +1,22 @@
+/root/work/r8/bench/gb/apps/dioxus/target -> /root/work/zortax/gui-bench/apps/dioxus/target
+/root/work/r8/bench/gb/apps/egui/target -> /root/work/zortax/gui-bench/apps/egui/target
+/root/work/r8/bench/gb/apps/floem/target -> /root/work/zortax/gui-bench/apps/floem/target
+/root/work/r8/bench/gb/apps/freya-056a5b4/target -> /root/work/zortax/gui-bench/apps/freya-056a5b4/target
+/root/work/r8/bench/gb/apps/freya/target -> /root/work/zortax/gui-bench/apps/freya/target
+/root/work/r8/bench/gb/apps/gpui-kit-fast/target -> /root/work/zortax/gui-bench/apps/gpui-kit-fast/target
+/root/work/r8/bench/gb/apps/gpui-kit/target -> /root/work/zortax/gui-bench/apps/gpui-kit/target
+/root/work/r8/bench/gb/apps/iced/target -> /root/work/zortax/gui-bench/apps/iced/target
+/root/work/r8/bench/gb/apps/vizia/target -> /root/work/zortax/gui-bench/apps/vizia/target
+/root/work/r8/bench/gb/apps/zgui/target -> /root/work/zortax/gui-bench/apps/zgui/target
+  
+  
+  
+.  
+..  
+release  
+  
+  
+  
+.  
+..  
+release  

@@ -1,0 +1,17 @@
+--- a/runner/src/frameworks.rs
++++ b/runner/src/frameworks.rs
+@@ -113,6 +113,14 @@
+         marks: false,
+         variants: RETAINED,
+     },
++    // round 8, e2e lane: the app on the new core (comparisons/bough-guibench-x), beside the façade's
++    Framework {
++        name: "bough-x",
++        app: "bough-x",
++        build: "",
++        marks: false,
++        variants: RETAINED,
++    },
+ ];
+ 
+ impl Framework {
