@@ -1,6 +1,6 @@
-# lorlei (formerly bough)
+# lorelei (formerly bough)
 
-The project is now called lorlei; crates, paths and most documents still say bough. `AGENTS.md` is the entry point for
+The project is now called lorelei; crates, paths and most documents still say bough. `AGENTS.md` is the entry point for
 contributors: the state, the contribution policy and the whole roadmap.
 
 A from-scratch Rust GUI framework built toward the GPUI-rework design (`designs/reactivity/final`), in the repository

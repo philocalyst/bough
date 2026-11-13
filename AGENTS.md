@@ -1,11 +1,11 @@
 # Working in this repository
 
-**lorlei** (until now called bough) is a from-scratch Rust GUI framework, the workspace at the repository root:
+**lorelei** (until now called bough) is a from-scratch Rust GUI framework, the workspace at the repository root:
 `crates/`, `comparisons/`, `bench/`, `vendor/`. The repository also keeps **`reactivity/`**, the preserved
 clean-room GPUI rework, with its own workspace and the workflow in the last section of this file. The design both
 answer to is `designs/reactivity/` (start with `final/00-model.md`); the audit list is `research/AUDIT.md`.
 
-> **Naming.** The project is lorlei. Crate names (`bough`, `bough-x`, `bough-expr`, ...), the `bough::prelude`
+> **Naming.** The project is lorelei. Crate names (`bough`, `bough-x`, `bough-expr`, ...), the `bough::prelude`
 > path, the repository URL, environment variables (`BOUGH_*`) and most of the older documents still say bough.
 > Treat the two names as one project. Do not rename identifiers piecemeal: a rename is one reviewed change, made
 > by the owner, across manifests, paths, scripts and docs together.
@@ -196,7 +196,7 @@ measurement under control; (5) every "flat" claim tested past its limit with a f
 latency may be measured; accessibility order and the screen-reader window policy; the text questions (who owns
 editing state, where fonts come from, how text should look, selectable by default, rope-backed `text()`); the
 inspector's form; how far Bevy's vocabulary enters the API; live-edit pins and pointer transparency; GPU portability
-(vendored wgpu or direct Vulkan and Direct3D); and the rename from bough to lorlei across identifiers.
+(vendored wgpu or direct Vulkan and Direct3D); and the rename from bough to lorelei across identifiers.
 
 **Latest measurements.** The full zortax gui-bench matrix was re-run on 2026-11-13 from `cc65ee215f`: 658 cells in each
 of fixed 60 Hz and unthrottled timing, all frameworks plus `bough` (façade) and `bough-x` (new core). `bough` had
@@ -250,7 +250,7 @@ the actual clean-room composition before adoption. Designs live in
   tools, evidence and vendors. Report dependency/vendor, generated shader, whole
   machine-code, stack and retained-capacity costs separately. Do not forecast
   final line counts or count helper code twice.
-- Mothership is available as `ssh mothership` (user miles); lorlei work above reaches it through `rex` instead. Build/copy work takes
+- Mothership is available as `ssh mothership` (user miles); lorelei work above reaches it through `rex` instead. Build/copy work takes
   a shared lock and runtime/profile measurements an exclusive lock at
   `/home/miles/gpui-ce3-compute-20261024/host.lock`. Keep at least 8 GiB free and
   release/reap every owned process. Its AST adapter has no render node; current

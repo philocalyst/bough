@@ -1,6 +1,6 @@
-# Contributing to lorlei
+# Contributing to lorelei
 
-lorlei is the project's new name; the code, crates, paths and older documents still say bough (see `AGENTS.md`, which also
+lorelei is the project's new name; the code, crates, paths and older documents still say bough (see `AGENTS.md`, which also
 holds the contribution policy in short form and the full roadmap).
 
 Welcome contributions: a construction (a mechanism, a representation, a port), a gate, a measurement, an independent
