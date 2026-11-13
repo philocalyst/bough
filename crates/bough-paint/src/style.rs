@@ -13,7 +13,7 @@
 //! | `.border(w, l)` | `Border<B, R, W, L, clear>` |
 //! | `.gradient(dx, dy, c, d)` | `Grad<B, R, X, Y, C, D>` |
 //! | `.gradient(..).border(w, l)` | `Over<Grad<..>, Border<.., clear>>` |
-//! | any of these after `.shadow(a).shadow(b)` | `Over<Over<Shadow b, Shadow a>, body>` (the first shadow on top, as in CSS; the body's opaque core hides them: the static cut) |
+//! | any of these after `.shadow(a).shadow(b)` | `Over<Shadow b, Over<Shadow a, body>>` (the first shadow on top, as in CSS; the body's opaque core hides both: the static cut) |
 //! | `.opacity(o)` | every colour above becomes `Fade<colour, O>` |
 //! | `.translate(x, y)` | every rect above becomes `Off<rect, X, Y>` |
 //!
@@ -229,31 +229,7 @@ where
 /// One shadow of box `B` with corners `R`.
 pub type ShadowOf<B, R, SP, DX, DY, BL, C> = Shadow<Off<Grow<B, SP>, DX, DY>, R, BL, C, Tab>;
 
-/// A non-empty list of shadows as one paint (the last given is the deepest).
-pub trait Stack<B, R, O> {
-    type P: Paint;
-    fn stack(self, b: B, r: R, o: O) -> Self::P;
-}
-impl<B: Copy, R: Copy, O: Tint<C>, SP, DX, DY, BL, C> Stack<B, R, O> for Sh<NoSh, SP, DX, DY, BL, C>
-where
-    ShadowOf<B, R, SP, DX, DY, BL, O::Out>: Paint,
-{
-    type P = ShadowOf<B, R, SP, DX, DY, BL, O::Out>;
-    fn stack(self, b: B, r: R, o: O) -> Self::P {
-        Shadow { b: Off { b: Grow { b, d: self.spread }, dx: self.dx, dy: self.dy }, r, blur: self.blur, c: o.tint(self.c), tab: Tab::NONE }
-    }
-}
-impl<B: Copy, R: Copy, O: Tint<C>, Rest: Stack<B, R, O>, SP, DX, DY, BL, C> Stack<B, R, O> for Sh<Rest, SP, DX, DY, BL, C>
-where
-    ShadowOf<B, R, SP, DX, DY, BL, O::Out>: Paint,
-{
-    type P = Over<ShadowOf<B, R, SP, DX, DY, BL, O::Out>, Rest::P>;
-    fn stack(self, b: B, r: R, o: O) -> Self::P {
-        Over(Shadow { b: Off { b: Grow { b, d: self.spread }, dx: self.dx, dy: self.dy }, r, blur: self.blur, c: o.tint(self.c), tab: Tab::NONE }, self.rest.stack(b, r, o))
-    }
-}
-
-/// The shadows (if any) beneath a body.
+/// The shadows (if any) beneath a body: each one given later is deeper.
 pub trait Under<B, R, O, Top: Paint> {
     type P: Paint;
     fn under(self, b: B, r: R, o: O, top: Top) -> Self::P;
@@ -264,13 +240,13 @@ impl<B, R, O, Top: Paint> Under<B, R, O, Top> for NoSh {
         top
     }
 }
-impl<B, R, O, Top: Paint, Rest, SP, DX, DY, BL, C> Under<B, R, O, Top> for Sh<Rest, SP, DX, DY, BL, C>
+impl<B: Copy, R: Copy, O: Tint<C>, Top: Paint, Rest: Under<B, R, O, Top>, SP, DX, DY, BL, C> Under<B, R, O, Top> for Sh<Rest, SP, DX, DY, BL, C>
 where
-    Self: Stack<B, R, O>,
+    ShadowOf<B, R, SP, DX, DY, BL, O::Out>: Paint,
 {
-    type P = Over<<Self as Stack<B, R, O>>::P, Top>;
+    type P = Over<ShadowOf<B, R, SP, DX, DY, BL, O::Out>, Rest::P>;
     fn under(self, b: B, r: R, o: O, top: Top) -> Self::P {
-        Over(self.stack(b, r, o), top)
+        Over(Shadow { b: Off { b: Grow { b, d: self.spread }, dx: self.dx, dy: self.dy }, r, blur: self.blur, c: o.tint(self.c), tab: Tab::NONE }, self.rest.under(b, r, o, top))
     }
 }
 

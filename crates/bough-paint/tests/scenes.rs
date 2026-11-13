@@ -24,7 +24,7 @@ fn run(name: &str, mut s: Scene, m: Model, script: &[Step]) {
     let words = stride * s.fh as usize;
     let pool = Pool::new(3);
     #[cfg(target_os = "macos")]
-    let mut gpu = bough_paint::metal::Gpu::new(&s, words, 192);
+    let mut gpu = unsafe { bough_paint::metal::Gpu::new(&s, words, 192) };
     let mut u = U::default();
     let mut kept = vec![0u32; words];
     let mut bad = 0;
@@ -70,7 +70,7 @@ fn run(name: &str, mut s: Scene, m: Model, script: &[Step]) {
 fn canvas_is_exact() {
     let frames = std::env::var("BOUGH_CANVAS_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
     let (s, m) = canvas::build(frames);
-    eprintln!("canvas: {frames} artboards, {} records in {} columns, {} model nodes", s.records(), s.cols.len(), m.nodes.len());
+    eprintln!("canvas: {frames} artboards, {} records in {} columns, {} model nodes", s.records(), s.cols().len(), m.nodes.len());
     let on = canvas::row_point(3);
     let script: &[Step] = &[
         (None, &[]),
@@ -96,7 +96,7 @@ fn canvas_is_exact() {
 #[test]
 fn anim_is_exact() {
     let (s, m) = anim::build(600);
-    eprintln!("anim: {} records in {} columns", s.records(), s.cols.len());
+    eprintln!("anim: {} records in {} columns", s.records(), s.cols().len());
     let script: &[Step] = &[(None, &[]), (None, &[(U_TIME, 16)]), (None, &[(U_TIME, 33)]), (None, &[(U_TIME, 800)]), (None, &[(U_TIME, 12345)]), (None, &[(2, 32768)]), (None, &[(U_TIME, 12361), (2, 20000)])];
     run("anim", s, m, script);
 }

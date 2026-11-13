@@ -107,6 +107,20 @@ static inline void mark(device metal::atomic_uint* DMG, metal::int4 w, uint TX, 
         }
     }
 }
+// the same for the record with key z, left out of the tiles whose list is cut at a cover above it (their
+// header says so, and the cover is the list's first entry): nothing of the record shows there
+static inline void markv(device metal::atomic_uint* DMG, metal::int4 w, uint TX, uint TY, uint z, const device uint* TILES, const device uint* LIST) {
+    uint x0 = uint(metal::max(w.x, 0)) >> 5u, y0 = uint(metal::max(w.y, 0)) >> 5u;
+    uint x1 = metal::min((uint(metal::max(w.z, 0)) + 31u) >> 5u, TX), y1 = metal::min((uint(metal::max(w.w, 0)) + 31u) >> 5u, TY);
+    if (x0 >= x1) { return; }
+    for (uint y = y0; y < y1; y++) {
+        for (uint x = x0; x < x1; x++) {
+            uint t = y * TX + x;
+            uint fl = (TILES[2u * t + 1u] & 0x40000000u) != 0u ? LIST[TILES[2u * t]] : 0u;
+            if (z >= fl) { metal::atomic_fetch_or_explicit(&DMG[t >> 5u], 1u << (t & 31u), metal::memory_order_relaxed); }
+        }
+    }
+}
 "#,
     );
 
@@ -126,7 +140,7 @@ kernel void k_shade(const device uint* COLS [[buffer(0)]], const device uint* ME
         r#"    uint t = TL[4u + wg.x];
     uint ux = (t % TX) * 32u + 2u * lid.x, uy = (t / TX) * 32u + 2u * lid.y;
     int x = int(ux), y = int(uy);
-    uint off = TILES[2u * t], n = TILES[2u * t + 1u] & 0x7FFFFFFFu;
+    uint off = TILES[2u * t], n = TILES[2u * t + 1u] & 0x3FFFFFFFu;
     metal::uint4 a0 = metal::uint4(0u), a1 = metal::uint4(0u), a2 = metal::uint4(0u), a3 = metal::uint4(0u);
     // the occlusion cut at pixel grain: start at the topmost entry whose opaque cover holds this 2 x 2 block
     uint start = 0u;
@@ -178,7 +192,7 @@ kernel void k_pick(const device uint* COLS [[buffer(0)]], device uint* META [[bu
     uint id = 0xFFFFFFFFu;
     if (x >= 0 && y >= 0 && uint(x) < fw && uint(y) < fh) {
         uint t = (uint(y) >> 5u) * TX + (uint(x) >> 5u);
-        uint off = TILES[2u * t], n = TILES[2u * t + 1u] & 0x7FFFFFFFu;
+        uint off = TILES[2u * t], n = TILES[2u * t + 1u] & 0x3FFFFFFFu;
         bool found = false;
         for (uint i = n; i > 0u && !found; i--) {
             uint z = LIST[off + i - 1u];
@@ -215,6 +229,7 @@ kernel void k_pick(const device uint* COLS [[buffer(0)]], device uint* META [[bu
             s,
             r#"
 kernel void k_win{k}(const device uint* COLS [[buffer(0)]], const device uint* META [[buffer(1)]], device uint* WINS [[buffer(3)]],
+                    const device uint* TILES [[buffer(4)]], const device uint* LIST [[buffer(5)]],
                     device metal::atomic_uint* DMG [[buffer(9)]], const device uint* TOUCH [[buffer(11)]], metal::uint3 gid [[thread_position_in_grid]]) {{
     uint idx = gid.x;
     if (idx >= META[{}u]) {{ return; }}
@@ -237,10 +252,11 @@ kernel void k_win{k}(const device uint* COLS [[buffer(0)]], const device uint* M
     bool moved = metal::any(wn != ow) || metal::any(cv != oc);
     if (moved) {{
         WINS[4u * z] = pack_lo(wn); WINS[4u * z + 1u] = pack_hi(wn); WINS[4u * z + 2u] = pack_lo(cv); WINS[4u * z + 3u] = pack_hi(cv);
-        mark(DMG, ow, TX, TY);
-        mark(DMG, wn, TX, TY);
-    }} else if ((((TOUCH[z >> 5u] >> (z & 31u)) & 1u) != 0u) || a{k}_chg(rect{w}{o}{u})) {{
-        mark(DMG, wn, TX, TY);
+        markv(DMG, ow, TX, TY, z, TILES, LIST);
+        markv(DMG, wn, TX, TY, z, TILES, LIST);
+    }} else {{
+        metal::int4 cw = (((TOUCH[z >> 5u] >> (z & 31u)) & 1u) != 0u) ? wn : a{k}_chgw(rect{w}{o}{u});
+        markv(DMG, cw, TX, TY, z, TILES, LIST);
     }}
 }}
 "#,
@@ -260,17 +276,17 @@ kernel void k_bin(const device uint* META [[buffer(1)]], const device uint* WINS
     if (((DMG[t >> 5u] >> (t & 31u)) & 1u) == 0u) { return; }
     int ox = int(t % TX) * 32, oy = int(t / TX) * 32;
     uint nz = META[5], cap = META[8], base = t * cap, n = 0u;
-    bool cut = META[9] != 0u;
+    bool cut = META[9] != 0u, cutat = false;
     for (uint z = 0u; z < nz; z++) {
         metal::int4 w = unpack_win(WINS[4u * z], WINS[4u * z + 1u]);
         if (w.x >= ox + 32 || w.z <= ox || w.y >= oy + 32 || w.w <= oy) { continue; }
         metal::int4 c = unpack_win(WINS[4u * z + 2u], WINS[4u * z + 3u]);
-        if (cut && c.x < c.z && c.x <= ox && c.y <= oy && c.z >= ox + 32 && c.w >= oy + 32) { n = 0u; }
+        if (cut && c.x < c.z && c.x <= ox && c.y <= oy && c.z >= ox + 32 && c.w >= oy + 32) { n = 0u; cutat = true; }
         if (n < cap) { LIST[base + n] = z; }
         n++;
     }
     TILES[2u * t] = base;
-    TILES[2u * t + 1u] = metal::min(n, cap) | (n > cap ? 0x80000000u : 0u);
+    TILES[2u * t + 1u] = metal::min(n, cap) | (n > cap ? 0x80000000u : 0u) | (cutat ? 0x40000000u : 0u);
     // a tile with more entries than a slab holds: counted, and redrawn by the CPU kernel (it is exact)
     if (n > cap) { metal::atomic_fetch_add_explicit(&PICK[1], 1u, metal::memory_order_relaxed); }
 }
@@ -321,6 +337,8 @@ pub struct Gpu {
     compact: Pso,
     tab: Pso,
     win: Vec<Pso>,
+    /// The arena this executor is bound to (calls that take a scene check it is that scene).
+    arena: *const u32,
     /// 0 columns (the arena, no copy), 1 meta, 2 order, 3 windows, 4 tile headers, 5 lists, 6 tile list,
     /// 7 output, 8 atlas, 9 damage, 10 pick, 11 rewritten records (a bit per key).
     bufs: [Option<Buf>; 13],
@@ -338,6 +356,11 @@ pub struct Gpu {
     first: bool,
     /// The block the surface shows.
     prev: U,
+    /// `BOUGH_GPU_SPLIT=1` (a measurement switch, never a result's configuration): every pass of a frame
+    /// in its own command buffer, waited for, and its GPU seconds kept here: pick, window passes, bin,
+    /// compact, shade.
+    pub split: bool,
+    pub pass_s: [f64; 5],
     /// Seconds Metal took to compile the source and build the pipelines.
     pub compile_s: f64,
     pub source_bytes: usize,
@@ -346,13 +369,24 @@ pub struct Gpu {
 impl Gpu {
     /// Generate, compile, and wrap the scene's arena. `cap`: entries a tile's slab holds (`frame`'s bins).
     /// `None` without a Metal device.
-    pub fn new(scene: &Scene, out_words: usize, cap: usize) -> Option<Gpu> {
+    ///
+    /// # Safety
+    /// The executor binds the scene's arena without a copy and keeps reading and writing it (columns,
+    /// corner tables) from the GPU: the scene must outlive the executor, and nothing may write the arena
+    /// while a call on this executor is running (every call here waits for its command buffer, so between
+    /// calls the arena is the scene's again). `Driver` owns both and is the safe form.
+    pub unsafe fn new(scene: &Scene, out_words: usize, cap: usize) -> Option<Gpu> {
         let descs: Vec<&Desc> = scene.cols.iter().map(|c| c.desc).collect();
         let lays: Vec<(usize, usize)> = scene.cols.iter().map(|c| (c.base, c.desc.words)).collect();
-        Gpu::with_source(scene, out_words, cap, &source(&descs, &lays, scene.tab_region().0))
+        // SAFETY: the caller's contract is this function's.
+        unsafe { Gpu::with_source(scene, out_words, cap, &source(&descs, &lays, scene.tab_region().0)) }
     }
     /// As `new` with the source given (the gates pass mutated or naga-translated text).
-    pub fn with_source(scene: &Scene, out_words: usize, cap: usize, src: &str) -> Option<Gpu> {
+    ///
+    /// # Safety
+    /// As `new`.
+    pub unsafe fn with_source(scene: &Scene, out_words: usize, cap: usize, src: &str) -> Option<Gpu> {
+        assert!(scene.cols.len() <= 64, "more than 64 columns");
         let device = MTLCreateSystemDefaultDevice()?;
         let queue = device.newCommandQueue()?;
         let t = std::time::Instant::now();
@@ -374,6 +408,7 @@ impl Gpu {
             compact,
             tab,
             win,
+            arena: scene.arena.ptr(),
             bufs: Default::default(),
             nt,
             tx: scene.tx,
@@ -386,6 +421,8 @@ impl Gpu {
             prev: U::default(),
             touched: Vec::new(),
             touched_cols: 0,
+            split: std::env::var("BOUGH_GPU_SPLIT").is_ok(),
+            pass_s: [0.0; 5],
             compile_s,
             source_bytes: src.len(),
         };
@@ -426,6 +463,7 @@ impl Gpu {
     /// Take the scene's mounts: the paint order, the columns' lengths, the atlas. (The columns themselves are
     /// already here: they are the arena.) Called after records are pushed; the next frame redraws everything.
     pub fn sync(&mut self, scene: &Scene) {
+        assert!(std::ptr::eq(self.arena, scene.arena.ptr()), "another scene than the one bound");
         self.nz = scene.order.len();
         self.lens = scene.cols.iter().map(|c| c.len).collect();
         self.buf(2, self.nz.max(1) * 4);
@@ -464,6 +502,7 @@ impl Gpu {
     /// the CPU fills them at the scene's next `update`, and until either happens shadows take the closed
     /// form: tables change time, never pixels.
     pub fn fill_tabs(&mut self, scene: &mut Scene) -> (f64, usize) {
+        assert!(std::ptr::eq(self.arena, scene.arena.ptr()), "another scene than the one bound");
         let jobs = scene.tab_jobs().to_vec();
         if jobs.is_empty() {
             return (0.0, 0);
@@ -494,6 +533,8 @@ impl Gpu {
     /// Stage A: shade `tiles` from the bins and window lane the CPU scene holds (after `Scene::update`),
     /// under `u`. Only the generated shade functions are on trial.
     pub fn shade_with(&mut self, scene: &Scene, u: &U, tiles: &[u32], stride: usize) -> GpuTime {
+        assert!(std::ptr::eq(self.arena, scene.arena.ptr()), "another scene than the one bound");
+        assert!(tiles.iter().all(|&t| (t as usize) < self.nt) && tiles.len() <= self.nt);
         self.buf(5, scene.bins.list.len().max(1) * 4);
         self.words_mut(5)[..scene.bins.list.len()].copy_from_slice(&scene.bins.list);
         let th = self.words_mut(4);
@@ -578,13 +619,35 @@ impl Gpu {
         }
         self.words_mut(10)[1] = 0;
         let t = std::time::Instant::now();
-        let cmd = self.queue.commandBuffer().expect("command buffer");
-        let enc = cmd.computeCommandEncoder().expect("encoder");
+        let split = self.split;
+        let mut pass_s = [0.0f64; 5];
+        let mut gpu_s = 0.0;
+        let mut cmd = self.queue.commandBuffer().expect("command buffer");
+        let mut enc = cmd.computeCommandEncoder().expect("encoder");
         self.bind(&enc, None);
+        // with `split`, close the pass just encoded and open the next
+        macro_rules! pass {
+            ($k:expr, $last:expr) => {
+                if split || $last {
+                    enc.endEncoding();
+                    cmd.commit();
+                    cmd.waitUntilCompleted();
+                    let s = cmd.GPUEndTime() - cmd.GPUStartTime();
+                    pass_s[$k] = s;
+                    gpu_s += s;
+                    if !$last {
+                        cmd = self.queue.commandBuffer().expect("command buffer");
+                        enc = cmd.computeCommandEncoder().expect("encoder");
+                        self.bind(&enc, None);
+                    }
+                }
+            };
+        }
         if pointer.is_some() && !first {
             enc.setComputePipelineState(&self.pick);
             enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: 1, height: 1, depth: 1 }, MTLSize { width: 1, height: 1, depth: 1 });
         }
+        pass!(0, false);
         let mut geom = first;
         for (k, pso) in self.win.iter().enumerate() {
             let touched = self.touched_cols >> k & 1 != 0;
@@ -595,21 +658,23 @@ impl Gpu {
             enc.setComputePipelineState(pso);
             enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: lens[k].div_ceil(64), height: 1, depth: 1 }, MTLSize { width: 64, height: 1, depth: 1 });
         }
+        pass!(1, false);
         if geom {
             enc.setComputePipelineState(&self.bin);
             enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: nt.div_ceil(64), height: 1, depth: 1 }, MTLSize { width: 64, height: 1, depth: 1 });
         }
+        pass!(2, false);
         enc.setComputePipelineState(&self.compact);
         enc.dispatchThreadgroups_threadsPerThreadgroup(MTLSize { width: 1, height: 1, depth: 1 }, MTLSize { width: 1, height: 1, depth: 1 });
+        pass!(3, false);
         if shade {
             enc.setComputePipelineState(&self.shade);
             // SAFETY: buffer 6 starts with the three dispatch counts `k_compact` writes earlier in this encoder.
             unsafe { enc.dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(self.bufs[6].as_ref().unwrap(), 0, MTLSize { width: 16, height: 16, depth: 1 }) };
         }
-        enc.endEncoding();
-        cmd.commit();
-        cmd.waitUntilCompleted();
-        let time = GpuTime { wall: t.elapsed().as_secs_f64(), gpu: cmd.GPUEndTime() - cmd.GPUStartTime() };
+        pass!(4, true);
+        self.pass_s = pass_s;
+        let time = GpuTime { wall: t.elapsed().as_secs_f64(), gpu: gpu_s };
         let touched = std::mem::take(&mut self.touched);
         for &z in &touched {
             self.words_mut(11)[z as usize >> 5] = 0;

@@ -509,7 +509,7 @@ impl Sink for Shade<'_, '_> {
                         continue;
                     }
                     for (i, o) in cov[..n].iter_mut().enumerate() {
-                        *o = k::q15(t.atlas[(first + i).min(t.atlas.len() - 1)] as u32) as u16;
+                        *o = if t.atlas.is_empty() { 0 } else { k::q15(t.atlas[(first + i).min(t.atlas.len() - 1)] as u32) as u16 };
                     }
                 }
             }

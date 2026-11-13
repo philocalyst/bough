@@ -9,8 +9,8 @@ use bough_paint::scenes::canvas;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let (mut s, _) = canvas::build(20);
-    let descs: Vec<&Desc> = s.cols.iter().map(|c| c.desc).collect();
-    let lays: Vec<(usize, usize)> = s.cols.iter().map(|c| (c.base, c.desc.words)).collect();
+    let descs: Vec<&Desc> = s.cols().iter().map(|c| c.desc).collect();
+    let lays: Vec<(usize, usize)> = s.cols().iter().map(|c| (c.base, c.desc.words)).collect();
     let good = source(&descs, &lays, s.tab_region().0);
     if args.get(1).map(|a| a.as_str()) == Some("dump") {
         std::fs::write(&args[2], &good).unwrap();
@@ -54,7 +54,7 @@ fn main() {
     let reps: usize = std::env::var("REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(12);
     for path in &args[2..] {
         let src = std::fs::read_to_string(path).unwrap();
-        let mut g = Gpu::with_source(&s, words, 192, &src).expect("Metal");
+        let mut g = unsafe { Gpu::with_source(&s, words, 192, &src) }.expect("Metal");
         if std::env::var("NO_TABS").is_err() {
             g.fill_tabs(&mut s);
         }

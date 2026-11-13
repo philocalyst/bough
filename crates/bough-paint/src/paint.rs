@@ -29,6 +29,18 @@ pub enum Cost {
     /// A neighbourhood integrated at every pixel (blurred shadows).
     Wide = 3,
 }
+impl Cost {
+    /// Relative time of one tile entry of this class on a CPU core (from the canvas's per-column profile:
+    /// a flat entry about 0.3 us, a blurred one about 7).
+    pub const fn weight(self) -> u32 {
+        match self {
+            Cost::Flat => 1,
+            Cost::Edge => 2,
+            Cost::PerPixel => 6,
+            Cost::Wide => 24,
+        }
+    }
+}
 pub const fn worst(a: Cost, b: Cost) -> Cost {
     if a as u8 >= b as u8 { a } else { b }
 }
@@ -85,8 +97,10 @@ pub trait Paint: Words {
     const HIT: bool = false;
     const CODE: &'static PCode;
     fn paint<Sk: Sink>(&self, cx: &Cx, clip: Vec4i, s: &mut Sk);
-    /// Some operand that reads a word of `mask` has a different value under the two blocks.
-    fn changed(&self, old: &Cx, new: &Cx, mask: u64) -> bool;
+    /// The pixels a change of block words `mask` can alter without moving anything: the windows (under
+    /// `new`) of the layers one of whose operands has a different value under the two blocks. A hovered
+    /// card's shadow is not in it.
+    fn changed_win(&self, old: &Cx, new: &Cx, mask: u64, clip: Vec4i) -> Vec4i;
     /// The pixels this record covers opaquely (empty unless `OPAQUE_CORE`).
     fn cover(&self, cx: &Cx, clip: Vec4i) -> Vec4i;
     #[inline(always)]
@@ -126,8 +140,12 @@ macro_rules! prim {
                 s.$sink(x::$mk($(self.$f.eval(cx)),*, clip))
             }
             #[inline(always)]
-            fn changed(&self, old: &Cx, new: &Cx, mask: u64) -> bool {
-                false $(|| ($T::READS & mask != 0 && self.$f.eval(old) != self.$f.eval(new)))*
+            fn changed_win(&self, old: &Cx, new: &Cx, mask: u64, clip: Vec4i) -> Vec4i {
+                if false $(|| ($T::READS & mask != 0 && self.$f.eval(old) != self.$f.eval(new)))* {
+                    x::$mk($(self.$f.eval(new)),*, clip).win
+                } else {
+                    EMPTY
+                }
             }
             #[inline(always)]
             fn cover(&self, cx: &Cx, clip: Vec4i) -> Vec4i {
@@ -216,11 +234,16 @@ impl<B: Expr<Out = Vec4i>, R: Expr<Out = i32>, S: Expr<Out = i32>, C: Expr<Out =
         s.shadow(x::mk_shadow(self.b.eval(cx), self.r.eval(cx), self.blur.eval(cx), self.c.eval(cx), self.tab.eval(cx), clip))
     }
     #[inline(always)]
-    fn changed(&self, old: &Cx, new: &Cx, mask: u64) -> bool {
-        (B::READS & mask != 0 && self.b.eval(old) != self.b.eval(new))
+    fn changed_win(&self, old: &Cx, new: &Cx, mask: u64, clip: Vec4i) -> Vec4i {
+        if (B::READS & mask != 0 && self.b.eval(old) != self.b.eval(new))
             || (R::READS & mask != 0 && self.r.eval(old) != self.r.eval(new))
             || (S::READS & mask != 0 && self.blur.eval(old) != self.blur.eval(new))
             || (C::READS & mask != 0 && self.c.eval(old) != self.c.eval(new))
+        {
+            x::mk_shadow(self.b.eval(new), self.r.eval(new), self.blur.eval(new), self.c.eval(new), self.tab.eval(new), clip).win
+        } else {
+            EMPTY
+        }
     }
     #[inline(always)]
     fn cover(&self, _: &Cx, _: Vec4i) -> Vec4i {
@@ -271,8 +294,8 @@ impl<A: Paint, B: Paint> Paint for Over<A, B> {
         self.1.paint(cx, clip, s);
     }
     #[inline(always)]
-    fn changed(&self, old: &Cx, new: &Cx, mask: u64) -> bool {
-        self.0.changed(old, new, mask) || self.1.changed(old, new, mask)
+    fn changed_win(&self, old: &Cx, new: &Cx, mask: u64, clip: Vec4i) -> Vec4i {
+        x::x_union(self.0.changed_win(old, new, mask, clip), self.1.changed_win(old, new, mask, clip))
     }
     #[inline(always)]
     fn cover(&self, cx: &Cx, clip: Vec4i) -> Vec4i {
@@ -313,8 +336,9 @@ impl<P: Paint, K: Expr<Out = Vec4i>> Paint for Clip<P, K> {
         self.p.paint(cx, x::x_and(clip, self.k.eval(cx)), s)
     }
     #[inline(always)]
-    fn changed(&self, old: &Cx, new: &Cx, mask: u64) -> bool {
-        (K::READS & mask != 0 && self.k.eval(old) != self.k.eval(new)) || self.p.changed(old, new, mask)
+    fn changed_win(&self, old: &Cx, new: &Cx, mask: u64, clip: Vec4i) -> Vec4i {
+        // a clip that changed moved the window where it matters: that is the window pass's other branch
+        self.p.changed_win(old, new, mask, x::x_and(clip, self.k.eval(new)))
     }
     #[inline(always)]
     fn cover(&self, cx: &Cx, clip: Vec4i) -> Vec4i {
@@ -352,8 +376,8 @@ impl<P: Paint, I: Expr<Out = u32>> Paint for Hit<P, I> {
         self.p.paint(cx, clip, s)
     }
     #[inline(always)]
-    fn changed(&self, old: &Cx, new: &Cx, mask: u64) -> bool {
-        self.p.changed(old, new, mask)
+    fn changed_win(&self, old: &Cx, new: &Cx, mask: u64, clip: Vec4i) -> Vec4i {
+        self.p.changed_win(old, new, mask, clip)
     }
     #[inline(always)]
     fn cover(&self, cx: &Cx, clip: Vec4i) -> Vec4i {

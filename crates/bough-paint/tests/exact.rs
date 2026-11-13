@@ -7,6 +7,8 @@ use bough_kernel::scenes::{self, Rng};
 use bough_paint::expr::*;
 use bough_paint::paint::*;
 use bough_paint::scene::Scene;
+// Every `unsafe { Gpu::new(..) }` below: the scene is a local declared before the executor (so it outlives
+// it), and the arena is written only between the executor's calls, each of which waits for the GPU.
 
 type Pan = Off<Lane, I<Uw<0>>, I<Uw<1>>>;
 /// Hover (word 2 against a record word) over a theme mix (word 3) of two opaque record colours.
@@ -206,7 +208,7 @@ fn archetype_kernels_equal_the_oracle() {
 #[test]
 fn generated_source_is_valid() {
     let s = build(1, 320, 250, 16);
-    let descs: Vec<&bough_paint::scene::Desc> = s.cols.iter().map(|c| c.desc).collect();
+    let descs: Vec<&bough_paint::scene::Desc> = s.cols().iter().map(|c| c.desc).collect();
     let wgsl = bough_paint::emit::wgsl(&descs);
     let module = naga::front::wgsl::parse_str(&wgsl).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&wgsl)));
     naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|e| panic!("{e:?}"));
@@ -234,11 +236,11 @@ fn gpu_functions_equal_the_oracle() {
     let (mut hits, mut shaded, mut full) = (0usize, 0u32, 0u32);
     for seed in 0..seeds() {
         let mut s = build(seed, fw, fh, 110);
-        let Some(mut gpu) = Gpu::new(&s, words, 256) else {
+        let Some(mut gpu) = (unsafe { Gpu::new(&s, words, 256) }) else {
             eprintln!("no Metal device: skipped");
             return;
         };
-        let mut res = Gpu::new(&s, words, 256).unwrap();
+        let mut res = unsafe { Gpu::new(&s, words, 256) }.unwrap();
         let mut g = Rng(seed * 77 + 5);
         let mut u = block(&mut g);
         let mut kept = vec![0u32; words];
@@ -291,19 +293,20 @@ fn gpu_mutants_are_caught() {
     let stride = fw as usize + 3;
     let words = stride * fh as usize;
     let s = build(3, fw, fh, 110);
-    let descs: Vec<&bough_paint::scene::Desc> = s.cols.iter().map(|c| c.desc).collect();
-    let lays: Vec<(usize, usize)> = s.cols.iter().map(|c| (c.base, c.desc.words)).collect();
+    let descs: Vec<&bough_paint::scene::Desc> = s.cols().iter().map(|c| c.desc).collect();
+    let lays: Vec<(usize, usize)> = s.cols().iter().map(|c| (c.base, c.desc.words)).collect();
     let good = source(&descs, &lays, s.tab_region().0);
     let mutants = [
         ("rounding", good.replacen("constant uint HALF = 16384u;", "constant uint HALF = 16383u;", 1)),
         ("dropped layer", good.replacen("    a0 = x_over(a0, p_rrect(", "    // a0 = x_over(a0, p_rrect(", 1)),
         ("pixel cut one too wide", good.replacen("c.z >= x + 2 && c.w >= y + 2", "c.z >= x + 1 && c.w >= y + 2", 1)),
-        ("dropped damage", good.replace(") != 0u) || a", ") != 0u) || false && a")),
+        ("dropped damage", good.replace("markv(DMG, cw,", "markv(DMG, metal::int4(0),")),
+        ("damage hidden one record too high", good.replacen("if (z >= fl) {", "if (z > fl) {", 1)),
     ];
     for (name, src) in mutants {
         assert!(src != good, "{name}: the mutation did not apply");
-        let Some(mut m) = Gpu::with_source(&s, words, 256, &src) else { return };
-        let mut ok = Gpu::new(&s, words, 256).unwrap();
+        let Some(mut m) = (unsafe { Gpu::with_source(&s, words, 256, &src) }) else { return };
+        let mut ok = unsafe { Gpu::new(&s, words, 256) }.unwrap();
         let mut g = Rng(99);
         let mut u = block(&mut g);
         let mut d = 0;
@@ -332,7 +335,7 @@ fn corner_tables_are_the_closed_form() {
     let mut b = build(5, fw, fh, 110);
     let jobs = a.tab_jobs().len();
     assert!(jobs > 0, "the scene has no shadow in the table regime");
-    let Some(mut g) = Gpu::new(&a, words, 256) else { return };
+    let Some(mut g) = (unsafe { Gpu::new(&a, words, 256) }) else { return };
     let (_, entries) = g.fill_tabs(&mut a);
     b.fill_tabs();
     let used = a.tab_region().1;
@@ -352,13 +355,13 @@ fn corner_tables_are_the_closed_form() {
     eprintln!("corner tables: cpu frame: {} corner pixels, {} from a table", fs.raster.px_corner, fs.raster.px_table);
     assert!(fs.raster.px_table > 0, "no corner pixel was answered from a table");
     // the GPU kernel's fill, mutated: the resident frame must differ from the good one
-    let descs: Vec<&bough_paint::scene::Desc> = a.cols.iter().map(|c| c.desc).collect();
-    let lays: Vec<(usize, usize)> = a.cols.iter().map(|c| (c.base, c.desc.words)).collect();
+    let descs: Vec<&bough_paint::scene::Desc> = a.cols().iter().map(|c| c.desc).collect();
+    let lays: Vec<(usize, usize)> = a.cols().iter().map(|c| (c.base, c.desc.words)).collect();
     let good = source(&descs, &lays, a.tab_region().0);
     let bad = good.replacen("= x_cfillw(", "= 1u + x_cfillw(", 1);
     assert!(bad != good);
     let mut c = build(5, fw, fh, 110);
-    let mut m = Gpu::with_source(&c, words, 256, &bad).unwrap();
+    let mut m = unsafe { Gpu::with_source(&c, words, 256, &bad) }.unwrap();
     m.fill_tabs(&mut c);
     m.frame(&u, None, stride);
     g.frame(&u, None, stride);

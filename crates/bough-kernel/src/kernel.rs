@@ -563,10 +563,15 @@ pub mod km {
 
     /// Progress (Q15) of a transition started at `t0` lasting `dur` ticks (>= 1), eased (0 linear, 1 smooth).
     pub fn progress(now: u32, t0: u32, dur: u32, ease: u32) -> u32 {
-        if now <= t0 {
+        // the clock is a wrapping word: "started" is at most 2^31 ticks after `t0` modulo 2^32
+        let mut el = now - min(t0, now);
+        if now < t0 {
+            el = (0xFFFFFFFFu32 - t0) + now + 1u32;
+        }
+        if el == 0u32 || el >= 0x80000000u32 {
             return 0u32;
         }
-        let e = min(now - t0, dur);
+        let e = min(el, dur);
         if e == dur {
             return ONE;
         }

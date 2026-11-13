@@ -15,6 +15,11 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use wgsl_rs::std::{Vec4, Vec4i, Vec4u};
 
+/// The largest surface side, and the largest magnitude of a rect lane in pixels: windows are packed as
+/// `i16` after the stager has clamped them to this range (`ops::window`), so a box that reaches further is
+/// still drawn exactly where it crosses the surface, and one that lies further away is refused at admission
+/// (`Scene::push` / `set`) rather than wrapped.
+pub const MAX_PX: i32 = 32767;
 /// Lanes before the records in a page: x0, y0, x1, y1 (Q8) and the paint-order key.
 pub const LANES: usize = 5;
 /// `order` word: column in the high 12 bits, record index in the low 20.
@@ -23,28 +28,34 @@ pub const IDX_MASK: u32 = (1 << IDX_BITS) - 1;
 /// The arena's alignment: a VM page on Apple silicon, so Metal can wrap it without a copy.
 pub const VM_PAGE: usize = 16384;
 
-/// A column's records as raw words (what a `Desc` function receives).
+/// A column's records as raw words (what a `Desc` kernel receives). It borrows the scene it views, can only
+/// be made by `Scene::view`, and its unchecked accessors are this crate's alone: callers inside the crate
+/// index it with `i < len`, which holds for every index that comes from the scene's own order lane or from
+/// a loop over `0..len` (the scene's columns and order are not writable from outside).
 #[derive(Clone, Copy)]
-pub struct ColView {
+pub struct ColView<'a> {
     base: *const u32,
-    pub len: u32,
+    pub(crate) len: u32,
     /// Words per record.
-    pub w: u32,
+    pub(crate) w: u32,
+    _scene: PhantomData<&'a Arena>,
 }
-impl ColView {
+impl ColView<'_> {
     #[inline(always)]
     fn page(&self, i: u32) -> *const u32 {
         // SAFETY (callers): i < len <= capacity, so the page is inside the column's allocation.
         unsafe { self.base.add((i as usize >> 6) * 64 * (LANES + self.w as usize)) }
     }
     #[inline(always)]
-    pub fn rect(&self, i: u32) -> [i32; 4] {
+    pub(crate) fn rect(&self, i: u32) -> [i32; 4] {
+        debug_assert!(i < self.len);
         let (p, r) = (self.page(i), i as usize & 63);
         // SAFETY: the four rect lanes are the page's first 256 words.
         unsafe { [*p.add(r) as i32, *p.add(64 + r) as i32, *p.add(128 + r) as i32, *p.add(192 + r) as i32] }
     }
     #[inline(always)]
-    pub fn z(&self, i: u32) -> u32 {
+    pub(crate) fn z(&self, i: u32) -> u32 {
+        debug_assert!(i < self.len);
         // SAFETY: the key lane is words 256..320 of the page.
         unsafe { *self.page(i).add(256 + (i as usize & 63)) }
     }
@@ -53,10 +64,16 @@ impl ColView {
     /// # Safety
     /// `P` is the column's archetype (`size_of::<P>() == 4 * self.w`) and `i < self.len`.
     #[inline(always)]
-    pub unsafe fn rec<P: Paint>(&self, i: u32) -> &P {
+    pub(crate) unsafe fn rec<P: Paint>(&self, i: u32) -> &P {
         // SAFETY: `P: Words` (whole words, alignment <= 4, any bits valid); the record's words follow the lanes.
         unsafe { &*(self.page(i).add(64 * LANES + (i as usize & 63) * self.w as usize) as *const P) }
     }
+}
+
+/// A column of `arena` as a view (borrowing the arena only, so the scene's lanes can be written beside it).
+fn view_of<'a>(arena: &'a Arena, c: &Col) -> ColView<'a> {
+    // SAFETY: `base` is inside the arena (checked at `Scene::column`).
+    ColView { base: unsafe { arena.ptr().add(c.base) }, len: c.len as u32, w: c.desc.words as u32, _scene: PhantomData }
 }
 
 /// Damaged tiles of a frame, one bit each, row-major.
@@ -91,6 +108,28 @@ impl Damage {
             }
         }
     }
+    /// The tiles a pixel window of the record with key `z` touches *and is visible in*: a tile whose list
+    /// is cut at an opaque cover above the record (`floor[t] > z`) cannot show any change of it. `floor`
+    /// is the bins' as they stood before this frame: a cover that moves this frame damages its own old and
+    /// new windows, so a tile left out here is one where nothing at or above its floor changed.
+    #[inline]
+    pub fn add_vis(&mut self, w: [i16; 4], z: u32, floor: &[u32]) {
+        if floor.len() != self.tx * self.ty {
+            return self.add(w);
+        }
+        let x0 = (w[0].max(0) as usize) >> 5;
+        let y0 = (w[1].max(0) as usize) >> 5;
+        let x1 = ((w[2].max(0) as usize + 31) >> 5).min(self.tx);
+        let y1 = ((w[3].max(0) as usize + 31) >> 5).min(self.ty);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let t = y * self.tx + x;
+                if z >= floor[t] {
+                    self.bits[t / 64] |= 1 << (t % 64);
+                }
+            }
+        }
+    }
     pub fn tiles(&self, out: &mut Vec<u32>) {
         out.clear();
         for (i, &w) in self.bits.iter().enumerate() {
@@ -122,25 +161,25 @@ pub struct Desc {
     /// The window pass: for every record, its window and cover under `new` into the lanes (by key), and
     /// damage for a record whose window moved or whose operands' values changed. Returns whether a window or
     /// cover moved.
-    pub window: fn(ColView, old: &U, new: &U, mask: u64, first: bool, win: &mut [[i16; 4]], cover: &mut [[i16; 4]], dmg: &mut Damage) -> bool,
-    pub flat: fn(ColView, zs: &[u32], order: &[u32], u: &U, t: &mut Tile),
+    pub(crate) window: fn(ColView, old: &U, new: &U, mask: u64, first: bool, win: &mut [[i16; 4]], cover: &mut [[i16; 4]], dmg: &mut Damage, floor: &[u32]) -> bool,
+    pub(crate) flat: fn(ColView, zs: &[u32], order: &[u32], u: &U, t: &mut Tile),
     /// `first`: the index of `zs[0]` in the tile's list (its occlusion mask).
-    pub shade: fn(ColView, zs: &[u32], first: usize, order: &[u32], u: &U, t: &mut Tile),
+    pub(crate) shade: fn(ColView, zs: &[u32], first: usize, order: &[u32], u: &U, t: &mut Tile),
     /// The specification at one pixel: (blended accumulator, some layer inked the pixel).
-    pub spec: fn(ColView, i: u32, u: &U, x: i32, y: i32, acc: Vec4u, atlas: &[u8], aw: u32, tabs: &[u32]) -> (Vec4u, bool),
+    pub(crate) spec: fn(ColView, i: u32, u: &U, x: i32, y: i32, acc: Vec4u, atlas: &[u8], aw: u32, tabs: &[u32]) -> (Vec4u, bool),
     /// The record as the generic kernel's commands.
-    pub stage: fn(ColView, i: u32, u: &U, out: &mut bough_kernel::stage::Scene),
-    pub pick: fn(ColView, i: u32, u: &U) -> u32,
+    pub(crate) stage: fn(ColView, i: u32, u: &U, out: &mut bough_kernel::stage::Scene),
+    pub(crate) pick: fn(ColView, i: u32, u: &U) -> u32,
     /// One rewritten record: damage where it was and where it is now, its lanes brought up to date. Returns
     /// whether its window or cover moved.
-    pub rewin: fn(ColView, i: u32, u: &U, win: &mut [[i16; 4]], cover: &mut [[i16; 4]], dmg: &mut Damage) -> bool,
+    pub(crate) rewin: fn(ColView, i: u32, u: &U, win: &mut [[i16; 4]], cover: &mut [[i16; 4]], dmg: &mut Damage, floor: &[u32]) -> bool,
 }
 
 fn i16s(v: Vec4i) -> [i16; 4] {
     [v.x as i16, v.y as i16, v.z as i16, v.w as i16]
 }
 
-fn window_pass<P: Paint>(c: ColView, old: &U, new: &U, mask: u64, first: bool, win: &mut [[i16; 4]], cover: &mut [[i16; 4]], dmg: &mut Damage) -> bool {
+fn window_pass<P: Paint>(c: ColView, old: &U, new: &U, mask: u64, first: bool, win: &mut [[i16; 4]], cover: &mut [[i16; 4]], dmg: &mut Damage, floor: &[u32]) -> bool {
     let geom = first || P::GEOM_READS & mask != 0;
     let mut moved = false;
     for i in 0..c.len {
@@ -160,21 +199,24 @@ fn window_pass<P: Paint>(c: ColView, old: &U, new: &U, mask: u64, first: bool, w
             };
             if first || w != win[z] || cv != cover[z] {
                 if !first {
-                    dmg.add(win[z]);
+                    dmg.add_vis(win[z], z as u32, floor);
                 }
-                dmg.add(w);
+                dmg.add_vis(w, z as u32, floor);
                 (win[z], cover[z]) = (w, cv);
                 moved = true;
                 continue;
             }
         }
-        if !first && p.changed(&Cx { u: old, rect }, &cn, mask) {
-            dmg.add(win[z]);
+        if !first {
+            let cw = p.changed_win(&Cx { u: old, rect }, &cn, mask, NO_CLIP);
+            if cw.x < cw.z {
+                dmg.add_vis(i16s(cw), z as u32, floor);
+            }
         }
     }
     moved
 }
-fn rewin_one<P: Paint>(c: ColView, i: u32, u: &U, win: &mut [[i16; 4]], cover: &mut [[i16; 4]], dmg: &mut Damage) -> bool {
+fn rewin_one<P: Paint>(c: ColView, i: u32, u: &U, win: &mut [[i16; 4]], cover: &mut [[i16; 4]], dmg: &mut Damage, floor: &[u32]) -> bool {
     // SAFETY: as `window_pass`.
     let (rect, z, p) = (c.rect(i), c.z(i) as usize, unsafe { c.rec::<P>(i) });
     let cx = Cx { u, rect };
@@ -182,8 +224,8 @@ fn rewin_one<P: Paint>(c: ColView, i: u32, u: &U, win: &mut [[i16; 4]], cover: &
     p.paint(&cx, NO_CLIP, &mut ws);
     let w = i16s(ws.0);
     let cv = if P::OPAQUE_CORE { i16s(p.cover(&cx, NO_CLIP)) } else { [0; 4] };
-    dmg.add(win[z]);
-    dmg.add(w);
+    dmg.add_vis(win[z], z as u32, floor);
+    dmg.add_vis(w, z as u32, floor);
     let moved = w != win[z] || cv != cover[z];
     (win[z], cover[z]) = (w, cv);
     moved
@@ -309,7 +351,8 @@ pub struct Bins {
     pub off: Vec<u32>,
     pub list: Vec<u32>,
     count: Vec<u32>,
-    floor: Vec<u32>,
+    /// Per tile: the key of the opaque cover its list is cut at (0: not cut).
+    pub floor: Vec<u32>,
 }
 impl Bins {
     #[inline]
@@ -386,11 +429,11 @@ pub struct Scene {
     pub fh: u32,
     pub tx: usize,
     pub ty: usize,
-    pub arena: Arena,
+    pub(crate) arena: Arena,
     used: usize,
-    pub cols: Vec<Col>,
+    pub(crate) cols: Vec<Col>,
     /// Paint-order key -> (column << 20 | index).
-    pub order: Vec<u32>,
+    pub(crate) order: Vec<u32>,
     /// By key: the record's pixel window and its opaque cover under the block last seen.
     pub win: Vec<[i16; 4]>,
     pub cover: Vec<[i16; 4]>,
@@ -438,6 +481,8 @@ unsafe impl Sync for OutPtr {}
 
 impl Scene {
     pub fn new(fw: u32, fh: u32, arena_words: usize) -> Scene {
+        // windows are 16-bit pixel coordinates (the stager clamps them there): the surface must fit
+        assert!(fw >= 1 && fh >= 1 && fw <= MAX_PX as u32 && fh <= MAX_PX as u32, "a surface of {fw} x {fh} px does not fit the window lane");
         let (tx, ty) = (fw.div_ceil(32) as usize, fh.div_ceil(32) as usize);
         Scene {
             fw,
@@ -528,6 +573,9 @@ impl Scene {
     /// Give the record's memoisable layers their table handles (`Paint::memo`), allocating a table for a
     /// key not seen before. Cold: once per record mount or rewrite.
     fn memo<P: Paint>(&mut self, rect: [i32; 4], mut p: P) -> P {
+        // admission: the kernels' Q8 arithmetic (offsets from a pixel centre, products with a blur's
+        // inverse width) is proved for coordinates of at most 2^15 pixels
+        assert!(rect.iter().all(|v| v.abs() <= MAX_PX * 256 + 255), "a rect lane beyond +-{MAX_PX} px: {rect:?}");
         if !self.memoise {
             return p;
         }
@@ -594,10 +642,20 @@ impl Scene {
         }
         self.tabs_filled();
     }
-    pub fn view(&self, col: usize) -> ColView {
-        let c = &self.cols[col];
-        // SAFETY: `base` is inside the arena (checked at `column`).
-        ColView { base: unsafe { self.arena.ptr().add(c.base) }, len: c.len as u32, w: c.desc.words as u32 }
+    pub(crate) fn view(&self, col: usize) -> ColView<'_> {
+        view_of(&self.arena, &self.cols[col])
+    }
+    /// The columns, in creation order (read only: the kernels' unchecked reads rest on them).
+    pub fn cols(&self) -> &[Col] {
+        &self.cols
+    }
+    /// Paint-order key -> (column << 20 | index).
+    pub fn order(&self) -> &[u32] {
+        &self.order
+    }
+    /// The column arena's address and size, for an executor that binds it.
+    pub fn arena(&self) -> &Arena {
+        &self.arena
     }
     pub fn records(&self) -> usize {
         self.order.len()
@@ -625,8 +683,8 @@ impl Scene {
             for &z in &touched {
                 let o = self.order[z as usize];
                 let ci = (o >> IDX_BITS) as usize;
-                let v = self.view(ci);
-                moved |= (self.cols[ci].desc.rewin)(v, o & IDX_MASK, u, &mut self.win, &mut self.cover, &mut self.damage);
+                let v = view_of(&self.arena, &self.cols[ci]);
+                moved |= (self.cols[ci].desc.rewin)(v, o & IDX_MASK, u, &mut self.win, &mut self.cover, &mut self.damage, &self.bins.floor);
             }
         }
         touched.clear();
@@ -638,8 +696,8 @@ impl Scene {
             }
             fs.cols_visited += 1;
             fs.recs_visited += self.cols[ci].len as u32;
-            let v = self.view(ci);
-            moved |= (d.window)(v, &self.prev, u, mask, first, &mut self.win, &mut self.cover, &mut self.damage);
+            let v = view_of(&self.arena, &self.cols[ci]);
+            moved |= (d.window)(v, &self.prev, u, mask, first, &mut self.win, &mut self.cover, &mut self.damage, &self.bins.floor);
         }
         if moved {
             self.bins.build(&self.win, &self.cover, self.tx, self.ty, self.cut);
@@ -650,50 +708,81 @@ impl Scene {
         fs
     }
 
+    /// One worker's scratch: the 32 x 32 Q15 accumulator and the tile's occlusion masks. Keep one per core.
+    pub fn worker(&self) -> Tile<'_> {
+        Tile::new(&self.atlas, self.aw, self.tabs())
+    }
+    /// What a tile costs to shade, for cutting bands of equal work and for choosing an executor: its
+    /// entries weighted by their archetype's cost class.
+    pub fn tile_weight(&self, t: u32) -> u32 {
+        self.bins.tile(t as usize).iter().map(|&z| self.cols[(self.order[z as usize] >> IDX_BITS) as usize].desc.cost.weight()).sum()
+    }
+    /// Shade `tiles` into the surface at `out` with this worker's scratch: the band interface. Reads the
+    /// columns, the window lane, the bins and the tables; writes only the pixels of the tiles given.
+    ///
+    /// # Safety
+    /// `out` is valid for `(fh - 1) * stride + fw` words, and no other thread reads or writes the pixels of
+    /// these tiles during the call (tiles given to concurrent callers are disjoint).
+    pub unsafe fn shade_into(&self, u: &U, tiles: &[u32], out: *mut u32, stride: usize, t: &mut Tile) {
+        let prof = *PROF_ON.get_or_init(|| std::env::var("BOUGH_PAINT_PROF").is_ok());
+        for &ti in tiles {
+            let (ox, oy) = ((ti as usize % self.tx) as i32 * 32, (ti as usize / self.tx) as i32 * 32);
+            let (cols, nrows) = ((self.fw as usize - ox as usize).min(32), (self.fh as usize - oy as usize).min(32));
+            let list = self.bins.tile(ti as usize);
+            t.begin(ox, oy, cols, nrows, self.flat);
+            if self.flat {
+                self.runs(list, |c, _, zs| (self.cols[c].desc.flat)(self.view(c), zs, &self.order, u, t));
+            }
+            t.cover_masks(list, &self.cover, self.cut && list.len() > 1);
+            t.prepare();
+            if prof {
+                self.runs(list, |c, first, zs| {
+                    let t0 = std::time::Instant::now();
+                    (self.cols[c].desc.shade)(self.view(c), zs, first, &self.order, u, t);
+                    let mut p = PROF.lock().unwrap();
+                    p[c].0 += t0.elapsed().as_nanos() as u64;
+                    p[c].1 += zs.len() as u64;
+                });
+            } else {
+                self.runs(list, |c, first, zs| (self.cols[c].desc.shade)(self.view(c), zs, first, &self.order, u, t));
+            }
+            t.st.entries += list.len() as u64;
+            let at = oy as usize * stride + ox as usize;
+            // SAFETY: the tile's rows [oy, oy + nrows) x columns [ox, ox + cols) lie inside `out` (the
+            // caller's contract), and nothing else touches them during the call.
+            unsafe { t.store(out.add(at), stride) };
+        }
+    }
     /// Shade `tiles` (indices, any order, no duplicates) into `out` on the caller plus `extra` pool workers.
     pub fn shade(&self, u: &U, tiles: &[u32], out: &mut [u32], stride: usize, pool: &Pool, extra: usize) -> Stats {
+        // admission, once per call: rows do not overlap, the surface holds the frame, and the tiles are a
+        // set (bounded, no duplicates), which is the whole proof that workers write disjoint pixels
+        assert!(stride >= self.fw as usize, "stride {stride} is less than the frame's width");
         assert!(out.len() >= (self.fh as usize - 1) * stride + self.fw as usize);
+        let nt = self.tx * self.ty;
+        let mut seen = vec![0u64; nt.div_ceil(64)];
+        for &t in tiles {
+            let t = t as usize;
+            assert!(t < nt, "tile {t} of {nt}");
+            assert!(seen[t / 64] >> (t % 64) & 1 == 0, "tile {t} is listed twice");
+            seen[t / 64] |= 1 << (t % 64);
+        }
         let optr = OutPtr(out.as_mut_ptr());
-        let prof = *PROF_ON.get_or_init(|| std::env::var("BOUGH_PAINT_PROF").is_ok());
         let next = AtomicUsize::new(0);
         const CHUNK: usize = 8;
         let total = std::sync::Mutex::new(Stats::default());
         let work = |_id: usize| {
             let optr = &optr;
-            let mut t = Tile::new(&self.atlas, self.aw, self.tabs());
+            let mut t = self.worker();
             loop {
                 let a = next.fetch_add(CHUNK, Relaxed);
                 if a >= tiles.len() {
                     break;
                 }
-                for &ti in &tiles[a..(a + CHUNK).min(tiles.len())] {
-                    let (ox, oy) = ((ti as usize % self.tx) as i32 * 32, (ti as usize / self.tx) as i32 * 32);
-                    let (cols, nrows) = ((self.fw as usize - ox as usize).min(32), (self.fh as usize - oy as usize).min(32));
-                    let list = self.bins.tile(ti as usize);
-                    t.begin(ox, oy, cols, nrows, self.flat);
-                    if self.flat {
-                        self.runs(list, |c, _, zs| (self.cols[c].desc.flat)(self.view(c), zs, &self.order, u, &mut t));
-                    }
-                    t.cover_masks(list, &self.cover, self.cut && list.len() > 1);
-                    t.prepare();
-                    if prof {
-                        self.runs(list, |c, first, zs| {
-                            let t0 = std::time::Instant::now();
-                            (self.cols[c].desc.shade)(self.view(c), zs, first, &self.order, u, &mut t);
-                            let mut p = PROF.lock().unwrap();
-                            p[c].0 += t0.elapsed().as_nanos() as u64;
-                            p[c].1 += zs.len() as u64;
-                        });
-                    } else {
-                        self.runs(list, |c, first, zs| (self.cols[c].desc.shade)(self.view(c), zs, first, &self.order, u, &mut t));
-                    }
-                    t.st.entries += list.len() as u64;
-                    let at = oy as usize * stride + ox as usize;
-                    // SAFETY: the tile's rows [oy, oy + nrows) x columns [ox, ox + cols) lie inside `out`
-                    // (asserted above), `out` is exclusively borrowed for this call, and tiles are disjoint
-                    // and each is claimed by one worker (the atomic counter), so nothing else touches them.
-                    unsafe { t.store(optr.0.add(at), stride) };
-                }
+                // SAFETY: `out` is exclusively borrowed for this call and covers the frame (asserted
+                // above); each chunk of tiles is claimed by one worker (the atomic counter) and the tiles
+                // are distinct.
+                unsafe { self.shade_into(u, &tiles[a..(a + CHUNK).min(tiles.len())], optr.0, stride, &mut t) };
             }
             total.lock().unwrap().add(&t.st);
         };

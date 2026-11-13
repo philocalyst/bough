@@ -163,3 +163,48 @@ atlas's idea applied to a second resident: a content-addressed memo of a pure co
 | canvas hover (1,661 tiles), GPU | <= 5 ms | > 10 ms (the presenter's step is 12.5 ms wall) |
 | exactness | 0 differing words on every gate, boxes off the pixel grid included; a mutant that adds one to a table entry is caught | any mismatch |
 | table memory, canvas | <= 2 MB | > 8 MB |
+
+### R12, result: kept on the CPU, refuted on the GPU
+
+Built as written (`ops.rs`: `x_ctaps`, `x_cfillw`, `x_shadowm`, `p_shadowm`; `paint.rs`: `Shadow<.., T>` with a
+`Tab` handle word and `Paint::memo`; `scene.rs`: the tables live in the arena after the columns, so the GPU
+reads them from the buffer it already has; `metal.rs`: `k_tab` fills a table with the leaf, a thread per
+word). A table is keyed by (radius, blur width) as staged, its header holds the key and is checked while
+shading, entries are 16 bits. Exactness: 0 differing words on every gate, the GPU's fill equals the CPU's
+word for word, and with every entry one too large `canvas_is_exact` fails (`--features mutant_tab`; the same
+edit to the GPU kernel's source is caught by `corner_tables_are_the_closed_form`). Off the pixel grid no
+table applies (`canvas on half pixels` in the scene gate: everything closed form, still exact).
+
+| | predicted | measured (M3 Pro, canvas full frame) | |
+|---|---|---|---|
+| GPU, full frame | <= 9 ms, kill > 15 | 16.8 to 18.9 ms; closed form 22.5 | **refuted** |
+| table memory | <= 2 MB, kill > 8 | 10 MB as 32-bit entries, 4.9 MB as 16-bit (158 keys: 16 radii x 10 blurs; a blur of 80 px is a 256 x 256 table per radius) | missed, under the kill line after packing |
+| CPU, full frame, one core | (none written) | 585 -> 316 ms, 7.62 G -> 4.41 G instructions | **kept** |
+| CPU, six threads | | 150 -> 93 ms | kept |
+
+How the GPU number came apart, each a variant of the generated source timed on the same frame:
+
+* closed form without any table machinery 22.5 ms; with `shadow()` returning a constant 6.5 to 8.5; with
+  `corner3` returning 0, 12 to 14. So shadows are 16 ms: the corner integral about 10, the rest of `shadow`
+  (the two profiles, the arc branch) 4 to 6.
+* First build, one leaf call per corner tap: 22 to 24 ms with every corner pixel answered from a table. No
+  gain at all. The loads are free (the load replaced by a constant: 19.1 against 20.0; the index folded into
+  4 KiB so the table stays in cache: 20.0): the four index computations per pixel cost what the quadrature
+  cost.
+* One leaf for the four taps (`x_ctaps`): 16.8 to 18.9 ms.
+* The staged command passed by reference instead of by value: no change. Every leaf forced inline: 31 ms and
+  a 9 s compile.
+
+So on this GPU the per-pixel arithmetic that is left with a table (two profiles of two cubics each, the
+window and core tests, four index computations, the blend) is two thirds of what the closed form costs, and
+a table of this shape cannot remove it. On the CPU, where the kernel already computes the profiles once per
+tile and only corner pixels go through the integral, the table removes the integral and that is 1.85x.
+
+Found on the way, a defect older than this session: a shadow whose box a negative spread turns inside out
+(a 1 px card with spread -2) gave different words on the fast CPU kernel than on the GPU and the oracle (the
+profile is an unsigned difference of the wrong sign; the fast kernel truncated it to 16 bits). It showed as
+soon as half of the adversarial cards were put on whole pixels. `mk_shadow` now gives such a box an empty
+window (it casts nothing, as in CSS); gates green.
+
+My port of the canvas had nodes on half pixels; the workload floors positions to whole points (even pixels),
+so the port now places on whole pixels (`canvas::half_pixels(true)` for the old placement).

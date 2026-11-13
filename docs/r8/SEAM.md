@@ -299,7 +299,7 @@ a paint type:
 | `.border(w, l)` alone | `Border<B, R, W, L, clear>` |
 | `.gradient(g)` (two-stop linear) | `Grad<B, R, X, Y, C, D>` |
 | `.gradient(g).border(w, l)` | `Over<Grad<..>, Border<.., clear>>` |
-| `.shadow(a).shadow(b)` before any of the above | `Over<Over<Shadow b, Shadow a>, body>` (CSS order: the first is on top) |
+| `.shadow(a).shadow(b)` with any of the above | `Over<Shadow b, Over<Shadow a, body>>` (CSS order: the first is on top) |
 | `.opacity(o)` | every colour above wrapped in `Fade<_, O>` (the façade's meaning: the box's own paint, not its subtree) |
 | `.translate(x, y)` | every rect above wrapped in `Off<_, X, Y>` |
 | `clip(..)` around it | `Clip<P, K>` |

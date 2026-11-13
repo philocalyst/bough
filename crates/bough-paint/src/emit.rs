@@ -5,7 +5,8 @@
 //! * `a{k}_texel`: the atlas texel its glyph layer reads (the caller fetches the byte: the only buffer read
 //!   a paint needs that is not its own record);
 //! * `a{k}_win`, `a{k}_cover`: the window lane's values (what `WinSink` and `Paint::cover` compute);
-//! * `a{k}_chg`: some operand that reads the block differs under the old and the new block (`Paint::changed`);
+//! * `a{k}_chgw`: the windows of the layers an operand of which differs under the old and the new block
+//!   (`Paint::changed_win`);
 //! * `a{k}_pick`: its pick id.
 //!
 //! Every expression is rendered as calls of leaves on parameter names and `123u` literals, which is valid
@@ -301,37 +302,47 @@ fn texel(p: &PCode, base: usize, clip: &str) -> Option<String> {
         PCode::Hit { p, .. } => texel(p, base, clip),
     }
 }
-/// The comparisons of every operand that reads the block, old against new.
-fn chg(p: &PCode, base: usize, out: &mut Vec<String>) {
-    let mut one = |c: &Code, t: Ty, b: usize| {
-        if reads(c) == 0 {
-            return;
+/// The comparisons of a primitive's operands that read the block, old against new.
+fn prim_chg(args: &[&Code], tys: &[Ty], base: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut b = base;
+    for (c, t) in args.iter().zip(tys.iter()) {
+        if reads(c) != 0 {
+            let ne = match t {
+                Ty::U32 => "x_neu",
+                Ty::I32 => "x_nei",
+                Ty::V4u => "x_nev",
+                Ty::V4i => "x_ner",
+            };
+            out.push(format!("{ne}({}, {})", expr(c, &mut { b }, 'o'), expr(c, &mut { b }, 'u')));
         }
-        let ne = match t {
-            Ty::U32 => "x_neu",
-            Ty::I32 => "x_nei",
-            Ty::V4u => "x_nev",
-            Ty::V4i => "x_ner",
-        };
-        out.push(format!("{ne}({}, {})", expr(c, &mut { b }, 'o'), expr(c, &mut { b }, 'u')));
-    };
-    match p {
-        PCode::Prim { args, tys, .. } => {
-            let mut b = base;
-            for (c, t) in args.iter().zip(tys.iter()) {
-                one(c, *t, b);
-                b += words(c);
+        b += words(c);
+    }
+    out
+}
+impl Fn<'_> {
+    /// `Paint::changed_win`: the union of the windows of the layers with a changed operand.
+    fn chgw(&mut self, p: &PCode, base: usize, clip: &str) {
+        match p {
+            PCode::Prim { mk, args, tys, .. } => {
+                let c = prim_chg(args, tys, base);
+                if !c.is_empty() {
+                    writeln!(self.out, "    w = x_union(w, x_keep(c_win({}), {}));", staged(mk, args, base, clip, 'u'), c.join(" || ")).unwrap();
+                }
             }
+            PCode::Over { a, b, .. } => {
+                self.chgw(a, base, clip);
+                self.chgw(b, base + pwords(a), clip);
+            }
+            PCode::Clip { p, k } => {
+                let mut kb = base + pwords(p);
+                let kx = expr(k, &mut kb, 'u');
+                let kn = self.fresh("k");
+                self.decl(T::V4i, &kn, &format!("x_and({clip}, {kx})"), false);
+                self.chgw(p, base, &kn);
+            }
+            PCode::Hit { p, .. } => self.chgw(p, base, clip),
         }
-        PCode::Over { a, b, .. } => {
-            chg(a, base, out);
-            chg(b, base + pwords(a), out);
-        }
-        PCode::Clip { p, k } => {
-            one(k, Ty::V4i, base + pwords(p));
-            chg(p, base, out);
-        }
-        PCode::Hit { p, .. } => chg(p, base, out),
     }
 }
 fn pick(p: &PCode, base: usize) -> Option<String> {
@@ -444,10 +455,11 @@ pub fn archetype(lang: Lang, k: usize, d: &Desc, out: &mut String) {
     ps.extend(ws.iter().cloned());
     ps.extend(os.iter().cloned());
     ps.extend(us.iter().cloned());
-    header(lang, out, T::Bool, &format!("a{k}_chg"), &ps, false);
-    let mut c = Vec::new();
-    chg(p, 0, &mut c);
-    writeln!(out, "    return {};\n}}", if c.is_empty() { "false".to_string() } else { c.join(" || ") }).unwrap();
+    header(lang, out, T::V4i, &format!("a{k}_chgw"), &ps, false);
+    let mut f = Fn { lang, out, n: 0 };
+    f.decl(T::V4i, "w", EMPTY, true);
+    f.chgw(p, 0, NO_CLIP);
+    writeln!(out, "    return w;\n}}").unwrap();
 }
 
 /// The leaves and every archetype's functions as one WGSL module (for validation; the run-time path on

@@ -497,7 +497,8 @@ fn shade_tile(sc: &mut Scratch, ox: i32, oy: i32, atlas: &Atlas, now: u32, dst: 
                     // bounds by construction: clamp each index, as the kernel's fetch does
                     None => {
                         for (i, o) in cov[..n].iter_mut().enumerate() {
-                            *o = k::q15(atlas.px[(first + i).min(atlas.px.len() - 1)] as u32) as u16;
+                            // an empty atlas is transparent, as `Atlas::cov` defines it
+                            *o = if atlas.px.is_empty() { 0 } else { k::q15(atlas.px[(first + i).min(atlas.px.len() - 1)] as u32) as u16 };
                         }
                     }
                 }
@@ -675,6 +676,8 @@ struct Shared {
     st: Mutex<State>,
     wake: Condvar,
     done: Condvar,
+    /// Held for the whole of a `run`: two callers never share the job slot.
+    admit: Mutex<()>,
 }
 
 struct Job(*const (dyn Fn(usize) + Sync));
@@ -688,12 +691,28 @@ struct State {
     want: usize,
     active: usize,
     quit: bool,
+    /// A worker's call of the current job panicked.
+    panicked: bool,
+}
+
+/// Ends a `run`: waits until every launched worker has acknowledged, then forgets the job. It runs on the
+/// normal path and when the caller's own call unwinds, so the borrowed closure is never observed after
+/// `run` has left its frame.
+struct Finish<'a>(&'a Shared);
+impl Drop for Finish<'_> {
+    fn drop(&mut self) {
+        let mut g = self.0.st.lock().unwrap_or_else(|e| e.into_inner());
+        while g.active != 0 {
+            g = self.0.done.wait(g).unwrap_or_else(|e| e.into_inner());
+        }
+        g.job = None;
+    }
 }
 
 impl Pool {
     /// A pool with `workers` threads besides the caller.
     pub fn new(workers: usize) -> Pool {
-        let sh = Arc::new(Shared { st: Mutex::new(State { epoch: 0, job: None, want: 0, active: 0, quit: false }), wake: Condvar::new(), done: Condvar::new() });
+        let sh = Arc::new(Shared { st: Mutex::new(State { epoch: 0, job: None, want: 0, active: 0, quit: false, panicked: false }), wake: Condvar::new(), done: Condvar::new(), admit: Mutex::new(()) });
         let threads = (1..=workers)
             .map(|id| {
                 let sh = sh.clone();
@@ -701,7 +720,7 @@ impl Pool {
                     let mut seen = 0;
                     loop {
                         let f = {
-                            let mut g = sh.st.lock().unwrap();
+                            let mut g = sh.st.lock().unwrap_or_else(|e| e.into_inner());
                             loop {
                                 if g.quit {
                                     return;
@@ -712,14 +731,16 @@ impl Pool {
                                         break;
                                     }
                                 }
-                                g = sh.wake.wait(g).unwrap();
+                                g = sh.wake.wait(g).unwrap_or_else(|e| e.into_inner());
                             }
                             g.job.as_ref().unwrap().0
                         };
-                        // SAFETY: `run` does not return (and so the closure is not dropped) before `active`
-                        // reaches 0, which this worker only decrements after the call.
-                        unsafe { (*f)(id) };
-                        let mut g = sh.st.lock().unwrap();
+                        // SAFETY: `run` does not leave its frame (and so the closure is not dropped) before
+                        // `active` reaches 0 (`Finish`, also when the caller unwinds), and this worker only
+                        // decrements it after the call has ended, by return or by a caught panic.
+                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe { (*f)(id) }));
+                        let mut g = sh.st.lock().unwrap_or_else(|e| e.into_inner());
+                        g.panicked |= r.is_err();
                         g.active -= 1;
                         if g.active == 0 {
                             sh.done.notify_one();
@@ -734,26 +755,33 @@ impl Pool {
         self.threads.len()
     }
     /// Run `f(worker)` on the caller and on `extra` workers (at most the pool's); returns when all are done.
+    /// Calls from several threads run one after another. Not reentrant: `f` must not call `run` on the
+    /// same pool (it would wait for itself). If any call of `f` panics, every worker still finishes its
+    /// call first, and then this function panics.
     pub fn run(&self, extra: usize, f: &(dyn Fn(usize) + Sync)) {
         let extra = extra.min(self.threads.len());
-        if extra > 0 {
-            let mut g = self.sh.st.lock().unwrap();
+        if extra == 0 {
+            return f(0);
+        }
+        let _admitted = self.sh.admit.lock().unwrap_or_else(|e| e.into_inner());
+        {
+            let mut g = self.sh.st.lock().unwrap_or_else(|e| e.into_inner());
             // SAFETY (lifetime erasure): the pointer is only dereferenced by workers counted in `active`,
-            // and this function waits for `active == 0` before returning.
+            // and `Finish` (below) waits for `active == 0` before this frame is left, by return or by
+            // unwinding; `admit` keeps a second caller from replacing the job meanwhile.
             g.job = Some(Job(unsafe { std::mem::transmute::<*const (dyn Fn(usize) + Sync + '_), *const (dyn Fn(usize) + Sync + 'static)>(f) }));
             g.want = extra;
             g.active = extra;
+            g.panicked = false;
             g.epoch += 1;
-            drop(g);
-            self.sh.wake.notify_all();
         }
-        f(0);
-        if extra > 0 {
-            let mut g = self.sh.st.lock().unwrap();
-            while g.active != 0 {
-                g = self.sh.done.wait(g).unwrap();
-            }
-            g.job = None;
+        self.sh.wake.notify_all();
+        {
+            let _finish = Finish(&self.sh);
+            f(0);
+        }
+        if std::mem::take(&mut self.sh.st.lock().unwrap_or_else(|e| e.into_inner()).panicked) {
+            panic!("a pool worker's call panicked");
         }
     }
     fn take_stats(&self) -> Stats {
@@ -769,7 +797,7 @@ impl Pool {
 
 impl Drop for Pool {
     fn drop(&mut self) {
-        self.sh.st.lock().unwrap().quit = true;
+        self.sh.st.lock().unwrap_or_else(|e| e.into_inner()).quit = true;
         self.sh.wake.notify_all();
         for t in self.threads.drain(..) {
             let _ = t.join();

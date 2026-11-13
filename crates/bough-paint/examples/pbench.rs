@@ -13,6 +13,7 @@
 use bough_kernel::cpu::{self, Binner, Damage, Opt, Pool, Prog};
 use bough_mem::pmu;
 use bough_paint::expr::{U, U_PICK, U_TIME};
+use bough_paint::driver::{Driver, Ran};
 use bough_paint::metal::Gpu;
 use bough_paint::plan;
 use bough_paint::scene::{Desc, Scene};
@@ -79,6 +80,9 @@ struct Bench {
     ap: Scene,
     ag: Scene,
     gpu: Gpu,
+    /// The mixed driver: the plan's choice of executor per frame, into one surface.
+    drv: Driver,
+    skip_k: bool,
     kgpu: bough_kernel::gpu::Gpu,
     px1: Vec<u32>,
     pxp: Vec<u32>,
@@ -97,7 +101,9 @@ impl Bench {
         let (fw, fh) = (self.a1.fw, self.a1.fh);
         let stride = fw as usize;
         let words = stride * fh as usize;
-        let mut cells: [Cell; 8] = Default::default();
+        let mut cells: [Cell; 9] = Default::default();
+        let (mut on_cpu, mut on_gpu) = (0usize, 0usize);
+        let mut passes: [Vec<f64>; 5] = Default::default();
         let (mut tiles, mut entries) = (0f64, 0f64);
         let atlas_px = self.a1.atlas.clone();
         let atlas = cpu::Atlas::new(&atlas_px, self.a1.aw);
@@ -106,7 +112,7 @@ impl Bench {
             let ptr = step(k, &mut self.u);
             // warm-up steps are not recorded
             let rec = k >= 2;
-            let mut scratch: [Cell; 8] = Default::default();
+            let mut scratch: [Cell; 9] = Default::default();
             let c = if rec { &mut cells } else { &mut scratch };
             if full {
                 self.a1.invalidate();
@@ -132,25 +138,53 @@ impl Bench {
             // AG: the resident frame
             let (gt, pick) = c[2].time(|| self.gpu.frame(&u, ptr, stride));
             c[2].gpu.push(gt.gpu);
+            if rec && self.gpu.split {
+                for (a, b) in passes.iter_mut().zip(self.gpu.pass_s) {
+                    a.push(b);
+                }
+            }
             let gpu_tiles = self.gpu.last().0;
+            // AD: the driver (one core below the plan's tile threshold, the resident GPU frame above it)
+            if full {
+                self.drv.invalidate();
+            }
+            let mut ud = u;
+            let ran = c[8].time(|| self.drv.frame(&mut ud, ptr));
+            if rec {
+                match ran {
+                    Ran::Cpu => on_cpu += 1,
+                    _ => on_gpu += 1,
+                }
+            }
+            let drv_bad = !full && self.drv.pixels().iter().zip(self.gpu.out(words)).any(|(a, b)| a != b);
+            if self.skip_k {
+                // `SKIP_K=1`: the generic kernel's rows are left out (they take most of a run's time); the
+                // archetype executors are then only checked against each other
+                self.pxk.copy_from_slice(&self.px1);
+                self.pxkp.copy_from_slice(&self.px1);
+            }
             // the generic kernel: commands restaged for free, then bin + raster of the same damage
-            let ks = self.a1.stage(&u);
+            let ks = if self.skip_k { Default::default() } else { self.a1.stage(&u) };
             let dmg: Vec<(u16, u16)> = self.a1.last_tiles().iter().map(|&t| ((t as usize % self.a1.tx) as u16, (t as usize / self.a1.tx) as u16)).collect();
             let d = if full { Damage::All } else { Damage::Tiles(&dmg) };
-            c[7].time(|| binner.bin(&ks, fw, fh, stride as u32, &atlas, 0, &d, true, &mut prog));
-            let st = c[3].time(|| cpu::raster(&ks, &prog, &atlas, &mut self.pxk, stride, &self.pool, 0, Opt::default()));
-            c[4].time(|| cpu::raster(&ks, &prog, &atlas, &mut self.pxkp, stride, &self.pool, self.workers, Opt::default()));
-            let kt = c[5].time(|| {
-                self.kgpu.upload_frame(&ks, &prog);
-                self.kgpu.render(prog.tiles(), words)
-            });
-            c[5].gpu.push(kt.gpu);
             if rec {
                 tiles += fs.tiles as f64;
-                entries += st.entries as f64;
+            }
+            if !self.skip_k {
+                c[7].time(|| binner.bin(&ks, fw, fh, stride as u32, &atlas, 0, &d, true, &mut prog));
+                let st = c[3].time(|| cpu::raster(&ks, &prog, &atlas, &mut self.pxk, stride, &self.pool, 0, Opt::default()));
+                c[4].time(|| cpu::raster(&ks, &prog, &atlas, &mut self.pxkp, stride, &self.pool, self.workers, Opt::default()));
+                let kt = c[5].time(|| {
+                    self.kgpu.upload_frame(&ks, &prog);
+                    self.kgpu.render(prog.tiles(), words)
+                });
+                c[5].gpu.push(kt.gpu);
+                if rec {
+                    entries += st.entries as f64;
+                }
             }
             let ne = |a: &[u32], b: &[u32]| a.iter().zip(b).any(|(x, y)| x != y);
-            let bad = ne(&self.px1, &self.pxk) as usize + ne(&self.pxp, &self.pxk) as usize + ne(self.gpu.out(words), &self.pxk) as usize + ne(&self.pxkp, &self.pxk) as usize + (fs.tiles != gpu_tiles) as usize + (ptr.is_some() && pick != u.w[U_PICK]) as usize;
+            let bad = ne(&self.px1, &self.pxk) as usize + ne(&self.pxp, &self.pxk) as usize + ne(self.gpu.out(words), &self.pxk) as usize + ne(&self.pxkp, &self.pxk) as usize + (fs.tiles != gpu_tiles) as usize + (ptr.is_some() && pick != u.w[U_PICK]) as usize + drv_bad as usize;
             if bad != 0 {
                 self.mismatches += 1;
                 eprintln!("!! {} {phase} step {k}: {bad} of the cross-checks failed (tiles cpu {} gpu {gpu_tiles})", self.name, fs.tiles);
@@ -162,6 +196,11 @@ impl Bench {
         row(&p, "A  window pass + bins", &cells[6], tiles / n, "the per-record part of A1 / AP");
         row(&p, &format!("AP archetype cpu {}+1", self.workers), &cells[1], tiles / n, "shade only");
         row(&p, "AG archetype gpu resident", &cells[2], tiles / n, "block write + encode + wait");
+        if self.gpu.split {
+            let m: Vec<String> = passes.iter().map(|v| format!("{:.0}", med(v).unwrap_or(0.0) * 1e6)).collect();
+            println!("{p}\tAG passes, each in its own command buffer (us of GPU time): pick {} window {} bin {} compact {} shade {}", m[0], m[1], m[2], m[3], m[4]);
+        }
+        row(&p, "AD driver, the plan's choice", &cells[8], tiles / n, &format!("{on_cpu} frames on one core, {on_gpu} on the GPU"));
         row(&p, "K  generic bin", &cells[7], tiles / n, &format!("{:.1} entries per tile after the cut", entries / tiles.max(1.0)));
         row(&p, "K1 generic cpu 1 core", &cells[3], tiles / n, "raster only; restage free, bin above");
         row(&p, &format!("KP generic cpu {}+1", self.workers), &cells[4], tiles / n, "raster only");
@@ -196,26 +235,28 @@ fn main() {
         "canvas" => plan::print("canvas (const PLAN)", &canvas::PLAN.arch, &canvas::PLAN.whole, &canvas::PLAN.deps),
         _ => plan::print("anim (const PLAN)", &anim::PLAN.arch, &anim::PLAN.whole, &anim::PLAN.deps),
     }
-    let descs: Vec<&'static Desc> = a1.cols.iter().map(|c| c.desc).collect();
+    let descs: Vec<&'static Desc> = a1.cols().iter().map(|c| c.desc).collect();
     let t = Instant::now();
     let (_, whole, _) = plan::plan_dyn(&descs);
     let plan_s = t.elapsed().as_secs_f64();
-    let lays: Vec<(usize, usize)> = a1.cols.iter().map(|c| (c.base, c.desc.words)).collect();
+    let lays: Vec<(usize, usize)> = a1.cols().iter().map(|c| (c.base, c.desc.words)).collect();
     let t = Instant::now();
     let src = bough_paint::metal::source(&descs.iter().map(|d| *d as &Desc).collect::<Vec<_>>(), &lays, a1.tab_region().0);
     let gen_s = t.elapsed().as_secs_f64();
     let (fw, fh) = (a1.fw, a1.fh);
     let words = (fw * fh) as usize;
-    let mut gpu = Gpu::new(&ag, words, 192).expect("Metal");
+    let mut gpu = unsafe { Gpu::new(&ag, words, 192) }.expect("Metal");
     let (tab_keys, t) = (ag.tab_jobs().len(), Instant::now());
     let (tab_gpu_s, tab_entries) = gpu.fill_tabs(&mut ag);
     println!("# corner tables: {tab_keys} keys, {tab_entries} entries ({} KiB), filled on the GPU in {:.2} ms of GPU time, {:.2} ms wall", ag.tab_region().1 * 4 / 1024, tab_gpu_s * 1e3, t.elapsed().as_secs_f64() * 1e3);
-    println!("# scene: {}x{} px, {} tiles, {} records in {} columns, {} column words ({} KiB); mount {:.1} ms", fw, fh, a1.tx * a1.ty, a1.records(), a1.cols.len(), a1.used_words(), a1.used_words() * 4 / 1024, mount_s * 1e3);
+    println!("# scene: {}x{} px, {} tiles, {} records in {} columns, {} column words ({} KiB); mount {:.1} ms", fw, fh, a1.tx * a1.ty, a1.records(), a1.cols().len(), a1.used_words(), a1.used_words() * 4 / 1024, mount_s * 1e3);
     println!("# start-up: whole-scene plan from the mounted columns {:.1} us (gpu {}), source assembly {:.2} ms ({} bytes, of which leaves {}), Metal compile + 5+{} pipelines {:.0} ms", plan_s * 1e6, whole.gpu, gen_s * 1e3, src.len(), bough_paint::emit::LEAVES_MSL.len(), descs.len(), gpu.compile_s * 1e3);
     let t = Instant::now();
     let kgpu = bough_kernel::gpu_executor().expect("Metal");
     println!("# generic kernel: Metal compile {:.0} ms ({} bytes of MSL)", t.elapsed().as_secs_f64() * 1e3, bough_kernel::KERNEL_MSL.len());
-    let mut b = Bench { name: if which == "canvas" { "canvas" } else { "anim" }, model, a1, ap, ag, gpu, kgpu, px1: vec![0; words], pxp: vec![0; words], pxk: vec![0; words], pxkp: vec![0; words], pool: Pool::new(workers), workers, u: U::default(), reps, mismatches: 0 };
+    let (ad, _) = build(3);
+    let drv = Driver::new(ad, whole, workers);
+    let mut b = Bench { name: if which == "canvas" { "canvas" } else { "anim" }, model, a1, ap, ag, gpu, drv, skip_k: std::env::var("SKIP_K").is_ok(), kgpu, px1: vec![0; words], pxp: vec![0; words], pxk: vec![0; words], pxkp: vec![0; words], pool: Pool::new(workers), workers, u: U::default(), reps, mismatches: 0 };
     {
         // the generic GPU executor's atlas (uploaded once)
         let ks = b.a1.stage(&b.u);
@@ -235,6 +276,9 @@ fn main() {
     if which == "canvas" {
         let on = canvas::row_point(3);
         b.phase("hover", false, |k, _| Some(if k % 2 == 0 { on } else { canvas::NOWHERE }));
+        // one record: a layers row that is no component's (its own background is all that changes)
+        let one = canvas::row_point(9);
+        b.phase("hover1", false, |k, _| Some(if k % 2 == 0 { one } else { canvas::NOWHERE }));
         b.phase("theme", false, |k, u| {
             u.w[2] = if k % 2 == 0 { 32768 } else { 0 };
             None

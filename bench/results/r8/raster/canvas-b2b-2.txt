@@ -59,3 +59,69 @@ canvas.hover	K  generic bin	1576	1123	1708	-	9282.5	4425.0	0.0	48.7 entries per 
 canvas.hover	K1 generic cpu 1 core	1576	1606506	1727109	-	17061537.4	4679126.7	0.0	raster only; restage free, bin above
 canvas.hover	KP generic cpu 5+1	1576	412364	503704	-	2490954.2	743999.5	0.0	raster only
 canvas.hover	KG generic gpu	1576	27157	36121	33171	659.6	694.0	0.0	upload + tile kernel + wait
+canvas.theme	A1 archetype cpu 1 core	4000	289050	319926	-	4477928.3	897984.3	0.0	pick + window pass + bins + shade
+canvas.theme	A  window pass + bins	4000	58	63	-	778.7	207.0	0.0	the per-record part of A1 / AP
+canvas.theme	AP archetype cpu 5+1	4000	67379	77747	-	742428.1	163231.8	0.0	shade only
+canvas.theme	AG archetype gpu resident	4000	19456	20610	18023	80.1	252.9	0.0	block write + encode + wait
+canvas.theme	K  generic bin	4000	1010	1131	-	10254.9	3559.4	0.0	25.2 entries per tile after the cut
+canvas.theme	K1 generic cpu 1 core	4000	1638077	1874815	-	21103732.0	5416374.3	0.0	raster only; restage free, bin above
+canvas.theme	KP generic cpu 5+1	4000	451667	511019	-	3514032.1	1055027.3	0.0	raster only
+canvas.theme	KG generic gpu	4000	31639	34062	31008	985.6	1078.0	0.0	upload + tile kernel + wait
+canvas.pan	A1 archetype cpu 1 core	2132	237571	296022	-	4061899.4	790327.2	0.0	pick + window pass + bins + shade
+canvas.pan	A  window pass + bins	2132	1121	1939	-	11859.0	4628.8	0.0	the per-record part of A1 / AP
+canvas.pan	AP archetype cpu 5+1	2132	50026	72797	-	603094.4	136309.0	0.0	shade only
+canvas.pan	AG archetype gpu resident	2132	17644	22260	19493	99.3	256.4	0.0	block write + encode + wait
+canvas.pan	K  generic bin	2132	916	1295	-	9274.3	3493.0	0.0	41.7 entries per tile after the cut
+canvas.pan	K1 generic cpu 1 core	2132	1545625	1949679	-	18945437.9	5175407.9	0.0	raster only; restage free, bin above
+canvas.pan	KP generic cpu 5+1	2132	418865	488756	-	3059071.6	890569.4	0.0	raster only
+canvas.pan	KG generic gpu	2132	26569	30208	27135	649.3	624.5	0.0	upload + tile kernel + wait
+canvas.drag	A1 archetype cpu 1 core	11	1812	2607	-	31917.0	6985.3	0.0	pick + window pass + bins + shade
+canvas.drag	A  window pass + bins	11	586	947	-	6098.9	2357.7	0.0	the per-record part of A1 / AP
+canvas.drag	AP archetype cpu 5+1	11	1128	2384	-	25753.4	5577.6	0.0	shade only
+canvas.drag	AG archetype gpu resident	11	3731	3928	3281	78.2	233.1	0.0	block write + encode + wait
+canvas.drag	K  generic bin	11	95	223	-	1894.7	590.9	0.0	56.5 entries per tile after the cut
+canvas.drag	K1 generic cpu 1 core	11	15060	21709	-	169952.9	54630.0	0.0	raster only; restage free, bin above
+canvas.drag	KP generic cpu 5+1	11	6059	12314	-	76230.7	23069.4	0.0	raster only
+canvas.drag	KG generic gpu	11	1470	1597	864	538.8	434.1	0.0	upload + tile kernel + wait
+canvas.time	A1 archetype cpu 1 core	453	62747	78656	-	990087.9	215318.6	0.0	pick + window pass + bins + shade
+canvas.time	A  window pass + bins	453	637	826	-	6087.4	2265.1	0.0	the per-record part of A1 / AP
+canvas.time	AP archetype cpu 5+1	453	11979	19458	-	147941.9	34698.9	0.0	shade only
+canvas.time	AG archetype gpu resident	453	6806	7665	7198	75.1	234.9	0.0	block write + encode + wait
+canvas.time	K  generic bin	453	935	1367	-	6752.9	3608.0	0.0	50.0 entries per tile after the cut
+canvas.time	K1 generic cpu 1 core	453	471060	597838	-	4961558.2	1500561.6	0.0	raster only; restage free, bin above
+canvas.time	KP generic cpu 5+1	453	111293	141603	-	673991.7	197956.1	0.0	raster only
+canvas.time	KG generic gpu	453	7829	14848	14193	546.8	455.2	0.0	upload + tile kernel + wait
+# cross-check failures: 0; load at end: ?
+ 14:59:00 up 2 days 3:43,  49 users,  load average: 21.62, 19.94, 17.39
+# pbench canvas None; reps 6; workers 5; load at start: ?
+# corner tables: 0 keys, 0 entries (0 KiB), filled on the GPU in 0.00 ms of GPU time, 0.00 ms wall
+# scene: 2560x1600 px, 4000 tiles, 19476 records in 14 columns, 776576 column words (3033 KiB); mount 3.7 ms
+# start-up: whole-scene plan from the mounted columns 1.9 us (gpu true), source assembly 1.36 ms (180368 bytes, of which leaves 62891), Metal compile + 5+14 pipelines 6 ms
+# generic kernel: Metal compile 0 ms (48585 bytes of MSL)
+# generic kernel: restaging every record costs 1.27 ms for 20508 commands (not charged to K rows)
+canvas.full	A1 archetype cpu 1 core	4000	838753	1019031	-	7610745.4	2233203.6	0.0	pick + window pass + bins + shade
+canvas.full	A  window pass + bins	4000	1098	1483	-	11472.9	4092.6	0.0	the per-record part of A1 / AP
+canvas.full	AP archetype cpu 5+1	4000	156950	218617	-	1150058.3	344033.8	0.0	shade only
+canvas.full	AG archetype gpu resident	4000	30426	35981	32153	156.1	382.5	0.0	block write + encode + wait
+canvas.hover	A1 archetype cpu 1 core	1576	611310	727880	-	5872397.4	1681878.7	0.0	pick + window pass + bins + shade
+canvas.hover	A  window pass + bins	1576	23	33	-	171.6	107.8	0.0	the per-record part of A1 / AP
+canvas.hover	AP archetype cpu 5+1	1576	139781	162890	-	863319.3	272535.5	0.0	shade only
+canvas.hover	AG archetype gpu resident	1576	23468	24945	22111	93.5	310.8	0.0	block write + encode + wait
+canvas.theme	A1 archetype cpu 1 core	4000	903238	988509	-	7604447.2	2298452.4	0.0	pick + window pass + bins + shade
+canvas.theme	A  window pass + bins	4000	65	84	-	788.8	249.9	0.0	the per-record part of A1 / AP
+canvas.theme	AP archetype cpu 5+1	4000	194527	202046	-	1033485.5	292596.7	0.0	shade only
+canvas.theme	AG archetype gpu resident	4000	29828	32029	27587	104.1	299.0	0.0	block write + encode + wait
+canvas.pan	A1 archetype cpu 1 core	2132	855403	935251	-	6909676.9	2086836.2	0.0	pick + window pass + bins + shade
+canvas.pan	A  window pass + bins	2132	1679	1874	-	11854.3	4590.8	0.0	the per-record part of A1 / AP
+canvas.pan	AP archetype cpu 5+1	2132	151658	197990	-	890126.6	250155.9	0.0	shade only
+canvas.pan	AG archetype gpu resident	2132	27554	34934	31466	120.7	296.4	0.0	block write + encode + wait
+canvas.drag	A1 archetype cpu 1 core	10	4439	6568	-	35398.0	12155.4	0.0	pick + window pass + bins + shade
+canvas.drag	A  window pass + bins	10	988	1246	-	6461.4	2637.7	0.0	the per-record part of A1 / AP
+canvas.drag	AP archetype cpu 5+1	10	2289	4824	-	28873.9	11476.1	0.0	shade only
+canvas.drag	AG archetype gpu resident	10	4263	4460	4104	69.1	219.5	0.0	block write + encode + wait
+canvas.time	A1 archetype cpu 1 core	483	189241	230659	-	1897923.7	558979.0	0.0	pick + window pass + bins + shade
+canvas.time	A  window pass + bins	483	691	933	-	6427.9	2615.2	0.0	the per-record part of A1 / AP
+canvas.time	AP archetype cpu 5+1	483	37990	51977	-	286395.1	91873.3	0.0	shade only
+canvas.time	AG archetype gpu resident	483	10903	12533	10866	80.9	219.2	0.0	block write + encode + wait
+# cross-check failures: 0; load at end: ?
+ 15:01:33 up 2 days 3:46,  49 users,  load average: 26.33, 22.31, 18.75

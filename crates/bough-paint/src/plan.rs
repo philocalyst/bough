@@ -90,6 +90,8 @@ pub const fn cpu_tiles(worst: Cost) -> u32 {
 }
 
 pub const fn whole(a: &[ArchPlan]) -> (Whole, [u32; 64]) {
+    // `deps` names archetypes by bit
+    assert!(a.len() <= 32, "a plan over more than 32 archetypes");
     let mut w = Whole { gpu: false, block: 0, rebin_on: 0, cut: false, pick: false, cpu_tiles: 0, words: 0 };
     let mut deps = [0u32; 64];
     let mut worst = Cost::Flat;
@@ -119,6 +121,7 @@ pub const fn whole(a: &[ArchPlan]) -> (Whole, [u32; 64]) {
 }
 
 pub const fn plan<const N: usize>(d: [&'static Desc; N]) -> Plan<N> {
+    assert!(N >= 1, "a plan over no archetype");
     let mut a = [arch(d[0]); N];
     let mut k = 1;
     while k < N {

@@ -22,8 +22,10 @@ pub enum Ran {
 }
 
 pub struct Driver {
-    pub scene: Scene,
-    pub gpu: Option<Gpu>,
+    /// The GPU executor binds the scene's arena without a copy: it is declared (and so dropped) before the
+    /// scene, and neither is reachable for writing except through this driver.
+    gpu: Option<Gpu>,
+    scene: Scene,
     whole: Whole,
     pool: Pool,
     /// The surface when there is no GPU.
@@ -43,19 +45,49 @@ pub struct Driver {
     seen_set: u32,
 }
 
+/// Up to this many tiles of predicted damage the CPU's window pass looks before an executor is chosen.
+const LOOK_TILES: u32 = 1024;
+/// The cost model's constants, M3 Pro, 2026-11-12 (`pbench`): a CPU core shades about 0.125 us per unit of
+/// tile weight; a GPU frame costs a 0.25 ms round trip, 3 ms more when the bin pass runs, and about 5 us per
+/// damaged tile. To be measured at start-up rather than written down.
+const CPU_NS_PER_WEIGHT: u64 = 125;
+const GPU_TRIP_NS: u64 = 250_000;
+const GPU_BIN_NS: u64 = 3_000_000;
+const GPU_NS_PER_TILE: u64 = 5_000;
+
 impl Driver {
     /// `whole` is the plan's whole-scene half for this scene's archetypes. No Metal object is created
     /// unless it asks for one.
     pub fn new(mut scene: Scene, whole: Whole, workers: usize) -> Driver {
         let words = (scene.fw * scene.fh) as usize;
         let cap = 192;
-        let mut gpu = if whole.gpu { Gpu::new(&scene, words, cap) } else { None };
+        // SAFETY: this driver owns the scene for as long as the executor (declared before it, so dropped
+        // first) and writes the arena only between the executor's calls, each of which waits for the GPU.
+        let mut gpu = if whole.gpu { unsafe { Gpu::new(&scene, words, cap) } } else { None };
         if let Some(g) = gpu.as_mut() {
             g.fill_tabs(&mut scene);
         }
         let own = if gpu.is_some() { Vec::new() } else { vec![0; words] };
         // unknown damage is assumed large: the first write to a word goes to the GPU when there is one
-        Driver { scene, gpu, whole, pool: Pool::new(workers), own, shown: U::default(), cpu_current: false, gpu_current: false, seen: [u32::MAX; 64], tiles: Vec::new(), cap, pending: false, seen_set: 0 }
+        Driver { gpu, scene, whole, pool: Pool::new(workers), own, shown: U::default(), cpu_current: false, gpu_current: false, seen: [u32::MAX; 64], tiles: Vec::new(), cap, pending: false, seen_set: 0 }
+    }
+    /// The plan's whole-scene half this driver was made with.
+    pub fn whole(&self) -> &Whole {
+        &self.whole
+    }
+    pub fn scene(&self) -> &Scene {
+        &self.scene
+    }
+    pub fn gpu(&self) -> Option<&Gpu> {
+        self.gpu.as_ref()
+    }
+    /// Forget what the surface shows: the next frame redraws everything.
+    pub fn invalidate(&mut self) {
+        self.scene.invalidate();
+        if let Some(g) = self.gpu.as_mut() {
+            g.invalidate();
+        }
+        (self.cpu_current, self.gpu_current) = (false, false);
     }
     pub fn pixels(&self) -> &[u32] {
         let words = (self.scene.fw * self.scene.fh) as usize;
@@ -95,17 +127,44 @@ impl Driver {
         if self.pending {
             predicted = predicted.max(self.seen_set);
         }
-        let on_cpu = self.gpu.is_none() || (started && predicted <= self.whole.cpu_tiles);
-        let (ran, tiles) = if on_cpu {
+        // A frame that damaged a large part of the surface last time goes to the GPU unseen. Otherwise the
+        // CPU's window pass finds the damage (tens of microseconds for a pointer word) and the two
+        // executors' costs are compared for exactly those tiles: the CPU's from the tiles' weights, the
+        // GPU's from its round trip, its bin pass if a window moved, and the tile count.
+        let mut on_cpu = self.gpu.is_none();
+        let mut cpu_tiles: Option<Vec<u32>> = None;
+        if !on_cpu && started && predicted <= LOOK_TILES {
             self.cpu_catch_up();
             if let Some((x, y)) = pointer {
                 let shown = self.shown;
                 u.w[U_PICK] = self.scene.pick(&shown, x, y);
             }
-            self.scene.update(u);
+            let fs = self.scene.update(u);
             let mut tl = std::mem::take(&mut self.tiles);
             self.scene.damage.tiles(&mut tl);
             self.scene.damage.clear();
+            let weight: u64 = tl.iter().map(|&t| self.scene.tile_weight(t) as u64).sum();
+            let cpu_ns = weight * CPU_NS_PER_WEIGHT;
+            let gpu_ns = GPU_TRIP_NS + if fs.rebinned { GPU_BIN_NS } else { 0 } + tl.len() as u64 * GPU_NS_PER_TILE;
+            on_cpu = cpu_ns <= gpu_ns;
+            cpu_tiles = Some(tl);
+        }
+        let (ran, tiles) = if on_cpu {
+            let tl = match cpu_tiles.take() {
+                Some(tl) => tl,
+                None => {
+                    self.cpu_catch_up();
+                    if let Some((x, y)) = pointer {
+                        let shown = self.shown;
+                        u.w[U_PICK] = self.scene.pick(&shown, x, y);
+                    }
+                    self.scene.update(u);
+                    let mut tl = std::mem::take(&mut self.tiles);
+                    self.scene.damage.tiles(&mut tl);
+                    self.scene.damage.clear();
+                    tl
+                }
+            };
             let out = match self.gpu.as_mut() {
                 Some(g) => g.out_mut(words),
                 None => &mut self.own[..],
@@ -117,6 +176,11 @@ impl Driver {
             self.gpu_current = false;
             (Ran::Cpu, n)
         } else {
+            if let Some(tl) = cpu_tiles.take() {
+                // the CPU looked and left the frame to the GPU, which draws the same block: the CPU's lanes
+                // are where the surface will be
+                self.tiles = tl;
+            }
             let g = self.gpu.as_mut().unwrap();
             if !self.gpu_current && started {
                 g.catch_up(&self.shown, stride);
