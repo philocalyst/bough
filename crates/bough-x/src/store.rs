@@ -4,7 +4,7 @@
 //! not generic. A column is created by the first record described at a position of the shape and is written
 //! through a typed pointer; every pass over a column (damage, hit testing, paint) is one function monomorphised
 //! for the column's archetype, reached once per column through its [`Desc`].
-use crate::expr::{StageId, U, U_TIME, Words};
+use crate::expr::{Slot, StageId, U, U_SCALE, U_TIME, Words};
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::any::TypeId;
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
@@ -60,7 +60,7 @@ impl Tiles {
             let s = self.sweeps[i];
             #[cfg(not(feature = "mutant_sweep"))]
             self.mark(s.rect.shift(s.space.origin(u)).and(s.space.clip));
-            if now >= s.until {
+            if !crate::expr::ahead(s.until, now) {
                 self.sweeps.swap_remove(i);
             } else {
                 i += 1;
@@ -143,6 +143,8 @@ impl Tiles {
 }
 
 pub const NO_WORD: u8 = 0xff;
+/// Set in `Space::scroll` beside the word's number: the word is an `f32` of points, not an `i32` of pixels.
+pub const POINTS: u8 = 0x40;
 
 /// A coordinate space: where a store's records are on screen. The origin moves with one word of the block
 /// (a scroll offset, an `i32` of device pixels), so scrolling rewrites no record.
@@ -158,7 +160,15 @@ impl Space {
     }
     #[inline(always)]
     pub fn origin(&self, u: &U) -> (i32, i32) {
-        if self.scroll == NO_WORD { self.base } else { (self.base.0, self.base.1 - u.w[self.scroll as usize & 63] as i32) }
+        if self.scroll == NO_WORD {
+            self.base
+        } else if self.scroll & POINTS == 0 {
+            (self.base.0, self.base.1 - u.w[self.scroll as usize & 63] as i32)
+        } else {
+            // the application's own scroll offset: an `f32` of points
+            let y = f32::from_bits(u.w[self.scroll as usize & 63]) * f32::from_bits(u.w[U_SCALE]);
+            (self.base.0, self.base.1 - y.round() as i32)
+        }
     }
     #[inline(always)]
     pub fn reads(&self) -> u64 {
@@ -233,6 +243,20 @@ pub trait Arch: Words {
     fn sweep(&self, r: Rect, _u: &U) -> Rect {
         r
     }
+    /// The record holds words the core writes (a transition's start): see [`Arch::carry`].
+    const STATE: bool = false;
+    /// The same operands as `o`, state words aside. Only asked when `STATE`.
+    #[inline(always)]
+    fn eq_ops(&self, o: &Self) -> bool {
+        self.same(o)
+    }
+    /// `self` takes over from `was`, which was showing under `old`: its transitions start from what `was`
+    /// showed. Called for a record whose operands were re-described and for one a block change retargets.
+    #[inline(always)]
+    fn carry(&mut self, _was: &Self, _old: &U, _new: &U) {}
+    /// The root view's fields its block words are gathered from (see `Expr::slots`).
+    #[inline]
+    fn slots(_f: &mut dyn FnMut(Slot)) {}
     /// The derivative: does this record show something else under `new` than under `old`?
     fn changed(&self, old: &U, new: &U) -> bool;
     #[inline(always)]
@@ -359,6 +383,7 @@ pub struct Desc {
     pub timed: bool,
     delta: DeltaFn,
     active: ActiveFn,
+    pub slots: fn(&mut dyn FnMut(Slot)),
     paint: unsafe fn(&RawCol, &StoreView, &U, *mut ()),
 }
 
@@ -375,6 +400,7 @@ impl<A: Arch, B: Backend> Holder<A, B> {
         timed: A::TIMED,
         delta: delta_col::<A>,
         active: if A::TIMED { active_col::<A> } else { active_none },
+        slots: A::slots,
         paint: paint_col::<A, B>,
     };
 }
@@ -593,6 +619,13 @@ pub struct Store {
     /// The block words some column here reads, and whether some column reads `Time`.
     pub reads: u64,
     pub timed: bool,
+    /// A list of elements: the rects of its first row as laid out (what its columns were discovered with, and
+    /// where a row is before its own layout is asked), and the width, x and y it was laid out for.
+    pub row0: Vec<Rect>,
+    pub lay: (i32, i32, i32),
+    /// A list's one followed row (the focused one): its index, kept through the relation's inserts and removes
+    /// by the list pass. `u32::MAX`: none; `u32::MAX - 1`: it was removed or lost.
+    pub track: u32,
 }
 
 static COL_ID: AtomicU32 = AtomicU32::new(1);
@@ -600,7 +633,7 @@ static COL_ID: AtomicU32 = AtomicU32::new(1);
 impl Store {
     pub fn new(cap: u32, space: Space) -> Store {
         assert!(cap == 1 || (cap >= 64 && cap.is_power_of_two()));
-        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), src: None, tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false }
+        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), src: None, tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false, row0: Vec::new(), lay: (0, 0, 0), track: u32::MAX }
     }
     #[inline(always)]
     pub fn view(&self) -> StoreView<'_> {
@@ -640,9 +673,18 @@ impl Store {
         self.sites.push(Site { page: core::ptr::null_mut(), page_size: 0, col: j as u32, base, cap: core::ptr::null_mut() });
         self.fix_sites();
     }
+    /// A position of the shape that is not a record (a child with its own space): a site that holds nothing,
+    /// so the positions of a row and of its layout count alike.
+    #[cold]
+    pub fn hole(&mut self) {
+        self.sites.push(Site { page: core::ptr::null_mut(), page_size: 0, col: u32::MAX, base: 0, cap: core::ptr::null_mut() });
+    }
     /// Point every site at its column's pages. Run whenever a column's pages may have moved.
     fn fix_sites(&mut self) {
         for s in &mut self.sites {
+            if s.col == u32::MAX {
+                continue;
+            }
             let c = &self.cols[s.col as usize];
             // SAFETY: `base / 64` is a page of the column (`discover` grew it to hold the site).
             s.page = unsafe { c.pages.add((s.base >> 6) as usize * c.desc.page.size()) };
@@ -727,6 +769,38 @@ impl Store {
         }
     }
 
+    /// Whether painting this store's columns one after another still paints its records in the order they were
+    /// described wherever two of them overlap: the condition its columns were grouped under at discovery
+    /// (`discover`), which a later change of geometry can break. Checked when a fixed record's rect changes.
+    pub fn order_holds(&self) -> bool {
+        let rect = |s: &Site| {
+            // SAFETY: a record's site of this fixed store; slot 0 exists.
+            if s.col == u32::MAX { Rect::default() } else { unsafe { s.rect(0) } }
+        };
+        for (i, a) in self.sites.iter().enumerate() {
+            for b in &self.sites[i + 1..] {
+                if a.col != u32::MAX && b.col != u32::MAX && b.col < a.col && rect(a).hits(rect(b)) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+    /// Every byte this store and the stores under it hold: pages, capture lanes, and the bookkeeping vectors
+    /// at their capacity. (`stats` counts pages only.)
+    pub fn bytes_all(&self) -> usize {
+        let mut n = size_of::<Store>();
+        for c in &self.cols {
+            n += c.npages as usize * c.desc.page.size();
+            if let Some(o) = c.hover {
+                n += o.caps as usize * c.npages as usize * 64;
+            }
+        }
+        n += self.cols.capacity() * size_of::<RawCol>() + self.sites.capacity() * size_of::<Site>() + self.order.capacity() * size_of::<Pass>();
+        n += self.row_live.capacity() * 8 + self.disc.capacity() * size_of::<(u32, Rect)>() + self.rows.capacity() * size_of::<(TypeId, u32)>();
+        n += (self.tmpl.capacity() + self.row0.capacity()) * size_of::<Rect>() + self.plan.capacity() * 4;
+        n + self.subs.iter().map(|s| s.bytes_all()).sum::<usize>() + (self.subs.capacity() - self.subs.len()) * size_of::<Store>()
+    }
     /// The block words read by some column of this store or of the stores under it.
     pub fn reads_all(&self) -> u64 {
         self.subs.iter().fold(self.reads, |m, s| m | s.reads_all())
@@ -788,6 +862,13 @@ impl Store {
         }
     }
 
+    pub fn at_mut(&mut self, path: &Path) -> Option<&mut Store> {
+        let mut s = self;
+        for &q in &path.at[..path.n as usize] {
+            s = s.subs.get_mut(q as usize)?;
+        }
+        Some(s)
+    }
     pub fn at(&self, path: &Path) -> Option<&Store> {
         let mut s = self;
         for &q in &path.at[..path.n as usize] {
@@ -868,6 +949,21 @@ unsafe fn delta_col<A: Arch>(e: &ColEnt, old: &U, new: &U, tiles: &mut Tiles) {
         let m = m & 0x5555_5555_5555_5555;
         if m != 0 {
             mark_page(pg, m, org, clip, old, new, tiles);
+            if A::STATE {
+                // records whose target moved: their transitions start from what they show now
+                let mut k = m;
+                while k != 0 {
+                    let i = k.trailing_zeros() as usize;
+                    k &= k - 1;
+                    // SAFETY: the world's delta holds the stores exclusively (`&mut World`); record `i` of this
+                    // page is live and of type `A`.
+                    unsafe {
+                        let p = (&raw const pg.rec[i]) as *mut A;
+                        let was = *p;
+                        (*p).carry(&was, old, new);
+                    }
+                }
+            }
         }
     }
 }
@@ -891,9 +987,9 @@ unsafe fn active_col<A: Arch>(col: &RawCol, sv: &StoreView, u: &U) -> (u32, Rect
             let i = k.trailing_zeros() as usize;
             k &= k - 1;
             let t = pg.rec[i].until(u);
-            if t > now {
+            if crate::expr::ahead(t, now) {
                 sweep = sweep.or(pg.rec[i].sweep(pg.rect(i), u));
-                until = until.max(t);
+                until = crate::expr::latest(until, t, now);
             }
         }
     }
@@ -961,7 +1057,18 @@ unsafe fn hit_col<A: Arch>(col: &RawCol, sv: &StoreView, u: &U, x: i32, y: i32) 
         if live == 0 {
             continue;
         }
-        let m = if live.count_ones() <= 12 {
+        let m = if A::MOVES {
+            // a record its paint moves is where it is shown: the same offset the paint applies
+            let (mut m, mut l) = (0u64, live);
+            while l != 0 {
+                let i = l.trailing_zeros() as usize;
+                l &= l - 1;
+                let (dx, dy) = pg.rec[i].offset(u);
+                let (x, y) = (x - dx, y - dy);
+                m |= (((x >= pg.x0[i]) & (x < pg.x1[i]) & (y >= pg.y0[i]) & (y < pg.y1[i])) as u64) << i;
+            }
+            m
+        } else if live.count_ones() <= 12 {
             let (mut m, mut l) = (0u64, live);
             while l != 0 {
                 let i = l.trailing_zeros() as usize;

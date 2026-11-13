@@ -135,7 +135,7 @@ impl Backend for Soft {
         col.each(|r, a| {
             self.records += 1;
             let mut buf = [0u8; 24];
-            let n = format_num(a.value(u), A::DECIMALS, &mut buf);
+            let n = format_num(a.value(u), a.decimals(), &mut buf);
             let r = r.shift(org);
             self.text(r, r.and(clip), &buf[..n], a.color(u).0)
         });
@@ -145,8 +145,7 @@ impl Backend for Soft {
         col.each(|r, a| {
             self.records += 1;
             let r = r.shift(org);
-            let (b, n) = a.text().bytes();
-            self.text(r, r.and(clip), &b[..n], a.color(u).0)
+            self.text(r, r.and(clip), a.str(), a.color(u).0)
         });
     }
     fn outline<A: OutlineArch>(&mut self, col: ColRef<'_, A>, u: &U) {
@@ -154,7 +153,7 @@ impl Backend for Soft {
         col.each(|r, a| {
             self.records += 1;
             let r = r.shift(org).shift(a.offset(u));
-            let (w, c) = (A::WIDTH, a.color(u).0);
+            let (w, c) = (a.width(u), a.color(u).0);
             for e in [Rect { y1: r.y0 + w, ..r }, Rect { y0: r.y1 - w, ..r }, Rect { x1: r.x0 + w, ..r }, Rect { x0: r.x1 - w, ..r }] {
                 self.rect(e.and(clip), c);
             }
@@ -190,7 +189,17 @@ struct Now<'a, 'r, 's, V> {
     at: (i32, i32),
     k: usize,
 }
+struct Rects(Vec<Rect>);
+impl bough_lay::Out for Rects {
+    #[inline]
+    fn put(&mut self, k: usize, r: [i32; 4]) {
+        self.0[k] = Rect { x0: r[0], y0: r[1], x1: r[2], y1: r[3] };
+    }
+}
 impl<V> Leaf<V> for Now<'_, '_, '_, V> {
+    fn hole(&mut self) {
+        self.k += 1;
+    }
     fn leaf<A: Arch>(&mut self, a: &A, _: TypeId, _: Option<Hov>) {
         self.im.one(self.rects[self.k].shift(self.at), a);
         self.k += 1;
@@ -207,6 +216,30 @@ impl<'s, V> Sink<V> for Immediate<'s, V> {
     fn scope<F: for<'r> FnOnce(&mut <Self as ScopeOf<'r, V>>::Scope)>(&mut self, space: Space, f: F) {
         let mut sub = Immediate { soft: &mut *self.soft, u: self.u, space, _p: PhantomData };
         f(&mut sub);
+    }
+    fn env(&self) -> crate::sink::Env<'_> {
+        crate::sink::Env { scale: f32::from_bits(self.u.w[crate::expr::U_SCALE]), size: [self.soft.w as f32, self.soft.h as f32], u: self.u }
+    }
+    fn rows<R: Row<V> + bough_lay::Lay, F: FnMut(usize) -> R>(&mut self, n: u32, geo: Option<crate::sink::Geo>, mut f: F) -> i32 {
+        let g = geo.expect("the immediate sink lays out");
+        if n == 0 {
+            return 0;
+        }
+        let scale = f32::from_bits(self.u.w[crate::expr::U_SCALE]);
+        let mut rects = Rects(vec![Rect::default(); <R as bough_lay::Lay>::LEAVES]);
+        // the height of a row is the first row's, as in the stores
+        let row_h = bough_lay::place_row(&f(0), scale, self.u, g.w as f32, &mut rects).0;
+        if row_h == 0 {
+            return 0;
+        }
+        let l = List { n, row_h, x: g.x, y: g.y, shape: &[], edits: &crate::sink::FIXED };
+        let (lo, hi) = exposed(&l, self.space.origin(self.u), self.space.clip);
+        for r in lo..hi {
+            let row = f(r as usize);
+            bough_lay::place_row(&row, scale, self.u, g.w as f32, &mut rects);
+            row.visit(&mut Now { im: self, rects: &rects.0, at: (g.x, g.y + r as i32 * row_h), k: 0 });
+        }
+        n as i32 * row_h
     }
     fn list<R: Row<V>, F: FnMut(usize) -> R>(&mut self, l: &List<'_>, mut f: F) {
         let (lo, hi) = exposed(l, self.space.origin(self.u), self.space.clip);

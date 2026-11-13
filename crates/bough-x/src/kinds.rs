@@ -1,6 +1,6 @@
 //! Paint kinds: the closed set of things a record can be, each generic over the expressions of its operands.
 //! A kind applied to expression types is an archetype ([`Arch`]).
-use crate::expr::{Code, Color, Cx, Expr, Frame, Map, StageId, U, U_TIME, Words, later};
+use crate::expr::{Code, Color, Cx, Expr, Frame, Map, Slot, StageId, U, U_TIME, Words, later, latest, ramp_end};
 use crate::reflect::Val;
 use crate::store::{Arch, Backend, ColRef, Op, Rect};
 use core::mem::offset_of;
@@ -10,15 +10,27 @@ pub trait FillArch: Arch {
 }
 pub trait NumArch: Arch {
     const DECIMALS: u8;
+    /// The decimals of this record (a backend asks this, not the constant: a kind may keep them per record).
+    #[inline(always)]
+    fn decimals(&self) -> u8 {
+        Self::DECIMALS
+    }
     fn value(&self, u: &U) -> i32;
     fn color(&self, u: &U) -> Color;
 }
 pub trait LabelArch: Arch {
     fn text(&self) -> Txt;
+    /// The text as bytes (what a backend draws).
+    fn str(&self) -> &[u8];
     fn color(&self, u: &U) -> Color;
 }
 pub trait OutlineArch: Arch {
     const WIDTH: i32;
+    /// The border's width in device pixels (a backend asks this, not the constant).
+    #[inline(always)]
+    fn width(&self, _u: &U) -> i32 {
+        Self::WIDTH
+    }
     fn color(&self, u: &U) -> Color;
 }
 
@@ -32,6 +44,19 @@ impl<E: Expr<Out = Color>> Arch for Fill<E> {
     const OPS: &'static [Op] = &[Op { name: "color", code: E::CODE, ty: core::any::type_name::<E>, stage: E::STAGE, reads: E::READS, word: 0, words: (size_of::<E>() / 4) as u16 }];
     const READS: u64 = E::READS;
     const NAME: &'static str = "fill";
+    const STATE: bool = E::STATE;
+    #[inline(always)]
+    fn eq_ops(&self, o: &Self) -> bool {
+        self.0.eq_ops(&o.0)
+    }
+    #[inline(always)]
+    fn carry(&mut self, was: &Self, old: &U, new: &U) {
+        self.0.carry(&was.0, &Cx::of(old), &Cx::of(new));
+    }
+    #[inline]
+    fn slots(f: &mut dyn FnMut(Slot)) {
+        E::slots(f);
+    }
     const STAGE: StageId = E::STAGE;
     const TIMED: bool = E::READS >> U_TIME & 1 != 0;
     const ENDLESS: bool = !E::RESTS;
@@ -74,12 +99,27 @@ impl<const D: u8, V: Expr<Out = i32>, C: Expr<Out = Color>> Arch for Num<D, V, C
     ];
     const READS: u64 = V::READS | C::READS;
     const NAME: &'static str = "num";
+    const STATE: bool = V::STATE | C::STATE;
+    #[inline(always)]
+    fn eq_ops(&self, o: &Self) -> bool {
+        self.0.eq_ops(&o.0) & self.1.eq_ops(&o.1)
+    }
+    #[inline(always)]
+    fn carry(&mut self, was: &Self, old: &U, new: &U) {
+        self.0.carry(&was.0, &Cx::of(old), &Cx::of(new));
+        self.1.carry(&was.1, &Cx::of(old), &Cx::of(new));
+    }
+    #[inline]
+    fn slots(f: &mut dyn FnMut(Slot)) {
+        V::slots(f);
+        C::slots(f);
+    }
     const STAGE: StageId = later(&[V::STAGE, C::STAGE]);
     const TIMED: bool = (V::READS | C::READS) >> U_TIME & 1 != 0;
     const ENDLESS: bool = !(V::RESTS & C::RESTS);
     #[inline(always)]
     fn until(&self, u: &U) -> u32 {
-        self.0.until(&Cx::of(u)).max(self.1.until(&Cx::of(u)))
+        latest(self.0.until(&Cx::of(u)), self.1.until(&Cx::of(u)), u.w[U_TIME])
     }
     #[inline(always)]
     fn changed(&self, old: &U, new: &U) -> bool {
@@ -128,6 +168,14 @@ impl Txt {
         }
         Txt(t)
     }
+    /// The text's bytes, in place.
+    #[inline(always)]
+    pub fn str(&self) -> &[u8] {
+        // SAFETY: three words are twelve initialised bytes; on a little-endian target byte `i` is bits
+        // `8 * (i % 4)` of word `i / 4`, which is how `new` packed them.
+        let b = unsafe { core::slice::from_raw_parts(self.0.as_ptr() as *const u8, 12) };
+        &b[..b.iter().position(|&c| c == 0).unwrap_or(12)]
+    }
     /// The bytes and how many of them are text.
     pub fn bytes(&self) -> ([u8; 12], usize) {
         let mut b = [0u8; 12];
@@ -151,6 +199,19 @@ impl<C: Expr<Out = Color>> Arch for Label<C> {
     ];
     const READS: u64 = C::READS;
     const NAME: &'static str = "label";
+    const STATE: bool = C::STATE;
+    #[inline(always)]
+    fn eq_ops(&self, o: &Self) -> bool {
+        (self.0 == o.0) & self.1.eq_ops(&o.1)
+    }
+    #[inline(always)]
+    fn carry(&mut self, was: &Self, old: &U, new: &U) {
+        self.1.carry(&was.1, &Cx::of(old), &Cx::of(new));
+    }
+    #[inline]
+    fn slots(f: &mut dyn FnMut(Slot)) {
+        C::slots(f);
+    }
     const STAGE: StageId = C::STAGE;
     const TIMED: bool = C::READS >> U_TIME & 1 != 0;
     const ENDLESS: bool = !C::RESTS;
@@ -181,6 +242,10 @@ impl<C: Expr<Out = Color>> LabelArch for Label<C> {
         self.0
     }
     #[inline(always)]
+    fn str(&self) -> &[u8] {
+        self.0.str()
+    }
+    #[inline(always)]
     fn color(&self, u: &U) -> Color {
         self.1.eval(&Cx::of(u))
     }
@@ -194,7 +259,7 @@ pub trait Motion: Expr<Out = (i32, i32)> {
     #[inline(always)]
     fn bounds(&self, u: &U) -> ((i32, i32), (i32, i32)) {
         let (t, a) = (self.until(&Cx::of(u)), self.eval(&Cx::of(u)));
-        if t == 0 {
+        if !crate::expr::ahead(t, u.w[U_TIME]) {
             return (a, a);
         }
         if t == u32::MAX {
@@ -220,18 +285,25 @@ impl<const DUR: u32, F: Expr<Out = (i32, i32)>, T: Expr<Out = (i32, i32)>, S: Ex
     type Stage = Frame;
     const READS: u64 = F::READS | T::READS | S::READS | 1 << U_TIME;
     const RESTS: bool = F::RESTS & T::RESTS & S::RESTS;
+    #[inline]
+    fn slots(f: &mut dyn FnMut(Slot)) {
+        F::slots(f);
+        T::slots(f);
+        S::slots(f)
+    }
     const CODE: &'static Code = &Code::Call("x_glide", &[F::CODE, T::CODE, S::CODE, &Code::U(U_TIME), &Code::Lit(DUR)]);
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> (i32, i32) {
         let (a, b) = (self.0.eval(cx), self.1.eval(cx));
         // progress in 1/256ths, saturating at both ends
         let dt = cx.u.w[U_TIME].wrapping_sub(self.2.eval(cx));
-        let p = if dt >= DUR { 256 } else { (dt * 256 / DUR) as i64 };
-        (a.0 + ((b.0 - a.0) as i64 * p >> 8) as i32, a.1 + ((b.1 - a.1) as i64 * p >> 8) as i32)
+        let p = if dt >= DUR { 256 } else { (dt as u64 * 256 / DUR as u64) as i64 };
+        (a.0 + ((b.0 as i64 - a.0 as i64) * p >> 8) as i32, a.1 + ((b.1 as i64 - a.1 as i64) * p >> 8) as i32)
     }
     #[inline(always)]
     fn until(&self, cx: &Cx) -> u32 {
-        ramp_until::<DUR>(self.2.eval(cx), cx.u.w[U_TIME]).max(self.0.until(cx)).max(self.1.until(cx))
+        let now = cx.u.w[U_TIME];
+        latest(latest(ramp_end(self.2.eval(cx), DUR, now), self.0.until(cx), now), self.1.until(cx), now)
     }
 }
 impl<const DUR: u32, F: Expr<Out = (i32, i32)>, T: Expr<Out = (i32, i32)>, S: Expr<Out = u32>> Motion for Glide<DUR, F, T, S> {}
@@ -247,12 +319,18 @@ impl<const DUR: u32, F: Expr<Out = Color>, T: Expr<Out = Color>, S: Expr<Out = u
     type Stage = Frame;
     const READS: u64 = F::READS | T::READS | S::READS | 1 << U_TIME;
     const RESTS: bool = F::RESTS & T::RESTS & S::RESTS;
+    #[inline]
+    fn slots(f: &mut dyn FnMut(Slot)) {
+        F::slots(f);
+        T::slots(f);
+        S::slots(f)
+    }
     const CODE: &'static Code = &Code::Call("x_tween", &[F::CODE, T::CODE, S::CODE, &Code::U(U_TIME), &Code::Lit(DUR)]);
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> Color {
         let (a, b) = (self.0.eval(cx).0, self.1.eval(cx).0);
         let dt = cx.u.w[U_TIME].wrapping_sub(self.2.eval(cx));
-        let p = if dt >= DUR { 256 } else { dt * 256 / DUR };
+        let p = if dt >= DUR { 256 } else { (dt as u64 * 256 / DUR as u64) as u32 };
         let ch = |s: u32| {
             let (x, y) = ((a >> s & 0xff) as i32, (b >> s & 0xff) as i32);
             ((x + ((y - x) * p as i32 >> 8)) as u32 & 0xff) << s
@@ -261,13 +339,9 @@ impl<const DUR: u32, F: Expr<Out = Color>, T: Expr<Out = Color>, S: Expr<Out = u
     }
     #[inline(always)]
     fn until(&self, cx: &Cx) -> u32 {
-        ramp_until::<DUR>(self.2.eval(cx), cx.u.w[U_TIME]).max(self.0.until(cx)).max(self.1.until(cx))
+        let now = cx.u.w[U_TIME];
+        latest(latest(ramp_end(self.2.eval(cx), DUR, now), self.0.until(cx), now), self.1.until(cx), now)
     }
-}
-/// A ramp of `DUR` ticks from `t0`: when it ends, or 0 if it has.
-#[inline(always)]
-fn ramp_until<const DUR: u32>(t0: u32, now: u32) -> u32 {
-    if now.wrapping_sub(t0) < DUR { t0.wrapping_add(DUR) } else { 0 }
 }
 
 /// A border of `W` device pixels, translated by a Frame-stage expression: it moves without a turn of layout,
@@ -288,7 +362,7 @@ impl<const W: i32, C: Expr<Out = Color>, T: Motion> Arch for Outline<W, C, T> {
     const ENDLESS: bool = !(T::RESTS & C::RESTS);
     #[inline(always)]
     fn until(&self, u: &U) -> u32 {
-        self.1.until(&Cx::of(u)).max(self.0.until(&Cx::of(u)))
+        latest(self.1.until(&Cx::of(u)), self.0.until(&Cx::of(u)), u.w[U_TIME])
     }
     #[inline(always)]
     fn sweep(&self, r: Rect, u: &U) -> Rect {
@@ -298,6 +372,21 @@ impl<const W: i32, C: Expr<Out = Color>, T: Motion> Arch for Outline<W, C, T> {
         r.shift(lo).or(r.shift(hi))
     }
     const NAME: &'static str = "outline";
+    const STATE: bool = C::STATE | T::STATE;
+    #[inline(always)]
+    fn eq_ops(&self, o: &Self) -> bool {
+        self.0.eq_ops(&o.0) & self.1.eq_ops(&o.1)
+    }
+    #[inline(always)]
+    fn carry(&mut self, was: &Self, old: &U, new: &U) {
+        self.0.carry(&was.0, &Cx::of(old), &Cx::of(new));
+        self.1.carry(&was.1, &Cx::of(old), &Cx::of(new));
+    }
+    #[inline]
+    fn slots(f: &mut dyn FnMut(Slot)) {
+        C::slots(f);
+        T::slots(f);
+    }
     const STAGE: StageId = later(&[T::STAGE, C::STAGE]);
     #[inline(always)]
     fn changed(&self, old: &U, new: &U) -> bool {

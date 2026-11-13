@@ -7,11 +7,16 @@ description = "Round 8: a UI as a typed dataflow. Expressions as types with the 
 
 [dependencies]
 bough-expr = { path = "../bough-expr" }
+bough-lay = { path = "../bough-lay" }
 
 [dev-dependencies]
 bough-mem = { path = "../bough-mem" }
 
 [features]
+# The façade's whole sheet on the element layer (scenes/sheet_el.rs, tests/sheet_el.rs). Off: the compiler does
+# not finish generating code for a view of that depth and width (hours, optimised or not; it type-checks in
+# seconds). See the expr journal, section 10.
+el_sheet = []
 # Mutants the pixel gates (tests/sheet.rs) must fail with:
 # the derivative forgets every other record of a page
 mutant_delta = []
@@ -23,3 +28,7 @@ mutant_moves = []
 mutant_sweep = []
 # reflection takes a list record's ring slot for its row (tests/reflect.rs must fail)
 mutant_reflect = []
+
+[[test]]
+name = "sheet_el"
+required-features = ["el_sheet"]

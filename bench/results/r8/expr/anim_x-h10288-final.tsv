@@ -1,0 +1,7 @@
+# H=10288: 4097 records in 129 pages; sweeps 1
+scene	phase	steps	instr_p50	cycles_p50	tiles_p50
+anim_x	frame_endless	64	2059	421	10272
+anim_x	frame_endless_and_fade	64	2168	464	10304
+anim_x	fade_start_turn	64	606	116	0
+anim_x	pointer_words	64	17665	3582	110
+anim_x	scroll_3_rows	64	17061	4398	10272

@@ -1,6 +1,6 @@
 //! The driver: one store tree, the block the raster last saw, the damage.
 use crate::event::{Button, Dispatch, ENV_REDUCED_MOTION, Ev, Event, Key, Mods, NONE, PLACE_REC_BITS, REDUCED_MOTION_AHEAD, U_ENV, U_FOCUS, U_PRESS, U_PRESS_AT, kind};
-use crate::expr::{APP_WORDS, HOT, U, U_PICK, U_PTR_X, U_PTR_Y, U_TIME};
+use crate::expr::{APP_WORDS, HOT, Slot, U, U_PICK, U_PTR_X, U_PTR_Y, U_SCALE, U_TIME};
 use crate::sink::{Cx, Patch, REL_EPOCH, View, Write};
 use core::sync::atomic::Ordering;
 use crate::store::{Backend, ColEnt, Path, SHAPE, Space, Store, Tiles};
@@ -10,6 +10,10 @@ use core::marker::PhantomData;
 /// the pointer (`NONE`: none).
 #[derive(Clone, Copy, Debug)]
 struct Held {
+    /// The row the pressed record showed and its list's relation version, at the press: if the slot shows
+    /// another row at the release (a scroll reused it, the relation was edited), the press is not a click.
+    row: u32,
+    ver: u32,
     place: u32,
     drag: u32,
     at: (i32, i32),
@@ -50,6 +54,12 @@ pub struct World<B> {
     cold: Vec<(*const Store, u32)>,
     spaces: Vec<(u64, *const Store)>,
     shape: u32,
+    /// The fields of the root view the block's words are gathered from, when the view keeps its Frame state
+    /// as its own fields (learned from the columns' lenses; empty for a view that declares a block).
+    pub slots: Vec<Slot>,
+    /// The view type this world was mounted with: every entry point that is handed a view checks it once, so
+    /// a handler registered for one view type is never run on another.
+    view: Option<core::any::TypeId>,
     /// The clock (`tick`'s argument). The raster's `Time` runs ahead of it under reduced motion.
     clock: u32,
     /// The pointer, and the places under it whose handlers hear hover, bottom first.
@@ -69,16 +79,28 @@ impl<B: Backend> World<B> {
         for w in [U_PICK, U_FOCUS, U_PRESS] {
             shown.w[w] = NONE;
         }
-        World { root: Box::new(Store::new(1, Space::root(w, h))), shown, tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, reads: 0, col_reads: Vec::new(), by_word: [0; 65], readers: Vec::new(), cols: Vec::new(), cold: Vec::new(), spaces: Vec::new(), shape: u32::MAX, clock: 0, ptr: None, hov: Vec::new(), held: None, focus: None, ctab: Vec::new(), ctab_at: (0, 0), _b: PhantomData }
+        shown.w[U_SCALE] = 1f32.to_bits();
+        World { root: Box::new(Store::new(1, Space::root(w, h))), shown, tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, reads: 0, col_reads: Vec::new(), by_word: [0; 65], readers: Vec::new(), cols: Vec::new(), cold: Vec::new(), spaces: Vec::new(), shape: u32::MAX, slots: Vec::new(), view: None, clock: 0, ptr: None, hov: Vec::new(), held: None, focus: None, ctab: Vec::new(), ctab_at: (0, 0), _b: PhantomData }
     }
 
     /// The application's block with the words it does not own (the surface's and the raster's) as the world
     /// has them.
     #[inline(always)]
     fn block<V: View>(&self, v: &V) -> U {
-        let mut u = *v.block();
+        let mut scratch = U::default();
+        let mut u = *v.gathered(&self.slots, &mut scratch);
         u.w[APP_WORDS..].copy_from_slice(&self.shown.w[APP_WORDS..]);
         u
+    }
+    /// The words of the application's block that differ from what is shown.
+    #[inline]
+    pub fn changed_words<V: View>(&self, v: &V) -> u64 {
+        let mut scratch = U::default();
+        self.shown.diff(v.gathered(&self.slots, &mut scratch), self.nwords) & !HOT
+    }
+    /// Device pixels per point. Set before the first mount; a change afterwards is a re-description.
+    pub fn set_scale(&mut self, scale: f32) {
+        self.shown.w[U_SCALE] = scale.to_bits();
     }
     /// The time of the frame being prepared, by the clock: what a handler stamps a motion's start with.
     #[inline(always)]
@@ -88,11 +110,12 @@ impl<B: Backend> World<B> {
 
     /// Describe the view for the first time. Only what is exposed comes to exist.
     pub fn mount<V: View>(&mut self, v: &V) {
+        self.view = Some(crate::sink::tid::<V>());
         self.shown = self.block(v);
         self.tiles.mark_all();
         self.root.row_live[0] = 1;
         self.epoch = REL_EPOCH.load(Ordering::Relaxed);
-        let mut cx = Cx { tiles: &mut self.tiles, u: &self.shown, all: true, lists: 0 };
+        let mut cx = Cx { tiles: &mut self.tiles, u: &self.shown, all: true, lists: 0, regroup: false, scale: f32::from_bits(self.shown.w[U_SCALE]) };
         v.view(&mut Write::<V, B>::new(&mut self.root, &mut cx, true));
         self.lists = cx.lists;
         self.root.resweep(&self.shown, &mut self.tiles);
@@ -113,7 +136,7 @@ impl<B: Backend> World<B> {
         self.root.moving_spaces(&mut self.spaces);
         self.col_reads.clear();
         self.col_reads.extend(self.cols.iter().map(|e| e.reads));
-        assert!(self.cols.len() < 1 << 16);
+        assert!(self.cols.len() <= 1 << (32 - PLACE_REC_BITS), "a place names one of at most 4,096 columns");
         self.readers.clear();
         for w in 0..64 {
             self.by_word[w] = self.readers.len() as u16;
@@ -121,6 +144,16 @@ impl<B: Backend> World<B> {
             assert!(self.readers.len() < 1 << 16);
         }
         self.by_word[64] = self.readers.len() as u16;
+        // The root view's fields the columns' lenses name. Two fields in one word cannot both be Frame state.
+        self.slots.clear();
+        for &(st, j) in &self.cold {
+            // SAFETY: the table was just built from this tree.
+            let d = unsafe { (&(*st).cols)[j as usize].desc };
+            (d.slots)(&mut |s: Slot| match self.slots.iter().find(|t| t.slot == s.slot) {
+                Some(t) => assert!(*t == s, "two fields of the view share word {} of the block (byte offsets {} and {}): Frame state must lie within {} bytes", s.slot, t.off, s.off, APP_WORDS * 4),
+                None => self.slots.push(s),
+            });
+        }
         // what a column reads, and what moves a space
         self.reads = self.spaces.iter().fold(self.root.reads_all(), |m, s| m | s.0);
     }
@@ -209,7 +242,9 @@ impl<B: Backend> World<B> {
     /// edited or a word that scrolls a list changed.
     #[inline]
     pub fn settle<V: View>(&mut self, v: &V) {
-        let ch = self.shown.diff(v.block(), self.nwords) & !HOT;
+        assert!(self.view == Some(crate::sink::tid::<V>()), "this world was mounted with another view type");
+        let mut scratch = U::default();
+        let ch = self.shown.diff(v.gathered(&self.slots, &mut scratch), self.nwords) & !HOT;
         let epoch = REL_EPOCH.load(Ordering::Relaxed);
         if (ch == 0) & (epoch == self.epoch) {
             return;
@@ -224,7 +259,7 @@ impl<B: Backend> World<B> {
         }
         if (epoch != self.epoch) | (ch & self.lists != 0) {
             self.epoch = epoch;
-            let mut cx = Cx { tiles: &mut self.tiles, u, all: false, lists: 0 };
+            let mut cx = Cx { tiles: &mut self.tiles, u, all: false, lists: 0, regroup: false, scale: f32::from_bits(u.w[U_SCALE]) };
             v.view(&mut Patch::<V, B> { st: &mut self.root, cx: &mut cx, sub: 0, _p: PhantomData });
             self.lists |= cx.lists;
             if ch != 0 {
@@ -240,20 +275,29 @@ impl<B: Backend> World<B> {
     /// Re-describing mode: the state is opaque, so the whole exposed view is described again and compared
     /// with the columns as it goes. The same `view` code as mount.
     pub fn redescribe<V: View>(&mut self, v: &V) {
+        assert!(self.view == Some(crate::sink::tid::<V>()), "this world was mounted with another view type");
         let u = &self.block(v);
         let ch = self.shown.diff(u, self.nwords) & !HOT;
         if ch != 0 {
             self.delta(u, ch);
         }
         self.epoch = REL_EPOCH.load(Ordering::Relaxed);
-        let mut cx = Cx { tiles: &mut self.tiles, u, all: true, lists: 0 };
+        let mut cx = Cx { tiles: &mut self.tiles, u, all: true, lists: 0, regroup: false, scale: f32::from_bits(u.w[U_SCALE]) };
         v.view(&mut Write::<V, B>::new(&mut self.root, &mut cx, false));
         self.lists |= cx.lists;
+        let regroup = cx.regroup;
         if self.root.timed {
             self.root.resweep(u, &mut self.tiles);
         }
         if ch != 0 {
             self.shown = *u;
+        }
+        if regroup {
+            // A fixed record moved over one of another column: the columns were grouped for an order that no
+            // longer holds. The stores are made again from the view (cold: a description, as at mount).
+            *self.root = Store::new(1, self.root.space);
+            self.tiles.sweeps.clear();
+            self.mount(v);
         }
         self.refocus();
     }
@@ -311,6 +355,7 @@ impl<B: Backend> World<B> {
 
     /// Run the handler of `place` that hears `e`, if it has one.
     fn call<V: View>(&self, v: &mut V, place: u32, e: &Event) -> bool {
+        assert!(self.view == Some(crate::sink::tid::<V>()), "this world was mounted with another view type");
         let Some((st, col, rec)) = self.at_place(place) else { return false };
         let c = &st.cols[col as usize];
         let Some(o) = c.hover else { return false };
@@ -353,6 +398,8 @@ impl<B: Backend> World<B> {
     /// or, while a drag handler holds the pointer, the drag.
     pub fn pointer<V: View>(&mut self, v: &mut V, x: i32, y: i32) -> Dispatch {
         self.ptr = Some((x, y));
+        // the pointer words and the pointer are one thing: a paint that reads them follows every move
+        self.pointer_words(x, y);
         if let Some(h) = self.held
             && h.drag != NONE
         {
@@ -397,6 +444,10 @@ impl<B: Backend> World<B> {
         }
         out
     }
+    /// What the record at `place` shows: its row and its list's relation version (0, 0 in a fixed store).
+    fn shows(&self, place: u32) -> (u32, u32) {
+        self.at_place(place).map_or((0, 0), |(st, _, rec)| (row_of(st, rec), st.seen))
+    }
     fn kinds(&self, place: u32) -> u32 {
         self.at_place(place).and_then(|(st, c, _)| st.cols[c as usize].hover).map_or(0, |o| o.kinds)
     }
@@ -413,7 +464,8 @@ impl<B: Backend> World<B> {
         }
         let top = chain.iter().rev().copied().find(|&p| self.kinds(p) & kind::POINTER != 0).unwrap_or(NONE);
         let drag = chain.iter().rev().copied().find(|&p| self.kinds(p) & kind::DRAG != 0).unwrap_or(NONE);
-        self.held = Some(Held { place: top, drag, at: (x, y), button });
+        let (row, ver) = self.shows(top);
+        self.held = Some(Held { row, ver, place: top, drag, at: (x, y), button });
         if button == Button::Primary {
             self.core_word(U_PRESS, top);
             self.core_word(U_PRESS_AT, (x as u32 & 0xffff) << 16 | (y as u32 & 0xffff));
@@ -436,7 +488,7 @@ impl<B: Backend> World<B> {
             return Dispatch { kind: kind::DRAG, place: h.drag, consumed };
         }
         self.pointer(v, x, y);
-        if button != Button::Primary || h.place == NONE {
+        if button != Button::Primary || h.place == NONE || self.shows(h.place) != (h.row, h.ver) {
             return Dispatch::NOTHING;
         }
         let chain = self.chain(x, y, kind::POINTER);
@@ -533,7 +585,17 @@ impl<B: Backend> World<B> {
         if old == new {
             return;
         }
+        if let Some(st) = self.focus.and_then(|f| self.root.at_mut(&f.path)) {
+            st.track = u32::MAX;
+        }
         self.focus = place.and_then(|p| self.logical(p));
+        if let Some(f) = self.focus
+            && let Some(st) = self.root.at_mut(&f.path)
+            && st.cap > 1
+        {
+            // the list pass keeps this row's index through the relation's inserts and removes
+            st.track = f.row;
+        }
         self.core_word(U_FOCUS, new);
         if old != NONE {
             self.call(v, old, &Event { kind: kind::FOCUS, ev: Ev { on: false, ..Ev::at(0.0, 0.0) }, text: "" });
@@ -557,7 +619,23 @@ impl<B: Backend> World<B> {
     /// After a pass that may have moved a window: where the focused row is now, or that it is not exposed
     /// (`Focus` holds `NONE` until it comes back). Nothing to do when nothing is focused.
     fn refocus(&mut self) {
-        let Some(f) = self.focus else { return };
+        let Some(mut f) = self.focus else { return };
+        if let Some(st) = self.root.at(&f.path)
+            && st.cap > 1
+        {
+            match st.track {
+                u32::MAX => {}
+                t if t == u32::MAX - 1 => {
+                    // the focused row was removed (or lost to more edits than a journal holds): focus leaves
+                    self.focus = None;
+                    return self.core_word(U_FOCUS, NONE);
+                }
+                t => {
+                    f.row = t;
+                    self.focus = Some(f);
+                }
+            }
+        }
         self.columns();
         let place = (|| {
             let st = self.root.at(&f.path)?;
