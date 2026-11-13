@@ -314,6 +314,12 @@ pub type Hov = &'static crate::event::Ons;
 pub const fn hit_fn<A: Arch>() -> HitFn {
     hit_col::<A>
 }
+/// Every record of a column under a point, in paint order (pushed as record indices).
+pub type HitAllFn = unsafe fn(&RawCol, &StoreView, &U, i32, i32, &mut Vec<u32>);
+#[inline(always)]
+pub const fn hit_all_fn<A: Arch>() -> HitAllFn {
+    hit_all_col::<A>
+}
 
 /// A column as the path from a block write to its pages sees it: one line, in a table of all the columns of a
 /// world in paint order. Everything a delta kernel needs is here or one load from here (the space), so the
@@ -988,6 +994,31 @@ unsafe fn hit_col<A: Arch>(col: &RawCol, sv: &StoreView, u: &U, x: i32, y: i32) 
         }
     }
     best
+}
+
+/// Every live record of the column whose rect (moved by its paint, if it moves) holds (x, y), in index order,
+/// which is the column's paint order. Records of one column may overlap (sites of one archetype nested in a
+/// row): all of them are found, so a click bubbles through them as through any others.
+unsafe fn hit_all_col<A: Arch>(col: &RawCol, sv: &StoreView, u: &U, x: i32, y: i32, out: &mut Vec<u32>) {
+    if x < sv.space.clip.x0 || x >= sv.space.clip.x1 || y < sv.space.clip.y0 || y >= sv.space.clip.y1 {
+        return;
+    }
+    // SAFETY: the caller instantiated this for the column's archetype.
+    let pages = unsafe { col.all::<A>() };
+    let org = sv.space.origin(u);
+    let (x, y) = (x - org.0, y - org.1);
+    for (pi, pg) in pages.iter().enumerate() {
+        let mut l = sv.live.page(pi);
+        while l != 0 {
+            let i = l.trailing_zeros() as usize;
+            l &= l - 1;
+            let (dx, dy) = if A::MOVES { pg.rec[i].offset(u) } else { (0, 0) };
+            let (px, py) = (x - dx, y - dy);
+            if (px >= pg.x0[i]) & (px < pg.x1[i]) & (py >= pg.y0[i]) & (py < pg.y1[i]) {
+                out.push(pi as u32 * 64 + i as u32);
+            }
+        }
+    }
 }
 
 unsafe fn paint_col<A: Arch, B: Backend>(col: &RawCol, sv: &StoreView, u: &U, b: *mut ()) {

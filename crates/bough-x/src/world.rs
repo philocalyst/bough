@@ -57,9 +57,12 @@ pub struct World<B> {
     hov: Vec<u32>,
     held: Option<Held>,
     focus: Option<Focused>,
-    /// Scratch for the pointer path (no allocation per event once warm).
-    buf: Vec<(Path, u32, u32)>,
-    places: Vec<u32>,
+    /// The columns whose records have handlers: index in the table and the kinds they hear. The pointer path
+    /// visits these and no other column.
+    handlers: Vec<(u32, u32)>,
+    /// Scratch for the event path, reserved once: an event allocates nothing.
+    buf: Vec<u32>,
+    pool: Vec<Vec<u32>>,
     _b: PhantomData<B>,
 }
 
@@ -69,7 +72,7 @@ impl<B: Backend> World<B> {
         for w in [U_PICK, U_FOCUS, U_PRESS] {
             shown.w[w] = NONE;
         }
-        World { root: Box::new(Store::new(1, Space::root(w, h))), shown, tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, reads: 0, col_reads: Vec::new(), by_word: [0; 65], readers: Vec::new(), cols: Vec::new(), cold: Vec::new(), spaces: Vec::new(), shape: u32::MAX, clock: 0, ptr: None, hov: Vec::new(), held: None, focus: None, buf: Vec::new(), places: Vec::new(), _b: PhantomData }
+        World { root: Box::new(Store::new(1, Space::root(w, h))), shown, tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, reads: 0, col_reads: Vec::new(), by_word: [0; 65], readers: Vec::new(), cols: Vec::new(), cold: Vec::new(), spaces: Vec::new(), shape: u32::MAX, clock: 0, ptr: None, hov: Vec::with_capacity(64), held: None, focus: None, handlers: Vec::new(), buf: Vec::with_capacity(64), pool: (0..4).map(|_| Vec::with_capacity(64)).collect(), _b: PhantomData }
     }
 
     /// The application's block with the words it does not own (the surface's and the raster's) as the world
@@ -111,6 +114,14 @@ impl<B: Backend> World<B> {
         self.spaces.clear();
         self.root.table(&mut self.cols, &mut self.cold);
         self.root.moving_spaces(&mut self.spaces);
+        self.handlers.clear();
+        for (k, &(st, j)) in self.cold.iter().enumerate() {
+            // SAFETY: the table was just built from this tree, so `st` is one of its stores.
+            let st = unsafe { &*st };
+            if let Some(o) = st.cols[j as usize].hover {
+                self.handlers.push((k as u32, o.kinds));
+            }
+        }
         self.col_reads.clear();
         self.col_reads.extend(self.cols.iter().map(|e| e.reads));
         assert!(self.cols.len() < 1 << 16);
@@ -314,28 +325,40 @@ impl<B: Backend> World<B> {
 
     /// The places under (x, y) whose handlers hear one of `kinds`, bottom first (the last is the pick).
     fn chain(&mut self, x: i32, y: i32, kinds: u32) -> Vec<u32> {
-        let mut out = core::mem::take(&mut self.places);
+        let mut out = self.take();
         self.chain_into(x, y, kinds, &mut out);
         out
     }
+    /// A scratch buffer from the world's pool (allocated once, at the world's creation, for every event after).
+    fn take(&mut self) -> Vec<u32> {
+        let mut v = self.pool.pop().unwrap_or_default();
+        v.clear();
+        v
+    }
     fn chain_into(&mut self, x: i32, y: i32, kinds: u32, out: &mut Vec<u32>) {
         self.columns();
-        let mut buf = core::mem::take(&mut self.buf);
-        buf.clear();
         out.clear();
-        self.root.chain(&self.shown, x, y, kinds, &mut Path::default(), &mut buf);
-        for &(p, c, r) in &buf {
-            if let Some(i) = self.root.at(&p).and_then(|st| self.col_index(st, c)) {
-                out.push(i << PLACE_REC_BITS | r);
+        let mut recs = core::mem::take(&mut self.buf);
+        for &(k, hears) in &self.handlers {
+            if hears & kinds == 0 {
+                continue;
             }
+            let (st, j) = self.cold[k as usize];
+            // SAFETY: the table is current, so `st` is a store of this world's tree.
+            let st = unsafe { &*st };
+            let c = &st.cols[j as usize];
+            let Some(o) = c.hover else { continue };
+            let sv = crate::store::StoreView { space: &st.space, live: crate::store::Live { cap: st.cap, rows: &st.row_live, nrec: c.nrec } };
+            recs.clear();
+            // SAFETY: `hit_all` was instantiated for the archetype the column was created with.
+            unsafe { (o.hit_all)(c, &sv, &self.shown, x, y, &mut recs) };
+            out.extend(recs.iter().map(|&r| k << PLACE_REC_BITS | r));
         }
-        self.buf = buf;
+        self.buf = recs;
     }
-    /// Give back a chain's buffer.
+    /// Give a scratch buffer back to the pool.
     fn done(&mut self, v: Vec<u32>) {
-        if v.capacity() > self.places.capacity() {
-            self.places = v;
-        }
+        self.pool.push(v);
     }
 
     /// Run the handler of `place` that hears `e`, if it has one.
@@ -404,37 +427,43 @@ impl<B: Backend> World<B> {
     pub fn accept_pick<V: View>(&mut self, v: &mut V, place: u32) -> Dispatch {
         let all = match self.ptr {
             Some((x, y)) if place != NONE => self.chain(x, y, kind::POINTER),
-            _ => Vec::new(),
+            _ => self.take(),
         };
-        self.picked(v, place, &all)
+        let d = self.picked(v, place, &all);
+        self.done(all);
+        d
     }
     fn picked<V: View>(&mut self, v: &mut V, pick: u32, all: &[u32]) -> Dispatch {
         self.core_word(U_PICK, pick);
-        // the hovered set is unchanged (the usual move): compare in place, allocate nothing
-        let mut same = true;
-        let mut k = 0;
+        let mut next = self.take();
         for &p in all {
             if self.kinds(p) & kind::HOVER != 0 {
-                same &= self.hov.get(k) == Some(&p);
-                k += 1;
+                next.push(p);
             }
         }
-        if same && k == self.hov.len() {
+        if next == self.hov {
+            // the usual move: the hovered set is what it was
+            self.done(next);
             return Dispatch { kind: kind::HOVER, place: pick, consumed: false };
         }
-        let hov: Vec<u32> = all.iter().copied().filter(|&p| self.kinds(p) & kind::HOVER != 0).collect();
-        let old = core::mem::replace(&mut self.hov, hov);
+        let old = core::mem::replace(&mut self.hov, next);
         let (x, y) = self.ptr.map_or((-1.0, -1.0), |(x, y)| (x as f32, y as f32));
         let mut out = Dispatch { kind: kind::HOVER, place: NONE, consumed: false };
-        for &p in old.iter().rev().filter(|p| !self.hov.contains(p)) {
-            self.call(v, p, &Event { kind: kind::HOVER, ev: Ev { on: false, ..Ev::at(x, y) }, text: "" });
+        // left: the old set's records not under the pointer now, topmost first
+        for i in (0..old.len()).rev() {
+            let p = old[i];
+            if !self.hov.contains(&p) {
+                self.call(v, p, &Event { kind: kind::HOVER, ev: Ev { on: false, ..Ev::at(x, y) }, text: "" });
+            }
         }
-        let new = self.hov.clone();
-        for &p in new.iter().rev().filter(|p| !old.contains(p)) {
-            if self.call(v, p, &Event { kind: kind::HOVER, ev: Ev::at(x, y), text: "" }) && out.place == NONE {
+        // entered: the new set's records that were not under it, topmost first
+        for i in (0..self.hov.len()).rev() {
+            let p = self.hov[i];
+            if !old.contains(&p) && self.call(v, p, &Event { kind: kind::HOVER, ev: Ev::at(x, y), text: "" }) && out.place == NONE {
                 out = Dispatch { kind: kind::HOVER, place: p, consumed: true };
             }
         }
+        self.done(old);
         out
     }
     fn kinds(&self, place: u32) -> u32 {
@@ -448,8 +477,14 @@ impl<B: Backend> World<B> {
         // one walk under the pointer serves the pick, hover, focus, the press and the drag
         self.ptr = Some((x, y));
         let chain = self.chain(x, y, kind::POINTER | kind::FOCUSABLE);
-        let ptr: Vec<u32> = chain.iter().copied().filter(|&p| self.kinds(p) & kind::POINTER != 0).collect();
+        let mut ptr = self.take();
+        for &p in &chain {
+            if self.kinds(p) & kind::POINTER != 0 {
+                ptr.push(p);
+            }
+        }
         self.picked(v, ptr.last().copied().unwrap_or(NONE), &ptr);
+        self.done(ptr);
         if button == Button::Primary {
             let f = chain.iter().rev().copied().find(|&p| self.kinds(p) & kind::FOCUSABLE != 0);
             self.focus_place(v, f);
@@ -462,7 +497,9 @@ impl<B: Backend> World<B> {
             self.core_word(U_PRESS_AT, (x as u32 & 0xffff) << 16 | (y as u32 & 0xffff));
         }
         let e = Event { kind: kind::PRESS, ev: Ev { button, ..Ev::at(x as f32, y as f32) }, text: "" };
-        self.bubble(v, chain.iter().rev().copied(), &e)
+        let d = self.bubble(v, chain.iter().rev().copied(), &e);
+        self.done(chain);
+        d
     }
 
     /// The button came up at (x, y): a drag ends (its handler sees `ev.on == false`); otherwise, if the pointer
@@ -617,7 +654,8 @@ impl<B: Backend> World<B> {
     /// The focusable places in paint order, exposed records only.
     fn focusables(&mut self) -> Vec<u32> {
         self.columns();
-        let mut out = Vec::new();
+        let mut out = self.take();
+        let mut recs = self.take();
         for (i, &(st, col)) in self.cold.iter().enumerate() {
             // SAFETY: the table is current, so `st` is a store of this world's tree.
             let st = unsafe { &*st };
@@ -626,7 +664,7 @@ impl<B: Backend> World<B> {
                 continue;
             }
             let live = crate::store::Live { cap: st.cap, rows: &st.row_live, nrec: c.nrec };
-            let mut recs = Vec::new();
+            recs.clear();
             for pg in 0..c.npages {
                 let mut m = live.page(pg as usize);
                 while m != 0 {
@@ -636,16 +674,18 @@ impl<B: Backend> World<B> {
             }
             // a list's records in row order, not ring order
             if st.cap > 1 {
-                recs.sort_by_key(|&r| (row_of(st, r), r / st.cap));
+                recs.sort_unstable_by_key(|&r| (row_of(st, r), r / st.cap));
             }
-            out.extend(recs.into_iter().map(|r| (i as u32) << PLACE_REC_BITS | r));
+            out.extend(recs.iter().map(|&r| (i as u32) << PLACE_REC_BITS | r));
         }
+        self.done(recs);
         out
     }
     /// Move focus to the next (or previous) focusable record in paint order, wrapping.
     pub fn tab<V: View>(&mut self, v: &mut V, back: bool) -> Dispatch {
         let all = self.focusables();
         if all.is_empty() {
+            self.done(all);
             return Dispatch { kind: kind::FOCUS, place: NONE, consumed: false };
         }
         let cur = all.iter().position(|&p| p == self.shown.w[U_FOCUS]);
@@ -656,8 +696,10 @@ impl<B: Backend> World<B> {
             (Some(i), false) => (i + 1) % n,
             (Some(i), true) => (i + n - 1) % n,
         };
-        self.focus_place(v, Some(all[next]));
-        Dispatch { kind: kind::FOCUS, place: all[next], consumed: true }
+        let p = all[next];
+        self.done(all);
+        self.focus_place(v, Some(p));
+        Dispatch { kind: kind::FOCUS, place: p, consumed: true }
     }
 
     /// Focus a place (`None`: nothing). The record's focus handler hears it; so does the one that lost focus.

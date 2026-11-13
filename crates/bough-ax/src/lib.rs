@@ -568,7 +568,7 @@ impl<'a, V: View, B: Backend> Project<'a, V, B> {
                         live = op.reads & ((1u64 << APP_WORDS) - 1) != 0;
                     }
                 }
-                R { s, screen: s.rect.shift(org), kinds: s.on.map_or(0, |o| o.kinds), content, live, selected: selected(s, &u, &mut self.reads) }
+                R { s, screen: s.rect.shift(org).shift(s.off), kinds: s.on.map_or(0, |o| o.kinds), content, live, selected: selected(s, &u, &mut self.reads) }
             })
             .collect();
         rs.sort_by_key(|r| r.s.ent.pos);

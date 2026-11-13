@@ -26,7 +26,7 @@
 //! turn while it moves.
 use crate::expr::U;
 use crate::sink::{Cx, Leaf, Mk, Row};
-use crate::store::{Arch, HitFn, Site, hit_fn};
+use crate::store::{Arch, HitAllFn, HitFn, Site, hit_all_fn, hit_fn};
 use core::any::TypeId;
 use core::marker::PhantomData;
 
@@ -244,6 +244,8 @@ pub struct Ons {
     pub caps: u32,
     pub caps_align: u32,
     pub hit: HitFn,
+    /// Every record of the column under a point (the chain under the pointer).
+    pub hit_all: HitAllFn,
     /// Run the handler that hears `e` for the record at `rec` with captures at `caps`; whether one consumed it.
     pub call: unsafe fn(v: *mut (), caps: *const u8, rec: *const u8, e: &Event) -> bool,
     /// The handlers' type, written out by the compiler (reflection's).
@@ -267,6 +269,7 @@ impl<V: 'static, T: Target<V>> OnsOf<V, T> {
         caps: size_of::<T::Caps>() as u32,
         caps_align: align_of::<T::Caps>() as u32,
         hit: hit_fn::<T::Rec>(),
+        hit_all: hit_all_fn::<T::Rec>(),
         call: call::<V, T>,
         ty: core::any::type_name::<T>,
     };

@@ -365,7 +365,9 @@ impl<'w> Item<'w> {
     }
     /// An owned description of the record.
     pub fn snap(&self) -> Snap {
-        Snap { ent: self.ent, kind: self.info.kind, on: self.info.on, words: self.words().to_vec(), loc: self.site.loc, rect: self.rect, ops: self.info.ops, vals: self.ops().map(|o| o.val).collect() }
+        // SAFETY: `ptr` is a record of the column's archetype.
+        let off = if self.info.moves { unsafe { (self.info.offset)(self.ptr, self.u) } } else { (0, 0) };
+        Snap { ent: self.ent, kind: self.info.kind, on: self.info.on, words: self.words().to_vec(), loc: self.site.loc, rect: self.rect, off, ops: self.info.ops, vals: self.ops().map(|o| o.val).collect() }
     }
 }
 
@@ -381,6 +383,8 @@ pub struct Snap {
     pub loc: &'static Location<'static>,
     /// In the store's space.
     pub rect: Rect,
+    /// Where its paint moves it, under the block it was described with (zero for a record that does not move).
+    pub off: (i32, i32),
     pub ops: &'static [Op],
     pub vals: Vec<Val>,
 }
@@ -571,7 +575,8 @@ impl<V> Leaf<V> for DLeaf<'_> {
     fn leaf<A: Arch>(&mut self, a: &A, _: TypeId, hov: Option<Hov>) {
         let k = self.ent.pos as usize;
         let vals = (0..A::OPS.len()).map(|i| a.val(i, self.u)).collect();
-        self.out.push(Snap { ent: self.ent, kind: A::NAME, on: hov, words: a.words().to_vec(), loc: self.loc, rect: self.shape.get(k).map_or(Rect::default(), |r| r.shift(self.at)), ops: A::OPS, vals });
+        let off = if A::MOVES { a.offset(self.u) } else { (0, 0) };
+        self.out.push(Snap { ent: self.ent, kind: A::NAME, on: hov, words: a.words().to_vec(), loc: self.loc, rect: self.shape.get(k).map_or(Rect::default(), |r| r.shift(self.at)), off, ops: A::OPS, vals });
         self.ent.pos += 1;
     }
 }

@@ -391,3 +391,38 @@ fn enter_activates_the_focused_record() {
     let d = w.key_down(&mut v, Key::Char(' '), Mods::default());
     assert_eq!(d.kind, kind::CLICK);
 }
+
+/// Two records of one column that overlap (one archetype and one handler type at two positions of a row): the
+/// chain under the pointer holds both, so hover enters both and a click reaches the upper one.
+struct Nest {
+    u: U,
+    log: Vec<String>,
+}
+impl View for Nest {
+    fn block(&self) -> &U {
+        &self.u
+    }
+    fn view<S: Sink<Self>>(&self, s: &mut S) {
+        s.row(|| {
+            (
+                [Rect::new(0, 0, 400, 200), Rect::new(100, 50, 100, 50)],
+                std::array::from_fn::<_, 2, _>(|i| Fill(Kc::<0xffcccccc>).on_hover(move |s: &mut Nest, e: &Ev| s.log.push(format!("hover {i} {}", e.on))).on_click(move |s: &mut Nest| s.log.push(format!("click {i}")))),
+            )
+        });
+    }
+}
+#[test]
+fn overlapping_records_of_one_column() {
+    let mut v = Nest { u: U::default(), log: Vec::new() };
+    let mut w = World::<Soft>::new(W, H, 1);
+    w.mount(&v);
+    assert_eq!(w.root.cols.len(), 1, "one column for both");
+    w.pointer(&mut v, 120, 60);
+    assert_eq!(v.log, ["hover 1 true", "hover 0 true"], "both entered, the upper first");
+    v.log.clear();
+    w.click(&mut v, 120, 60);
+    assert_eq!(v.log, ["click 1"]);
+    v.log.clear();
+    w.pointer(&mut v, 20, 20);
+    assert_eq!(v.log, ["hover 1 false"], "left the inner, still on the outer");
+}
