@@ -294,3 +294,114 @@ Also from B10, stated so nobody reads more into the numbers than is there: the a
 Latin-1 face (anything else is not drawn: the lazy shaper path does not exist); rows are laid out by arithmetic
 in the view, not by a layout engine; the binary-size ratio (1.07 MB against 55.5 MB) compares different
 profiles and feature surfaces and is not a framework size result (B12).
+
+## 9. H05: the text is in two places (written at the close, 2026-11-13)
+
+Plainly: this branch draws text with a prepared-face crate of its own, `bough-glyph`, through text kinds of its
+own in `bough-span` (`Text`, `TextOf`, `Str`, `line::Line`). The text lane's `bough-face` (branch `r8/text-main`,
+`5d7a6bc39a`) is the same idea built separately, and on that branch `bough-x` itself already depends on it
+(`bough_x::text`: `Backend::line`, `NumArch::PAD`, the `Glyphs` memo). So there are two image formats, two bake
+tools, two exactness gates and two rules for where a pen lands on the pixel grid, for the same face at the same
+size. The text lane's journal (its section 8, item 1) assigns the fix to this lane: take `bough-face` and
+`bough_x::text`, and let the committed image replace `bough-glyph`. **That was not done in round 8.** The
+finding stands.
+
+What exists twice:
+
+| | `bough-glyph` (this branch) | `bough-face` (`r8/text-main`) |
+|---|---|---|
+| image | "BGI1": a 256-entry character-to-glyph index, per glyph its advance, box and coverage, an n x n kerning square in font units (76 KB of the 96.8 KB image at 14 px), short ligatures | "BFC2": row and column classes per token, a class x class step table (advance with kerning; a marked entry means the pair needs the full shaper), slots into one coverage atlas with a stride (bindable as a texture), ligatures, a digit cell |
+| made by | `examples/bake.rs`, with swash | `bough_text::stage::bake`, with the façade's table shaper and rasteriser |
+| gate | `tests/exact.rs`: placement and coverage equal to swash on 4,013 strings and 195 glyphs | the text lane's probes against the façade's shaper; `tests/admission.rs` (malformed images refused, stale runs draw nothing) |
+| pen to pixel | `Image::snap`: round half up of `units * size / upem`, size in 1/64 px | `Face::px`: one multiply by a Q32 scale, then a rounding |
+| text outside the face | skipped without a word (`Image::place`); a caller may ask `Image::covers` first | refused (`Face::shape` returns `None`), or drawn as a stand-in (`shape_lossy`) |
+| text in a record | `Str<N>` (the bytes inline in N words) or `LineRef` (slot and version of a pooled `String`) | `Run`: two words naming a range of the memo's shared glyph and pen lanes, keyed by (face, text), with generations |
+| numbers | written as strings (`Str::num`) and placed like any text | `num`: glyphs and pens by arithmetic on the value, in the digit cell |
+| sizes in the tree | 14 px and 28 px (scale 2) | 14 px only |
+
+What unifying would take, in order:
+
+1. Bring `bough-face` and `bough_x::text` onto this line (they come with `r8/text-main`, or with `main-next`
+   once the closer has integrated it), and bake a 28 px face: the harness's scale switch draws at scale 2 and
+   only the 14 px image is committed.
+2. `bough-span` implements `Backend::line` over `Face::spans` (coverage rows cut to the clip) and the number path
+   over `num`. Its `Text`, `TextOf` and `Str` kinds and `line.rs` are deleted; `Spans` holds the faces instead of
+   one `&Image`.
+3. The views: row labels become memo runs, row values numbers, the header's status a run per count; the search
+   field's `Line` becomes a run re-keyed on every edit (the memo hands back the same run for the same text, so a
+   re-description that changes nothing damages nothing, as now).
+4. `bough-glyph` (crate, data, bake tool, gate) is deleted. Its exactness gate is then the text lane's.
+5. The pixel gates (`comparisons/bough-guibench-x/tests/pixels.rs`) are re-run. They compare the ring against a
+   full redraw by the same raster, so they hold by construction; what changes is where glyphs land (the two
+   rounding rules can differ by a pixel), so screenshots change. gui-bench's layout check reads backgrounds and
+   borders only and is not affected.
+6. Measure again what text touches: the first frame (F3 in section 2 held because nothing is opened or
+   shaped; the memo adds a lookup per described label where `bough-glyph` placed the bytes directly), hover and
+   typing.
+
+Until then the app's text is one prepared Latin-1 face at two sizes, and anything outside it is not drawn
+(section 8).
+
+## 10. The runner: every scenario through gui-bench's checks (written at the close, 2026-11-13)
+
+The lane's last command built the keymap fix (`aafc8f0e47`) but could not install it ("Text file busy": a
+gui-bench run was using the old binary), so its `x1-fixed` and `x1-unthrottled` results are the old binary
+(`d6319ae01e8a9e38`, `11a6ee519e`), with the key defect: the table ops other than select and update10, and the
+search filter, had 0 samples. They are not results. The close installed the fix and ran the runner twice.
+
+**Binary.** `r8/e2e` `aafc8f0e47`, `cargo build --profile dist -p bough-guibench-x` on ilo-prod, `bough-bench`
+installed as the runner's `apps/bough-x/target/release/bough-x-bench`: 1,083,960 bytes, sha256
+`00adf1edb691c84af992796fb8c103a6bec9159036b0eda456a997b922481565`. Runner: gui-bench `0fd45107d6` with the bench
+lane's overlay (the `GB_TIMING` timing switch and its scenes) and one registration entry (below), built at
+`gb-target/release/gui-bench`, sha256 `ba4fb6214bde357b`.
+
+**Runs.** `gui-bench --quick --frameworks bough-x --scenarios rows,virtual,typing,search,table,ticker,spinner,resize`,
+the runner on CPUs 0-7 (`taskset -c 0-7 nice -n 10`), ilo-prod shared with other tenants (load 12 to 28):
+`x2-fixed` (`GB_TIMING=fixed`, 06:10-06:15 UTC) and `x2-unthrottled` (`GB_TIMING=unthrottled`, 06:27-06:31 UTC).
+Both: 14 cells, 0 failed measurements, **the layout check passed in every cell**, and every check that judges the
+app passed in every measurement: iterations, iteration errors, and each `samples.*` check that is not a sample
+count (latency, scroll smoothness, frame pacing, input coalescing, typing, resize, buffers, resources, frame
+cost). Every key probe resolved (`timeouts` 0). The warnings are `--quick`'s sample counts (8 of 10 wanted for the
+table ops and the filter, 4 for resize's scale step) and the host's load.
+
+| scenario (cells) | layout | app checks | host checks (not the app's) |
+|---|---|---|---|
+| rows 100, 3,000 (hover, scroll, idle) | pass | pass | fixed: `wake_lateness` failed hover (both sizes) and scroll at 100 (2-4 of 192-522 wakes over 2 ms, max 3.1 ms) at load 25; unthrottled: pass |
+| virtual 100,000 | pass | pass | fixed: scroll `wake_lateness` failed (3 of 522); unthrottled: pass |
+| typing 1,000 | pass | pass | fixed: `wake_lateness` failed (5 of 1,152); unthrottled: pass |
+| search 1,000 (typing, filter) | pass | pass | pass (load warnings) |
+| table fine, coarse (8 ops each) | pass | pass, 8 samples each | pass (load warnings) |
+| ticker fine, coarse, 1 and 100 updates | pass | pass | fixed: fine-100 pacing `wake_lateness` failed (1 of 720); unthrottled: pass |
+| spinner 0, 10,000 | pass | pass | unthrottled: pacing `wake_lateness` failed (3 of 111,201 and 1 of 104,772 wakes) |
+| resize 1,000 (resize, scale) | pass | pass | pass |
+
+The cells marked invalid are invalid only through `wake_lateness`, the runner's measure of the compositor's own
+wake-ups on a loaded host; the matrix is to be run when ilo-prod is quiet. The numbers of these two runs are not
+reported: they are `--quick` and loaded.
+
+**What the binary's fast paths admit** (stated so its numbers are read for what they are): one prepared face,
+DejaVu Sans at 14 and 28 px, Latin-1 only (anything else is not drawn); opaque colours (`rgb()`; spans are
+source-over, the surface opaque XRGB); rows placed by arithmetic in the view (row `i` at `i * ROW_HEIGHT`), not by
+a layout engine and not by the element layer; a resize remounts the `World` (focus and press are re-established by
+the app, section 8 H08); the keymap is fakeland's serialised map, read for group one's first two levels (H03).
+
+**To repeat it** (ilo-prod; every build under `taskset -c 8-15 nice -n 19`):
+
+1. A checkout of the branch to build in `/root/work/r8/e2e/bough`; `source /root/work/r8/e2e/env.sh` (zortax's nix
+   environment read-only, the lane's own rustup and cargo home, `CARGO_TARGET_DIR=/root/work/r8/e2e/target`).
+2. `cargo build --profile dist -p bough-guibench-x --offline -j4`; the binary is `target/dist/bough-bench`.
+3. Install by copy and rename (an in-place copy over a running executable fails):
+   `cp target/dist/bough-bench gb/apps/bough-x/target/release/.new && mv -f .../.new .../bough-x-bench`
+   (`/root/work/r8/e2e/close/install.sh` refuses while the binary runs).
+4. The runner: `/root/work/r8/e2e/gb` is the bench lane's gui-bench (`/root/work/r8/bench/gb`, gui-bench
+   `0fd45107d6`, its fakeland through `runner/.cargo/config.toml`) with the timing switch
+   (`bench-r8/patches/gb-timing.patch`: `GB_TIMING=fixed|unthrottled|vrr:MIN-MAX`) and one registration entry
+   (`bench-r8/patches/gui-bench-bough-x.patch`: `name "bough-x"`, `app "bough-x"`, variants fine and coarse); built
+   with `CARGO_TARGET_DIR=/root/work/r8/e2e/gb-target cargo build --release --offline -j4` in `gb/runner`.
+5. `cd /root/work/r8/e2e/gb && GB_TIMING=unthrottled taskset -c 0-7 nice -n 10 ../gb-target/release/gui-bench
+   --frameworks bough-x --scenarios rows,virtual,typing,search,table,ticker,spinner,resize --out RESULTS` (drop
+   `--quick` for the full matrix; `run.sh NAME TIMING` in `/root/work/r8/e2e/close/` records the identity).
+   `chk2.py RESULTS` there prints every cell's layout and validity checks, app and host apart.
+
+H08's runner half is closed: all eight scenarios pass the runner's layout and behaviour checks. Its author-API half
+stands (the views here are written against the core, not the element layer), as does the resize remount.
