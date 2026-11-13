@@ -354,3 +354,112 @@ Section 5 counted block, column table, descriptor, page. That is the path for a 
 sheet's cells are in a list store inside a scope store, and stores hold their children and columns in `Vec`s,
 so the dependent loads are: world, scope store, list store, column header, page: **five**, growing with
 nesting depth. The kernel pointer in the header (the WIP) removed the descriptor, not the tree.
+
+## 10. The element layer, and the review's core findings (written at the close, 2026-11-13)
+
+The lane stopped (an outage) with the element layer and its review fixes uncommitted; the closing agent committed
+them as `c6fce8e823` (WIP), merged `r8/surface` (`911a16b590`) and `r8/layout` `fc830898f4`, and finished them
+in the commits after. Everything below was run on the Mac (M3 Pro, release) unless it says otherwise.
+
+### 10.1 What the element layer is
+
+`crates/bough-x/src/el.rs`. The author writes the façade's idiom: `fn view(&self) -> impl Element<Self> + '_`,
+`div()`, `row((..))`, `column((..))`, `.bg(..)`, `.border(..)`, `.translate(..)`, `text(..)`, `.on_click(..)` and
+the other handlers, `each(iter.map(row))`, `.scroll(sig!(self.y))`, `.transition(curve)`, and plain state in
+`Signal` fields that handlers set. An element is a value whose type is both its records (`Row<V>`) and its layout
+(`bough_lay::Shape`); `Element::drive<S: Sink<V>>` hands it to whatever sink asks (mount, re-description, a turn's
+list pass, the immediate-mode oracle, reflection). Nothing is a second runtime:
+
+* `sig!(self.field)` is a lens whose word is the field's byte offset (`offset_of!`): the block is *gathered* from
+  the view's own fields by the table of slots the columns name, so a handler's write is a plain store, found by
+  the block compare. No field is numbered by the author.
+* `.map(closure)`: the closure's captures are the record's words, so `move |l| fill(*l, col, row)` is one
+  archetype for every cell.
+* `.transition(curve)`: where the value started from, and when, are words of the record, written by the turn that
+  moves its target (`Expr::carry`); frames evaluate nothing.
+* `each(iter)` under a scrolled box is a list by exposure: the iterator is indexed (`TrustedRandomAccess`), never
+  walked, so 10,000 rows cost what is exposed.
+* handlers are components of the box's record; their captures are a lane beside the column.
+
+### 10.2 What the close changed, and why
+
+1. **Layout as data (compile time).** The layer called bough-lay's typed layout (`Lay`: the flex algorithm
+   monomorphised per element type). The façade's sheet as one view type (`tests/sheet_el.rs`) type-checked in
+   seconds and its code generation did not finish in hours, optimised or not (the lane killed it after 3 h 32 min;
+   it went behind a feature, `el_sheet`). The layout lane measured the same cause (a chat row type: 204 s, 2.75 MB)
+   and replaced the typed form with layout as data (`bough_lay::shape`: an element emits one 24-word node, one
+   layout function lays out any row, a list keeps a `Memo` of the last shape's rects). The element layer now uses
+   it: `Text`, `Hd` (a box with handlers) and `Scroll` implement `Shape` (a scrolled box is a box with one child
+   out of flow at its corner, as large as the box: the hole its content's space is cut from); `Element::drive`
+   lays the root out through `Flat` and `place_root`; a list of elements lays an entering row out through the
+   list's `Memo` (a row of the kept shape at a width inside the kept answer's validity interval is a copy, any
+   other row goes through the one function). **`tests/sheet_el.rs` now builds in 4 s** and the feature gate is
+   gone. The memo's key is a 64-bit hash of the row's layout words (the layout lane's choice; a collision would
+   reuse another shape's rects, which the gates below would show but nothing prevents).
+2. **Mount read the view's fields before it knew them.** The slot table is learned from the columns, which exist
+   only after the first description, so every element view was first described and painted with its fields read
+   as zero (the sheet: `look` 0, so column A showed hovered until the first hover). `World::mount` now describes,
+   learns the slots, and describes again from nothing when the gathered block differs (cold, once per mount; a view
+   that declares its block is described once). Described again, not settled from zero: a settle would start a
+   transition from a value never shown. A later pass that makes columns naming fields no column named before
+   (`World::learn`) gathers and settles them; such a word's first change can start a transition from zero (stated,
+   not fixed).
+3. **The immediate-mode oracle cannot show a transition in flight.** A description from state alone is at rest;
+   the in-flight start is a record word. `tests/sheet_el.rs` compares stores == immediate whenever nothing is
+   moving (as its fresh-mount check already did) and retained == full redraw at every step.
+
+### 10.3 Gates
+
+At the head of this section's commits: `cargo test --release -p bough-x -p bough-expr -p bough-lay -p bough-ax`
+green: bough-x anim 2, el_small 2, events 12, reflect 7, review 7, review_core 12, sheet 4, **sheet_el 4** (the
+façade's sheet, 10,000 rows: 300 random steps mount-once, 200 re-describing, 20 rows 150 steps; nothing unexposed
+exists), table 1; bough-lay extent 3, oracle 4; bough-ax 11 (1 ignored); bough-expr 1.
+Mutants, each failing a gate: `mutant_delta` fails el_small (2 of 2) and sheet_el (3 of 4: retained != full
+redraw at step 1); `mutant_journal` fails events (2 of 12); `mutant_moves` fails sheet (3 of 4); `mutant_sweep`
+fails anim (2 of 2) and sheet_el's 20-row script (step 5); `mutant_reflect` fails reflect (1 of 7); bough-ax's
+`mutant_fast` (3 of 12) and `mutant_removed` (1 of 12) fail ax; bough-lay's `mutant_gap` and `mutant_valid` fail
+oracle (2 of 4 each). sheet_el alone does not catch `mutant_journal` (its rows are a range, not an edited
+relation), `mutant_moves` or `mutant_reflect`; the core's sheet, events and reflect gates do. Not run on the
+remotes at this head; `c6fce8e823` and `911a16b590` (before the layout merge) passed the same suite and mutants on
+ilo-prod.
+
+### 10.4 What the façade's sheet needed changed (`scenes/sheet_el.rs`, from `comparisons/bough-workloads/src/sheet.rs`)
+
+The import line; a run of children inside a row is an array (`std::array::from_fn(|c| cell(r, c))`) where the
+façade writes `each((0..COLS).map(..))` (a row's record count is in its type until rows can hold runs); no
+benchmark `Scene` impl. State, handlers, `sig!`, capturing closures, builder chains, `each` for the rows, the
+scrolled body and the selection's transition are as written there.
+
+### 10.5 Limits, stated
+
+* Text is a stand-in measure (12 device pixels a character, 15 tall, 24 of inset) and a stand-in raster; the
+  text lane's `bough-face` is not wired in. `NumFmt`'s prefix and suffix are not drawn; interned strings are
+  never released; a bordered box has no fill.
+* Frame state is whole words: a field read by `sig!` is 4-aligned and at most 4 bytes, and two fields in one word
+  of the block cannot both be Frame state (asserted when the table is built). A mapped closure captures only
+  `u32`, `i32`, `f32` or `Color` values (asserted at compile time).
+* A row or a root has at most 96 elements and 12 wrapping leaves (`Flat`); a container at most 32 children in
+  flow. Past that, a panic names the limit.
+* Not measured: the element-layer sheet's turn and frame costs against the core's hand-written sheet
+  (`examples/sheet_x.rs`). No driver example exists for it; that is the number that says what the idiom costs
+  over the core's own, and it is the next measurement. The gui-bench app (`comparisons/bough-guibench-x`, e2e
+  lane) does not use the element layer.
+
+### 10.6 The review's core findings (C01-C13), state at the close
+
+| finding | state | where |
+|---|---|---|
+| C01 erased type identity | **closed** | view: `World::mount` keeps the view's `TypeId`, every entry point asserts it (`world_rejects_different_view_type`). Storage (the close): `World::root` is private (read through `root()`), the slot table crate-private, `Store::paint` and `Store::delta` crate-private (their columns were described for one backend and view only the owning world knows); a test's reference delta is `World::tree_delta` |
+| C02 list row compatibility not a type proof | **closed** | admission compares each leaf's archetype with its column, once per pass (`Same`); `same_size_list_type_change_is_not_silently_accepted` |
+| C03 moving paint picked at old bounds | **closed** | pick applies the paint offset; `moving_target_is_picked_at_visible_position` |
+| C04 pointer equality as layout identity | **closed** | the shape is compared by its bytes every pass; `in_place_shape_changes_update_layout` |
+| C05 focus and press by position | **closed** (surface lane) | `focus_follows_item_through_insert`, `press_is_cancelled_when_slot_reused` |
+| C06 pointer words | **closed** (surface lane) | `pointer_updates_expression_words` |
+| C07 structural limits | **in part** | columns <= 4,096 asserted when the table is built; a list's rows positive in height, under 2^30, total under 2^31 px, refused where described (the close: `sink::admit`; `zero_height_list_is_refused_where_described`); the window grows its ring (`window_can_grow`). Standing: paths of six 16-bit components; 16-bit reader incidences (asserted when the table is built, not widened) |
+| C08 ancestry by overlap | **stands** | surface journal section 8 |
+| C09 dispatch allocates | **closed** (surface lane) | surface journal section 7 |
+| C10 `Words` alignment | **closed** | a non-empty record type is whole words at alignment 4, asserted where its words are taken |
+| C11 wrap-unsafe time | **closed** | modular deadlines (`ahead`, `latest`, `ramp_end`); `active_ramp_survives_clock_wrap` |
+| C12 memory is a column subtotal | **in part** | `Store::bytes_all` counts every byte the store tree holds; application and renderer memory are not in it |
+| C13 grouping after geometry changes | **closed** | a fixed record that moves over a column painted before it regroups the stores (`order_holds`); `changed_geometry_preserves_paint_order` |
+| L03 (layout) in bough-x's list | **closed** | exposure is bough-lay's `Uniform` extent (64-bit) through `Extent::window`, a zero height refused where described; `exposure_is_the_rows_that_meet_the_clip` (200,000 random lists against a brute-force count) |

@@ -153,6 +153,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-ax"
+version = "0.0.0"
+dependencies = [
+ "bough-x",
+]
+
+[[package]]
 name = "bough-core"
 version = "0.0.0"
 dependencies = [
@@ -348,6 +355,7 @@ name = "bough-x"
 version = "0.0.0"
 dependencies = [
  "bough-expr",
+ "bough-lay",
  "bough-mem",
 ]
 

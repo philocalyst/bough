@@ -1,8 +1,44 @@
 # The layout seams (round 8): proposal v0 from the layout lane
 
-Status: **proposal, 2026-11-12, not agreed.** Answers the expr lane's five points and two questions, the lead's
+Status: **v0 as agreed on 2026-11-12, with section 0 added at the end of the round: two of its claims were
+measured and refuted. Section 0 wins where it differs from the sections after it.**
+
+Original status line: proposal, 2026-11-12, not agreed. Answers the expr lane's five points and two questions, the lead's
 two pushes (changed rows only; exact extents with wrapped text), ROUND8 Amendment 2 (the author keeps the
 façade's builder calls), and proposes the boundary with the text lane. Nothing is built on it yet.
+
+## 0. Where this ended (2026-11-12, measured; `docs/lanes/layout/JOURNAL.md` section 4)
+
+Two claims of sections 1 and 2 are **refuted**:
+
+* "A monomorphised `place` for a row of fixed and flex children is tens of instructions, cheaper than
+  computing and comparing a key": it is 25,486 instructions for the sheet row against 203 to copy a kept
+  slice, and one row type cost up to 204 s and 2.7 MB to compile. "There is no shape memo" is withdrawn.
+* "The answer is not an owned `&[Rect]`": for rows whose layout does not read row data it should be exactly
+  that. **The expr lane's slice compared by identity stays for `Hk::Fixed` row types.**
+
+The design the numbers support, and what `crates/bough-lay` holds:
+
+1. An element built by the façade's calls emits its layout as a flat array of 24-word elements (`Shape`,
+   `Nd`): a few stores per element, 0.2 to 0.5 s and 3.5 to 17 KB of compile cost per row type.
+2. One layout function for every row type (`shape::place`): the flex arithmetic instantiated once over that
+   array, checked against `vendor/cephal`. It keeps nothing per row.
+3. A list keeps the rects of the last shape it laid out, with the interval of widths they hold over
+   (`Memo`). Same shape, width inside the interval: a copy.
+4. The row type says how its height comes about (`Shape::HK`: `Fixed`, `Content`, `Wraps`), which picks the
+   extent (`Uniform`, or `Heights`) as in section 4.
+
+Open, stated plainly: the shape of a row is a hash of its words and the compiler does not fold it (2,677
+instructions for the sheet row), so checking the shape per row costs more than the copy; a `Fixed` list checks
+it once per pass, which is unsound if the author varies a value per row. And the layout function is no faster
+than cephal with a kept tree (52,730 against 21,600 for the sheet row; 91,359 against 87,079 for a chat row);
+what it buys is no retained tree per row.
+
+The seam with the expr lane as it stands after this: `Out::put(k, [x0, y0, x1, y1])` into the lanes on a miss;
+`Memo::kept()` (a slice and a height) on a hit; `Valid` per list for `Fixed` row types and per exposed row
+otherwise; `Extent` with 64-bit logical coordinates and `window(y, h)` giving a viewport-local frame
+(`Uniform::new` refuses a height that is not positive, which is where the divide by zero in list exposure is
+to be stopped).
 
 Checked before writing (not assumed):
 

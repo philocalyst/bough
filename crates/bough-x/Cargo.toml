@@ -7,6 +7,7 @@ description = "Round 8: a UI as a typed dataflow. Expressions as types with the 
 
 [dependencies]
 bough-expr = { path = "../bough-expr" }
+bough-lay = { path = "../bough-lay" }
 
 [dev-dependencies]
 bough-mem = { path = "../bough-mem" }

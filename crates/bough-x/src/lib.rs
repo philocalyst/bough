@@ -10,7 +10,10 @@
 //! * [`soft`]: a reference raster and an immediate-mode sink, both oracles.
 //!
 //! Nothing here depends on the façade's runtime.
+#![feature(trusted_random_access, auto_traits, negative_impls)]
+#![allow(internal_features)]
 pub use bough_expr as expr;
+pub mod el;
 pub mod event;
 pub mod kinds;
 pub mod reflect;

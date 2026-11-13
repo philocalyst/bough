@@ -69,6 +69,9 @@ impl Val {
 
 /// What a column's archetype is, as only its type knows. Learned once, when [`Learn`] meets the type.
 pub struct ColInfo {
+    /// The record type, as the column's own `arch` must be for the readers below to apply (checked when the
+    /// column is learned and whenever the reflection is used).
+    pub arch: TypeId,
     /// The paint kind (`"fill"`, `"num"`, ...).
     pub kind: &'static str,
     /// The record type, written out by the compiler.
@@ -100,6 +103,7 @@ unsafe fn offset_of<A: Arch>(p: *const u8, u: &U) -> (i32, i32) {
 impl ColInfo {
     fn of<A: Arch>(on: Option<Hov>) -> ColInfo {
         ColInfo {
+            arch: TypeId::of::<A>(),
             kind: A::NAME,
             ty: core::any::type_name::<A>(),
             stage: A::STAGE,
@@ -144,18 +148,29 @@ pub enum Kind {
     List(ListInfo),
 }
 
+/// What a store's view described, in order: a row of its fixed shape (by row call), or a child store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    Row(u32),
+    Sub(u32),
+}
+
 /// A store as reflection knows it.
 pub struct StoreInfo {
     pub kind: Kind,
+    /// Rows and child stores in the order the view described them.
+    pub seq: Vec<Part>,
     /// Where the scope or list was described.
     pub loc: Option<&'static Location<'static>>,
     pub sites: Vec<Option<SiteInfo>>,
     pub cols: Vec<Option<ColInfo>>,
     pub subs: Vec<StoreInfo>,
+    /// Records met whose column was not made for their type (see `LearnLeaf`): not reflected.
+    pub refused: u32,
 }
 impl StoreInfo {
     fn new(kind: Kind, loc: Option<&'static Location<'static>>) -> StoreInfo {
-        StoreInfo { kind, loc, sites: Vec::new(), cols: Vec::new(), subs: Vec::new() }
+        StoreInfo { kind, seq: Vec::new(), loc, sites: Vec::new(), cols: Vec::new(), subs: Vec::new(), refused: 0 }
     }
     fn child(&mut self, q: usize, st: &Store, kind: Kind, loc: &'static Location<'static>) -> &mut StoreInfo {
         while self.subs.len() <= q {
@@ -164,6 +179,8 @@ impl StoreInfo {
         let c = &mut self.subs[q];
         c.kind = kind;
         c.loc = Some(loc);
+        c.seq.clear();
+        c.refused = 0;
         c.sites.resize_with(st.sites.len(), || None);
         c.cols.resize_with(st.cols.len(), || None);
         c
@@ -212,6 +229,11 @@ struct LearnLeaf<'a> {
     loc: &'static Location<'static>,
 }
 impl<V> Leaf<V> for LearnLeaf<'_> {
+    fn hole(&mut self) {
+        // a position of the row that is not a record (an element's scrolled child): it has a site, and no info
+        self.site += 1;
+        self.pos += 1;
+    }
     fn leaf<A: Arch>(&mut self, _: &A, _: TypeId, hov: Option<Hov>) {
         let k = self.site as usize;
         self.site += 1;
@@ -219,6 +241,13 @@ impl<V> Leaf<V> for LearnLeaf<'_> {
         self.pos += 1;
         let Some(s) = self.st.sites.get(k) else { return };
         self.out.sites[k] = Some(SiteInfo { col: s.col, row: self.row, pos, loc: self.loc });
+        // The readers are installed only for a column made for this very record type. A record whose type holds
+        // a closure is another type in each sink's instantiation of `view` (the closure's type carries the sink),
+        // so its column is not readable through this sink: it is skipped, never read as another type.
+        if self.st.cols[s.col as usize].arch != TypeId::of::<A>() {
+            self.out.refused += 1;
+            return;
+        }
         let c = &mut self.out.cols[s.col as usize];
         if c.is_none() {
             *c = Some(ColInfo::of::<A>(hov));
@@ -234,6 +263,7 @@ impl<'a, V> Sink<V> for Learn<'a> {
         let loc = Location::caller();
         let k = self.rowc;
         self.rowc += 1;
+        self.out.seq.push(Part::Row(k));
         let Some(&(_, p0)) = self.st.rows.get(k as usize) else { return };
         let (_, row) = f();
         row.visit(&mut LearnLeaf { st: self.st, out: self.out, site: p0, row: k, pos: 0, loc });
@@ -243,6 +273,7 @@ impl<'a, V> Sink<V> for Learn<'a> {
         let loc = Location::caller();
         let q = self.sub as usize;
         self.sub += 1;
+        self.out.seq.push(Part::Sub(q as u32));
         let Some(st) = self.st.subs.get(q) else { return };
         let out = self.out.child(q, st, Kind::Scope, loc);
         f(&mut Learn { st, out, rowc: 0, sub: 0 });
@@ -252,6 +283,7 @@ impl<'a, V> Sink<V> for Learn<'a> {
         let loc = Location::caller();
         let q = self.sub as usize;
         self.sub += 1;
+        self.out.seq.push(Part::Sub(q as u32));
         let Some(st) = self.st.subs.get(q) else { return };
         let info = ListInfo { n: l.n, row_h: l.row_h, x: l.x, y: l.y, shape: l.shape.to_vec() };
         let out = self.out.child(q, st, Kind::List(info), loc);
@@ -352,7 +384,9 @@ impl<'w> Item<'w> {
     }
     /// An owned description of the record.
     pub fn snap(&self) -> Snap {
-        Snap { ent: self.ent, kind: self.info.kind, loc: self.site.loc, rect: self.rect, ops: self.info.ops, vals: self.ops().map(|o| o.val).collect() }
+        // SAFETY: `ptr` is a record of the column's archetype.
+        let off = if self.info.moves { unsafe { (self.info.offset)(self.ptr, self.u) } } else { (0, 0) };
+        Snap { ent: self.ent, kind: self.info.kind, on: self.info.on, words: self.words().to_vec(), loc: self.site.loc, rect: self.rect, off, ops: self.info.ops, vals: self.ops().map(|o| o.val).collect() }
     }
 }
 
@@ -361,9 +395,15 @@ impl<'w> Item<'w> {
 pub struct Snap {
     pub ent: Ent,
     pub kind: &'static str,
+    /// Its handlers, if any.
+    pub on: Option<Hov>,
+    /// The record's words.
+    pub words: Vec<u32>,
     pub loc: &'static Location<'static>,
     /// In the store's space.
     pub rect: Rect,
+    /// Where its paint moves it, under the block it was described with (zero for a record that does not move).
+    pub off: (i32, i32),
     pub ops: &'static [Op],
     pub vals: Vec<Val>,
 }
@@ -381,9 +421,12 @@ impl Snap {
     }
 }
 
-/// Reflection of one world: what the view's types said, kept beside the stores (not in them).
+/// Reflection of one world: what the view's types said, kept beside the stores (not in them). It is tied to the
+/// store tree it was learned from: every use checks it is that tree, with the columns it learned, of the record
+/// types it learned (admission, per column; never per record), and refuses anything else.
 pub struct Reflect {
     pub root: StoreInfo,
+    store: *const Store,
 }
 
 impl Reflect {
@@ -395,18 +438,27 @@ impl Reflect {
         out.cols.resize_with(root.cols.len(), || None);
         v.view(&mut Learn { st: root, out: &mut out, rowc: 0, sub: 0 });
         out.finish();
-        Reflect { root: out }
+        Reflect { root: out, store: root }
     }
 
-    /// Whether every column and site of the stores is known.
+    /// Whether this reflection applies to `root`: the tree it was learned from, every column and site known,
+    /// and every learned column still of the record type it was learned for.
     pub fn current(&self, root: &Store) -> bool {
         fn same(i: &StoreInfo, s: &Store) -> bool {
             i.cols.len() == s.cols.len()
                 && i.sites.len() == s.sites.len()
                 && i.subs.len() == s.subs.len()
+                && i.cols.iter().zip(&s.cols).all(|(a, c)| a.as_ref().is_none_or(|a| a.arch == c.arch))
                 && i.subs.iter().zip(&s.subs).all(|(a, b)| same(a, b))
         }
-        same(&self.root, root)
+        core::ptr::eq(self.store, root) && same(&self.root, root)
+    }
+    /// Records the view described whose columns were not made for their type (closures inside `view`).
+    pub fn refused(&self) -> u32 {
+        fn go(i: &StoreInfo) -> u32 {
+            i.refused + i.subs.iter().map(go).sum::<u32>()
+        }
+        go(&self.root)
     }
 
     /// Every list of the view: its store path, what it was described with, where.
@@ -432,11 +484,16 @@ impl Reflect {
     /// Every live record in paint order (the order the stores paint: a column as a whole, child stores where
     /// the view described them).
     pub fn each<'w>(&'w self, root: &'w Store, u: &'w U, mut f: impl FnMut(&Item<'w>)) {
+        assert!(self.current(root), "reflection used on a store tree it was not learned from (or that changed shape): learn again");
         walk(&self.root, root, u, &mut Path::default(), &mut f);
     }
 
     /// Every live record, collected.
+    ///
+    /// Panics if `root` is not the tree this reflection was learned from, or has changed shape since: its typed
+    /// readers would read other records as their types.
     pub fn items<'w>(&'w self, root: &'w Store, u: &'w U) -> Vec<Item<'w>> {
+        assert!(self.current(root), "reflection used on a store tree it was not learned from (or that changed shape): learn again");
         let mut v = Vec::new();
         walk_owned(&self.root, root, u, &mut Path::default(), &mut v);
         v
@@ -551,10 +608,14 @@ struct DLeaf<'a> {
     out: &'a mut Vec<Snap>,
 }
 impl<V> Leaf<V> for DLeaf<'_> {
-    fn leaf<A: Arch>(&mut self, a: &A, _: TypeId, _: Option<Hov>) {
+    fn hole(&mut self) {
+        self.ent.pos += 1;
+    }
+    fn leaf<A: Arch>(&mut self, a: &A, _: TypeId, hov: Option<Hov>) {
         let k = self.ent.pos as usize;
         let vals = (0..A::OPS.len()).map(|i| a.val(i, self.u)).collect();
-        self.out.push(Snap { ent: self.ent, kind: A::NAME, loc: self.loc, rect: self.shape.get(k).map_or(Rect::default(), |r| r.shift(self.at)), ops: A::OPS, vals });
+        let off = if A::MOVES { a.offset(self.u) } else { (0, 0) };
+        self.out.push(Snap { ent: self.ent, kind: A::NAME, on: hov, words: a.words().to_vec(), loc: self.loc, rect: self.shape.get(k).map_or(Rect::default(), |r| r.shift(self.at)), off, ops: A::OPS, vals });
         self.ent.pos += 1;
     }
 }

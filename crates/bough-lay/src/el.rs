@@ -1,6 +1,6 @@
 //! Elements as the façade builds them. The children of a box are in its type; its style values are plain data.
-use crate::flex::{Align, Buf, Dim, Hk, Justify, Kids, Lay, Out, Spec, Visit, place_kids, rect, solve};
-use crate::tree::{Kind, Node};
+use crate::flex::{Align, Dim, Hk, Justify, Spec};
+use crate::shape::{K_BOX, K_GONE, K_LINE, K_WRAP, Nd, Shape, ShapeKids, Sink, Wrap};
 use crate::val::{Av, Cx, V};
 use core::marker::PhantomData;
 
@@ -19,7 +19,9 @@ impl<A> Paint for Rec1<A> {
 }
 
 /// The height was set by the author / comes from content.
+#[derive(Clone, Copy)]
 pub struct HFixed;
+#[derive(Clone, Copy)]
 pub struct HAuto;
 pub trait HState {
     const FIXED: bool;
@@ -216,46 +218,23 @@ impl<P, C, H> LBox<P, C, H> {
     }
 }
 
-impl<P: Paint, C: Kids, H: HState> Lay for LBox<P, C, H> {
+impl<P: Paint, C: ShapeKids, H: HState> Shape for LBox<P, C, H> {
     const LEAVES: usize = P::N + C::LEAVES;
     const WRAPS: bool = C::WRAPS;
+    const VARIES: bool = C::VARIES;
     const HK: Hk = if H::FIXED {
         Hk::Fixed
     } else if C::WRAPS {
         Hk::Wraps
-    } else {
+    } else if C::VARIES {
         Hk::Content
+    } else {
+        Hk::Fixed
     };
     #[inline(always)]
-    fn spec(&self) -> &Spec {
-        &self.spec
-    }
-    #[inline(always)]
-    fn size(&self, cx: &mut Cx, known: [Option<V>; 2], parent: [Option<V>; 2], avail: [Av; 2], content: bool) -> [V; 2] {
-        let mut buf = Buf::new();
-        solve(&self.spec, &self.kids, cx, known, parent, avail, content, &mut buf, false).outer
-    }
-    #[inline(always)]
-    fn reported(&self, cx: &mut Cx, size: [V; 2]) -> [V; 2] {
-        crate::flex::reported(&self.spec, cx, size)
-    }
-    #[inline(always)]
-    fn place<O: Out + ?Sized>(&self, cx: &mut Cx, size: [V; 2], org: [V; 2], out: &mut O, k: usize) -> usize {
-        if P::N == 1 {
-            out.put(k, rect(cx, size, org));
-        }
-        if C::LEAVES != 0 {
-            let mut buf = Buf::new();
-            let av = [Av::Def(size[0]), Av::Def(size[1])];
-            let sol = solve(&self.spec, &self.kids, cx, [Some(size[0]), Some(size[1])], [None; 2], av, false, &mut buf, true);
-            place_kids(&self.kids, cx, &mut buf, &sol, org, out, k + P::N);
-        }
-        k + <Self as Lay>::LEAVES
-    }
-    fn tree(&self) -> Node {
-        let mut kids = Vec::new();
-        self.kids.trees(&mut kids);
-        Node { spec: self.spec, kind: Kind::Flex, kids, leaves: P::N, total: <Self as Lay>::LEAVES }
+    fn emit<'a, S: Sink<'a>>(&'a self, s: &mut S) {
+        s.node(Nd::pack(&self.spec, K_BOX, P::N == 1, C::COUNT, 0.0, 0.0, [0; 2]));
+        self.kids.emit_kids(s);
     }
 }
 
@@ -273,7 +252,7 @@ pub struct Block {
 
 /// What layout asks of measured content (text). Device pixels. This is the boundary with the text lane
 /// (`docs/r8/LAYOUT-SEAM.md` section 5); the leaves in [`crate::tree::standin`] stand in for it.
-pub trait Measure: Clone + 'static {
+pub trait Measure {
     /// The content can break: its block size depends on its inline size.
     const WRAPS: bool;
     /// Min-content and max-content inline size.
@@ -337,133 +316,129 @@ pub fn content<M: Measure>(m: &M, cx: &mut Cx, kw: Option<V>, kh: Option<V>, av:
     [kw.unwrap_or(V::k(b.w)), kh.unwrap_or(V::k(b.h))]
 }
 
-impl<M: Measure, P: Paint> Lay for Leaf<M, P> {
+/// The border-box size of a measured leaf.
+#[inline(always)]
+pub fn leaf_size<M: Measure>(spec: &Spec, m: &M, cx: &mut Cx, known: [Option<V>; 2], parent: [Option<V>; 2], avail: [Av; 2], content_only: bool) -> [V; 2] {
+    let node = crate::flex::own(spec, cx, known, parent, content_only, [0.0; 2]);
+    if let [Some(w), Some(h)] = node {
+        return [w, h];
+    }
+    // (the available space is for the border box: the parent already took the margins off)
+    content(m, cx, node[0], node[1], avail[0])
+}
+
+/// What a leaf's content is to layout: a line of known size, or content that wraps and is asked.
+pub trait LeafM {
+    const WRAPS: bool;
+    fn emit<'a, S: Sink<'a>>(&'a self, spec: &Spec, painted: bool, s: &mut S);
+}
+impl LeafM for crate::tree::standin::Line {
+    const WRAPS: bool = false;
+    #[inline(always)]
+    fn emit<'a, S: Sink<'a>>(&'a self, spec: &Spec, painted: bool, s: &mut S) {
+        s.node(Nd::pack(spec, K_LINE, painted, 0, self.0, self.1, [0; 2]));
+    }
+}
+impl<W: Wrap> LeafM for W {
+    const WRAPS: bool = true;
+    #[inline(always)]
+    fn emit<'a, S: Sink<'a>>(&'a self, spec: &Spec, painted: bool, s: &mut S) {
+        s.node(Nd::pack(spec, K_WRAP, painted, 0, 0.0, 0.0, self.key()));
+        s.wrap(self);
+    }
+}
+impl<M: LeafM, P: Paint> Shape for Leaf<M, P> {
     const LEAVES: usize = P::N;
     const WRAPS: bool = M::WRAPS;
+    const VARIES: bool = false;
+    const HK: Hk = if M::WRAPS { Hk::Wraps } else { Hk::Fixed };
     #[inline(always)]
-    fn spec(&self) -> &Spec {
-        &self.spec
-    }
-    #[inline(always)]
-    fn size(&self, cx: &mut Cx, known: [Option<V>; 2], parent: [Option<V>; 2], avail: [Av; 2], content_only: bool) -> [V; 2] {
-        let node = crate::flex::own(&self.spec, cx, known, parent, content_only, [0.0; 2]);
-        if let [Some(w), Some(h)] = node {
-            return [w, h];
-        }
-        // (the available space is for the border box: the parent already took the margins off)
-        content(&self.m, cx, node[0], node[1], avail[0])
-    }
-    #[inline(always)]
-    fn place<O: Out + ?Sized>(&self, cx: &mut Cx, size: [V; 2], org: [V; 2], out: &mut O, k: usize) -> usize {
-        if P::N == 1 {
-            out.put(k, rect(cx, size, org));
-        }
-        k + P::N
-    }
-    fn tree(&self) -> Node {
-        Node { spec: self.spec, kind: Kind::Leaf(crate::tree::measurer(self.m.clone())), kids: Vec::new(), leaves: P::N, total: P::N }
+    fn emit<'a, S: Sink<'a>>(&'a self, s: &mut S) {
+        self.m.emit(&self.spec, P::N == 1, s);
     }
 }
 
 // ---- children -----------------------------------------------------------------------------------------------
 
-impl Kids for () {
+impl ShapeKids for () {
     const LEAVES: usize = 0;
     const WRAPS: bool = false;
+    const VARIES: bool = false;
+    const COUNT: u32 = 0;
     #[inline(always)]
-    fn visit<F: Visit>(&self, _: &mut F) {}
-    #[inline(always)]
-    fn empty(&self) -> bool {
-        true
-    }
-    fn trees(&self, _: &mut Vec<Node>) {}
+    fn emit_kids<'a, S: Sink<'a>>(&'a self, _: &mut S) {}
 }
-impl<L: Lay> Kids for L {
+impl<L: Shape> ShapeKids for L {
     const LEAVES: usize = L::LEAVES;
     const WRAPS: bool = L::WRAPS;
+    const VARIES: bool = L::VARIES;
+    const COUNT: u32 = 1;
     #[inline(always)]
-    fn visit<F: Visit>(&self, f: &mut F) {
-        f.kid(self)
-    }
-    fn trees(&self, out: &mut Vec<Node>) {
-        out.push(self.tree())
+    fn emit_kids<'a, S: Sink<'a>>(&'a self, s: &mut S) {
+        self.emit(s)
     }
 }
 /// A child that may be absent. Its records exist either way (a row's type fixes its records); absent, they
 /// have empty rects and it takes no part in layout.
-impl<L: Lay> Kids for Option<L> {
+impl<L: Shape> ShapeKids for Option<L> {
     const LEAVES: usize = L::LEAVES;
     const WRAPS: bool = L::WRAPS;
+    const VARIES: bool = true;
+    const COUNT: u32 = 1;
     #[inline(always)]
-    fn visit<F: Visit>(&self, f: &mut F) {
+    fn emit_kids<'a, S: Sink<'a>>(&'a self, s: &mut S) {
         match self {
-            Some(l) => f.kid(l),
-            None => f.gone::<L>(),
-        }
-    }
-    fn trees(&self, out: &mut Vec<Node>) {
-        match self {
-            Some(l) => out.push(l.tree()),
-            None => out.push(Node::gone(L::LEAVES)),
+            Some(l) => l.emit(s),
+            None => s.node(Nd::pack(&Spec::new(false), K_GONE, false, L::LEAVES as u32, 0.0, 0.0, [0; 2])),
         }
     }
 }
-impl<K: Kids, const N: usize> Kids for [K; N] {
+impl<K: ShapeKids, const N: usize> ShapeKids for [K; N] {
     const LEAVES: usize = K::LEAVES * N;
     const WRAPS: bool = K::WRAPS;
+    const VARIES: bool = K::VARIES;
+    const COUNT: u32 = K::COUNT * N as u32;
     #[inline(always)]
-    fn visit<F: Visit>(&self, f: &mut F) {
+    fn emit_kids<'a, S: Sink<'a>>(&'a self, s: &mut S) {
         for k in self {
-            k.visit(f);
-        }
-    }
-    fn trees(&self, out: &mut Vec<Node>) {
-        for k in self {
-            k.trees(out);
+            k.emit_kids(s);
         }
     }
 }
-impl<C: Kids, E: Kids> Kids for Chain<C, E> {
+impl<C: ShapeKids, E: ShapeKids> ShapeKids for Chain<C, E> {
     const LEAVES: usize = C::LEAVES + E::LEAVES;
     const WRAPS: bool = C::WRAPS | E::WRAPS;
+    const VARIES: bool = C::VARIES | E::VARIES;
+    const COUNT: u32 = C::COUNT + E::COUNT;
     #[inline(always)]
-    fn visit<F: Visit>(&self, f: &mut F) {
-        self.0.visit(f);
-        self.1.visit(f);
-    }
-    fn trees(&self, out: &mut Vec<Node>) {
-        self.0.trees(out);
-        self.1.trees(out);
+    fn emit_kids<'a, S: Sink<'a>>(&'a self, s: &mut S) {
+        self.0.emit_kids(s);
+        self.1.emit_kids(s);
     }
 }
 macro_rules! kids_tuple {
-    ($($t:ident)+) => {
-        impl<$($t: Kids),+> Kids for ($($t,)+) {
+    ($($t:ident $i:tt)+) => {
+        impl<$($t: ShapeKids),+> ShapeKids for ($($t,)+) {
             const LEAVES: usize = 0 $(+ $t::LEAVES)+;
             const WRAPS: bool = false $(| $t::WRAPS)+;
+            const VARIES: bool = false $(| $t::VARIES)+;
+            const COUNT: u32 = 0 $(+ $t::COUNT)+;
             #[inline(always)]
-            #[allow(non_snake_case)]
-            fn visit<Fv: Visit>(&self, f: &mut Fv) {
-                let ($($t,)+) = self;
-                $($t.visit(f);)+
-            }
-            #[allow(non_snake_case)]
-            fn trees(&self, out: &mut Vec<Node>) {
-                let ($($t,)+) = self;
-                $($t.trees(out);)+
+            fn emit_kids<'a, Sv: Sink<'a>>(&'a self, s: &mut Sv) {
+                $(self.$i.emit_kids(s);)+
             }
         }
     };
 }
-kids_tuple!(A);
-kids_tuple!(A B);
-kids_tuple!(A B C);
-kids_tuple!(A B C D);
-kids_tuple!(A B C D E);
-kids_tuple!(A B C D E F);
-kids_tuple!(A B C D E F G);
-kids_tuple!(A B C D E F G H);
-kids_tuple!(A B C D E F G H I);
-kids_tuple!(A B C D E F G H I J);
-kids_tuple!(A B C D E F G H I J K);
-kids_tuple!(A B C D E F G H I J K L);
+kids_tuple!(A 0);
+kids_tuple!(A 0 B 1);
+kids_tuple!(A 0 B 1 C 2);
+kids_tuple!(A 0 B 1 C 2 D 3);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4 F 5);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4 F 5 G 6);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10);
+kids_tuple!(A 0 B 1 C 2 D 3 E 4 F 5 G 6 H 7 I 8 J 9 K 10 L 11);

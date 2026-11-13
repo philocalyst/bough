@@ -38,7 +38,10 @@ fn table_walk_equals_tree_walk() {
         let ch = world.shown.diff(&new, NWORDS);
         let mut want = Tiles::new(W, H);
         want.sweeps = world.tiles.sweeps.clone();
-        world.root.delta(&world.shown, &new, ch, &mut want);
+        {
+            let old = world.shown;
+            world.tree_delta(&old, &new, ch, Some(&mut want));
+        }
         // rows the list pass will damage are not part of this comparison: take the block's damage alone
         let had_lists = ch & (1 << Scroll::SLOT) != 0;
         world.settle(&sheet);

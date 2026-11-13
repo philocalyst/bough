@@ -24,8 +24,11 @@ pub const U_FOCUS: usize = 56;
 pub const U_PRESS: usize = 57;
 pub const U_ENV: usize = 58;
 pub const U_PRESS_AT: usize = 59;
-/// The words below this are the application's (growing up from 0) and the core's (growing down from here).
-pub const APP_WORDS: usize = 56;
+/// Words the core owns: 48..55. Word 55 is the window's scale (device pixels per point, an `f32`'s bits);
+/// the others are given out downwards (derived scroll origins).
+pub const U_SCALE: usize = 55;
+/// The words below this are the application's: the Frame-reachable fields of its own state.
+pub const APP_WORDS: usize = 48;
 /// The words a turn compares: everything but the hot ones.
 pub const TURN_WORDS: usize = 60;
 
@@ -149,6 +152,17 @@ impl Word for Color {
 pub trait Lens: Copy + 'static {
     type T: Word;
     const SLOT: usize;
+    /// Where the word comes from when the block is gathered from the application's own state: the field's byte
+    /// offset in the root view and its size. `None`: the application declares a block and writes it itself.
+    const AT: Option<(usize, usize)> = None;
+}
+
+/// A word of the block and the field of the root view it is gathered from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Slot {
+    pub slot: u8,
+    pub bytes: u8,
+    pub off: u32,
 }
 /// The name of a run of words of the block (an array field).
 pub trait LensArr: Copy + 'static {
@@ -252,6 +266,37 @@ impl Lens for Pick {
     type T = u32;
     const SLOT: usize = U_PICK;
 }
+/// Deadlines in `Time` are modular: `Time` wraps, so "later" is only meaningful within half the clock's range
+/// of now (about 24 days of milliseconds). 0 is "at rest" and `u32::MAX` is "never", and neither is a deadline.
+/// Whether deadline `t` is still ahead of `now`.
+#[inline(always)]
+pub const fn ahead(t: u32, now: u32) -> bool {
+    t == u32::MAX || (t != 0 && (t.wrapping_sub(now) as i32) > 0)
+}
+/// The later of two deadlines as seen from `now` (see [`ahead`]).
+#[inline(always)]
+pub const fn latest(a: u32, b: u32, now: u32) -> u32 {
+    if a == u32::MAX || b == u32::MAX {
+        u32::MAX
+    } else if !ahead(a, now) {
+        if ahead(b, now) { b } else { 0 }
+    } else if !ahead(b, now) || a.wrapping_sub(now) >= b.wrapping_sub(now) {
+        a
+    } else {
+        b
+    }
+}
+/// When a ramp of `dur` ticks from `t0` ends, or 0 if it has. Never 0 or `u32::MAX` for a ramp in flight.
+#[inline(always)]
+pub const fn ramp_end(t0: u32, dur: u32, now: u32) -> u32 {
+    if now.wrapping_sub(t0) < dur {
+        let e = t0.wrapping_add(dur);
+        if e == 0 || e == u32::MAX { 1 } else { e }
+    } else {
+        0
+    }
+}
+
 /// The hot words: they change every frame or every pointer event, so they are never part of a turn's compare.
 pub const HOT: u64 = 0xf << 60;
 // ---- record words ------------------------------------------------------------------------------------------
@@ -260,8 +305,9 @@ pub const HOT: u64 = 0xf << 60;
 /// in place from a column, compared as words, and handed to the GPU.
 ///
 /// # Safety
-/// `size_of::<Self>() % 4 == 0`, `align_of::<Self>() <= 4`, no padding, and every bit pattern (zero included)
-/// is a valid value.
+/// `size_of::<Self>() % 4 == 0`; `align_of::<Self>() == 4` unless the type is zero-sized (a record is read in
+/// place as `&[u32]`, so a four-byte type of alignment 1 is not `Words`; this is asserted where the words are
+/// taken); no padding; and every bit pattern (zero included) is a valid value.
 pub unsafe trait Words: Copy + 'static {
     const N: usize = size_of::<Self>() / 4;
     /// The record as words.
@@ -269,6 +315,7 @@ pub unsafe trait Words: Copy + 'static {
     fn words(&self) -> &[u32] {
         // SAFETY: the trait's contract: `N` whole words, alignment at most 4 (and at least 1; a zero-sized value
         // gives an empty slice at a dangling but aligned-enough address only when N == 0, handled below).
+        const { assert!(size_of::<Self>() == 0 || (align_of::<Self>() == 4 && size_of::<Self>() % 4 == 0), "Words: a non-empty record type is whole words at alignment 4") };
         if Self::N == 0 { &[] } else { unsafe { core::slice::from_raw_parts(self as *const Self as *const u32, Self::N) } }
     }
     /// Equality of records is equality of their words.
@@ -444,6 +491,8 @@ pub trait Expr: Words {
     /// Whether [`Expr::until`] can be anything but "never": false for an expression that reads `Time` and gives
     /// no bound, so a column of them is known to be in motion without asking a single record.
     const RESTS: bool = Self::READS >> U_TIME & 1 == 0;
+    /// The value holds words the core writes (where a transition started from, and when): see [`Expr::carry`].
+    const STATE: bool = false;
     fn eval(&self, cx: &Cx) -> Self::Out;
 
     /// The bound of this expression in `Time`: the value of `Time` from which on the expression no longer
@@ -455,6 +504,20 @@ pub trait Expr: Words {
     fn until(&self, _cx: &Cx) -> u32 {
         if Self::READS >> U_TIME & 1 != 0 { u32::MAX } else { 0 }
     }
+
+    /// The fields of the root view this expression's block words are gathered from. A combinator forwards to
+    /// its operands; the world checks that every application word a column reads was named by some lens.
+    #[inline]
+    fn slots(_f: &mut dyn FnMut(Slot)) {}
+    /// The same operands as `o`, state words aside. Only asked when `STATE`.
+    #[inline(always)]
+    fn eq_ops(&self, o: &Self) -> bool {
+        self.same(o)
+    }
+    /// `self` (operands just described, or the same record under a new block) takes over from `was`, which
+    /// was showing under `old`: a transition starts from what `was` showed, now. Only called when `STATE`.
+    #[inline(always)]
+    fn carry(&mut self, _was: &Self, _old: &Cx, _new: &Cx) {}
 
     /// Apply a Rust function that captures nothing. What varies per record belongs in a `Rec` operand. The
     /// result is CPU stage: it is re-evaluated for exposed records when a word it reads changes.
@@ -504,6 +567,12 @@ impl<L: Lens> Expr for Un<L> {
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> L::T {
         cx.u.get::<L>()
+    }
+    #[inline]
+    fn slots(f: &mut dyn FnMut(Slot)) {
+        if let Some((off, bytes)) = L::AT {
+            f(Slot { slot: L::SLOT as u8, bytes: bytes as u8, off: off as u32 })
+        }
     }
 }
 
@@ -583,6 +652,18 @@ impl<const V: u32> Expr for Kc<V> {
     }
 }
 
+/// A colour given as a value is a word the record owns.
+impl Expr for Color {
+    type Out = Color;
+    type Stage = Mount;
+    const READS: u64 = 0;
+    const CODE: &'static Code = &Code::Rec;
+    #[inline(always)]
+    fn eval(&self, _: &Cx) -> Color {
+        *self
+    }
+}
+
 /// Words the record owns.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
@@ -627,6 +708,19 @@ where
     type Stage = <A::Stage as Stage>::OnCpu;
     const READS: u64 = A::READS;
     const RESTS: bool = A::RESTS;
+    const STATE: bool = A::STATE;
+    #[inline]
+    fn slots(f: &mut dyn FnMut(Slot)) {
+        A::slots(f)
+    }
+    #[inline(always)]
+    fn eq_ops(&self, o: &Self) -> bool {
+        self.0.eq_ops(&o.0)
+    }
+    #[inline(always)]
+    fn carry(&mut self, was: &Self, old: &Cx, new: &Cx) {
+        self.0.carry(&was.0, old, new)
+    }
     const CODE: &'static Code = &Code::Cpu(&[A::CODE]);
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> O {
@@ -651,6 +745,21 @@ where
     type Stage = <(A::Stage, B::Stage) as JoinAll>::Out;
     const READS: u64 = A::READS | B::READS;
     const RESTS: bool = A::RESTS & B::RESTS;
+    const STATE: bool = A::STATE | B::STATE;
+    #[inline]
+    fn slots(f: &mut dyn FnMut(Slot)) {
+        A::slots(f);
+        B::slots(f)
+    }
+    #[inline(always)]
+    fn eq_ops(&self, o: &Self) -> bool {
+        self.0.eq_ops(&o.0) & self.1.eq_ops(&o.1)
+    }
+    #[inline(always)]
+    fn carry(&mut self, was: &Self, old: &Cx, new: &Cx) {
+        self.0.carry(&was.0, old, new);
+        self.1.carry(&was.1, old, new)
+    }
     const CODE: &'static Code = &Code::Cpu(&[A::CODE, B::CODE]);
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> Self::Out {
@@ -658,7 +767,7 @@ where
     }
     #[inline(always)]
     fn until(&self, cx: &Cx) -> u32 {
-        self.0.until(cx).max(self.1.until(cx))
+        latest(self.0.until(cx), self.1.until(cx), cx.u.w[U_TIME])
     }
 }
 impl<A: Expr, B: Expr, C: Expr> Expr for (A, B, C)
@@ -669,6 +778,23 @@ where
     type Stage = <(A::Stage, B::Stage, C::Stage) as JoinAll>::Out;
     const READS: u64 = A::READS | B::READS | C::READS;
     const RESTS: bool = A::RESTS & B::RESTS & C::RESTS;
+    const STATE: bool = A::STATE | B::STATE | C::STATE;
+    #[inline]
+    fn slots(f: &mut dyn FnMut(Slot)) {
+        A::slots(f);
+        B::slots(f);
+        C::slots(f)
+    }
+    #[inline(always)]
+    fn eq_ops(&self, o: &Self) -> bool {
+        self.0.eq_ops(&o.0) & self.1.eq_ops(&o.1) & self.2.eq_ops(&o.2)
+    }
+    #[inline(always)]
+    fn carry(&mut self, was: &Self, old: &Cx, new: &Cx) {
+        self.0.carry(&was.0, old, new);
+        self.1.carry(&was.1, old, new);
+        self.2.carry(&was.2, old, new)
+    }
     const CODE: &'static Code = &Code::Cpu(&[A::CODE, B::CODE, C::CODE]);
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> Self::Out {
@@ -676,7 +802,7 @@ where
     }
     #[inline(always)]
     fn until(&self, cx: &Cx) -> u32 {
-        self.0.until(cx).max(self.1.until(cx)).max(self.2.until(cx))
+        latest(latest(self.0.until(cx), self.1.until(cx), cx.u.w[U_TIME]), self.2.until(cx), cx.u.w[U_TIME])
     }
 }
 
