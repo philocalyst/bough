@@ -61,8 +61,12 @@ pub static REL_EPOCH: AtomicU32 = AtomicU32::new(0);
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Edit {
     Update(u32),
-    /// Rows from here on are other rows than before (an insert or a remove).
+    /// Rows from here on are other rows than before (for a list: as an insert or a remove does).
     Shift(u32),
+    /// A row was inserted at this index: the rows from here on moved down by one.
+    Insert(u32),
+    /// The row at this index was removed: the rows after it moved up by one.
+    Remove(u32),
 }
 
 /// The last edits of a relation: its derivative. A list compares its own `seen` with `ver` and replays what it
@@ -95,10 +99,27 @@ impl Journal {
                     upd[n] = at;
                     n += 1;
                 }
-                Edit::Shift(at) => from = from.min(at),
+                Edit::Shift(at) | Edit::Insert(at) | Edit::Remove(at) => from = from.min(at),
             }
         }
         (from, upd, n)
+    }
+    /// The inserts and removes since version `seen`, oldest first, into `out` (what a reference to a row by its
+    /// index is remapped by). `false` when more happened than the journal keeps: the rows' identities are lost.
+    pub fn moves_since(&self, seen: u32, out: &mut Vec<Edit>) -> bool {
+        out.clear();
+        let pending = self.ver.wrapping_sub(seen);
+        if pending > 8 {
+            return false;
+        }
+        for k in (0..pending).rev() {
+            match self.log[self.ver.wrapping_sub(1 + k) as usize & 7] {
+                Edit::Update(_) => {}
+                Edit::Shift(_) => return false,
+                e => out.push(e),
+            }
+        }
+        true
     }
 }
 impl Default for Journal {
@@ -142,11 +163,11 @@ impl<T> Rel<T> {
         &mut self.items[i]
     }
     pub fn insert(&mut self, i: usize, v: T) {
-        self.journal.push(Edit::Shift(i as u32));
+        self.journal.push(Edit::Insert(i as u32));
         self.items.insert(i, v);
     }
     pub fn remove(&mut self, i: usize) -> T {
-        self.journal.push(Edit::Shift(i as u32));
+        self.journal.push(Edit::Remove(i as u32));
         self.items.remove(i)
     }
 }
@@ -230,6 +251,7 @@ unsafe fn replace<A: Arch>(site: &Site, slot: u32, p: *mut A, a: A, mk: &Mk, cx:
             cx.tiles.mark(r.and(mk.clip));
         }
         *p = a;
+        cx.changed += 1;
     }
 }
 
@@ -308,6 +330,10 @@ pub struct Cx<'c> {
     pub u: &'c U,
     pub all: bool,
     pub lists: u64,
+    /// Records this pass stored again with other words or another rect, or lists it moved (an
+    /// over-approximation): what a reader of the stores (reflection, accessibility) compares to know whether
+    /// anything it read may have changed.
+    pub changed: u32,
 }
 
 struct Discover<'a, B> {
@@ -389,6 +415,7 @@ impl<'w, 'c, V, B: Backend> Sink<V> for Write<'w, 'c, V, B> {
                         // A fixed record somewhere else: rare (a resize in re-describing mode). Its paint may
                         // move it further, which this untyped path cannot see, so the whole space is damaged.
                         self.cx.tiles.mark(self.mk.clip);
+                        self.cx.changed += 1;
                         s.set_rect(0, *r);
                     }
                 }
@@ -542,6 +569,9 @@ fn list_new(parent: &mut Store, l: &List<'_>) {
 #[allow(clippy::too_many_arguments)]
 fn list_plan(st: &mut Store, cx: &mut Cx<'_>, l: &List<'_>, (lo, hi): (u32, u32), org: (i32, i32), space: Space, leaves: usize, src: crate::store::RowSrc) -> Mk {
     let (from, upd, nupd) = l.edits.since(st.seen);
+    // inserts and removes since the last pass, for whoever holds a row by its index (focus, a press)
+    st.moved_ok = l.edits.moves_since(st.seen, &mut st.moved);
+    st.moved_from = st.seen;
     #[cfg(feature = "mutant_journal")]
     let (from, nupd) = (u32::MAX, 0 * nupd);
     st.seen = l.edits.ver;
@@ -572,8 +602,12 @@ fn list_plan(st: &mut Store, cx: &mut Cx<'_>, l: &List<'_>, (lo, hi): (u32, u32)
         if ohi > olo {
             cx.tiles.mark(space.clip);
         }
+        cx.changed += 1;
         (olo, ohi) = (0, 0);
     }
+    // rows entered, left or became other rows: what a reader of the stores sees moved (rows only compared
+    // count where `replace` stores one)
+    cx.changed += ((lo != olo) | (hi != ohi) | (from != u32::MAX)) as u32;
     if (lo == olo) & (hi == ohi) & (from == u32::MAX) & !cx.all {
         // only updates of single rows: those and nothing else
         for &r in &upd[..nupd] {

@@ -11,6 +11,8 @@ use core::marker::PhantomData;
 #[derive(Clone, Copy, Debug)]
 struct Held {
     place: u32,
+    /// What the pressed place showed (store, site, row): a release activates it only if it still shows that.
+    what: Option<Focused>,
     drag: u32,
     at: (i32, i32),
     button: Button,
@@ -23,6 +25,8 @@ struct Focused {
     path: Path,
     site: u32,
     row: u32,
+    /// The list's relation version this row index is right for (inserts and removes after it remap it).
+    seen: u32,
 }
 
 pub struct World<B> {
@@ -60,6 +64,13 @@ pub struct World<B> {
     /// The columns whose records have handlers: index in the table and the kinds they hear. The pointer path
     /// visits these and no other column.
     handlers: Vec<(u32, u32)>,
+    /// Publication revision: grows whenever a pass stored records with other words or rects, or moved a list.
+    revision: u32,
+    /// The view type this world was mounted with: handlers were instantiated for it, so events must come with
+    /// it (checked at admission, once per event).
+    view: Option<core::any::TypeId>,
+    /// The row each hovered place showed when it was entered (a list's slot shows another row after a scroll).
+    hov_what: Vec<u32>,
     /// Scratch for the event path, reserved once: an event allocates nothing.
     buf: Vec<u32>,
     pool: Vec<Vec<u32>>,
@@ -72,7 +83,7 @@ impl<B: Backend> World<B> {
         for w in [U_PICK, U_FOCUS, U_PRESS] {
             shown.w[w] = NONE;
         }
-        World { root: Box::new(Store::new(1, Space::root(w, h))), shown, tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, reads: 0, col_reads: Vec::new(), by_word: [0; 65], readers: Vec::new(), cols: Vec::new(), cold: Vec::new(), spaces: Vec::new(), shape: u32::MAX, clock: 0, ptr: None, hov: Vec::with_capacity(64), held: None, focus: None, handlers: Vec::new(), buf: Vec::with_capacity(64), pool: (0..4).map(|_| Vec::with_capacity(64)).collect(), _b: PhantomData }
+        World { root: Box::new(Store::new(1, Space::root(w, h))), shown, tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, reads: 0, col_reads: Vec::new(), by_word: [0; 65], readers: Vec::new(), cols: Vec::new(), cold: Vec::new(), spaces: Vec::new(), shape: u32::MAX, clock: 0, ptr: None, revision: 0, view: None, hov_what: Vec::with_capacity(64), hov: Vec::with_capacity(64), held: None, focus: None, handlers: Vec::new(), buf: Vec::with_capacity(64), pool: (0..4).map(|_| Vec::with_capacity(64)).collect(), _b: PhantomData }
     }
 
     /// The application's block with the words it does not own (the surface's and the raster's) as the world
@@ -83,6 +94,13 @@ impl<B: Backend> World<B> {
         u.w[APP_WORDS..].copy_from_slice(&self.shown.w[APP_WORDS..]);
         u
     }
+    /// The publication revision: it moves whenever a pass stored a record with other words or another rect, or
+    /// moved a list. A reader of the stores that saw the same revision and the same block has nothing new to
+    /// read.
+    #[inline(always)]
+    pub fn revision(&self) -> u32 {
+        self.revision
+    }
     /// The time of the frame being prepared, by the clock: what a handler stamps a motion's start with.
     #[inline(always)]
     pub fn now(&self) -> u32 {
@@ -90,14 +108,16 @@ impl<B: Backend> World<B> {
     }
 
     /// Describe the view for the first time. Only what is exposed comes to exist.
-    pub fn mount<V: View>(&mut self, v: &V) {
+    pub fn mount<V: View + 'static>(&mut self, v: &V) {
+        self.view = Some(core::any::TypeId::of::<V>());
         self.shown = self.block(v);
         self.tiles.mark_all();
         self.root.row_live[0] = 1;
         self.epoch = REL_EPOCH.load(Ordering::Relaxed);
-        let mut cx = Cx { tiles: &mut self.tiles, u: &self.shown, all: true, lists: 0 };
+        let mut cx = Cx { tiles: &mut self.tiles, u: &self.shown, all: true, lists: 0, changed: 0 };
         v.view(&mut Write::<V, B>::new(&mut self.root, &mut cx, true));
         self.lists = cx.lists;
+        self.revision = self.revision.wrapping_add(cx.changed + 1);
         self.root.resweep(&self.shown, &mut self.tiles);
         self.retable();
         self.refocus();
@@ -235,9 +255,10 @@ impl<B: Backend> World<B> {
         }
         if (epoch != self.epoch) | (ch & self.lists != 0) {
             self.epoch = epoch;
-            let mut cx = Cx { tiles: &mut self.tiles, u, all: false, lists: 0 };
+            let mut cx = Cx { tiles: &mut self.tiles, u, all: false, lists: 0, changed: 0 };
             v.view(&mut Patch::<V, B> { st: &mut self.root, cx: &mut cx, sub: 0, _p: PhantomData });
             self.lists |= cx.lists;
+            self.revision = self.revision.wrapping_add(cx.changed);
             if ch != 0 {
                 self.shown = *u;
             }
@@ -257,9 +278,10 @@ impl<B: Backend> World<B> {
             self.delta(u, ch);
         }
         self.epoch = REL_EPOCH.load(Ordering::Relaxed);
-        let mut cx = Cx { tiles: &mut self.tiles, u, all: true, lists: 0 };
+        let mut cx = Cx { tiles: &mut self.tiles, u, all: true, lists: 0, changed: 0 };
         v.view(&mut Write::<V, B>::new(&mut self.root, &mut cx, false));
         self.lists |= cx.lists;
+        self.revision = self.revision.wrapping_add(cx.changed);
         if self.root.timed {
             self.root.resweep(u, &mut self.tiles);
         }
@@ -362,7 +384,10 @@ impl<B: Backend> World<B> {
     }
 
     /// Run the handler of `place` that hears `e`, if it has one.
-    fn call<V: View>(&self, v: &mut V, place: u32, e: &Event) -> bool {
+    fn call<V: View + 'static>(&self, v: &mut V, place: u32, e: &Event) -> bool {
+        // the handlers were instantiated for the view this world was mounted with: another type is refused here,
+        // once per handler call, before any pointer is cast
+        assert!(self.view == Some(core::any::TypeId::of::<V>()), "an event for a view of another type than the world was mounted with");
         let Some((st, col, rec)) = self.at_place(place) else { return false };
         let c = &st.cols[col as usize];
         let Some(o) = c.hover else { return false };
@@ -374,7 +399,7 @@ impl<B: Backend> World<B> {
         unsafe { (o.call)(v as *mut V as *mut (), c.caps_ptr(rec), c.rec_ptr(rec), e) }
     }
     /// The first place of `chain` (topmost first) whose handler consumes `e`.
-    fn bubble<V: View>(&self, v: &mut V, chain: impl Iterator<Item = u32>, e: &Event) -> Dispatch {
+    fn bubble<V: View + 'static>(&self, v: &mut V, chain: impl Iterator<Item = u32>, e: &Event) -> Dispatch {
         for p in chain {
             if self.call(v, p, e) {
                 return Dispatch { kind: e.kind, place: p, consumed: true };
@@ -403,8 +428,10 @@ impl<B: Backend> World<B> {
 
     /// The pointer moved to (x, y): the pick, then hover left and entered (the chain's symmetric difference),
     /// or, while a drag handler holds the pointer, the drag.
-    pub fn pointer<V: View>(&mut self, v: &mut V, x: i32, y: i32) -> Dispatch {
+    pub fn pointer<V: View + 'static>(&mut self, v: &mut V, x: i32, y: i32) -> Dispatch {
         self.ptr = Some((x, y));
+        // the words a paint may read the pointer from move with it, in the same operation
+        self.pointer_words(x, y);
         if let Some(h) = self.held
             && h.drag != NONE
         {
@@ -416,7 +443,7 @@ impl<B: Backend> World<B> {
     }
     /// The pick at the pointer as it stands, and hover brought up to date: after a move, or after a turn that
     /// moved content under a still pointer (what the raster's pick in the frame being drawn delivers).
-    pub fn repick<V: View>(&mut self, v: &mut V) -> Dispatch {
+    pub fn repick<V: View + 'static>(&mut self, v: &mut V) -> Dispatch {
         let Some((x, y)) = self.ptr else { return Dispatch::NOTHING };
         let all = self.chain(x, y, kind::POINTER);
         let d = self.picked(v, all.last().copied().unwrap_or(NONE), &all);
@@ -424,7 +451,7 @@ impl<B: Backend> World<B> {
         d
     }
     /// A pick that arrived from the raster with a frame: `place` is the `Pick` word.
-    pub fn accept_pick<V: View>(&mut self, v: &mut V, place: u32) -> Dispatch {
+    pub fn accept_pick<V: View + 'static>(&mut self, v: &mut V, place: u32) -> Dispatch {
         let all = match self.ptr {
             Some((x, y)) if place != NONE => self.chain(x, y, kind::POINTER),
             _ => self.take(),
@@ -433,12 +460,23 @@ impl<B: Backend> World<B> {
         self.done(all);
         d
     }
-    fn picked<V: View>(&mut self, v: &mut V, pick: u32, all: &[u32]) -> Dispatch {
+    fn picked<V: View + 'static>(&mut self, v: &mut V, pick: u32, all: &[u32]) -> Dispatch {
         self.core_word(U_PICK, pick);
         let mut next = self.take();
         for &p in all {
             if self.kinds(p) & kind::HOVER != 0 {
                 next.push(p);
+            }
+        }
+        // places that now show another row than when they were entered: their item is gone from under the
+        // pointer, and its captures with it (the slot holds the new row's), so it is dropped without a leave
+        let mut i = 0;
+        while i < self.hov.len() {
+            if self.row_at(self.hov[i]) != self.hov_what[i] {
+                self.hov.remove(i);
+                self.hov_what.remove(i);
+            } else {
+                i += 1;
             }
         }
         if next == self.hov {
@@ -447,6 +485,11 @@ impl<B: Backend> World<B> {
             return Dispatch { kind: kind::HOVER, place: pick, consumed: false };
         }
         let old = core::mem::replace(&mut self.hov, next);
+        self.hov_what.clear();
+        for i in 0..self.hov.len() {
+            let r = self.row_at(self.hov[i]);
+            self.hov_what.push(r);
+        }
         let (x, y) = self.ptr.map_or((-1.0, -1.0), |(x, y)| (x as f32, y as f32));
         let mut out = Dispatch { kind: kind::HOVER, place: NONE, consumed: false };
         // left: the old set's records not under the pointer now, topmost first
@@ -466,6 +509,10 @@ impl<B: Backend> World<B> {
         self.done(old);
         out
     }
+    /// The row a place shows now (`NONE` for no record).
+    fn row_at(&self, place: u32) -> u32 {
+        self.at_place(place).map_or(NONE, |(st, _, rec)| row_of(st, rec))
+    }
     fn kinds(&self, place: u32) -> u32 {
         self.at_place(place).and_then(|(st, c, _)| st.cols[c as usize].hover).map_or(0, |o| o.kinds)
     }
@@ -473,7 +520,7 @@ impl<B: Backend> World<B> {
     /// A button went down at (x, y): focus moves to the nearest focusable record under it (or leaves, as the
     /// DOM blurs on the background), `Press` and `PressAt` are written, the press handler runs, and a drag
     /// handler captures the pointer.
-    pub fn pointer_down<V: View>(&mut self, v: &mut V, x: i32, y: i32, button: Button) -> Dispatch {
+    pub fn pointer_down<V: View + 'static>(&mut self, v: &mut V, x: i32, y: i32, button: Button) -> Dispatch {
         // one walk under the pointer serves the pick, hover, focus, the press and the drag
         self.ptr = Some((x, y));
         let chain = self.chain(x, y, kind::POINTER | kind::FOCUSABLE);
@@ -491,7 +538,8 @@ impl<B: Backend> World<B> {
         }
         let top = chain.iter().rev().copied().find(|&p| self.kinds(p) & kind::POINTER != 0).unwrap_or(NONE);
         let drag = chain.iter().rev().copied().find(|&p| self.kinds(p) & kind::DRAG != 0).unwrap_or(NONE);
-        self.held = Some(Held { place: top, drag, at: (x, y), button });
+        let what = if top == NONE { None } else { self.logical(top) };
+        self.held = Some(Held { place: top, what, drag, at: (x, y), button });
         if button == Button::Primary {
             self.core_word(U_PRESS, top);
             self.core_word(U_PRESS_AT, (x as u32 & 0xffff) << 16 | (y as u32 & 0xffff));
@@ -504,7 +552,7 @@ impl<B: Backend> World<B> {
 
     /// The button came up at (x, y): a drag ends (its handler sees `ev.on == false`); otherwise, if the pointer
     /// is still over the record pressed, it is activated (the click handler nearest to it under the pointer).
-    pub fn pointer_up<V: View>(&mut self, v: &mut V, x: i32, y: i32, button: Button) -> Dispatch {
+    pub fn pointer_up<V: View + 'static>(&mut self, v: &mut V, x: i32, y: i32, button: Button) -> Dispatch {
         self.columns();
         let Some(h) = self.held.take() else { return Dispatch::NOTHING };
         if h.button == Button::Primary {
@@ -520,8 +568,11 @@ impl<B: Backend> World<B> {
         self.ptr = Some((x, y));
         let chain = self.chain(x, y, kind::POINTER);
         self.picked(v, chain.last().copied().unwrap_or(NONE), &chain);
+        // the pressed place must still show what was pressed: a scroll or an edit in between may have put
+        // another row in its slot, and that row was not pressed
+        let same = h.what.is_some_and(|w| self.logical(h.place).is_some_and(|n| (n.path, n.site, n.row) == (w.path, w.site, w.row)));
         let d = match chain.iter().position(|&p| p == h.place) {
-            Some(i) if button == Button::Primary && h.place != NONE => {
+            Some(i) if button == Button::Primary && h.place != NONE && same => {
                 let e = Event { kind: kind::CLICK, ev: Ev::at(x as f32, y as f32), text: "" };
                 self.bubble(v, chain[..=i].iter().rev().copied(), &e)
             }
@@ -532,7 +583,7 @@ impl<B: Backend> World<B> {
     }
 
     /// A press and a release at (x, y).
-    pub fn click<V: View>(&mut self, v: &mut V, x: i32, y: i32) -> Dispatch {
+    pub fn click<V: View + 'static>(&mut self, v: &mut V, x: i32, y: i32) -> Dispatch {
         self.pointer_down(v, x, y, Button::Primary);
         self.pointer_up(v, x, y, Button::Primary)
     }
@@ -540,7 +591,7 @@ impl<B: Backend> World<B> {
     /// A key went down. Tab and Shift+Tab move focus in paint order; otherwise the focused record's key handler,
     /// then those of the records with key handlers it lies inside, innermost first (with nothing focused: those
     /// that hold the window's origin, the root's included).
-    pub fn key_down<V: View>(&mut self, v: &mut V, key: Key, mods: Mods) -> Dispatch {
+    pub fn key_down<V: View + 'static>(&mut self, v: &mut V, key: Key, mods: Mods) -> Dispatch {
         self.columns();
         if key == Key::Tab {
             return self.tab(v, mods.shift);
@@ -569,7 +620,7 @@ impl<B: Backend> World<B> {
     }
 
     /// Text typed (an IME commit, or a printable key's text) goes to the focused record's text handler.
-    pub fn text<V: View>(&mut self, v: &mut V, s: &str) -> Dispatch {
+    pub fn text<V: View + 'static>(&mut self, v: &mut V, s: &str) -> Dispatch {
         self.columns();
         let focused = self.shown.w[U_FOCUS];
         let e = Event { kind: kind::TEXT, ev: Ev::at(0.0, 0.0), text: s };
@@ -581,7 +632,7 @@ impl<B: Backend> World<B> {
     /// one that returns `true` consumes it); otherwise the innermost space under the pointer whose origin reads a
     /// scroll word moves, within its lists' extent: the space is its own scroller. One line is a row of its
     /// first list.
-    pub fn wheel<V: View>(&mut self, v: &mut V, x: i32, y: i32, dx: f32, dy: f32) -> Dispatch {
+    pub fn wheel<V: View + 'static>(&mut self, v: &mut V, x: i32, y: i32, dx: f32, dy: f32) -> Dispatch {
         self.ptr = Some((x, y));
         let chain = self.chain(x, y, kind::WHEEL);
         let e = Event { kind: kind::WHEEL, ev: Ev { dx, dy, ..Ev::at(x as f32, y as f32) }, text: "" };
@@ -613,7 +664,7 @@ impl<B: Backend> World<B> {
 
     /// Activate a place as a click would, with no pointer: what an assistive technology's "press" does. The
     /// place's own click handler runs, or the nearest under its centre.
-    pub fn activate<V: View>(&mut self, v: &mut V, place: u32) -> Dispatch {
+    pub fn activate<V: View + 'static>(&mut self, v: &mut V, place: u32) -> Dispatch {
         self.columns();
         let e = Event { kind: kind::CLICK, ev: Ev::at(0.0, 0.0), text: "" };
         if self.call(v, place, &e) {
@@ -629,7 +680,7 @@ impl<B: Backend> World<B> {
     /// Scroll the list at `path` so that row `r` is exposed (as little as needed): what an assistive
     /// technology's "scroll into view" does. Writes the scroll word of the list's space; the next settle
     /// exposes the row. Returns whether the word changed.
-    pub fn scroll_into_view<V: View>(&mut self, v: &mut V, path: &Path, r: u32) -> bool {
+    pub fn scroll_into_view<V: View + 'static>(&mut self, v: &mut V, path: &Path, r: u32) -> bool {
         let Some(st) = self.root.at(path) else { return false };
         let (sp, (_, y, h)) = (st.space, st.geo);
         if sp.scroll == crate::store::NO_WORD || h == 0 {
@@ -682,7 +733,7 @@ impl<B: Backend> World<B> {
         out
     }
     /// Move focus to the next (or previous) focusable record in paint order, wrapping.
-    pub fn tab<V: View>(&mut self, v: &mut V, back: bool) -> Dispatch {
+    pub fn tab<V: View + 'static>(&mut self, v: &mut V, back: bool) -> Dispatch {
         let all = self.focusables();
         if all.is_empty() {
             self.done(all);
@@ -703,7 +754,7 @@ impl<B: Backend> World<B> {
     }
 
     /// Focus a place (`None`: nothing). The record's focus handler hears it; so does the one that lost focus.
-    pub fn focus_place<V: View>(&mut self, v: &mut V, place: Option<u32>) {
+    pub fn focus_place<V: View + 'static>(&mut self, v: &mut V, place: Option<u32>) {
         self.columns();
         let old = self.shown.w[U_FOCUS];
         let new = place.unwrap_or(NONE);
@@ -728,13 +779,36 @@ impl<B: Backend> World<B> {
         let path = self.path_of(st)?;
         let k = rec / st.cap;
         let site = st.sites.iter().enumerate().filter(|(_, s)| s.col == col).nth(k as usize)?.0 as u32;
-        Some(Focused { path, site, row: row_of(st, rec) })
+        Some(Focused { path, site, row: row_of(st, rec), seen: st.seen })
     }
     /// After a pass that may have moved a window: where the focused row is now, or that it is not exposed
     /// (`Focus` holds `NONE` until it comes back). Nothing to do when nothing is focused.
     fn refocus(&mut self) {
-        let Some(f) = self.focus else { return };
+        let Some(mut f) = self.focus else { return };
         self.columns();
+        // the focused row follows its item through the inserts and removes the last pass replayed
+        if let Some(st) = self.root.at(&f.path)
+            && st.src.is_some()
+            && st.seen != f.seen
+        {
+            if st.moved_from == f.seen && st.moved_ok {
+                for e in &st.moved {
+                    match *e {
+                        crate::sink::Edit::Insert(at) if at <= f.row => f.row += 1,
+                        crate::sink::Edit::Remove(at) if at < f.row => f.row -= 1,
+                        crate::sink::Edit::Remove(at) if at == f.row => {
+                            // the focused item is gone: focus is nowhere
+                            self.focus = None;
+                            self.core_word(U_FOCUS, NONE);
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            f.seen = st.seen;
+            self.focus = Some(f);
+        }
         let place = (|| {
             let st = self.root.at(&f.path)?;
             let s = st.sites.get(f.site as usize)?;

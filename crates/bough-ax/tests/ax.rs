@@ -381,3 +381,80 @@ fn dump() {
     ax.update(&w, &v);
     println!("{}", ax.tree().dump());
 }
+
+// ---- the independent review's findings S02 and S03, as tests -----------------------------------------------------
+
+struct Title {
+    u: U,
+    title: Txt,
+}
+impl View for Title {
+    fn block(&self) -> &U {
+        &self.u
+    }
+    fn view<S: Sink<Self>>(&self, s: &mut S) {
+        s.row(|| ([Rect::new(0, 0, 200, 40)], Label(self.title, Kc::<0xff000000>)));
+    }
+}
+
+/// S03: a fixed text that is plain state (no relation, no block word), changed and re-described, reaches the
+/// tree: the update compares the world's publication revision, which the re-description moved.
+#[test]
+fn opaque_state_redescribed_reaches_the_tree() {
+    let mut v = Title { u: U::default(), title: Txt::new("Inbox") };
+    let mut w = World::<Soft>::new(400, 300, 1);
+    w.mount(&v);
+    let mut ax = Ax::new();
+    ax.update(&w, &v);
+    assert_eq!(ax.tree().one(|n| n.role == Role::StaticText).name, "Inbox");
+    v.title = Txt::new("Archive");
+    w.redescribe(&v);
+    let up = ax.update(&w, &v);
+    assert_eq!(up.changed.len(), 1);
+    assert_eq!(ax.tree().one(|n| n.role == Role::StaticText).name, "Archive");
+    // and a re-description that changed nothing is nothing to the tree
+    w.redescribe(&v);
+    assert!(ax.update(&w, &v).is_empty());
+    assert_eq!(ax.projected, 0);
+}
+
+/// "the pick equals this record's constant": a hover look, not a selection.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PickIs(Rec<u32>);
+// SAFETY: one word.
+unsafe impl bough_x::expr::Words for PickIs {}
+impl Expr for PickIs {
+    type Out = bool;
+    type Stage = Frame;
+    const READS: u64 = 1 << bough_x::expr::U_PICK;
+    const CODE: &'static Code = &Code::Call("x_eq", &[&Code::U(bough_x::expr::U_PICK), &Code::Rec]);
+    fn eval(&self, cx: &XCx) -> bool {
+        cx.u.w[bough_x::expr::U_PICK] == self.0.0
+    }
+}
+struct Hovering {
+    u: U,
+}
+impl View for Hovering {
+    fn block(&self) -> &U {
+        &self.u
+    }
+    fn view<S: Sink<Self>>(&self, s: &mut S) {
+        s.row(|| ([Rect::new(0, 0, 200, 40), Rect::new(0, 0, 200, 40)], (Fill(Choose::<_, 0xffeeeeee, 0xffffffff>(PickIs(rec(0)))).on_click(|_: &mut Hovering| {}), Label(Txt::new("Open"), Kc::<0xff000000>))));
+    }
+}
+
+/// S02: a record that compares a core word (the pick, the focus, the press) with its own constant looks
+/// hovered, focused or pressed; it is not "selected".
+#[test]
+fn a_hover_look_is_not_a_selection() {
+    let v = Hovering { u: U::default() };
+    let mut w = World::<Soft>::new(400, 300, 1);
+    w.mount(&v);
+    let mut ax = Ax::new();
+    ax.update(&w, &v);
+    let b = ax.tree().one(|n| n.role == Role::Button);
+    assert_eq!(b.name, "Open");
+    assert_eq!(b.selected, None);
+}

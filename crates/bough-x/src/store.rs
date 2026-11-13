@@ -591,6 +591,11 @@ pub struct Store {
     pub src: Option<RowSrc>,
     /// A list's row count as of its last pass (its extent is `geo.1 + n * geo.2`).
     pub n: u32,
+    /// A list's inserts and removes replayed by its last pass (from version `moved_from`), oldest first, and
+    /// whether that is all of them.
+    pub moved: Vec<crate::sink::Edit>,
+    pub moved_from: u32,
+    pub moved_ok: bool,
     /// A list's layout: the rects of one row relative to the row, and where and how tall rows are.
     pub tmpl: Vec<Rect>,
     /// Where the slice `tmpl` was copied from was: an identity check before a content compare.
@@ -613,7 +618,7 @@ pub fn columns_made() -> u32 {
 impl Store {
     pub fn new(cap: u32, space: Space) -> Store {
         assert!(cap == 1 || (cap >= 64 && cap.is_power_of_two()));
-        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), src: None, n: 0, tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false }
+        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), src: None, n: 0, moved: Vec::new(), moved_from: 0, moved_ok: true, tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false }
     }
     #[inline(always)]
     pub fn view(&self) -> StoreView<'_> {

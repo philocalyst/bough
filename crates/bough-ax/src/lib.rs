@@ -29,7 +29,8 @@ use bough_x::event::{NONE, REDUCED_MOTION_AHEAD, U_FOCUS, kind};
 use bough_x::expr::{APP_WORDS, Code, HOT, U, U_TIME};
 use bough_x::reflect::{Kind as SKind, Part, Reflect, Snap, StoreInfo, Val};
 use bough_x::sink::View;
-use bough_x::store::{Backend, NO_WORD, Path, Rect, Store};
+use bough_x::store::{Backend, NO_WORD, Path, Rect, SHAPE, Store};
+use core::sync::atomic::Ordering;
 use bough_x::world::World;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -243,8 +244,10 @@ pub struct Ax {
     refl: Option<Reflect>,
     /// What the last projection was made from: the block, the relation epoch, the focus, the words it read.
     block: U,
-    /// Every list's (window, row count, relation version) as of its last pass: what its rows were.
-    lists: Vec<[u32; 4]>,
+    /// The world's publication revision and the process's store shape as of the last projection: records
+    /// stored again, rects moved, lists moved (revision); stores or columns made (shape).
+    revision: u32,
+    shape: u32,
     focus: Option<(Path, u32, u32)>,
     reads: u64,
     /// Each list's row count as last published (for announcing appended rows).
@@ -261,7 +264,7 @@ impl Default for Ax {
 
 impl Ax {
     pub fn new() -> Ax {
-        Ax { tree: Tree::default(), refl: None, block: U::default(), lists: Vec::new(), focus: None, reads: !0, counts: BTreeMap::new(), projected: 0 }
+        Ax { tree: Tree::default(), refl: None, block: U::default(), revision: 0, shape: u32::MAX, focus: None, reads: !0, counts: BTreeMap::new(), projected: 0 }
     }
     pub fn tree(&self) -> &Tree {
         &self.tree
@@ -269,15 +272,23 @@ impl Ax {
 
     /// Bring the tree up to date after a turn; what changed.
     pub fn update<V: View, B: Backend>(&mut self, w: &World<B>, v: &V) -> Update {
-        let lists = lists_of(&w.root);
+        // Nothing the tree was built from moved: the same publication revision (no record stored again, no rect,
+        // no list moved), no store made, the same focus, none of the words it read. Five compares, no walk.
+        // Stores or columns were made somewhere in the process: is the reflection still this tree's (a walk,
+        // only then; another world growing leaves it current)
+        let shape = SHAPE.load(Ordering::Relaxed);
+        let mut fresh_schema = false;
+        if shape != self.shape {
+            if !self.refl.as_ref().is_some_and(|r| r.current(&w.root)) {
+                self.refl = Some(Reflect::learn(&w.root, v));
+                fresh_schema = true;
+            }
+            self.shape = shape;
+        }
         let focus = w.focused();
-        let current = self.refl.as_ref().is_some_and(|r| r.current(&w.root));
-        if current && lists == self.lists && focus == self.focus && self.block.diff(&w.shown, 64) & self.reads == 0 {
+        if !fresh_schema && w.revision() == self.revision && focus == self.focus && self.block.diff(&w.shown, 64) & self.reads == 0 {
             self.projected = 0;
             return Update::default();
-        }
-        if !current {
-            self.refl = Some(Reflect::learn(&w.root, v));
         }
         let mut p = Project::new(w, v, self.refl.as_ref().unwrap());
         p.run();
@@ -312,7 +323,7 @@ impl Ax {
         self.counts = fresh.nodes.values().filter_map(|n| n.row_count.map(|c| (n.id, c))).collect();
         self.tree = fresh;
         self.block = w.shown;
-        self.lists = lists;
+        self.revision = w.revision();
         self.focus = focus;
         // the settled tree does not move with time or the pointer: those words never make it project
         self.reads = reads & !HOT;
@@ -341,21 +352,6 @@ impl Ax {
         }
         out
     }
-}
-
-/// Each list store's window, row count and relation version, in tree order.
-fn lists_of(st: &Store) -> Vec<[u32; 4]> {
-    fn go(st: &Store, out: &mut Vec<[u32; 4]>) {
-        if st.src.is_some() {
-            out.push([st.lo, st.hi, st.n, st.seen]);
-        }
-        for s in &st.subs {
-            go(s, out);
-        }
-    }
-    let mut out = Vec::new();
-    go(st, &mut out);
-    out
 }
 
 /// The text a person would hear for a node and its descendants.
@@ -387,6 +383,10 @@ struct Project<'a, V, B> {
     owner: BTreeMap<(Path2, u32, u32), NodeId>,
     /// Selection indicators (outlines) at rest, on screen.
     rings: Vec<Rect>,
+    /// The stored records of fixed shapes, read once per projection, by store.
+    fixed: BTreeMap<Path2, Vec<Snap>>,
+    /// Each store's columns' places in the world's column table (paint order), found once per projection.
+    places: BTreeMap<(Path2, u32), u32>,
 }
 type Path2 = ([u16; 6], u16);
 fn p2(p: &Path) -> Path2 {
@@ -409,21 +409,43 @@ impl<'a, V: View, B: Backend> Project<'a, V, B> {
     fn new(w: &'a World<B>, v: &'a V, r: &'a Reflect) -> Self {
         let mut u = w.shown;
         u.w[U_TIME] = w.now().wrapping_add(REDUCED_MOTION_AHEAD);
-        Project { w, v, r, u, tree: Tree::default(), reads: 1 << U_FOCUS, owner: BTreeMap::new(), rings: Vec::new() }
+        Project { w, v, r, u, tree: Tree::default(), reads: 1 << U_FOCUS, owner: BTreeMap::new(), rings: Vec::new(), fixed: BTreeMap::new(), places: BTreeMap::new() }
     }
 
     fn run(&mut self) {
         let root = Path::default();
         let id = NodeId::of(&root, 0, 0, Tag::Window);
         let mut win = Node::new(id, Role::Window, self.w.root.space.clip);
-        // selection indicators anywhere, at rest
+        // one walk of the stores: selection indicators anywhere, at rest, and the records of fixed shapes
         let u = self.u;
         for it in self.r.items(&self.w.root, &u) {
             if it.kind() == "outline" {
                 self.rings.push(it.screen);
                 self.reads |= it.info.reads;
             }
+            let fixed = self.w.root.at(&it.ent.path).is_some_and(|s| s.cap == 1);
+            if fixed {
+                self.fixed.entry(p2(&it.ent.path)).or_default().push(it.snap());
+            }
         }
+        // the world's column table, in paint order: what a place's column number counts
+        fn table(st: &Store, p: &mut Path, i: &mut u32, out: &mut BTreeMap<(Path2, u32), u32>) {
+            for e in &st.order {
+                match *e {
+                    bough_x::store::Pass::Col(j) => {
+                        out.insert((p2(p), j), *i);
+                        *i += 1;
+                    }
+                    bough_x::store::Pass::Sub(q) => {
+                        p.at[p.n as usize] = q as u16;
+                        p.n += 1;
+                        table(&st.subs[q as usize], p, i, out);
+                        p.n -= 1;
+                    }
+                }
+            }
+        }
+        table(&self.w.root, &mut Path::default(), &mut 0, &mut self.places);
         win.children = self.store(&self.r.root, &self.w.root, root);
         self.tree.nodes.insert(id, win);
         self.tree.root = Some(id);
@@ -434,7 +456,7 @@ impl<'a, V: View, B: Backend> Project<'a, V, B> {
     /// The nodes of a store's rows and child stores, in the order the view described them.
     fn store(&mut self, info: &StoreInfo, st: &Store, path: Path) -> Vec<NodeId> {
         let u = self.u;
-        let items: Vec<Snap> = self.r.items(&self.w.root, &u).into_iter().filter(|i| i.ent.path == path).map(|i| i.snap()).collect();
+        let items: Vec<Snap> = self.fixed.remove(&p2(&path)).unwrap_or_default();
         let mut out = Vec::new();
         for part in &info.seq {
             match *part {
@@ -495,11 +517,18 @@ impl<'a, V: View, B: Backend> Project<'a, V, B> {
     /// Rows of the list at `path`, described from the view (materialised or not).
     fn list_rows(&mut self, path: &Path, rows: core::ops::Range<u32>, grid: bool, _info: Option<&StoreInfo>) -> Vec<NodeId> {
         let u = self.u;
-        let snaps = Reflect::rows(self.v, &u, path, rows.clone());
+        let mut snaps = Reflect::rows(self.v, &u, path, rows.clone());
+        // rows come out in row order already; one pass splits them
+        snaps.sort_by_key(|s| (s.ent.row, s.ent.pos));
         let org = self.w.root.at(path).map_or((0, 0), |s| s.space.origin(&u));
         let mut out = Vec::new();
+        let mut at = 0;
         for r in rows {
-            let row: Vec<&Snap> = snaps.iter().filter(|s| s.ent.row == r).collect();
+            let from = at;
+            while at < snaps.len() && snaps[at].ent.row == r {
+                at += 1;
+            }
+            let row: Vec<&Snap> = snaps[from..at].iter().collect();
             if row.is_empty() {
                 continue;
             }
@@ -657,30 +686,8 @@ impl<'a, V: View, B: Backend> Project<'a, V, B> {
         let st = self.w.root.at(path)?;
         let site = st.sites.get(s.ent.pos as usize)?;
         let slot = if st.cap == 1 { 0 } else if row >= st.lo && row < st.hi { row % st.cap } else { return None };
-        let rec = site.base + slot;
-        // the world numbers columns in paint order; find this one without needing `&mut World`
-        let mut i = 0u32;
-        let mut found = None;
-        fn walk(st: &Store, path: &mut Path, want: &Path, col: u32, i: &mut u32, found: &mut Option<u32>) {
-            for p in &st.order {
-                match *p {
-                    bough_x::store::Pass::Col(j) => {
-                        if *path == *want && j == col && found.is_none() {
-                            *found = Some(*i);
-                        }
-                        *i += 1;
-                    }
-                    bough_x::store::Pass::Sub(q) => {
-                        path.at[path.n as usize] = q as u16;
-                        path.n += 1;
-                        walk(&st.subs[q as usize], path, want, col, i, found);
-                        path.n -= 1;
-                    }
-                }
-            }
-        }
-        walk(&self.w.root, &mut Path::default(), path, site.col, &mut i, &mut found);
-        found.map(|c| c << bough_x::event::PLACE_REC_BITS | rec)
+        let c = *self.places.get(&(p2(path), site.col))?;
+        Some(c << bough_x::event::PLACE_REC_BITS | (site.base + slot))
     }
 
     /// Texts outside a grid that line up with its columns are its column headers.
@@ -746,6 +753,11 @@ fn selected(s: &Snap, u: &U, reads: &mut u64) -> Option<bool> {
     for op in s.ops {
         let mut word = op.word as usize;
         eq_words(op.code, &mut word, &mut |w, k| {
+            // only an application word selects: the core's (pick, focus, press, environment) and the raster's
+            // compare with a record for hover, focus rings and pressed looks, which are not selection
+            if w >= APP_WORDS {
+                return;
+            }
             *reads |= 1 << w;
             if let Some(&c) = s.words.get(k) {
                 out = Some(out.unwrap_or(false) | (u.w[w] == c));
