@@ -403,5 +403,13 @@ the app, section 8 H08); the keymap is fakeland's serialised map, read for group
    `--quick` for the full matrix; `run.sh NAME TIMING` in `/root/work/r8/e2e/close/` records the identity).
    `chk2.py RESULTS` there prints every cell's layout and validity checks, app and host apart.
 
+**On main** (the integration, `1068e57fd1`: the element layer's core, text, raster and this lane merged). Built
+from it on ilo-prod the same way (`cargo build --profile dist -p bough-guibench-x`; 1,109,864 bytes, sha256
+`e325cf1adde66d7cce919079c34efc02f34e9a6afc88e83bb4673c6d496d3730`), and `cargo test --release -p bough-guibench-x
+-p bough-span -p bough-host -p bough-glyph -p bough-x` green there. `x3-fixed` (07:02-07:06 UTC) and
+`x3-unthrottled` (07:06-07:10 UTC), load 5 to 11: 14 cells each, the layout check passed in every cell and
+**every measurement was valid** (no app check failed, no host check failed). These are the binary and the
+registration the matrix is to run.
+
 H08's runner half is closed: all eight scenarios pass the runner's layout and behaviour checks. Its author-API half
 stands (the views here are written against the core, not the element layer), as does the resize remount.

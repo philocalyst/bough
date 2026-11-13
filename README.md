@@ -29,8 +29,11 @@ It loses GPU time on glyph-dense scenes, the dashboard's worst stall, and p95 st
 that killed it), and what is still open, ordered by expected size. It is updated as work lands. The current
 round's design is `docs/r8/ROUND8.md`: one abstraction (typed expressions whose stage the compiler infers,
 columns per view call site, damage as evaluate-and-compare over exposed pages) under an unchanged author API.
-The public scoreboard is zortax's gui-bench under fakeland; as of 2026-11-12 the benchmarked binary is still the
-round-7 runtime, and the new core is on the `r8/*` branches.
+The public scoreboard is zortax's gui-bench under fakeland. As of 2026-11-13 the benchmarked façade binary is the
+round-7 runtime (`r7/platform` `74e665786c`, now on main); the round-8 core is on main too (`crates/bough-x` with its
+element layer, and gui-bench's app on it, `comparisons/bough-guibench-x`, which passes the runner's layout and
+behaviour checks in all eight scenarios). Round 8's closing report is
+[`docs/r8/final/REPORT.md`](docs/r8/final/REPORT.md), with each lane's final report beside it.
 
 ## The question
 

@@ -210,6 +210,33 @@ The new core's binary, by hand under the same compositor (not yet through the ru
 - Open: parley behind the memo off the interaction path; the build-time glyph image; segment end pens; the
   editor path; fonts and fallback.
 
+**expr** (r8/expr)
+- Kept: one view, many sinks: a turn is one block compare plus an epoch word; damage as eval(old) != eval(new)
+  over exposed pages; one column per call site; lists as a ring over a relation's journal; `Time` never
+  differentiated (a frame at rest 6 instructions, a glide 174). The element layer: the façade's idiom
+  (`fn view(&self) -> impl Element<Self>`, `div`/`row`/`text`, `sig!`, handlers, `each`, `.scroll`,
+  `.transition`) driving the core through `Element::drive<S: Sink<V>>`, laid out as data by bough-lay; the
+  façade's sheet (10,000 rows) holds retained == full redraw == immediate == fresh mount over 500 random steps.
+- Refuted: the element layer on typed layout (the sheet's code generation did not finish in 3.5 hours; on layout
+  as data it builds in 4 s); own predictions for mount (187 K vs <= 60 K), hover (7,173 vs <= 4,000), theme
+  (30,755 vs <= 12,000), unexposed edit (1,067 vs kill 500).
+- Open: the element-layer sheet measured against the core's hand-written one; runs inside a row; text on the
+  element layer (bough-face); the gui-bench app on the element layer.
+
+**e2e** (r8/e2e)
+- Kept: gui-bench's app on the new core passes the runner's layout and behaviour checks in all eight scenarios
+  (rows, virtual, typing, search, table, ticker, spinner, resize; fixed and unthrottled timing); spawn to first
+  buffer 4.3 ms at any row count; rows hover 0.078 ms unthrottled (by hand, not the runner).
+- Refuted: empty-client floor 2-3 ms (4.2: the kernel zeroing shared pages); first raster under 0.7 ms.
+- Open: text through bough-face (H05); the app on the element layer (H08); `World::resize`; fractional scale (H01);
+  a real keymap (H03).
+
+**bench** (wt/lead/bench-r8)
+- Kept: the runner's timing switch (`GB_TIMING=fixed|unthrottled|vrr`), unthrottled as the primary view, missing
+  validity counted as unchecked, per-run identity and source hashes.
+- Refuted: virtual-100,000 start-up 7th at 564.9 ms (load; pinned and unthrottled it is first, 39.1 ms).
+- Open: the matrix with the new core's binary beside the façade's; a quiet-host run (cmp-3).
+
 **integration** (main-next)
 - Kept off main: the kernel backend as default (`BOUGH_REPAIR=kernel` opts in; the presenter stays the default)
   and `scroll_band` masking the interaction flags (it copied interactive boxes by scroll and failed two
@@ -218,3 +245,9 @@ The new core's binary, by hand under the same compositor (not yet through the ru
   at `m_page + 1` entries, from before the gapped directory (blocks with holes, 2x pages); they drew nothing of
   a 2,500-row list scrolled to its end, so `bough --test far` and `bough-zgui --test input` failed their oracle
   check. The bound is now the directory's; both pass.
+- On main, by merge (2026-11-13): r8/expr with r8/surface and r8/layout (the element layer on the new core),
+  r8/text-main, r8/raster, r8/e2e (with r7/platform `74e665786c`, the façade the benchmark measured). Not on main:
+  r8/threads (the arena and published halves; 19 conflicting hunks in the core's world, store, sink and lib
+  and a conflicting sheet test against the merged core, left for its next round), r8/text (r8/text-main is the same work on the current base).
+- Fixed on main: `StatePool` access checked and crate-private (review O01); `Region::carve` aligns the address
+  for an over-aligned type (review O02: the threads lane's fix, taken onto main alone).
