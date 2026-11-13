@@ -19,8 +19,30 @@ the fakeland compositor (`bench-r8/`); the dashboard is built from it.
 | canvas 5,000 hover | 925.8 ms (software, one thread) | iced 85 | under the others |
 | idle CPU / idle RSS (rows) | 0.03 ms/s / 35 MiB | freya 14.7 / iced 169 | keep; RSS <= 20 MiB |
 
-Under a fixed 60 Hz compositor about 10 ms of every framework's hover total is the wait for the latch; the
-matrix is being re-run with the compositor unthrottled so totals show the app.
+Under a fixed 60 Hz compositor about 10 ms of every framework's hover total is the wait for the latch, so the
+matrix was re-run with the compositor unthrottled (present when ready), pinned to CPUs 0-7. That run is the
+primary view. **Correction:** the start-up figures in the table above come from the first run, taken unpinned at
+load 10-21; start-up has no validity check in the harness, so the load did not mark them. Pinned and
+unthrottled, the same façade binary: virtual-100,000 start-up 39.1 ms (first of 11; vizia 104.5), rows-3,000
+56.3 ms.
+
+Unthrottled, façade binary against the best other valid value (2026-11-12):
+
+| cell | bough | best other |
+|---|---|---|
+| rows 3,000 hover total | 0.99 ms | iced 5.35 |
+| typing | 0.25 ms | zgui 4.06 |
+| search filter | 6.99 ms | iced 9.86 |
+| table update10 / remove | 0.37 / 3.73 ms | iced 7.16 / freya 8.1 |
+| resize | 5.8 ms | iced 8.2 |
+| spinner and ticker frame rate | 62.5 fps (a 16 ms clock in the benchmark app) | egui 1,248 fps, freya 153 |
+| sheet 10,000: hover / theme / idle RSS / start-up | 19.4 ms / 27.9 ms / 331 MiB / 677 ms | egui 9.95 / 11.2 / 149 / 136 |
+| canvas 1,000: hover / theme | 83 / 286 ms | iced 17.6 / 20 |
+| canvas 5,000: theme / resize | 1,151 / 386 ms | egui 71 / 70 |
+| sheet 10,000 scroll and resize | failed (no matching window; connection reset) | - |
+
+The new core's binary, by hand under the same compositor (not yet through the runner): spawn to first buffer
+4.3 ms at any row count (an empty client: 4.2), rows hover 0.074-0.079 ms unthrottled.
 
 ## Kept (measured, in the tree or on a lane branch)
 
@@ -122,3 +144,77 @@ matrix is being re-run with the compositor unthrottled so totals show the app.
 - Cache and branch misses and flamegraphs for every hot path, warm and cold, on both remotes.
 - A richer animation benchmark (only spinner cells exist); the five heavy scenes in four frameworks.
 - Compile time and binary size per component as standing columns.
+
+## Entries by lane since the first version (2026-11-12, as reported; newest last)
+
+**layout** (r8/layout)
+- Kept: typed flex equals the solver rect for rect (4,000 random trees x 8 widths, twice; sheet row; 400 ide
+  lines x 3 widths; 400 chat rows x 4 widths); validity intervals hold on every sampled width; rows classify
+  themselves from the type (Fixed / Wraps).
+- Refuted: "a monomorphised `place` is cheaper than a key compare": sheet row 25,486 instructions against 203
+  for copying a kept slice (prediction <= 150); chat row 56,086 (prediction <= 600). The compiler does not see
+  through a general single-line flex algorithm; each container costs about 2,000, the solver's own figure.
+- Refuted: per-row-type compile cost: the chat row did not finish in 12 minutes with `size` inlined; 185 s for
+  three scene rows with a firewall.
+- Refuted: validity intervals save work on chat rows: 0.0 % of 102,400 (row, 1 px) pairs were a range check
+  (the bubble is 74 % of the column, so a rect changes at every pixel).
+- Open: children as a tuple in the container's type (one boxed attempt); memo keyed by layout bytes and width
+  interval with the solver as the miss path for Fixed rows; typed layout scoped to Wraps rows if it pays there.
+
+**raster** (r8/raster)
+- Kept: per-archetype CPU kernels and generated GPU functions word-exact against the round-7 oracle; a cover is
+  a per-record predicate, so run-time constant colours cut occlusion; in-place record rewrite with GPU-side
+  damage; corner coverage tables on the CPU path (canvas full frame 1.85x: one core 585 -> 316 ms, six threads
+  150 -> 93 ms).
+- Refuted: corner tables reach <= 9 ms on the GPU: 16.8-18.9 ms (closed form 22.5); <= 2 MB: 5 MB.
+- Refuted: per-corner tap leaves: no gain at 100 % hits. Struct copies or missing inlining as the GPU's cost:
+  by-reference 0 %, forced inline 35 % slower.
+- Refuted (as the code stood): never slower than the Metal presenter: canvas hover 23-30 ms against 12.5, theme
+  23-34 against 19.2.
+- Fixed: a shadow box turned inside out by a negative spread differed between CPU and GPU.
+- Open: a stable prefix per damaged tile (do not reshade what lies below the lowest changed record); hover
+  damage by layer and visibility; one-record hover through the CPU kernel; first-frame breakdown;
+  per-archetype GPU source; pick in the frame drawn and late latching; speculation.
+
+**surface** (r8/surface)
+- Kept: reflection in the core as a sink and a typed walk, zero cost unused (same 621 symbols, every steady
+  cell identical); source locations per row/scope/list from `#[track_caller]`; unmaterialised rows described on
+  demand; operand provenance from the compiler's type names; events as pick -> place -> one trampoline with
+  captures in a per-column lane; event cost flat in list size (pointer onto another row 1,772 dispatch / 2,614
+  with settle; click 3,992 / 4,884; text into a focused field 1,014 / 1,756; warm under 0.3 microseconds);
+  focus that survives scrolling away; wheel writing the scroll word with no handler; reduced motion as a time
+  offset plus an environment bit for loops; an accessibility projection (a 100,000-row sheet publishes under
+  2,000 nodes, theme/hover/glide frames project 0 nodes, an edit changes at most 3).
+- Refuted: list row identity by Rust type (a closure in a sink-generic view is a new type per sink); events
+  costing nothing on hover (7,083 -> 7,809); first click dispatch at four walks (5,647 -> 3,992 with one);
+  "nothing changed" for accessibility keyed on a global epoch; places checked against a process-wide counter.
+- Open: macOS accessibility adapter, then AT-SPI; text selection and editing semantics; static lint over
+  reflection under alternate state blocks; key-binding resolution; per-element locations; cold line counts of
+  the event path; focus rewrite on ring remap.
+
+**threads** (r8/threads)
+- Kept: publishing through a working and a published half (no torn scene over 2,000,000 publishes); a scene
+  image that is refused, repaired or harmless under 3,000 corruptions; a counters recipe for both remotes.
+- Refuted: five dependent loads to two (hover with L3 cold 12,245 -> 12,342 cycles; 470 -> 473 lines from
+  DRAM); the scene image as a start-up lever (about 15 microseconds); anything in a turn being worth a thread.
+- Open: the 210 cold lines of an interaction; a first-frame pixel section; allocation as arenas per epoch;
+  bands owned by cores for the frame.
+
+**text** (r8/text)
+- Kept: staged text (chat first paint 94,600 against 1.37 M); size-only measure (4.0 M for 1,980 messages);
+  appends flat in length (~700); typing one character 1,202 at 1,000 lines and 1,257 at 300,000; `guess(w)`
+  93-98 % exact.
+- Refuted: per-paragraph break tables; digits by arithmetic equal the shaper; table-shaper coverage of real
+  fonts (one of seven macOS faces); the placed 12-byte glyph form; cheap prefix compare for growing `String`s
+  (0.52 per existing byte).
+- Open: parley behind the memo off the interaction path; the build-time glyph image; segment end pens; the
+  editor path; fonts and fallback.
+
+**integration** (main-next)
+- Kept off main: the kernel backend as default (`BOUGH_REPAIR=kernel` opts in; the presenter stays the default)
+  and `scroll_band` masking the interaction flags (it copied interactive boxes by scroll and failed two
+  bough-zgui pixel gates: input's laid-out gallery, transforms' turned and translated subtrees).
+- Fixed: the frozen original kernels (`oracle.metal`, the presenter's raster oracle) bounded the page directory
+  at `m_page + 1` entries, from before the gapped directory (blocks with holes, 2x pages); they drew nothing of
+  a 2,500-row list scrolled to its end, so `bough --test far` and `bough-zgui --test input` failed their oracle
+  check. The bound is now the directory's; both pass.

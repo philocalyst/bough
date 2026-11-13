@@ -1094,7 +1094,10 @@ kernel void fs_bin(uint2 tgid2 [[threadgroup_position_in_grid]],
     uint nb = 0;
     uint cap = h.bin_cap;
     device uint4* bin = bins + ty * cap;
-    uint ndir = min(h.n_dir, h.m_page + 1u);
+    // A region layout change, not a raster mechanism: since the gapped directory (blocks with holes) the
+    // directory columns hold 2x pages, so their bound is 2 * (m_page + 1). Frozen as of the round-6 base, this
+    // read stopped at m_page + 1 and dropped every directory entry past it (a list of 2,500 rows drew nothing).
+    uint ndir = min(h.n_dir, 2u * (h.m_page + 1u));
     for (uint d0 = 0; d0 < ndir; d0 += 256) {
         uint di = d0 + li;
         bool dh = di < ndir && all(dink[di] < th);
