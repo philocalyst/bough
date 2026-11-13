@@ -220,15 +220,15 @@ impl<'s, V> Sink<V> for Immediate<'s, V> {
     fn env(&self) -> crate::sink::Env<'_> {
         crate::sink::Env { scale: f32::from_bits(self.u.w[crate::expr::U_SCALE]), size: [self.soft.w as f32, self.soft.h as f32], u: self.u }
     }
-    fn rows<R: Row<V> + bough_lay::Lay, F: FnMut(usize) -> R>(&mut self, n: u32, geo: Option<crate::sink::Geo>, mut f: F) -> i32 {
+    fn rows<R: Row<V> + bough_lay::Shape, F: FnMut(usize) -> R>(&mut self, n: u32, geo: Option<crate::sink::Geo>, mut f: F) -> i32 {
         let g = geo.expect("the immediate sink lays out");
         if n == 0 {
             return 0;
         }
         let scale = f32::from_bits(self.u.w[crate::expr::U_SCALE]);
-        let mut rects = Rects(vec![Rect::default(); <R as bough_lay::Lay>::LEAVES]);
+        let mut rects = Rects(vec![Rect::default(); <R as bough_lay::Shape>::LEAVES]);
         // the height of a row is the first row's, as in the stores
-        let row_h = bough_lay::place_row(&f(0), scale, self.u, g.w as f32, &mut rects).0;
+        let row_h = bough_lay::shape::place(&f(0), scale, self.u, g.w as f32, &mut rects).0;
         if row_h == 0 {
             return 0;
         }
@@ -236,7 +236,7 @@ impl<'s, V> Sink<V> for Immediate<'s, V> {
         let (lo, hi) = exposed(&l, self.space.origin(self.u), self.space.clip);
         for r in lo..hi {
             let row = f(r as usize);
-            bough_lay::place_row(&row, scale, self.u, g.w as f32, &mut rects);
+            bough_lay::shape::place(&row, scale, self.u, g.w as f32, &mut rects);
             row.visit(&mut Now { im: self, rects: &rects.0, at: (g.x, g.y + r as i32 * row_h), k: 0 });
         }
         n as i32 * row_h

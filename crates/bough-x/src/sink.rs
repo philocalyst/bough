@@ -73,7 +73,7 @@ pub trait Sink<V>: Sized + for<'r> ScopeOf<'r, V> {
     /// and its own layout. `geo` is where the list is; a sink that keeps what it was told (`FIXED == false`)
     /// is given `None`. Returns the height of the list in device pixels.
     #[track_caller]
-    fn rows<R: Row<V> + bough_lay::Lay, F: FnMut(usize) -> R>(&mut self, _n: u32, _geo: Option<Geo>, _f: F) -> i32 {
+    fn rows<R: Row<V> + bough_lay::Shape, F: FnMut(usize) -> R>(&mut self, _n: u32, _geo: Option<Geo>, _f: F) -> i32 {
         unimplemented!("this sink does not take lists of elements")
     }
     /// A row of the fixed shape: its layout (one rect per record, in order) and its operands. The closure is
@@ -555,7 +555,7 @@ impl<'w, 'c, V, B: Backend> Sink<V> for Write<'w, 'c, V, B> {
         Env { scale: self.cx.scale, size: [self.cx.tiles.w as f32, self.cx.tiles.h as f32], u: self.cx.u }
     }
     #[inline(always)]
-    fn rows<R: Row<V> + bough_lay::Lay, F: FnMut(usize) -> R>(&mut self, n: u32, geo: Option<Geo>, f: F) -> i32 {
+    fn rows<R: Row<V> + bough_lay::Shape, F: FnMut(usize) -> R>(&mut self, n: u32, geo: Option<Geo>, f: F) -> i32 {
         let q = self.sub as usize;
         self.sub += 1;
         rows_sync::<V, R, F, B>(self.st, q, self.cx, n, geo, f, core::panic::Location::caller())
@@ -581,7 +581,7 @@ impl<'w, 'c, V, B: Backend> Sink<V> for Patch<'w, 'c, V, B> {
         Env { scale: self.cx.scale, size: [self.cx.tiles.w as f32, self.cx.tiles.h as f32], u: self.cx.u }
     }
     #[inline(always)]
-    fn rows<R: Row<V> + bough_lay::Lay, F: FnMut(usize) -> R>(&mut self, n: u32, _: Option<Geo>, f: F) -> i32 {
+    fn rows<R: Row<V> + bough_lay::Shape, F: FnMut(usize) -> R>(&mut self, n: u32, _: Option<Geo>, f: F) -> i32 {
         let q = self.sub as usize;
         self.sub += 1;
         rows_sync::<V, R, F, B>(self.st, q, self.cx, n, None, f, core::panic::Location::caller())
@@ -692,8 +692,8 @@ impl bough_lay::Out for Lanes {
 /// laid out into its lanes. Rows are of one height (the first row's); a list whose rows differ in height
 /// needs an extent, which the layout lane's `Extent` will give.
 #[inline]
-pub fn rows_sync<V, R: Row<V> + bough_lay::Lay, F: FnMut(usize) -> R, B: Backend>(parent: &mut Store, q: usize, cx: &mut Cx<'_>, n: u32, geo: Option<Geo>, mut f: F, at: &'static core::panic::Location<'static>) -> i32 {
-    const { assert!(<R as Row<V>>::LEAVES as usize == <R as bough_lay::Lay>::LEAVES, "a row's layout has one rect per record") };
+pub fn rows_sync<V, R: Row<V> + bough_lay::Shape, F: FnMut(usize) -> R, B: Backend>(parent: &mut Store, q: usize, cx: &mut Cx<'_>, n: u32, geo: Option<Geo>, mut f: F, at: &'static core::panic::Location<'static>) -> i32 {
+    const { assert!(<R as Row<V>>::LEAVES as usize == <R as bough_lay::Shape>::LEAVES, "a row's layout has one rect per record") };
     let space = parent.space;
     cx.lists |= space.reads();
     if q == parent.subs.len() {
@@ -759,8 +759,10 @@ pub fn rows_sync<V, R: Row<V> + bough_lay::Lay, F: FnMut(usize) -> R, B: Backend
             if e >> 31 != 0 {
                 if e >> 30 & 1 != 0 {
                     // a row that entered: its own layout, into its lanes
+                    // through the list's memo: a row of the shape the memo holds, at a width its answer holds
+                    // over, is a copy of the kept rects (bough-lay's `Memo`); otherwise the one layout function
                     let mut out = Lanes { sites, slot: r & mask, at: (gx, gy + r as i32 * row_h) };
-                    bough_lay::place_row(&row, cx.scale, cx.u, gw as f32, &mut out);
+                    st.memo.row(&row, cx.scale, cx.u, gw as f32, (0, 0), &mut out);
                 }
                 row.write(sites, r & mask);
             } else {
@@ -778,13 +780,13 @@ pub fn rows_sync<V, R: Row<V> + bough_lay::Lay, F: FnMut(usize) -> R, B: Backend
 /// The first description of a list of elements: lay its first row out, make its columns from that.
 #[cold]
 #[inline(never)]
-fn rows_new<V, R: Row<V> + bough_lay::Lay, F: FnMut(usize) -> R, B: Backend>(parent: &mut Store, cx: &mut Cx<'_>, n: u32, g: Geo, f: &mut F, at: &'static core::panic::Location<'static>) {
+fn rows_new<V, R: Row<V> + bough_lay::Shape, F: FnMut(usize) -> R, B: Backend>(parent: &mut Store, cx: &mut Cx<'_>, n: u32, g: Geo, f: &mut F, at: &'static core::panic::Location<'static>) {
     let space = parent.space;
-    let mut rects = vec![[0i32; 4]; <R as bough_lay::Lay>::LEAVES];
+    let mut rects = vec![[0i32; 4]; <R as bough_lay::Shape>::LEAVES];
     let mut row_h = 0;
     let first = if n > 0 { Some(f(0)) } else { None };
     if let Some(row) = &first {
-        row_h = bough_lay::place_row(row, cx.scale, cx.u, g.w as f32, &mut rects[..]).0;
+        row_h = bough_lay::shape::place(row, cx.scale, cx.u, g.w as f32, &mut rects[..]).0;
     }
     let rows = if row_h > 0 { (space.clip.y1 - space.clip.y0) / row_h + 2 } else { 64 };
     let mut st = Store::new((rows as u32).next_power_of_two().max(64), space);
@@ -808,9 +810,9 @@ fn rows_new<V, R: Row<V> + bough_lay::Lay, F: FnMut(usize) -> R, B: Backend>(par
 /// row with it.
 #[cold]
 #[inline(never)]
-fn rows_shape<V, R: Row<V> + bough_lay::Lay, F: FnMut(usize) -> R>(st: &mut Store, cx: &mut Cx<'_>, n: u32, g: Geo, f: &mut F) {
-    let mut rects = vec![[0i32; 4]; <R as bough_lay::Lay>::LEAVES];
-    let row_h = if n > 0 { bough_lay::place_row(&f(0), cx.scale, cx.u, g.w as f32, &mut rects[..]).0 } else { 0 };
+fn rows_shape<V, R: Row<V> + bough_lay::Shape, F: FnMut(usize) -> R>(st: &mut Store, cx: &mut Cx<'_>, n: u32, g: Geo, f: &mut F) {
+    let mut rects = vec![[0i32; 4]; <R as bough_lay::Shape>::LEAVES];
+    let row_h = if n > 0 { bough_lay::shape::place(&f(0), cx.scale, cx.u, g.w as f32, &mut rects[..]).0 } else { 0 };
     st.row0 = rects.iter().map(|r| Rect { x0: r[0], y0: r[1], x1: r[2], y1: r[3] }).collect();
     st.lay = (g.x, g.y, g.w);
     // force `list_plan` to see another layout: the window is emptied and every exposed row comes in again

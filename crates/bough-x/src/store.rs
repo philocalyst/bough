@@ -636,6 +636,8 @@ pub struct Store {
     /// where a row is before its own layout is asked), and the width, x and y it was laid out for.
     pub row0: Vec<Rect>,
     pub lay: (i32, i32, i32),
+    /// A list of elements: the rects of the last row shape it laid out, and the widths they hold over.
+    pub memo: bough_lay::Memo,
 }
 
 static COL_ID: AtomicU32 = AtomicU32::new(1);
@@ -648,7 +650,7 @@ pub fn columns_made() -> u32 {
 impl Store {
     pub fn new(cap: u32, space: Space) -> Store {
         assert!(cap == 1 || (cap >= 64 && cap.is_power_of_two()));
-        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), src: None, n: 0, moved: Vec::new(), moved_from: 0, moved_ok: true, tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false, row0: Vec::new(), lay: (0, 0, 0) }
+        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), src: None, n: 0, moved: Vec::new(), moved_from: 0, moved_ok: true, tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false, row0: Vec::new(), lay: (0, 0, 0), memo: bough_lay::Memo::new() }
     }
     #[inline(always)]
     pub fn view(&self) -> StoreView<'_> {

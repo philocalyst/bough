@@ -25,9 +25,9 @@ use crate::expr::{APP_WORDS, Code, Color, Cx as ECx, Expr, Lens, Slot, Turn, U, 
 use crate::kinds::{Fill, LabelArch, Motion, NumArch, OutlineArch, Txt};
 use crate::sink::{Cx, Geo, Leaf, Mk, Row, Sink};
 use crate::store::{Arch, Backend, ColRef, POINTS, Rect, Site, Space};
-use bough_lay::flex::{Spec, rect};
-use bough_lay::val::{Av, Cx as LCx, V as LV};
-use bough_lay::{Chain, LBox, Lay, Out, Rec1};
+use bough_lay::flex::{Dim, Spec};
+use bough_lay::shape::{Flat, K_BOX, K_LINE, Nd, Sink as LSink};
+use bough_lay::{Chain, Hk, LBox, Lay, Rec1, Shape};
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
 use std::iter::TrustedRandomAccessNoCoerce;
@@ -776,46 +776,21 @@ impl<K, C> Text<K, C> {
         Text { spec: self.spec, k: self.k, c, line: self.line }
     }
 }
-/// The stand-in measure: the reference raster's glyphs are 12 device pixels apart and 15 tall, after 12 of
-/// inset. The text lane's `Measure` takes this type's place.
-#[derive(Clone, Copy)]
-struct Fixed12 {
-    chars: usize,
-    line: f32,
-}
-impl bough_lay::Measure for Fixed12 {
-    const WRAPS: bool = false;
-    fn inline(&self) -> (f32, f32) {
-        let w = 24.0 + 12.0 * self.chars as f32;
-        (w, w)
-    }
-    fn block(&self, w: f32) -> bough_lay::el::Block {
-        bough_lay::el::Block { w: self.inline().0.min(w.max(0.0)).max(self.inline().0), h: self.line, lo: 0.0, hi: f32::INFINITY }
-    }
-}
-impl<K: Content, C> Text<K, C> {
-    #[inline(always)]
-    fn leaf(&self, s: f32) -> bough_lay::Leaf<Fixed12, Rec1<()>> {
-        bough_lay::text(Fixed12 { chars: self.k.chars(), line: if self.line > 0.0 { self.line * s } else { 15.0 } }, ()).with_spec(self.spec)
-    }
-}
-impl<K: Content, C> Lay for Text<K, C> {
+/// Text as layout words: one line. The stand-in measure: the reference raster's glyphs are 12 device pixels
+/// apart and 15 tall, after 12 of inset; a line height given in points (`.font(_, line)`) is the leaf's height.
+/// The text lane's measure takes this one's place.
+impl<K: Content, C> Shape for Text<K, C> {
     const LEAVES: usize = 1;
     const WRAPS: bool = false;
+    const VARIES: bool = false;
+    const HK: Hk = Hk::Fixed;
     #[inline(always)]
-    fn spec(&self) -> &Spec {
-        &self.spec
-    }
-    #[inline(always)]
-    fn size(&self, cx: &mut LCx, known: [Option<LV>; 2], parent: [Option<LV>; 2], avail: [Av; 2], content: bool) -> [LV; 2] {
-        self.leaf(cx.s).size(cx, known, parent, avail, content)
-    }
-    #[inline(always)]
-    fn place<O: Out + ?Sized>(&self, cx: &mut LCx, size: [LV; 2], org: [LV; 2], out: &mut O, k: usize) -> usize {
-        self.leaf(cx.s).place(cx, size, org, out, k)
-    }
-    fn tree(&self) -> bough_lay::tree::Node {
-        self.leaf(1.0).tree()
+    fn emit<'a, S: LSink<'a>>(&'a self, s: &mut S) {
+        let mut spec = self.spec;
+        if self.line > 0.0 && matches!(spec.h, Dim::Auto) {
+            spec.h = Dim::Pt(self.line);
+        }
+        s.node(Nd::pack(&spec, K_LINE, true, 0, 24.0 + 12.0 * self.k.chars() as f32, 15.0, [0; 2]));
     }
 }
 impl<V, K: Content, C: Expr<Out = Color> + Rooted<V>> Row<V> for Text<K, C> {
@@ -974,28 +949,14 @@ impl<V: 'static, X: Boxy<V>, H: Handler<V, <X::Tgt as Target<V>>::Rec>> Row<V> f
         }
     }
 }
-impl<X: Lay, H> Lay for Hd<X, H> {
+impl<X: Shape, H> Shape for Hd<X, H> {
     const LEAVES: usize = X::LEAVES;
     const WRAPS: bool = X::WRAPS;
-    const HK: bough_lay::Hk = X::HK;
+    const VARIES: bool = X::VARIES;
+    const HK: Hk = X::HK;
     #[inline(always)]
-    fn spec(&self) -> &Spec {
-        self.0.spec()
-    }
-    #[inline(always)]
-    fn size(&self, cx: &mut LCx, known: [Option<LV>; 2], parent: [Option<LV>; 2], avail: [Av; 2], content: bool) -> [LV; 2] {
-        self.0.size(cx, known, parent, avail, content)
-    }
-    #[inline(always)]
-    fn reported(&self, cx: &mut LCx, size: [LV; 2]) -> [LV; 2] {
-        self.0.reported(cx, size)
-    }
-    #[inline(always)]
-    fn place<O: Out + ?Sized>(&self, cx: &mut LCx, size: [LV; 2], org: [LV; 2], out: &mut O, k: usize) -> usize {
-        self.0.place(cx, size, org, out, k)
-    }
-    fn tree(&self) -> bough_lay::tree::Node {
-        self.0.tree()
+    fn emit<'a, S: LSink<'a>>(&'a self, s: &mut S) {
+        self.0.emit(s)
     }
 }
 
@@ -1066,36 +1027,24 @@ impl<P, C, H> Scrolls<P, C> for LBox<P, C, H> {
         Scroll { spec: self.spec, paint: self.paint, content: self.kids, word: y.word() }
     }
 }
-impl<P: bough_lay::Paint, C> Lay for Scroll<P, C> {
+/// The hole of a scrolled box, as layout: out of flow at the box's corner and as large as the box, so its rect
+/// is the box's and it does not size the box (the content scrolls; it never sizes its box).
+const HOLE: Spec = {
+    let mut s = Spec::new(false);
+    s.abs = Some((0.0, 0.0));
+    s.w = Dim::Pct(1.0);
+    s.h = Dim::Pct(1.0);
+    s
+};
+impl<P: bough_lay::Paint, C> Shape for Scroll<P, C> {
     const LEAVES: usize = P::N + 1;
     const WRAPS: bool = false;
+    const VARIES: bool = false;
+    const HK: Hk = Hk::Fixed;
     #[inline(always)]
-    fn spec(&self) -> &Spec {
-        &self.spec
-    }
-    #[inline(always)]
-    fn size(&self, cx: &mut LCx, known: [Option<LV>; 2], parent: [Option<LV>; 2], avail: [Av; 2], content: bool) -> [LV; 2] {
-        // the box's own size: its content does not size it (it scrolls)
-        let mut b = column(());
-        b.spec = self.spec;
-        b.size(cx, known, parent, avail, content)
-    }
-    #[inline(always)]
-    fn place<O: Out + ?Sized>(&self, cx: &mut LCx, size: [LV; 2], org: [LV; 2], out: &mut O, k: usize) -> usize {
-        let r = rect(cx, size, org);
-        if P::N == 1 {
-            out.put(k, r);
-        }
-        out.put(k + P::N, r);
-        k + P::N + 1
-    }
-    fn tree(&self) -> bough_lay::tree::Node {
-        let mut b = column(());
-        b.spec = self.spec;
-        let mut n = b.tree();
-        n.leaves = P::N + 1;
-        n.total = P::N + 1;
-        n
+    fn emit<'a, S: LSink<'a>>(&'a self, s: &mut S) {
+        s.node(Nd::pack(&self.spec, K_BOX, P::N == 1, 1, 0.0, 0.0, [0; 2]));
+        s.node(Nd::pack(&HOLE, K_BOX, true, 0, 0.0, 0.0, [0; 2]));
     }
 }
 impl<V, C> Row<V> for Scroll<(), C> {
@@ -1143,7 +1092,7 @@ pub trait Seg<V> {
 impl<V, I> Seg<V> for Each<I>
 where
     I: Iterator + TrustedRandomAccessNoCoerce,
-    I::Item: Row<V> + Lay,
+    I::Item: Row<V> + Shape,
 {
     #[inline(always)]
     fn seg<S: Sink<V>>(&mut self, s: &mut S, f: &mut Flow) {
@@ -1162,17 +1111,20 @@ where
 }
 /// An element in a scrolled box's content: laid out as a row of the content's width, where the flow is.
 #[inline(always)]
-fn seg_el<V, E: Part<V> + Lay, S: Sink<V>>(e: &mut E, s: &mut S, f: &mut Flow) {
+fn seg_el<V, E: Part<V> + Shape, S: Sink<V>>(e: &mut E, s: &mut S, f: &mut Flow) {
     if !f.lay {
         return e.holes(None, &mut 0, s);
     }
     let env = s.env();
-    let mut out = vec![[0i32; 4]; <E as Lay>::LEAVES];
-    let (h, _) = bough_lay::place_row(&*e, env.scale, env.u, f.w as f32, &mut out[..]);
+    let mut out = vec![[0i32; 4]; <E as Shape>::LEAVES];
+    let (h, abs) = {
+        let flat = Flat::of(&*e);
+        (bough_lay::shape::place_flat(&flat, env.scale, env.u, f.w as f32, &mut out[..]).0, flat.root().spec().abs.is_some())
+    };
     let rects: Vec<Rect> = out.iter().map(|r| Rect { x0: r[0], y0: r[1] + f.y, x1: r[2], y1: r[3] + f.y }).collect();
     s.row(|| (&rects[..], ByRef(&*e)));
     e.holes(Some(&rects), &mut 0, s);
-    if e.spec().abs.is_none() {
+    if !abs {
         f.y += h;
     }
 }
@@ -1180,7 +1132,7 @@ macro_rules! seg_node {
     ([$($g:tt)*] $t:ty) => {
         impl<V, $($g)*> Seg<V> for $t
         where
-            $t: Part<V> + Lay,
+            $t: Part<V> + Shape,
         {
             #[inline(always)]
             fn seg<S: Sink<V>>(&mut self, s: &mut S, f: &mut Flow) {
@@ -1202,7 +1154,7 @@ impl<I> !NotEach for Each<I> {}
 impl<P, C> NotEach for Scroll<P, C> {}
 impl<V, P, H, C: NotEach> SegKids<V, P, H> for C
 where
-    LBox<P, C, H>: Part<V> + Lay,
+    LBox<P, C, H>: Part<V> + Shape,
 {
     #[inline(always)]
     fn seg_box<S: Sink<V>>(b: &mut LBox<P, C, H>, s: &mut S, f: &mut Flow) {
@@ -1396,17 +1348,19 @@ scroll_part!(Rec1<P>, 1, P: Paints<V>);
 pub trait Element<V> {
     fn drive<S: Sink<V>>(self, s: &mut S);
 }
-impl<V, E: Part<V> + Lay> Element<V> for E {
+impl<V, E: Part<V> + Shape> Element<V> for E {
     #[inline]
     fn drive<S: Sink<V>>(mut self, s: &mut S) {
-        const { assert!(<E as Row<V>>::LEAVES as usize == <E as Lay>::LEAVES, "an element's layout has one rect per record") };
+        const { assert!(<E as Row<V>>::LEAVES as usize == <E as Shape>::LEAVES, "an element's layout has one rect per record") };
         if !S::FIXED {
             // a turn: the fixed records are expressions over the block and are not described; only lists are
             return self.holes(None, &mut 0, s);
         }
         let env = s.env();
-        let mut out = vec![[0i32; 4]; <E as Lay>::LEAVES];
-        bough_lay::place_root(&self, env.scale, env.u, env.size, &mut out[..]);
+        let mut out = vec![[0i32; 4]; <E as Shape>::LEAVES];
+        // the element's layout words, then the one layout function (bough-lay's `shape`): no layout code is
+        // generated per element type
+        bough_lay::place_root(&Flat::of(&self).root(), env.scale, env.u, env.size, &mut out[..]);
         let rects: Vec<Rect> = out.iter().map(|r| Rect { x0: r[0], y0: r[1], x1: r[2], y1: r[3] }).collect();
         s.row(|| (&rects[..], ByRef(&self)));
         self.holes(Some(&rects), &mut 0, s);
