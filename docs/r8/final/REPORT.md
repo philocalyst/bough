@@ -27,11 +27,27 @@ What that means in practice:
   opaque paints and rows placed by arithmetic. They show what the representation costs; they are not yet what an
   author's program costs.
 * The one piece of work that converts B's numbers into the framework's numbers is the **element layer**: the
-  façade's `View` and elements driving the new core through `Element::drive<S: Sink<V>>`. A first version
-  (`bough-x/src/el.rs`, a sheet written with elements, two test files) was in the expression lane's working
-  tree, uncommitted, when the round closed; the closing integration decides whether it lands tested or as
-  work in progress. Until it lands and the façade's scenes pass on it, B is a prototype.
+  façade's `View` and elements driving the new core through `Element::drive<S: Sink<V>>`. Its first version is
+  on `main` (`bough-x/src/el.rs`): `fn view(&self) -> impl Element<Self>`, `div`, `row`, `text`, `sig!` by
+  `offset_of!`, captures as record words, `.transition`, indexed `each`, rows laid out by `bough-lay`. The
+  façade's 10,000-row sheet written with it holds the oracles (retained equals full redraw at every step, and
+  equals immediate paint and a fresh mount whenever nothing is in motion). It has **not been measured** against
+  the hand-written sheet, has no text through `bough-face`, no runs inside a row, and the benchmarked new-core
+  app does not use it. Until the façade's scenes run on it, B is a prototype.
+* The first attempt at that sheet on typed (monomorphised) layout type-checked in 1.8 s and then did not finish
+  code generation in 3 h 32 min. On layout as data it builds in 4 s. Scaling measured on flat generated
+  components had said nothing about one deep real view.
 * The author's API has not changed and must not: all of the performance work is below it.
+
+**What is on `main` at the close (`cc65ee215f`)**: the façade; the new core with the element layer, events,
+reflection, the accessibility projection, typed layout and extents; the text lane's staged text; the raster
+lane's per-archetype kernels; the new host and the new-core benchmark app; this report and the tally. The
+whole-workspace suite on the Mac one commit earlier ran 209 test targets: 401 passed, 0 failed, 3 ignored. Both
+bough benchmark binaries built from `main` passed the runner's layout and behaviour checks in all eight
+scenarios (14 cells, quick mode, fixed and unthrottled).
+**Not on `main`**: the threads lane (`r8/threads`: the arena, two-half publication, scene image, and its fixes
+for P01-P04), which conflicts with the core in 19 places including a second allocation-free pointer path; the
+round-7 async engine; the heavy scenes' benchmark crate; some round-6 lane work (section 4.1).
 
 ## 2. Standing against the other frameworks
 
@@ -91,17 +107,21 @@ values marked as such. Its source and data are `bench-r8/` in the lead's worktre
 
 These are the review's five gates. They come before any new optimisation.
 
-1. **Safe interfaces must be sound.** Unsafe invariants were held by comments at several boundaries. Closed by
-   their lanes with the review's probes turned into tests: the event and reflection parts of C01, C03, C05, C06,
-   C09, S01, S03, S04 (surface); T01, T02, T03, T07 (text); P01-P04, O02 (threads); H02, H04, H06, H07 (host and
-   app); L03 inside `bough-lay`. **Still open**: C02 (list rows are checked by location, leaf count and size, not
-   by type), the storage half of C01 (`World` not parameterised by its view; public stores), C04, C07, C10, C11,
-   C13 (the expression lane was applying these when the machine went down; `docs/r8/final/expr.md` says which
-   landed); R01-R03 (raw column views and unchecked tile sets in the raster); A04 (pinning and timers in the
-   round-7 async engine); O01 (`StatePool` unchecked ids, in the façade on `main`); K01 and K03 (the worker
-   pool's borrow does not survive a panic; unvalidated GPU programs). None of Miri, Loom or a sanitizer has been
-   run on any of it.
-2. **The sixteen failing probes pass on the integration branch**, not on lane branches.
+1. **Safe interfaces must be sound.** Unsafe invariants were held by comments at several boundaries. Closed on
+   `main`, with the review's probes turned into tests: C01 (view identity checked at the entry points at run
+   time; the store tree, slot table, `Store::paint` and `Store::delta` no longer public), C02, C03, C04, C05,
+   C06, C09, C10 (alignment), C11, C13; S01, S03, S04; T01, T02, T03, T07; R01-R05, K01, K02, K08; O01, O02;
+   H02, H04 (for opaque surfaces), H06, H07; L03. **Still open**: A04 and the rest of A01-A06 (the round-7 async
+   engine, not on `main`); K03 (unvalidated GPU programs and device ownership); P01-P04, fixed only on
+   `r8/threads`, which is not merged; C07 in part (paths of six 16-bit components and 16-bit reader incidences
+   stand; 4,096 columns and list sizes are now admitted or refused where described); C10's purity half (an
+   expression is assumed pure and nothing enforces it); the list memo is keyed by a 64-bit hash with no
+   equality check. C01 is a run-time check, not `World<V, B>`. None of Miri, Loom or a sanitizer has been run on
+   any of it.
+2. **The sixteen failing probes pass on the integration branch**, not on lane branches. The ten core probes do
+   (as `tests/review_core.rs`), as do the three text probes and the over-aligned carve; the cross-thread `Line`
+   probe is closed by a compile-fail test. Re-running the review's own probe files against `main` unchanged is
+   the confirmation still owed.
 3. **One end-to-end candidate**: every scenario (rows, virtual, table, typing, search, spinner, sheet, chat, ide,
    dashboard, canvas) through one binary built from one branch, with the runner's layout and behaviour checks,
    and a fallback for every paint and text capability the fast paths do not admit.
@@ -124,7 +144,9 @@ reformulations; the rest came from the lanes or the lead.
 
 | avenue | size | notes |
 |---|---|---|
-| Element layer: the façade's elements, `sig!`, handlers and `View` over the new core | L | The decisive item. Row identity must not be a Rust type that depends on the sink (a closure in a sink-generic view is a different type per sink: refuted once). Predicted by the text lane: the façade's text programs run unchanged in source. |
+| Element layer, the rest of it: every façade element and modifier, handlers as methods, text through `bough-face`, runs inside a row, nested lists, the layer driving the benchmark app and the five heavy scenes | L | The decisive item. The first version is on `main` and holds the oracles on the façade's sheet. Owed at once: its cost against the hand-written sheet (hover 6,826, theme 31,010, mount about 230 K), and compile time and code size per component on a deep real view, measured early. Row identity must not be a Rust type that depends on the sink. Predicted by the text lane: the façade's text programs run unchanged in source. |
+| Merge `r8/threads` (arena, two-half publication, scene image, P01-P04) | M | 19 conflicting hunks in the core's world, store and sink; both sides have an allocation-free pointer path. Decide which path stands, then port the arena under it; or go straight to frame versions (X5) and take only the arena. |
+| The edit regression after the review fixes: an exposed edit went 1,433 to 2,612, mostly in one function (`part_journal_only`, 359 to 1,538), cause not attributed | S | Measured once at load 96, so first re-measure on a quiet host. |
 | One machine-generated matrix of feature x commit x gate for the integration branch **[review O13]** | S | The "kept" list is not one executable today; `main` descends from before some round-6 lane work (direct wires, owner grain, dormant runs, composition), which lives on `round6` and lane branches. |
 | Round-7 async engine merged, with the held-state regression carried through the merged runtime (A01) | M | `main` still has the round-6 reader cohorts and a thread per request. |
 | `bough-glyph` and `bough-face` made one prepared-face format; generic kernel, per-archetype kernels and the span executor under one paint contract (alpha, clips, order, numeric ranges) **[review]** | M | Two text stacks and three rasters exist. The generic integer kernel stays as the executable specification. |
@@ -199,7 +221,10 @@ or 300,000 lines; appends flat in length).
 | avenue | size | notes |
 |---|---|---|
 | Tile prefix caching **[review]**: damage carries the lowest changed painter depth; reuse what lies below it | M | The largest candidate for canvas hover (shadows are 16 of 22.5 ms a frame and do not change on hover). Reject if prefix storage and invalidation exceed the shading saved on mixed scenes. |
-| Hover damage by layer and visibility; a one-record hover through the CPU kernel, 200 through the GPU | S-M | Today one `Wide` paint anywhere pushes every estimate to the 8-tile threshold (R06). |
+| Hover damage by layer and visibility | built | Canvas hover 1,576 to 527 tiles, 6.9 ms of GPU time; theme 4,000 to 3,628 tiles, 19.3 ms. A one-record hover (30 tiles) is 40-43 µs on one core against 254-498 µs wall through the GPU, so the executor must be chosen per damage, which the static plan does not do (refuted as it stood). Measured on the Mac under load; not in the benchmarked binary. |
+| Executor choice per damage from the affected tiles' work | S-M | Today one `Wide` paint anywhere pushes every estimate to the 8-tile threshold (R06). |
+| The new raster as the benchmarked path on Linux: per-archetype kernels behind the façade's canvas, six bands | M | One core does a canvas full frame in 4.48 G instructions (287-315 ms) against the round-7 generic kernel's 21.1 G (1.7-2.0 s), and 66-77 ms on 5+1 cores. The benchmark's canvas cells (83 ms to 1.15 s) are the old path on one thread. |
+| GPU start-up: 2.5 s to compile new Metal source and 19 pipelines, 6 ms from the system's cache | M | A build-time shader plan and per-archetype (not per-column) source; first frame 31-37 ms against the presenter's 60. |
 | Work estimation learned per machine, from post-cut work and usable bands, with regret reported **[review]** | M | Constants are M3 Pro's; Linux never chooses the GPU; the pool is created eagerly (K04). |
 | Incremental binning: changed-page bin deltas, retained overflow lists | M | Any moved window rebins the whole lane; the GPU bin pass has a fixed 192-entry slab with CPU redraw on overflow (R07). |
 | Occlusion masks: worker-local scratch, compressed identical masks, stop at full cover (R08) | S | The certificate can cost more than the shading it saves on sparse text. |
@@ -414,6 +439,8 @@ Each with the number that killed it; details in `docs/TALLY.md`.
 
 * (page, slot) identity over a piece table: parity or worse; ordered walk 2.8x slower after churn.
 * Monomorphised typed layout: 25,486 against 203 for a sheet row; 56,086 for chat; 204 s to compile.
+* The element layer on typed layout for a view the size of the sheet: code generation unfinished after
+  3 h 32 min (4 s on layout as data).
 * Validity intervals on fraction-sized rows: 0.0 % hits.
 * Per-paragraph break tables: 12 against 7.8 per byte. Digits by arithmetic: 5.2 % of numbers differ under kerning.
 * Table-shaper coverage of real fonts: one of seven macOS faces.
@@ -469,6 +496,9 @@ Each with the number that killed it; details in `docs/TALLY.md`.
 
 * `main`: the façade (rounds 6 and 7 as integrated), the new core as merged from the expression lane, the tally
   and the round-8 design. `main-next` locally is the integration branch that is pushed to it.
+* Heads at the close: `main` `cc65ee215f`; `r8/expr` `ded8ff4e25`; `r8/e2e` `68fd365e79`; `r8/layout`
+  `fc830898f4`; `r8/surface` `dc6dbfb9e5`; `r8/raster` `a187c31709`; `r8/text-main` `5d7a6bc39a`; `r8/threads`
+  `392d90a133` (unmerged).
 * Round-8 lane branches: `r8/expr`, `r8/layout`, `r8/raster`, `r8/text`, `r8/threads`, `r8/surface`, `r8/e2e`.
   Round-7: `r7/*` (async is unbuilt work in progress at its head). Round-6 lane work not on `main`: `round6`
   and `lane/*/round6`.
