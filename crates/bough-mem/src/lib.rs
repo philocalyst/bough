@@ -173,7 +173,16 @@ impl Region {
 
     fn carve_aligned<T>(&mut self, name: &'static str, cap: usize, align: usize) -> Col<T> {
         let bytes = cap.checked_mul(size_of::<T>()).expect("column size");
-        let off = self.reserve(bytes, align);
+        // `reserve` aligns the offset, which aligns the address only up to the mapping's own alignment (a VM
+        // page). Beyond that the address itself is aligned: reserve room for the slack and start where the
+        // address is a multiple of `align`.
+        let off = if align > vm_page() {
+            let slack = self.reserve(bytes + align, vm_page());
+            let base = self.inner.base.as_ptr() as usize;
+            (base + slack).next_multiple_of(align) - base
+        } else {
+            self.reserve(bytes, align)
+        };
         // SAFETY: off + bytes <= len (checked in `reserve`), base is valid for len bytes.
         let ptr = unsafe { NonNull::new_unchecked(self.inner.base.as_ptr().add(off) as *mut T) };
         Col { ptr, len: 0, cap, off, name, region: Some(self.inner.clone()), _t: PhantomData }
