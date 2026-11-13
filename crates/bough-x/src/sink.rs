@@ -603,14 +603,32 @@ impl<'w, 'c, V, B: Backend> Sink<V> for Patch<'w, 'c, V, B> {
     }
 }
 
-/// The exposed rows of a list of `n` rows under a space at `org` with clip `clip`.
+/// The exposed rows of a list of `n` rows under a space at `org` with clip `clip`: the rows of the list's
+/// extent (bough-lay's [`Uniform`], 64-bit) that meet the clip, `(n, n)` past its end and `(0, 0)` before its
+/// start. A list of rows with no height exposes nothing (it is refused where it is described: [`admit`]).
 #[inline(always)]
 pub fn exposed(l: &List<'_>, org: (i32, i32), clip: Rect) -> (u32, u32) {
-    let top = clip.y0 - org.1 - l.y;
-    let n = l.n as i32;
-    let lo = top.div_euclid(l.row_h).clamp(0, n);
-    let hi = (top + (clip.y1 - clip.y0) + l.row_h - 1).div_euclid(l.row_h).clamp(lo, n);
-    (lo as u32, hi as u32)
+    use bough_lay::Extent;
+    let Some(ext) = bough_lay::Uniform::new(l.n, l.row_h) else { return (0, 0) };
+    let top = clip.y0 as i64 - org.1 as i64 - l.y as i64;
+    let h = clip.y1 - clip.y0;
+    if top >= ext.total() {
+        return (l.n, l.n);
+    }
+    if h <= 0 || top + h as i64 <= 0 {
+        return (0, 0);
+    }
+    let (lo, hi, _) = ext.window(top, h);
+    (lo, hi)
+}
+
+/// A list as described: rows of a positive height (review L03: a height of 0 divided where the list was
+/// scrolled), at most 2^30 of them (a plan's row index keeps two flag bits), and a total height that a 32-bit
+/// position holds (review C07). Anything else is refused here, with what was asked.
+#[inline(always)]
+pub fn admit(n: u32, row_h: i32) {
+    assert!(row_h > 0 || n == 0, "a list's rows have a positive height (asked: {n} rows of {row_h} px)");
+    assert!(n < 1 << 30 && n as i64 * row_h.max(0) as i64 <= i32::MAX as i64, "a list holds under 2^30 rows and under 2^31 px (asked: {n} rows of {row_h} px)");
 }
 
 /// Bring list `q` of `parent` up to date: rows that entered exposure are written, rows the relation's journal
@@ -626,6 +644,7 @@ pub fn exposed(l: &List<'_>, org: (i32, i32), clip: Rect) -> (u32, u32) {
 /// site) and their shape (leaves and size), not by their Rust type: a closure inside `view` (a handler, a mapped
 /// function) is a different type in each sink's instantiation of `view`, the same source and the same layout.
 pub fn list_sync<V, R: Row<V>, F: FnMut(usize) -> R, B: Backend>(parent: &mut Store, q: usize, cx: &mut Cx<'_>, l: &List<'_>, mut f: F, at: &'static core::panic::Location<'static>) {
+    admit(l.n, l.row_h);
     let space = parent.space;
     cx.lists |= space.reads();
     if q == parent.subs.len() {
@@ -719,6 +738,8 @@ pub fn rows_sync<V, R: Row<V> + bough_lay::Shape, F: FnMut(usize) -> R, B: Backe
         }
     }
     let row_h = st.geo.2;
+    // a row laid out at no height is content with nothing to show (not refused, as an author's height is)
+    admit(n, row_h.max(1));
     if n == 0 || row_h == 0 {
         if st.hi > st.lo {
             cx.tiles.mark(space.clip);

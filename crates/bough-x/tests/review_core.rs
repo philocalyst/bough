@@ -42,3 +42,27 @@ impl View for ChangedType{fn block(&self)->&U{&self.u}fn view<S:Sink<Self>>(&sel
 struct WrappingTime{u:U}
 impl View for WrappingTime{fn block(&self)->&U{&self.u}fn view<S:Sink<Self>>(&self,s:&mut S){s.row(||([Rect::new(0,0,10,10)],Fill(Tween::<100,_,_,_>(Kc::<0xff000000>,Kc::<0xffffffff>,rec(u32::MAX-10)))));}}
 #[test]fn active_ramp_survives_clock_wrap(){let v=WrappingTime{u:U::default()};let mut w=World::<Soft>::new(30,30,0);w.tick(u32::MAX-5);w.mount(&v);assert!(!w.tiles.sweeps.is_empty(),"5ms into a 100ms ramp was classified at rest because its deadline wrapped");}
+
+// L03 and C07, the list's extent: a height of 0 is refused where the list is described (it divided where the
+// list was scrolled), and exposure is the rows of the list's 64-bit extent that meet the clip.
+struct ZeroHeight{u:U}
+impl View for ZeroHeight{fn block(&self)->&U{&self.u}fn view<S:Sink<Self>>(&self,s:&mut S){s.list(&List{n:10,row_h:0,x:0,y:0,shape:&[Rect::new(0,0,10,10)],edits:&FIXED},|_|Fill(Kc::<0xffff0000>));}}
+#[test]
+#[should_panic(expected = "a list's rows have a positive height")]
+fn zero_height_list_is_refused_where_described(){let v=ZeroHeight{u:U::default()};let mut w=World::<Soft>::new(30,30,0);w.mount(&v);}
+#[test]
+fn exposure_is_the_rows_that_meet_the_clip(){
+    let mut x=0x9e37_79b9_7f4a_7c15u64;
+    let mut rnd=|m:i64|{x^=x<<13;x^=x>>7;x^=x<<17;(x%(m as u64)) as i64};
+    for _ in 0..200_000{
+        let (n,h)=(rnd(40) as u32,1+rnd(40) as i32);
+        let (y0,ch,org,ly)=(rnd(400) as i32-100,rnd(300) as i32,rnd(1200) as i32-600,rnd(50) as i32);
+        let clip=Rect{x0:0,y0,x1:10,y1:y0+ch};
+        let l=List{n,row_h:h,x:0,y:ly,shape:&[],edits:&FIXED};
+        let (lo,hi)=bough_x::sink::exposed(&l,(0,org),clip);
+        let meets=|r:u32|{let t=org+ly+r as i32*h;ch>0&&t<clip.y1&&t+h>clip.y0};
+        let want:Vec<u32>=(0..n).filter(|&r|meets(r)).collect();
+        assert!(lo<=hi&&hi<=n,"{lo}..{hi} of {n}");
+        assert_eq!((lo..hi).collect::<Vec<_>>(),want,"n {n} h {h} clip {y0}+{ch} org {org} y {ly}");
+    }
+}
