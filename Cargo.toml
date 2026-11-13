@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/bough-mem", "crates/bough-sys", "crates/bough-frame", "crates/bough-wayland", "crates/bough-core", "crates/bough-text", "crates/bough-metal", "crates/bough-damage-lab", "crates/bough", "comparisons/bough-heavy", "comparisons/bough-scenes", "comparisons/bough-vlist", "comparisons/bough-suite", "comparisons/bough-zgui", "comparisons/bough-text-bench", "comparisons/bough-app-mail-dash", "comparisons/bough-app-sketch-code", "comparisons/bough-widgets", "comparisons/bough-awagy", "crates/bough-gpu", "crates/bough-kernel", "crates/bough-expr", "crates/bough-x", "crates/bough-paint", "comparisons/bough-workloads", "crates/bough-glyph", "crates/bough-span", "crates/bough-host", "comparisons/bough-guibench-x", "crates/bough-lay"]
+members = ["crates/bough-mem", "crates/bough-sys", "crates/bough-frame", "crates/bough-wayland", "crates/bough-core", "crates/bough-text", "crates/bough-metal", "crates/bough-damage-lab", "crates/bough", "comparisons/bough-heavy", "comparisons/bough-scenes", "comparisons/bough-vlist", "comparisons/bough-suite", "comparisons/bough-zgui", "comparisons/bough-text-bench", "comparisons/bough-app-mail-dash", "comparisons/bough-app-sketch-code", "comparisons/bough-widgets", "comparisons/bough-awagy", "crates/bough-gpu", "crates/bough-kernel", "crates/bough-expr", "crates/bough-x", "crates/bough-paint", "crates/bough-glyph", "crates/bough-span", "crates/bough-host", "comparisons/bough-guibench-x", "crates/bough-lay"]
 # Vendored forks (vendor/README.md): path dependencies, not members (their tests and dev-dependencies stay upstream's).
-exclude = ["vendor", "reactivity", "designs"]  # reactivity/ is the preserved clean-room GPUI workspace, resolved on its own
+exclude = ["vendor", "reactivity", "designs", "comparisons/bough-workloads"]  # reactivity/ is the preserved clean-room GPUI workspace, resolved on its own
 
 [workspace.package]
 edition = "2024"
