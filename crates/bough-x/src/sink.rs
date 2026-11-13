@@ -301,7 +301,7 @@ row_tuple!(A B C D E F G H I J K L);
 /// block words that move some list's exposure.
 pub struct Cx<'c> {
     /// The scene's memory: a record written is noted there, so the next publish copies its page.
-    pub ar: crate::arena::Ar,
+    pub(crate) ar: crate::arena::Ar,
     pub tiles: &'c mut Tiles,
     pub u: &'c U,
     pub all: bool,
@@ -407,7 +407,7 @@ impl<'w, 'c, V, B: Backend> Sink<V> for Write<'w, 'c, V, B> {
             crate::store::SHAPE.fetch_add(1, Ordering::Relaxed);
             self.st.order.push(Pass::Sub(q as u32));
             // a store found in a mapped image is not fresh: its records are there to be compared
-            fresh = self.st.ar.head().adopt == 0;
+            fresh = self.st.ar.head().adopt.get() == 0;
         }
         let st = &mut self.st.subs[q];
         if st.space != space {
@@ -500,7 +500,7 @@ pub fn list_sync<V, R: Row<V>, F: FnMut(usize) -> R, B: Backend>(parent: &mut St
     }
     if st.rows.is_empty() && lo < hi {
         row_new::<V, R, B>(st, l.shape, &f(lo as usize));
-        if st.ar.head().adopt != 0 {
+        if st.ar.head().adopt.get() != 0 {
             list_adopt(st, l, (lo, hi));
         }
         st.src = Some((at, R::LEAVES, size_of::<R>() as u32));

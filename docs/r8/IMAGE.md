@@ -1,22 +1,24 @@
 # The scene image: format, loader, and what it is worth (threads lane, for the e2e lane)
 
-Status: **built for columns** (`Arena::save` / `Arena::open`, `World::save` / `World::open` / `World::adopt`,
-`crates/bough-x/tests/image.rs`); sections for pixels, glyphs and shapes are reserved in the head and not
-written yet. Read `ARENA.md` first: the image is the arena.
+Status: **built for columns** (`World::save` / `World::open` / `World::adopt`, `crates/bough-x/tests/image.rs`),
+ported under expr's column table and with the independent review's P03 and P04 closed (ARENA.md section 3);
+sections for pixels, glyphs and shapes are reserved in the head and not written yet. The pixel section's
+design and the measurement behind it are in `THREADS-DESIGNS.md` section 3. Read `ARENA.md` first: the image
+is the arena.
 
-## 1. Format (v1, magic `boughx01`)
+## 1. Format (v2, magic `boughx02`)
 
 ```text
-0          shared part, 256 KiB: head (4 KiB) | dirty bitmap (zero) | ranges
-256 KiB    one half: plan | order | spaces | live | columns, up to the last used line, padded to 64 KiB
+0          shared part, 256 KiB: head (4 KiB) | bitmaps (zero) | ranges | column and list descriptions
+256 KiB    one half: plan | spaces | live | columns, up to the last used line, padded to 64 KiB
 then       optional sections, each at a 64 KiB boundary, named in head.sections as (file offset, bytes):
            0 the first frame's pixels   1 glyph columns   2 layout shapes   3 spare
 ```
 
 The file is the memory, byte for byte. The head carries: magic; a fold of the layout constants; the identity
-of the binary that wrote it (size and modification time of the executable); the counts and the bump cursor;
-the surface size; the block the scene was shaded with; a checksum of the structural part (head, plan, order,
-spaces, live words, ranges). The sheet at 10,000 rows (764 records exposed) is 458,752 bytes, of which about
+of the binary that wrote it (size and modification time of the executable) and a hash of the backend type;
+the counts and the bump cursor; the surface size; the block the scene was shaded with; a checksum of the
+structural part (head, plan, spaces, live words, ranges, column and list descriptions). The sheet at 10,000 rows (764 records exposed) is 458,752 bytes, of which about
 100 KiB is ever touched.
 
 ## 2. What makes a page mappable read-only and copy-on-write on first write
@@ -40,12 +42,18 @@ spaces, live words, ranges). The sheet at 10,000 rows (764 records exposed) is 4
 
 ```rust
 let mut world = World::<B>::open(path)?;        // map; check head, bounds, checksum. Nothing mounted.
-world.paint_front(&world.shown.clone(), &mut backend);   // the first frame: the view has not run
-world.adopt(&view, NWORDS)?;                    // before the first turn (or at once, if exactness comes first)
+unsafe { world.paint_image(&mut backend) };     // optional first frame before the view has run: see below
+world.adopt(&view, NWORDS)?;                    // from here on it is a world like any other
+world.paint_front(&world.shown.clone(), &mut backend);
 ```
 
+* Before `adopt`, the safe API paints nothing (`paint_front` returns `false`): the plan's paint kernels are
+  offsets read from a file, and nothing has yet shown that they are kernels. `paint_image` is the first frame
+  of a start from an image and is `unsafe`: the caller vouches that this exact executable wrote the file and
+  nobody altered it. `adopt` compares every plan entry with the one this binary builds for the view, after
+  which the image's plan is this binary's and `paint_front` paints it.
 * `open` refuses (`Refused::{Io, Layout, Binary, Bounds, Checksum}`): not an image or other layout constants;
-  written by another binary; a count or offset outside the file; a structural part that is not what was
+  written by another binary or for another backend type; a count or offset outside the file; a structural part that is not what was
   written. The caller mounts instead.
 * `adopt` runs the view with the re-description sink against the mapped columns. Allocation requests are
   replayed (the same requests in the same order get the same columns, checked against the image), so the
@@ -54,18 +62,21 @@ world.adopt(&view, NWORDS)?;                    // before the first turn (or at 
   repaired; an image of another *shape* (other columns, other sizes) fails `adopt`, and the caller drops the
   world and mounts. A list's window is taken as it is only if its live bits and rects are what the current
   state exposes; otherwise its rows are written anew.
-* Until `adopt`, the world can be painted and nothing else.
 
-Gates (Mac and ilo-prod): the mapped scene paints the saved pixels before the view runs; adopting the same
+Gates (`tests/image.rs`, 5; Mac and mothership at the final commit; the corruption counts are ilo-prod's at
+`81da84ea75`): the mapped scene paints the saved pixels before the view runs; adopting the same
 state damages no tile and writes no page, and 40 further steps match a fresh mount; a stale state (theme,
-scroll, an edit, a row inserted) is repaired to a fresh mount's pixels; a view with no rows is refused; 3,000
+scroll, an edit, a row inserted) is repaired to a fresh mount's pixels; a view with no rows is refused; an
+image made for another backend type is refused; 3,000
 corruptions (truncations, single bits, bursts in the structural part and in the columns): 762 refused, 252
 repaired, 1,986 without effect, none out of bounds. Threat model: the image is a cache the application wrote
 for itself; it is protected against corruption, not against a forger with the same permissions.
 
 ## 4. What it is worth: measured, and not much for the scene itself
 
-mothership (quiet), 10,000-row sheet, 764 records, median of 200, wall time including system calls:
+mothership (quiet), 10,000-row sheet, 764 records, median of 200, wall time including system calls (at
+`81da84ea75`, before the port; the final table is `hot-mothership-final.tsv`: mount 45.4 us, open 27.0 us,
+open and adopt 44.9 us):
 
 | path | user instructions | wall, warm | wall, caches cold |
 |---|---:|---:|---:|
@@ -84,12 +95,9 @@ building the 1,000,000-row model is the application's time and can run after the
 
 Where an image still earns its place, in order:
 
-1. **The first frame's pixels** (section 0 of the format): 2.1 ms of raster at this size is fifty times the
-   scene. If the pixel section is page-aligned XRGB of the configured size, the first `wl_shm` pool can be
-   created from the image's own file descriptor at that offset: the compositor maps the page cache, and the
-   first commit needs no raster and no copy. Valid only if the configure size and the state match (the head
-   has both); otherwise raster as usual. Not built; it needs the e2e lane's wl_shm path to say what it accepts
-   (a read-only regular file as a pool, stride, format).
+1. **The first frame's pixels** (section 0 of the format). The first buffer's cost is the kernel's first
+   touch of its pages: 6 ms for 16 MB on mothership; the same bytes mapped from a file in the page cache cost
+   42 us to read (THREADS-DESIGNS.md section 3, with what is needed from e2e to build it). Not built.
 2. **Mount-stage products that are expensive per record**, when they exist: shaped glyph columns and layout
    shapes (sections 1 and 2). With `Num` formatted while shading and rects by arithmetic, the sheet has none.
 3. The column image as built: worth keeping because it is free (the arena is already position independent),

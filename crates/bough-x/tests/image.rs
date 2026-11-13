@@ -53,14 +53,19 @@ fn a_mapped_scene_is_the_saved_scene() {
     drop(world);
 
     let mut w2 = World::<Soft>::open(&path).unwrap();
-    // before the view has run: the published half and the block it was shaded with
+    // before the view has run nothing may be painted through the safe API: the plan is the file's word
     let mut s = Soft::new(W, H);
-    w2.paint_front(&w2.shown.clone(), &mut s);
+    assert!(!w2.paint_front(&w2.shown.clone(), &mut s));
+    // SAFETY: the image was written a few lines above by this executable and nothing altered it.
+    unsafe { w2.paint_image(&mut s) };
     assert!(s.px == want, "the mapped scene does not paint what was saved");
 
     w2.adopt(&sheet, NWORDS).unwrap();
     assert!(w2.tiles.count() == 0, "adopting the same state damaged {} tiles", w2.tiles.count());
-    assert!(w2.ar.head().sum.iter().all(|&s| s == 0), "adopting the same state wrote a page");
+    assert!(!w2.unpublished(), "adopting the same state wrote a page");
+    // adopted: the image's plan is this binary's, and a frame may paint it
+    let mut s = Soft::new(W, H);
+    assert!(w2.paint_front(&w2.shown.clone(), &mut s) && s.px == want);
     assert!(w2.stats().0 == recs);
     println!("image: {bytes} bytes for {recs} records");
 
@@ -165,9 +170,6 @@ fn corruption_is_refused_or_repaired() {
         match World::<Soft>::open(&bad) {
             Err(_) => refused += 1,
             Ok(mut w) => {
-                // whatever it holds, painting it stays in bounds
-                let mut s = Soft::new(W, H);
-                w.paint_front(&w.shown.clone(), &mut s);
                 match w.adopt(&sheet, NWORDS) {
                     Err(_) => refused += 1,
                     Ok(()) => {
@@ -185,4 +187,24 @@ fn corruption_is_refused_or_repaired() {
     b[16] ^= 0xff;
     std::fs::write(&bad, &b).unwrap();
     assert!(matches!(World::<Soft>::open(&bad), Err(Refused::Binary)));
+}
+
+/// The review's P04: an image binds its plan to the backend type it was made for.
+#[test]
+fn another_backend_is_refused() {
+    use bough_x::kinds::{FillArch, LabelArch, NumArch, OutlineArch};
+    use bough_x::store::{Backend, ColRef};
+    struct Other;
+    impl Backend for Other {
+        fn fill<A: FillArch>(&mut self, _: ColRef<'_, A>, _: &U) {}
+        fn num<A: NumArch>(&mut self, _: ColRef<'_, A>, _: &U) {}
+        fn label<A: LabelArch>(&mut self, _: ColRef<'_, A>, _: &U) {}
+        fn outline<A: OutlineArch>(&mut self, _: ColRef<'_, A>, _: &U) {}
+    }
+    let (_, mut world) = lived_in(10_000);
+    let path = tmp("backend.bx");
+    world.save(&path).unwrap();
+    drop(world);
+    assert!(matches!(World::<Other>::open(&path), Err(Refused::Binary)), "an image made for one backend opened as another");
+    assert!(World::<Soft>::open(&path).is_ok());
 }

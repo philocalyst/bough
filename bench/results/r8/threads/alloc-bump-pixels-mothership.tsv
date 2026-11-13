@@ -1,0 +1,48 @@
+# mothership, the same build: alloc_x, bump_x, pixels_x
+== alloc_x
+# rows=10000 window=2560x1600; page size 4096 bytes
+step	allocations	page_faults
+model built	1	98
+world made (arena reserved)	3	4
+first mount	61	21
+first publish	0	14
+frame buffer made (16 MB	 zeroed)	1	1
+first frame (reference raster)	0	4000
+second frame	0	0
+cell	allocs_p50	allocs_max	faults_p50	faults_max
+floor	0	0	0	0
+idle	0	0	0	0
+hover	0	0	0	0
+hover_word	0	0	0	0
+theme	0	0	0	0
+edit_exposed	0	0	0	0
+edit_unexposed	0	0	0	0
+insert_remove	0	0	0	0
+scroll_6px	0	0	0	0
+scroll_3_rows	0	0	0	0
+scroll_page	0	0	0	0
+scroll_far	0	0	0	0
+redescribe_idle	0	0	0	0
+world_new	3	3	3	3
+mount	64	64	21	21
+image_open	5	5	2	2
+image_adopt	68	68	13	13
+frame_full	0	0	0	0
+== bump_x
+bump=0	world_new+mount	instructions_p50	90117	cycles_p50	52134
+bump=1	world_new+mount	instructions_p50	84830	cycles_p50	52199
+bump=0	world_new+mount	instructions_p50	90117	cycles_p50	51248
+bump=1	world_new+mount	instructions_p50	84830	cycles_p50	52382
+== pixels_x (file on /home/miles/work/r8/threads)
+# round 0
+anon	map_us	15.2	touch_every_page_us	6687.4	minor_faults	4002
+file	map_us	6.1	touch_every_page_us	44.4	minor_faults	11
+filepop	map_us	45.6	touch_every_page_us	25.2	minor_faults	11
+# round 1
+anon	map_us	9.6	touch_every_page_us	5965.1	minor_faults	4000
+file	map_us	5.7	touch_every_page_us	42.1	minor_faults	11
+filepop	map_us	47.0	touch_every_page_us	32.1	minor_faults	11
+# round 2
+anon	map_us	7.8	touch_every_page_us	5964.5	minor_faults	4000
+file	map_us	5.4	touch_every_page_us	41.2	minor_faults	11
+filepop	map_us	50.1	touch_every_page_us	19.4	minor_faults	11

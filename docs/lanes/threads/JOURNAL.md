@@ -287,3 +287,87 @@ parallel frame, the cross-check.
 | A1 | where start-up's faults and allocations are | mount makes under 40 heap allocations and under 25 page faults (4 KiB pages) for 764 records; the arena's own part is 2 system calls and under 12 faults; every turn after the first makes 0 allocations | a turn that allocates; or mount over 100 allocations |
 | A2 | what a global allocator choice can buy | under 2 % of mount's instructions and nothing on any turn (turns do not allocate): a faster `malloc` has nothing to be fast on. Removing the remaining allocations (store-tree vectors, the table, tiles) into the arena is worth at most the faults they cause, under 10 % of mount | a bump global allocator making mount more than 10 % cheaper |
 | P1 | the frame on cores, on the raster lane's kernels (canvas: 316 ms on one core, 93 ms on six, 3.4x) | the gap to linear is memory (shared tiles and scene read by all, bands not kept by a core); bands of equal weight owned by a core across frames reach at least 4.8x on six and cut L2 misses per frame by at least 20 % against a rotating assignment | no gain over raster's own six-thread number within 5 %: the gap is not placement |
+
+## 11. The port under expr's table (commits `84a41de1c6`, `a896d255fb`)
+
+The lead's decision: expr's `ColEnt` world-wide table (`054b83c929`) is the turn's entry; one of the two flat
+tables had to go, and it was this lane's. What is under it now, and where, is `docs/r8/ARENA.md`. The first
+ARENA.md (own plan as the entry, column numbers, an order array, `Ar::read`) is superseded and was rewritten.
+
+Costs against `054b83c929` built apart (Mac, `dist`, instructions, expr's own `sheet_x` cells; the same
+binary's cells that write nothing are +0.0 %):
+
+| cell | expr | port, first | port, final | |
+|---|---:|---:|---:|---|
+| scroll three rows | 5,321 | 5,563 | 5,422 | +1.9 % |
+| scroll a page | 29,945 | 30,307 | 30,022 | +0.3 % |
+| edit an exposed cell | 1,510 | 1,575 | 1,548 | +2.5 % |
+| edit an unexposed cell | 982 | 1,012 | 985 | +0.3 % |
+| hover, theme, idle, select, frames in motion | | | | +0.0 % |
+
+How the scroll cost came down: the slot pages a pass wrote are worked out from the three runs of rows that
+are written, not row by row; a list has its parent's space slot and writes none; one note per list per pass
+(a mask), with `publish` working out the pages of every site of every column and the live words.
+
+**The Mac's mount rise was not mount.** `hot_x`'s mount cell made a world and dropped the previous one inside
+the bracket; the arena's reservation and release alone are 131 K instructions with the kernel's (`world_new`,
+9 us). Mount itself, four runs each: 166 K to 340 K on the port, 205 K to 314 K on expr's commit: the spread
+is first-touch faults, and the port's floor is lower.
+
+## 12. The cold interaction path (prediction L1 to L4)
+
+`bench/r8/perf/lines.sh` and what it found are in `docs/r8/THREADS-DESIGNS.md` section 1.
+
+| id | verdict |
+|---|---|
+| L1 | **Killed.** Record pages are 18 of a cold hover's 93 data lines (a fifth), not half. The store tree was 24 (the hit test walked it and recounted it on every pointer event) and the heap 24 (the event path allocated). The plan was aimed at pages; the first thing to remove was bookkeeping. |
+| L2 | **Killed on the low side, above its kill line.** 86 code lines from memory per cold hover (60 after the change), predicted 150 to 250. Still as many as the data lines. |
+| (built) | The pointer path over the column table: no store walk, no allocation. L3 cold, three interleaved runs each: 12,160 -> 9,890 cycles, 407 -> 315 last-level misses; warm 10,888 -> 10,094 instructions; data lines 93 -> 70, store tree 24 -> 5. Cells whose code did not change moved up to 15 % between runs: "about a fifth". |
+| L3 | **Not run.** The page summary is designed (THREADS-DESIGNS 1.2); with records now 12 of 70 lines its ceiling is lower than predicted (about 8 % of cold cycles, not 20 %). |
+| L4 | **Not run**, and re-predicted down to at most 10 %: a cold hover's misses already overlap (about 19 cycles per line from memory). |
+
+## 13. Allocation (A1, A2) and the first buffer
+
+`examples/alloc_x.rs`, `bump_x.rs`, `pixels_x.rs`; THREADS-DESIGNS sections 2 and 3.
+
+| id | verdict |
+|---|---|
+| A1 | **Half.** Every turn cell: 0 allocations, 0 page faults (both hosts). Mount: 61 allocations (predicted under 40: missed), 21 faults at 4 KiB pages and 14 at 16 KiB (under 25: holds); the arena itself 3 allocations and 4 faults. |
+| A2 | **Holds against its kill, misses its number.** A bump global allocator makes world-and-mount 5.9 % cheaper in user instructions (90,117 -> 84,830) and nothing in cycles (52,134 -> 52,199); predicted under 2 %, kill at 10 %. A turn has nothing for an allocator to do. |
+| first buffer | A 16 MB anonymous shared buffer touched once: 5,965 us and 4,000 faults on mothership. The same bytes from a file in the page cache, mapped read-only and read: 42 us, 11 faults. On the Mac the two are the same (930 against 800 us, 1,000 faults each). So e2e's proposal holds on Linux with a warm page cache and large folios. |
+
+## 14. The independent review (batch 5) and amendment 7
+
+Read: `bough/runtime/lanes/independent-review/recent-20261112/REPORT.md`, P01 to P05 and O02. Closed: P01 (for
+the safe API), P02, P03, P04 (for the safe API), O02. Stands: P05. The table with how each was closed and what
+is left is ARENA.md section 3. Tests added for them: `nothing_is_painted_before_the_first_publish`,
+`a_reader_outlives_its_world`, `another_backend_is_refused`, the reader gate on the atomic `Reader`, and
+`crates/bough-mem/tests/align.rs` (the review's own probe).
+
+What the review was right about and I had wrong: (1) I called an epoch-retried read of plain memory "what
+bbtree's readers do" and tested it for two million publishes; it was a data race in Rust's model whatever the
+test saw. It is atomics now. (2) `paint_front` read a count from the shared head that mount had written
+before any publish. (3) "Nothing in a turn is worth a thread" was a conclusion from one scene with arithmetic
+layout and no text; withdrawn as a general claim (it stands for that scene, with numbers). (4) The image's
+identity check authorised code offsets; the safe path no longer follows one before `adopt` has matched it.
+
+No workers were built (the lead's instruction). The banded-kernel work on raster's `shade_into` was not
+started; its design and predictions are THREADS-DESIGNS section 5, and it should come after frame versions
+(section 4 there), which is the review's priority-0 answer and mine.
+
+## 15. Flamegraphs and the cross-check
+
+`hot.sh -f` on ilo-prod drew seven cells at `81da84ea75` (`/root/work/r8/threads/out/flame/*.svg` and
+`.folded`; not copied back: the transfer is the terminal). Leaf frames, by share of user cycles:
+
+* theme: `mark_rects` 46 %, `delta_col<Fill<..fill..>>` 11 %, `Tiles::mark` 10 %. **Theme is dominated by
+  scanning changed rects for a bounding box and marking tiles, not by differentiating records.** A page whose
+  every live record changed needs no scan: its box is the store's. That is expr's to take.
+* scroll a page: `list_plan` 31 %, the row closure 20 %, `World::changed` 10 %, libm `round` 9 % (the scene's
+  `f32` to hundredths conversion, a call per cell), `Tiles::mark` 5 %.
+* mount: `list_plan` 10 %, the row closures 11 %, `Store::discover` 6 %, `seal` 2 %, `_int_malloc` 1 %.
+* **A defect of the method for cells of a few microseconds**: hover's graph is 93 % `[unknown]`: the two
+  counter reads that bracket each repetition are system calls, and their user-side stubs out-weigh a 3 us
+  cell. Flamegraphs of small cells need the bracket off (an environment switch in the harness; not added).
+
+`hot.sh -x` (perf stat slopes, M1's second half): see the hand-over note for whether it finished.

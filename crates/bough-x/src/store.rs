@@ -449,11 +449,11 @@ impl RawCol {
         let lines = (self.desc.page.size() / LINE) as u32;
         let (at, rid) = ar.new_span(npages, lines);
         let p = ar.work().at(at);
-        if self.npages != 0 && ar.head().adopt == 0 {
+        if self.npages != 0 && ar.head().adopt.get() == 0 {
             // SAFETY: both spans are inside the working half and distinct; the old one holds `npages` pages.
             unsafe { core::ptr::copy_nonoverlapping(self.pages, p, self.desc.page.size() * self.npages as usize) };
             (0..self.npages).for_each(|k| ar.dirty(rid + k));
-            ar.head().wasted += self.npages * lines;
+            ar.head().wasted.set(ar.head().wasted.get() + self.npages * lines);
         }
         (self.pages, self.line, self.rid, self.npages) = (p, at, rid, npages);
         ar.set_cid(self.cid, rid, self.k, cap / 64);
@@ -594,7 +594,7 @@ pub type RowSrc = (&'static core::panic::Location<'static>, u32, u32);
 
 pub struct Store {
     /// The scene's memory: this store's pages, live words and space slot are in its working half.
-    pub ar: Ar,
+    pub(crate) ar: Ar,
     /// Its slot in the half's spaces and its first live word there; a list's id in the list bitmap.
     pub space_ix: u16,
     pub live_at: u32,
@@ -633,7 +633,7 @@ pub struct Store {
 static COL_ID: AtomicU32 = AtomicU32::new(1);
 
 impl Store {
-    pub fn new(ar: Ar, cap: u32, space: Space) -> Store {
+    pub(crate) fn new(ar: Ar, cap: u32, space: Space) -> Store {
         Store::with_space(ar, cap, space, None)
     }
     /// A list's store: its rows are in the space of the store that holds the list, so it has that store's slot
@@ -651,7 +651,7 @@ impl Store {
         let mut st = Store { ar, space_ix, live_at, lid, cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live, space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), src: None, tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false };
         if shared.is_some() {
             // the slot is the parent's to write
-        } else if ar.head().adopt != 0 {
+        } else if ar.head().adopt.get() != 0 {
             // Found in a mapped image: it has the space the image had. What the view says now may differ, and
             // then the sink sees a change like any other.
             // SAFETY: a space index answered by the replay is below `MAX_SPACES`; the slot is plain words.
@@ -662,7 +662,7 @@ impl Store {
         st
     }
     /// A store that owns nothing: what a world mapped from an image has until the view is described.
-    pub fn placeholder(ar: Ar) -> Store {
+    pub(crate) fn placeholder(ar: Ar) -> Store {
         Store { ar, space_ix: 0, live_at: 0, lid: u32::MAX, cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap: 1, row_live: LiveWords { p: ar.work().live(0), n: 0 }, space: Space::root(0, 0), disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), src: None, tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false }
     }
     /// `space` was assigned: put it where a frame reads it.
@@ -781,7 +781,7 @@ impl Store {
         ColEnt { reads: c.reads, skip: self.space.reads(), delta: c.delta, pages: c.pages, live: self.row_live.as_ptr(), space: &self.space, npages: c.npages, nrec: c.nrec, cap: self.cap, timed: c.desc.timed as u32 }
     }
     /// Column `c` as a plan entry: its offset form, for a frame, a reader or an image.
-    pub fn entry(&self, c: &RawCol) -> Entry {
+    pub(crate) fn entry(&self, c: &RawCol) -> Entry {
         Entry::new(c.desc, c.desc.paint_at, self.space.reads(), c.line, c.nrec, self.live_at, self.cap, self.space_ix)
     }
     /// Append this store's columns and those of the stores under it, in paint order; `cold` gets, per entry,
@@ -1130,7 +1130,7 @@ unsafe fn paint_at_col<A: Arch, B: Backend>(h: Half, e: &Entry, u: &U, b: *mut (
 /// Paint the `n` columns of half `h` in plan order (paint order): what a frame does.
 ///
 /// SAFETY: every entry was written for backend type `B`, and nobody writes `h` meanwhile.
-pub unsafe fn paint_half<B: Backend>(h: Half, n: usize, u: &U, b: &mut B) {
+pub(crate) unsafe fn paint_half<B: Backend>(h: Half, n: usize, u: &U, b: &mut B) {
     // SAFETY: the caller's contract.
     unsafe {
         for e in h.plan(n) {

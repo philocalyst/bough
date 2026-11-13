@@ -2,10 +2,10 @@
 //! thread never waits for them.
 //!
 //! * `a_frame_in_flight_is_not_disturbed`: turns after a publish change nothing a frame reads.
-//! * `readers_never_see_a_torn_scene`: a thread reads the published half through `Ar::read` while the turn
+//! * `readers_never_see_a_torn_scene`: a thread reads the published half through a `Reader` while the turn
 //!   thread rewrites every row and publishes; every record it sees carries one stamp. The feature
 //!   `mutant_torn` (the reader skips the epoch check) must fail this.
-use bough_x::arena::{Ar, Half};
+use bough_x::arena::Snapshot;
 use bough_x::prelude::*;
 use bough_x::soft::Soft;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -45,29 +45,20 @@ impl Stamps {
     }
 }
 
-/// The first record word of every live record of every list column of half `h`, by raw reads: what an
-/// inspector or an accessibility walk does. Tolerates torn bytes: everything read is bounded before use.
-fn stamps_of(ar: Ar, h: Half, out: &mut Vec<u32>) {
+/// The first record word of every live record of every list column of the published scene: what an inspector
+/// or an accessibility walk does.
+fn stamps_of(snap: &Snapshot<'_>, out: &mut Vec<u32>) {
     out.clear();
-    let n = (ar.ncols_racy() as usize).min(bough_x::arena::MAX_COLS);
-    for c in 0..n {
-        // SAFETY: entries below `MAX_COLS` are inside the half; an entry is plain words, copied out whole and
-        // bounded before anything is read through it. No code offset in it is followed.
-        unsafe {
-            let e = h.entry(c).read_volatile();
-            let (cap, nrec, pages, live) = (e.cap, e.nrec, e.pages, e.live);
-            let (off, size, psize) = (e.rec_off as usize, e.rec_size as usize, e.page_lines as usize * 64);
-            if cap < 64 || cap > 4096 || nrec > cap || (live as usize) + (cap as usize / 64) > bough_x::arena::MAX_LIVE {
-                continue;
-            }
-            if size < 4 || off + 64 * size > psize || !ar.in_half(pages, (nrec as usize).div_ceil(64) * psize) {
-                continue;
-            }
-            for slot in 0..nrec {
-                if h.live(live + slot / 64).read_volatile() >> (slot & 63) & 1 != 0 {
-                    let p = h.at(pages).add((slot as usize >> 6) * psize + off + (slot as usize & 63) * size);
-                    out.push((p as *const u32).read_volatile());
-                }
+    for c in 0..snap.columns() {
+        let Some(col) = snap.column(c) else { continue };
+        if col.cap < 64 {
+            continue;
+        }
+        for rec in 0..col.nrec {
+            if snap.live(&col, rec)
+                && let Some(w) = snap.record_word(&col, rec, 0)
+            {
+                out.push(w);
             }
         }
     }
@@ -105,14 +96,14 @@ fn readers_never_see_a_torn_scene() {
     let mut world = World::<Soft>::new(W, H, 4);
     world.mount(&v);
     world.publish();
-    let ar = world.ar;
+    let reader = world.reader();
     let (stop, reads, retries, torn) = (AtomicBool::new(false), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
     let turns: u32 = std::env::var("TURNS").ok().and_then(|t| t.parse().ok()).unwrap_or(200_000);
     std::thread::scope(|sc| {
         sc.spawn(|| {
             let mut got = Vec::new();
             while !stop.load(Ordering::Relaxed) {
-                let Some((_, tries)) = ar.read(|h, _| stamps_of(ar, h, &mut got)) else { continue };
+                let Some((_, tries)) = reader.read(|snap| stamps_of(snap, &mut got)) else { continue };
                 reads.fetch_add(1, Ordering::Relaxed);
                 retries.fetch_add(tries as u64, Ordering::Relaxed);
                 assert!(got.len() >= 80, "the reader found {} records", got.len());
@@ -133,4 +124,39 @@ fn readers_never_see_a_torn_scene() {
     println!("turns {turns}, reads {r}, retries {t} ({:.3} per read), torn {x}", t as f64 / r.max(1) as f64);
     assert!(r > 100, "the reader barely ran ({r} reads)");
     assert!(x == 0, "{x} of {r} reads saw records of two publishes");
+}
+
+/// The review's P03: a frame cannot run a plan that was never published.
+#[test]
+fn nothing_is_painted_before_the_first_publish() {
+    let v = Stamps::new();
+    let mut world = World::<Soft>::new(W, H, 4);
+    world.mount(&v);
+    let mut s = Soft::new(W, H);
+    assert!(!world.paint_front(&world.shown.clone(), &mut s), "an unpublished plan was painted");
+    assert!(s.px.iter().all(|&p| p == 0));
+    assert!(world.reader().read(|snap| snap.columns()).is_none(), "a reader saw a scene before the first publish");
+    world.publish();
+    assert!(world.paint_front(&world.shown.clone(), &mut s));
+    let mut w = Soft::new(W, H);
+    world.paint(&mut w);
+    assert!(s.px == w.px);
+}
+
+/// The review's P01: a reader keeps the scene's memory alive; a handle cannot outlive it.
+#[test]
+fn a_reader_outlives_its_world() {
+    let mut v = Stamps::new();
+    v.stamp(7);
+    let mut world = World::<Soft>::new(W, H, 4);
+    world.mount(&v);
+    world.publish();
+    let reader = world.reader();
+    drop(world);
+    let mut got = Vec::new();
+    let (_, tries) = reader.read(|snap| stamps_of(snap, &mut got)).unwrap();
+    assert!(tries == 0 && got.len() >= 80 && got.iter().all(|&s| s == 7));
+    // out of range is an answer, not an access
+    let (odd, _) = reader.read(|snap| (snap.column(u32::MAX).is_none(), snap.column(0).map(|c| snap.record_word(&c, u32::MAX, 0)))).unwrap();
+    assert!(odd.0 && odd.1 != Some(Some(0)));
 }

@@ -109,6 +109,28 @@ Instructions and cycles of the calling thread only (they include the kernel's), 
 levels still show as cycles. Under load the cold cycles are noise (the `floor` cell read 350 and 1,781 cycles
 at the L2 level in two runs ten minutes apart).
 
+## Which lines, by what they are: `lines.sh`
+
+`hot.sh` counts; `bench/r8/perf/lines.sh [-o OUT] [-c CPU] BIN CELL...` says which. Intel only (PEBS data
+addresses), an ordinary user suffices. For each cell it samples, with every event a sample:
+
+* `mem_load_retired.l1_miss` with L1 cold: the address of every load that missed L1 (every data line touched);
+* `mem_load_retired.l3_miss` with L3 cold: the data lines that came from memory;
+* `frontend_retired.l2_miss` with L3 cold: the code lines fetched from L3 or memory, by function;
+
+and folds addresses by the regions the binary prints with `REGIONS=1` (`World::regions`: block, column table,
+store tree, each column's pages split into rect lanes and records, live words, damage bitmap, model, stack).
+The binary enables the sampler for its measured repetitions only (perf's control FIFO: `PERF_CTL`, `PERF_ACK`;
+copy `PerfCtl` from `hot_x.rs`), and evicts with stores only, so neither set-up nor the eviction walk is in
+the samples. The `floor` cell's counts are subtracted per kind. Output: `OUT/<cell>.lines.tsv`.
+
+## Allocations and page faults: `alloc_x`
+
+`cargo run --profile dist -p bough-x --example alloc_x`: the same cells under a counting global allocator and
+`getrusage`: allocations and minor faults per repetition, and for each step of a start (model, world, mount,
+publish, first frame). Not a release binary: it prints no instruction counts. A turn is expected to print 0
+and 0.
+
 ## What has run, and what has not (2026-11-12)
 
 * The in-process table: Mac, mothership (twice, plus the pre-arena commit for an A/B), ilo-prod. Files in

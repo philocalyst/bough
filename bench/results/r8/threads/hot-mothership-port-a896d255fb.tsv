@@ -1,0 +1,42 @@
+# port at a896d255fb + the lines.sh harness (before the pointer path went over the table): hot.sh, mothership
+# host=mothership os=Linux 6.18.56 arch=x86_64
+# cpu=Intel(R) Xeon(R) E-2236 CPU @ 3.40GHz threads=12 mem=31GiB
+# governor=powersave boost= nmi_watchdog=1 perf_event_paranoid=2
+# load=1.08 1.33 1.20
+# commit= date=2026-11-12T23:08:03Z rustc=1.101.0-nightly_5d8fec066_2026-10-16
+# binary=hot_x.port profile=unknown sha256=8792fb6fe2fa1359 bytes=597776
+# hot.sh cpu_pin=taskset -c 3 l1d=32KiB l2=256KiB l3=12288KiB evict=2x fill_cycles=300 reps=200 (cold levels at most 64)
+scene	cell	level	evict_kb	reps	instr	cycles	br_miss	l1_miss	l2_miss	fill_l2	fill_l3	fill_dram	dtlb_miss	instr_max	cycles_max	wall_ns	wall_ns_max	chain_lb
+sheet	floor	warm	0	200	4	2	0	0	0		0	0	0	4	324	1674	6500	
+sheet	idle	warm	0	200	48	0	0	0	0		0	0	0	52	312	16	3927	1.8
+sheet	hover	warm	0	200	10888	3303	3	13	0		0	0	0	10893	4990	747	9132	44.4
+sheet	hover_word	warm	0	200	9399	2789	4	5	0		0	0	0	9403	3659	638	3640	27.9
+sheet	theme	warm	0	200	35976	11305	3	283	1		13	0	0	35981	12489	2536	8045	44.2
+sheet	edit_exposed	warm	0	200	2145	894	3	15	0		0	0	0	2154	2405	215	5756	26.7
+sheet	scroll_3_rows	warm	0	200	6501	2947	1	107	0		2	0	0	6506	8278	678	7497	30.2
+sheet	scroll_page	warm	0	200	42675	15885	13	338	0		29	0	0	42687	18421	3574	50112	35.4
+sheet	floor	l1	64	64	4	111	3	3	0		0	0	0	4	377	1758	3572	
+sheet	idle	l1	64	64	48	0	0	7	0		0	0	0	52	346	0	3210	1.8
+sheet	hover	l1	64	64	10888	3381	0	220	1		59	0	0	10892	4664	754	4099	44.4
+sheet	hover_word	l1	64	64	9399	3174	8	149	3		23	0	0	9403	6777	724	4083	27.9
+sheet	theme	l1	64	64	35976	11351	0	547	19		80	0	0	35980	12084	2556	5786	44.2
+sheet	edit_exposed	l1	64	64	2145	901	0	124	4		226	0	0	2154	1339	207	3331	26.7
+sheet	scroll_3_rows	l1	64	64	6501	4505	0	221	8		140	0	0	6505	6777	1579	6014	30.2
+sheet	scroll_page	l1	64	64	42675	15803	10	477	6		35	0	0	42687	17648	3573	53785	35.4
+sheet	floor	l2	512	64	4	37	0	3	2		10	0	0	4	291	1919	5877	
+sheet	idle	l2	512	64	48	10	0	9	4		23	0	0	52	445	2	3418	1.8
+sheet	hover	l2	512	64	10888	4388	3	223	82		674	0	0	10892	8284	1015	7847	44.4
+sheet	hover_word	l2	512	64	9399	3464	3	148	47		443	0	0	9403	6457	798	4204	27.9
+sheet	theme	l2	512	64	35976	13492	5	551	103		1243	0	0	35980	21564	3870	7716	44.2
+sheet	edit_exposed	l2	512	64	2145	1619	2	123	68		443	0	0	2154	3735	429	3973	26.7
+sheet	scroll_3_rows	l2	512	64	6501	4136	1	220	43		816	0	0	6505	9710	953	6078	30.2
+sheet	scroll_page	l2	512	64	42675	28231	87	501	41		1230	0	0	42687	40431	6904	11809	35.4
+sheet	floor	l3	24576	64	4	517	1	8	1		43	9	0	4	1809	4350	13514	
+sheet	idle	l3	24576	64	48	548	2	9	5		19	23	1	52	3139	369	7534	1.8
+sheet	hover	l3	24576	64	10888	16621	26	234	76		533	570	17	10892	29032	3972	11653	44.4
+sheet	hover_word	l3	24576	64	9399	11151	12	154	46		315	375	13	9403	21443	2568	13032	27.9
+sheet	theme	l3	24576	64	35976	24555	42	559	104		670	890	19	35980	37129	5508	14010	44.2
+sheet	edit_exposed	l3	24576	64	2145	8890	9	138	62		283	350	22	2154	15203	1995	9429	26.7
+sheet	scroll_3_rows	l3	24576	64	6501	11995	25	234	39		493	650	15	6505	18534	2712	12566	30.2
+sheet	scroll_page	l3	24576	64	42675	26502	43	494	41		754	857	14	42687	48817	6294	18356	35.4
+

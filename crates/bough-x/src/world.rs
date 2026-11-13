@@ -32,7 +32,10 @@ pub const RESERVE: usize = 64 << 20;
 pub struct World<B> {
     /// The scene's memory; `ar` is its handle, and the store tree's pages are in its working half.
     _arena: Arena,
-    pub ar: Ar,
+    ar: Ar,
+    /// What a frame may paint: the plan length and the block as of the last publish. `None` until the first
+    /// publish (or, for a mapped image, until `adopt` has matched its plan against this binary's own).
+    front: Option<(u32, U)>,
     /// Boxed: the column table points into the tree, and the world itself may be moved.
     pub root: Box<Store>,
     /// The block as of the last settle: what the pixels on screen were shaded with.
@@ -89,7 +92,7 @@ impl<B: Backend> World<B> {
         for w in [U_PICK, U_FOCUS, U_PRESS] {
             shown.w[w] = NONE;
         }
-        World { _arena: arena, ar, root: Box::new(root), shown, tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, reads: 0, col_reads: Vec::new(), by_word: [0; 65], readers: Vec::new(), cols: Vec::new(), cold: Vec::new(), spaces: Vec::new(), shape: u32::MAX, clock: 0, ptr: None, hov: Vec::new(), hits: Vec::new(), kinds_of: Vec::new(), scratch: Vec::new(), hov_next: Vec::new(), held: None, focus: None, ctab: Vec::new(), ctab_at: (0, 0), _b: PhantomData }
+        World { _arena: arena, ar, front: None, root: Box::new(root), shown, tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, reads: 0, col_reads: Vec::new(), by_word: [0; 65], readers: Vec::new(), cols: Vec::new(), cold: Vec::new(), spaces: Vec::new(), shape: u32::MAX, clock: 0, ptr: None, hov: Vec::new(), hits: Vec::new(), kinds_of: Vec::new(), scratch: Vec::new(), hov_next: Vec::new(), held: None, focus: None, ctab: Vec::new(), ctab_at: (0, 0), _b: PhantomData }
     }
 
     /// The application's block with the words it does not own (the surface's and the raster's) as the world
@@ -162,8 +165,9 @@ impl<B: Backend> World<B> {
     /// put it there; otherwise say whether what is there (a mapped image's) is exactly it.
     fn replan(&mut self, write: bool) -> bool {
         let (w, hd) = (self.ar.work(), self.ar.head());
+        let had = hd.ncols.get() as usize;
         assert!(self.cold.len() <= crate::arena::MAX_COLS, "the scene has more than {} columns", crate::arena::MAX_COLS);
-        let mut same = hd.ncols as usize == self.cold.len();
+        let mut same = had == self.cold.len();
         for (i, &(st, j)) in self.cold.iter().enumerate() {
             // SAFETY: the table is current: `st` is a store of this tree and `j` one of its columns; entry `i`
             // is inside the plan (the assert above), and the turn thread writes its own half.
@@ -171,14 +175,14 @@ impl<B: Backend> World<B> {
                 let e = (*st).entry(&(&(*st).cols)[j as usize]);
                 if !write {
                     same = same && *w.entry(i) == e;
-                } else if hd.ncols as usize <= i || *w.entry(i) != e {
+                } else if had <= i || *w.entry(i) != e {
                     w.entry(i).write(e);
                     self.ar.dirty_plan(i as u32);
                 }
             }
         }
         if write {
-            hd.ncols = self.cold.len() as u32;
+            hd.ncols.set(self.cold.len() as u32);
         }
         same
     }
@@ -674,49 +678,91 @@ impl<B: Backend> World<B> {
         self.root.paint(&self.shown, b);
     }
 
-    /// Publish the turn thread's writes: the published half becomes what the working half is. Call between
-    /// frames (no frame is reading the published half). Returns the lines copied.
+    /// Publish the turn thread's writes: the published half becomes what the working half is, and a frame may
+    /// paint it with the block as it is now. Returns the lines copied. `&mut self`: no frame of this world is
+    /// painting the published half while it is written.
     pub fn publish(&mut self) -> u32 {
         if self.shape != SHAPE.load(Ordering::Relaxed) {
             self.retable();
         }
-        self.ar.publish()
+        let n = self.ar.publish();
+        self.front = Some((self.ar.head().ncols.get(), self.shown));
+        n
     }
 
-    /// Paint from the published half with block `u` (the block that was current at the publish): what a
-    /// frame does.
-    pub fn paint_front(&self, u: &U, b: &mut B) {
-        // SAFETY: every column of this world was described with backend type `B` (`World<B>`'s sinks are the
-        // only ones that make columns, and an image names the binary that wrote it); the published half is
-        // written only by `publish`, which takes `&mut self`.
-        unsafe { store::paint_half(self.ar.front(), self.ar.head().ncols as usize, u, b) }
+    /// Whether a turn wrote something that has not been published.
+    pub fn unpublished(&self) -> bool {
+        self.ar.pending()
+    }
+
+    /// The block the published half was last published with.
+    pub fn front_block(&self) -> Option<&U> {
+        self.front.as_ref().map(|f| &f.1)
+    }
+
+    /// Paint the published half with block `u`: what a frame does. `u` is the block of the publish, or a later
+    /// one whose changes are all words the published records read at Frame stage (a hover, a theme, time).
+    /// Paints nothing and returns `false` when nothing has been published: an unpublished plan is never run.
+    pub fn paint_front(&self, u: &U, b: &mut B) -> bool {
+        let Some((n, _)) = self.front else { return false };
+        // SAFETY: the first `n` entries of the published plan are what `publish` copied from entries this world
+        // wrote for backend type `B` (or, for a mapped image, entries `adopt` found equal to those); the
+        // published half is written only by `publish`, which takes `&mut self`.
+        unsafe { store::paint_half(self.ar.front(), n as usize, u, b) };
+        true
+    }
+
+    /// A reader of the published half for another thread (accessibility, an inspector): it never blocks a turn.
+    pub fn reader(&self) -> crate::arena::Reader {
+        self._arena.reader()
+    }
+
+    /// The backend type, as an image names it.
+    fn schema() -> u64 {
+        core::any::type_name::<B>().bytes().fold(0xcbf2_9ce4_8422_2325u64 ^ size_of::<B>() as u64, |h, b| (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01B3))
     }
 
     /// Write the scene to `path` as an image a later run of this binary can map (`World::open`). Publishes
     /// first: the image is the published scene and the block it was shaded with.
     pub fn save(&mut self, path: &std::path::Path) -> std::io::Result<usize> {
         self.publish();
-        self._arena.save(path, &self.shown, [self.tiles.w, self.tiles.h])
+        self._arena.save(path, &self.shown, [self.tiles.w, self.tiles.h], Self::schema())
     }
 
-    /// Map an image as this world's scene. What comes back can be painted at once (`paint_front`, with
-    /// `shown`): nothing was mounted, nothing was read but the image's structural part, and no page of it was
-    /// written. It cannot take a turn until [`World::adopt`] has run.
+    /// Map an image as this world's scene: nothing is mounted, nothing is read but the image's structural
+    /// part, and no page of it is written. The world can do nothing until [`World::adopt`] has run, except
+    /// through [`World::paint_image`].
+    ///
+    /// Refused unless the image names this executable (size and modification time), this backend type and this
+    /// module's layout, its counts and offsets are in bounds, and its checksum holds. None of that makes the
+    /// plan's code offsets trusted: `adopt` does.
     #[cfg(unix)]
     pub fn open(path: &std::path::Path) -> Result<World<B>, Refused> {
-        let arena = Arena::open(path, RESERVE)?;
+        let arena = Arena::open(path, RESERVE, Self::schema())?;
         let ar = arena.ar();
-        let h = ar.head();
-        let (shown, size) = (U { w: h.shown }, h.size);
+        let (shown, size) = (U { w: ar.head().shown.get() }, ar.head().size.get());
         let mut w = World::<B>::new_on(arena, Store::placeholder(ar), size[0], size[1], 0);
         w.shown = shown;
         Ok(w)
     }
 
+    /// Paint a mapped image before the view has run (the first frame of a start from an image).
+    ///
+    /// # Safety
+    /// The image's plan names its paint kernels by offsets into this executable, and until `adopt` has compared
+    /// them with this binary's own nothing proves they are kernels: the caller vouches that the file is one
+    /// this exact executable wrote and that nobody altered it since (the header's size, time and checksum are
+    /// a filter against accident, not a proof).
+    pub unsafe fn paint_image(&self, b: &mut B) {
+        // SAFETY: the caller's contract; counts and page offsets were bounded by `Arena::open`.
+        unsafe { store::paint_half(self.ar.front(), self.ar.head().ncols.get() as usize, &self.shown, b) }
+    }
+
     /// Make a mapped scene this view's: the view is described against the image, with the same code as a
     /// re-description. The store tree is found again (the same requests get the same columns), and every
     /// operand and rect the view gives is compared with what the image holds; what differs is written and
-    /// damaged like any change. So an image of another state is repaired, not trusted.
+    /// damaged like any change. So an image of another state is repaired, not trusted. The image's plan is
+    /// compared, entry for entry, with the one this binary builds for the view: only then may it be painted.
     ///
     /// `Err` when the view's shape is not the image's (another view, another window size class): the caller
     /// drops this world and mounts.
@@ -739,6 +785,9 @@ impl<B: Backend> World<B> {
         if !(self.ar.adopt_end() && self.replan(false) && self.root.cids_same()) {
             return Err(Refused::Bounds);
         }
+        // The published half is the same file pages the working half was compared in, and the plan is not
+        // written by the pass above: its entries are this binary's. A frame may paint it.
+        self.front = Some((self.ar.head().ncols.get(), self.shown));
         self.retable();
         // records compared equal under the image's block; what the block's change shows is the delta's
         if ch != 0 {

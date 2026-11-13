@@ -1,0 +1,46 @@
+# lines.sh, hover, mothership: first the port (store-tree hit test), then the pointer path over the table
+## pointer path over the table (8cbbb91460)
+# lines.sh cpu=3 reps=64 l1_evict=64KiB l3_evict=24576KiB
+# cell=hover reps=64: distinct 64-byte lines over the measured repetitions	 the floor cell's subtracted per kind; samples per repetition
+## data lines loaded (L1 cold)
+kind	lines	samples_per_rep
+other (heap	 statics)	18	3.4
+pages.fill.records	12	4.1
+tiles (damage bitmap)	9	1.7
+world (driver state)	8	0.7
+table (column entries	 readers)	6	1.9
+tree (stores	 sites)	5	1.6
+stack	5	1.7
+pages.fill.rects	4	0.3
+model	2	0.2
+live words	1	0.4
+total	70	
+## data lines from memory (L3 cold)
+kind	lines	samples_per_rep
+other (heap	 statics)	18	4.2
+pages.fill.records	11	1.2
+tiles (damage bitmap)	8	0.7
+pages.fill.rects	5	1.1
+world (driver state)	4	0.4
+tree (stores	 sites)	4	0.6
+table (column entries	 readers)	4	0.5
+total	54	
+## code lines fetched from L3 or memory (L3 cold)
+function	lines
+<hot_x::CELLS::{closure#2} as core::ops::function::FnOnce<(&mut hot_x::Bed	 usize)>>::call_once	18
+bough_x::store::delta_col::<bough_x::kinds::Fill<bough_expr::Map<hot_x::sheet::fill	 (bough_expr::Un<hot_x::sh	12
+bough_x::store::mark_rects	5
+bough_x::store::delta_col::<bough_x::kinds::Fill<bough_expr::Map<hot_x::sheet::head	 (bough_expr::Un<hot_x::sh	4
+<bough_x::world::World<bough_x::soft::Soft>>::delta	4
+bough_x::store::hit_col::<bough_x::kinds::Fill<bough_expr::Map<hot_x::sheet::head	 (bough_expr::Un<hot_x::shee	3
+__memset_avx2_unaligned_erms	3
+__memmove_avx_unaligned_erms	2
+__libc_malloc2	2
+<bough_x::world::World<bough_x::soft::Soft>>::call::<hot_x::sheet::Sheet>	2
+<bough_x::store::Tiles>::mark	2
+bough_x::event::call::<hot_x::sheet::Sheet	 bough_x::event::On<bough_x::kinds::Fill<bough_expr::Map<hot_x::she	1
+<hot_x::PerfCtl>::say	1
+<bough_x::world::World<bough_x::soft::Soft>>::changed::<hot_x::sheet::Sheet>	1
+hot_x::evict	-1
+total	60
+
