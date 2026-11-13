@@ -19,6 +19,17 @@ pub struct Soft {
     pub clip: Rect,
     /// Records the backend was handed (a count of work, for the cost of a repair).
     pub records: u64,
+    /// Real text: the application's faces and glyph lanes. Without it lines draw nothing and numbers are the
+    /// 3 x 5 stand-in digits.
+    pub text: Option<SoftText>,
+}
+
+/// The oracle's hold on the application's text: its faces and (shared, because the view shapes lines while it
+/// is described) its glyph lanes.
+#[derive(Clone)]
+pub struct SoftText {
+    pub faces: &'static [bough_face::Face],
+    pub glyphs: std::rc::Rc<core::cell::RefCell<bough_face::Glyphs>>,
 }
 
 // 3 x 5 digits, rows top to bottom, bit 2 = left.
@@ -82,7 +93,7 @@ pub fn format_num(n: i32, d: u8, out: &mut [u8; 24]) -> usize {
 
 impl Soft {
     pub fn new(w: i32, h: i32) -> Soft {
-        Soft { w, h, px: vec![0; (w * h) as usize], clip: Rect { x0: 0, y0: 0, x1: w, y1: h }, records: 0 }
+        Soft { w, h, px: vec![0; (w * h) as usize], clip: Rect { x0: 0, y0: 0, x1: w, y1: h }, records: 0, text: None }
     }
     pub fn rect(&mut self, r: Rect, c: u32) {
         let r = r.and(self.clip).and(Rect { x0: 0, y0: 0, x1: self.w, y1: self.h });
@@ -93,6 +104,21 @@ impl Soft {
             let row = (y * self.w) as usize;
             self.px[row + r.x0 as usize..row + r.x1 as usize].fill(c);
         }
+    }
+    /// Coverage over what is there, in colour `c`: per channel, in integers. `cov` starts at pixel `(x, y)`,
+    /// which the caller has cut to the frame and the clip.
+    #[inline(always)]
+    fn cover(&mut self, x: i32, y: i32, cov: &[u8], c: u32) {
+        let row = &mut self.px[(y * self.w + x) as usize..][..cov.len()];
+        for (d, &a) in row.iter_mut().zip(cov) {
+            let a = a as u32;
+            let ch = |sh: u32| (((c >> sh & 255) * a + (*d >> sh & 255) * (255 - a) + 127) / 255) << sh;
+            *d = ch(16) | ch(8) | ch(0);
+        }
+    }
+    /// With real text: where painting is allowed for a record's rect (its space's clip, the tile, the frame).
+    fn cut(&self, clip: Rect) -> Rect {
+        clip.and(self.clip).and(Rect { x0: 0, y0: 0, x1: self.w, y1: self.h })
     }
     /// Text in a box (screen coordinates), cut to `cut`.
     fn text(&mut self, r: Rect, cut: Rect, bytes: &[u8], c: u32) {
@@ -132,12 +158,31 @@ impl Backend for Soft {
     }
     fn num<A: NumArch>(&mut self, col: ColRef<'_, A>, u: &U) {
         let (org, clip) = (col.space.origin(u), col.space.clip);
+        let text = self.text.clone();
         col.each(|r, a| {
             self.records += 1;
+            let r = r.shift(org);
+            if let Some(t) = &text {
+                let g = t.glyphs.borrow();
+                let cut = self.cut(r.and(clip));
+                crate::text::TextCx { faces: t.faces, glyphs: &g }.num(a.value(u), a.decimals(), A::PAD, r, cut, |x, y, cov| self.cover(x, y, cov, a.color(u).0));
+                return;
+            }
             let mut buf = [0u8; 24];
             let n = format_num(a.value(u), a.decimals(), &mut buf);
-            let r = r.shift(org);
             self.text(r, r.and(clip), &buf[..n], a.color(u).0)
+        });
+    }
+    fn line<A: crate::text::LineArch>(&mut self, col: ColRef<'_, A>, u: &U) {
+        let Some(t) = self.text.clone() else { return };
+        let g = t.glyphs.borrow();
+        let cx = crate::text::TextCx { faces: t.faces, glyphs: &g };
+        let (org, clip) = (col.space.origin(u), col.space.clip);
+        col.each(|r, a| {
+            self.records += 1;
+            let r = r.shift(org);
+            let cut = self.cut(r.and(clip));
+            cx.line(a.run(), r, cut, |x, y, cov| self.cover(x, y, cov, a.color(u).0));
         });
     }
     fn label<A: LabelArch>(&mut self, col: ColRef<'_, A>, u: &U) {

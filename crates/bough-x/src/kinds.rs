@@ -10,6 +10,8 @@ pub trait FillArch: Arch {
 }
 pub trait NumArch: Arch {
     const DECIMALS: u8;
+    /// The least number of digits drawn, zeros on the left (`{:05}` is 5).
+    const PAD: u8 = 0;
     /// The decimals of this record (a backend asks this, not the constant: a kind may keep them per record).
     #[inline(always)]
     fn decimals(&self) -> u8 {

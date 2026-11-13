@@ -18,6 +18,8 @@ pub mod model;
 pub mod numeric;
 pub mod para;
 pub mod pool;
+/// Round 8: text as staged data (the shape memo, break tables with validity intervals, line records).
+pub mod stage;
 /// The table, the kernels and byte slots live in the vendored parley now (graft 1 shapes parley's covered font
 /// segments with them); re-exported under their old paths.
 pub use parley::bough::{script, shape, slots};

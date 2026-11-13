@@ -1,0 +1,109 @@
+# host: M3 Pro; dist; Arial; one memo (bough_face::Glyphs); load average: 33.17, 18.77, 13.42
+cell	unit	instructions	cycles	note
+font	upem	2048.000		/System/Library/Fonts/Supplemental/Arial.ttf
+chat.corpus	chars	436280.000		2,000 message bodies (the scene has 436,280 with quotes and pills)
+t1.memo.entries	count	3297.000		distinct texts of 3,000 code lines + 2,000 messages
+t1.memo.bytes	bytes	3426120.000		table, entries and the two glyph lanes
+t1.shape.8	instr/text	192.9	42.9	re-shaping into a reused run (the baseline a hit must beat)
+t1.hit.8	instr/text	131.8	43.1	key hashed at the call
+t1.hit_keyed.8	instr/text	100.1	25.6	key known (a constant string)
+t1.hit_over_shape.8	ratio	0.683		kill at 16 bytes: above 1
+t1.shape.16	instr/text	231.9	36.6	re-shaping into a reused run (the baseline a hit must beat)
+t1.hit.16	instr/text	148.3	24.1	key hashed at the call
+t1.hit_keyed.16	instr/text	107.3	14.4	key known (a constant string)
+t1.hit_over_shape.16	ratio	0.640		kill at 16 bytes: above 1
+t1.shape.32	instr/text	351.5	142.0	re-shaping into a reused run (the baseline a hit must beat)
+t1.hit.32	instr/text	182.5	42.1	key hashed at the call
+t1.hit_keyed.32	instr/text	123.9	24.0	key known (a constant string)
+t1.hit_over_shape.32	ratio	0.519		kill at 16 bytes: above 1
+t1.shape.64	instr/text	563.2	187.7	re-shaping into a reused run (the baseline a hit must beat)
+t1.hit.64	instr/text	251.3	59.3	key hashed at the call
+t1.hit_keyed.64	instr/text	156.3	20.9	key known (a constant string)
+t1.hit_over_shape.64	ratio	0.446		kill at 16 bytes: above 1
+t1.shape.256	instr/text	1902.1	485.2	re-shaping into a reused run (the baseline a hit must beat)
+t1.hit.256	instr/text	487.8	286.8	key hashed at the call
+t1.hit_keyed.256	instr/text	164.5	29.0	key known (a constant string)
+t1.hit_over_shape.256	ratio	0.256		kill at 16 bytes: above 1
+t1.shape.chat	instr/byte	7.9	3.7	shape every message into a reused run
+t1.miss.chat.cold	instr/byte	19.3	11.2	a fresh memo per pass: hash, probe, shape, glyph lanes, entry; with growth and the first touch of its memory
+t1.miss.chat	instr/byte	12.7	6.2	the same into a memo whose memory is already resident (cleared, not freed); no break table: a label's miss
+t1.miss_over_shape	ratio	1.608		prediction: at most 1.15
+t1.miss_and_breaks.chat	instr/byte	24.7	10.1	and the break table of each (a paragraph's miss)
+t2c.break_bytes_per_char.table	bytes	2.155		[end, next] and the segment's first glyph; prediction at most 2
+t2c.break_bytes_per_char.bytes	bytes	0.000		block_bytes reads the pens and the text: nothing is stored for breaking
+t2.block.new_width	instr/para	376.7	316.7	block_bytes: no table, interpolation in the pen lane per line, with the interval; prediction at most 150
+t2.block_table.new_width	instr/para	201.1	61.2	the same over a break table (the general form)
+t2.walk.new_width	instr/para	448.4	119.2	every segment visited (the façade's greedy, on this table)
+t2.lines_per_para	lines	2.463		at the 1280 pt window
+t2.segments_per_para	segments	39.166		
+t2.sweep.1px	instr/step	40793.4	30475.5	2,000 paragraphs: interval check for all, block() for those outside
+t2.sweep.1px.rebroken	fraction	0.021		paragraphs outside their interval per step; prediction under 0.05, kill above 0.25
+t2.sweep.1px.height_changed	fraction	0.002		of all paragraphs per step: what layout must act on
+t2.sweep.harness	instr/step	925196.6	791246.3	the r7 resize phase's widths (about 69 pt per step)
+t2.sweep.harness.rebroken	fraction	0.787		
+t2b.mean_adv	font units	901.000		English letter frequencies; upem 2048
+t2b.guess.total_err.2000	fraction	-0.017		extent error before any row is measured; prediction within 0.03
+t2b.guess.rows_exact.2000	fraction	0.932		
+t2b.guess.rows_within1.2000	fraction	1.000		prediction at least 0.90
+t2b.mean15.total_err.2000	fraction	0.013		running mean of the first 15 rows (the layout lane's stand-in)
+t2b.mean15.rows_exact.2000	fraction	0.186		
+t2b.mean15.rows_within1.2000	fraction	0.365		
+t2b.guess.total_err.2560	fraction	-0.007		extent error before any row is measured; prediction within 0.03
+t2b.guess.rows_exact.2560	fraction	0.968		
+t2b.guess.rows_within1.2560	fraction	1.000		prediction at least 0.90
+t2b.mean15.total_err.2560	fraction	0.001		running mean of the first 15 rows (the layout lane's stand-in)
+t2b.mean15.rows_exact.2560	fraction	0.271		
+t2b.mean15.rows_within1.2560	fraction	0.562		
+t2b.guess.total_err.3200	fraction	-0.003		extent error before any row is measured; prediction within 0.03
+t2b.guess.rows_exact.3200	fraction	0.984		
+t2b.guess.rows_within1.3200	fraction	1.000		prediction at least 0.90
+t2b.mean15.total_err.3200	fraction	-0.017		running mean of the first 15 rows (the layout lane's stand-in)
+t2b.mean15.rows_exact.3200	fraction	0.377		
+t2b.mean15.rows_within1.3200	fraction	0.705		
+t2b.guess	instr/row	12.1	2.5	
+t3.cell		0.000		/System/Library/Fonts/Supplemental/Arial.ttf: Ok(Cell { adv: 1139, dot: 569, minus: 682, kern: 152 })
+t3.cell		0.000		/System/Library/Fonts/Helvetica.ttc: no simple-script table
+t3.cell		0.000		/System/Library/Fonts/Menlo.ttc: Err(Contextual(48, 48))
+t3.cell		0.000		/System/Library/Fonts/SFNS.ttf: Err(Proportional(48, 49))
+t3.cell		0.000		/System/Library/Fonts/Supplemental/Times New Roman.ttf: no simple-script table
+t3.cell		0.000		/System/Library/Fonts/Supplemental/Georgia.ttf: Err(Proportional(48, 49))
+t3.cell		0.000		/System/Library/Fonts/Supplemental/Verdana.ttf: no simple-script table
+t3.gate	numbers	300000.000		glyph ids == the shaper's; pens and width == the sum of advances
+t3.kerned_numbers	fraction	0.052		numbers whose proportional setting (the shaper's, with digit-pair kerns) differs from the cell; worst pen difference 608 font units; cell.kern 152
+t3.glyph_and_pen	instr/glyph	19.1	4.4	7 digits and a point, d = 2; prediction at most 25
+t3.facade_render_and_shape	instr/number	296.3	60.8	what a number write does in text today before any patching: render to bytes, shape
+t4.append.1k	instr/append	700.3	199.9	6 bytes appended to a Flow; prediction at most 25 per byte + 300
+t4.append.1k.shaped	bytes/append	8.582		the last segment plus the appended bytes
+t4.set.1k	instr/append	1975.2	418.5	the whole String handed over; the compare is the only term in the length
+t4.append.10k	instr/append	685.4	177.0	6 bytes appended to a Flow; prediction at most 25 per byte + 300
+t4.append.10k.shaped	bytes/append	8.748		the last segment plus the appended bytes
+t4.set.10k	instr/append	6484.9	1119.5	the whole String handed over; the compare is the only term in the length
+t4.append.100k	instr/append	678.4	216.4	6 bytes appended to a Flow; prediction at most 25 per byte + 300
+t4.append.100k.shaped	bytes/append	8.568		the last segment plus the appended bytes
+t4.set.100k	instr/append	53034.4	9025.3	the whole String handed over; the compare is the only term in the length
+t5.type.1000	instr/key	1192.7	342.4	one character into a line near the middle: find the line, storage splice, re-shape of that line; prediction at most 1,500
+t5.find.1000	instr/line	114.0	23.9	the line's text
+t5.newline.1000	instr/op	656.6	288.9	split a line and join it back, re-shaping both halves; prediction at most 3,000 for the split
+t5.type.300000	instr/key	1274.3	454.7	one character into a line near the middle: find the line, storage splice, re-shape of that line; prediction at most 1,500
+t5.find.300000	instr/line	178.0	50.6	the line's text
+t5.newline.300000	instr/op	848.9	280.0	split a line and join it back, re-shaping both halves; prediction at most 3,000 for the split
+g1.glyphs	count	53839.000		46299 with ink, 3,000 code lines at 24 px
+g1.bytes_per_glyph.placed	bytes	10.319		12 per inked glyph, plus the shaped lanes kept for hit testing
+g1.bytes_per_glyph.shaped	bytes	6.000		the memo's lanes; nothing per mount
+g1.place	instr/glyph	31.9	6.2	producing the placed form (every mount, re-break and size)
+g1.setup.placed	instr/glyph	12.4	2.8	the kernel's per-glyph work before the blit, from 12-byte glyph words
+g1.setup.shaped	instr/glyph	21.2	5.5	the same from the memo's lanes and the strike's slots (a multiply and a table load)
+g1.setup.placed_over_shaped	ratio	0.583		prediction: at most 0.85; under 0.95 keeps the placed form
+g1.paint.placed	instr/glyph	1939.5	330.5	setup and blit into an R8 line target
+g1.paint.shaped	instr/glyph	2308.3	448.9	
+s1.chat.first_paint.shaped.cold	instr	111963.9	38407.8	20 exposed messages (4727 chars): memo, shape, lines at the width, line records over the memo's lanes; prediction at most 100,000
+s1.chat.first_paint.per_char.cold	instr/char	23.686		54 line records
+s1.chat.first_paint.placed.cold	instr	267917.4	60508.2	the same, and every line's glyphs placed into 12-byte words
+s1.chat.sweep.memo.cold	instr	8600732.7	4778976.3	1,980 unexposed messages (431553 chars) measured through the memo (glyph lanes kept); prediction at most 6 M
+s2.ide.first_paint.cold	instr	150953.1	45001.1	130 line records (2486 chars): memo, shape, style lane copied; prediction at most 150,000
+s1.chat.first_paint.shaped.warm	instr	68095.1	18919.0	20 exposed messages (4727 chars): memo, shape, lines at the width, line records over the memo's lanes; prediction at most 100,000
+s1.chat.first_paint.per_char.warm	instr/char	14.406		54 line records
+s1.chat.first_paint.placed.warm	instr	223841.1	42677.7	the same, and every line's glyphs placed into 12-byte words
+s1.chat.sweep.memo.warm	instr	6172408.0	2288360.0	1,980 unexposed messages (431553 chars) measured through the memo (glyph lanes kept); prediction at most 6 M
+s2.ide.first_paint.warm	instr	102142.3	25087.1	130 line records (2486 chars): memo, shape, style lane copied; prediction at most 150,000
+s1.chat.sweep.size_only	instr	4041380.7	1470911.0	the same messages, keeping nothing but (lines, lo, hi): shape into a scratch run, block_bytes over it

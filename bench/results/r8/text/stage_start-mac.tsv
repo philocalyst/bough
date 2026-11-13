@@ -1,0 +1,11 @@
+# host: M3 Pro; dist; commit 69f1c0da75; load average: 27.76, 20.01, 16.74
+# font /Library/Fonts/Nix Fonts/vl9mbzk97wmh1s1yj3766b4zai8msjq6-dejavu-fonts-2.37/share/fonts/truetype/DejaVuSans.ttf; image 26015 bytes; 24 rows + header; REPS=15
+cell	instructions	ns
+image: open the face, shape the frame's lines (memo), numbers by arithmetic	44233	2041
+image: the same, and every glyph's coverage laid into the frame	563547	57083
+no image: read the font file	270361	86458
+no image: shaping tables, file cache warm (SimpleScript::build_cached)	785180	270458
+no image: shaping tables from the font (SimpleScript::build)	20735549	1411417
+no image: construct the shaper (dense tables)	498202	56584
+no image: strike, and rasterise the glyphs the frame uses (cold)	1364967	332833
+no image: shape the frame's lines (table shaper, no memo)	27325	1459

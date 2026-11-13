@@ -279,6 +279,9 @@ pub trait Backend: 'static {
     fn num<A: crate::kinds::NumArch>(&mut self, col: ColRef<'_, A>, u: &U);
     fn label<A: crate::kinds::LabelArch>(&mut self, col: ColRef<'_, A>, u: &U);
     fn outline<A: crate::kinds::OutlineArch>(&mut self, col: ColRef<'_, A>, u: &U);
+    /// A line of shaped text ([`crate::text::Line`]). A backend with no text draws nothing.
+    #[inline(always)]
+    fn line<A: crate::text::LineArch>(&mut self, _col: ColRef<'_, A>, _u: &U) {}
 }
 
 /// A typed view of a column for a pass.

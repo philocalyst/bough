@@ -1,0 +1,22 @@
+# host: ilo-prod (Ryzen 7 3700X), taskset 8-15 nice 19; dist; commit 69f1c0da75; COLD=1; load average: 5.43, 7.21, 7.22
+# rows=3000 reps=32 cold=true window=1280x800 device px, DejaVu Sans 14 px from the prepared face
+scene	phase	steps	instr_p50	instr_p95	cycles_p50	tiles_p50	l1d-misses	cache-misses	branch-misses
+rows	mount	16	72324	73862	91651	0	806	1053	272
+# rows mount: 14 lines shaped, 37 found again, 6356 bytes of glyph state
+rows	idle	32	43	43	1692	0	10	44	0
+rows	hover	32	3603	3604	18583	120	134	346	1
+rows	tint (text colour alone, every line)	32	2015	2015	10420	341	80	192	3
+rows	scroll 3 rows	32	4354	4366	19161	960	127	301	7
+rows	scroll a page (24 rows enter)	32	20476	20482	28895	960	236	369	8
+rows	label edit (toggle a suffix on an exposed row)	32	1532	3580	14478	28	103	322	8
+rows	value edit (an exposed row's number)	32	1148	1149	11596	12	78	223	5
+rows	remove a row then insert one	32	23470	23544	68418	766	1727	641	15
+# rows end: 26 lines shaped, 3097 found again, 8618 bytes of glyph state
+typing	type a character (event, handler, settle)	32	3694	3797	28081	26	132	481	7
+typing	caret move	32	2489	2609	21725	1	119	364	4
+# typing end: 32 lines shaped, 30 found again, 9120 bytes of glyph state
+search	type a character (event, handler, settle)	32	927230	927231	461176	26	4270	1220	2541
+search	caret move	32	2489	2609	23964	1	114	370	6
+search	narrow by a key, widen by a backspace (24 rows re-enter)	32	227253	227253	164663	976	4187	1180	34
+# search re-entry: 1 lines shaped during the phase
+# search end: 33 lines shaped, 494 found again, 9182 bytes of glyph state

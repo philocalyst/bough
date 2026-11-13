@@ -8,6 +8,8 @@ description = "Round 8: a UI as a typed dataflow. Expressions as types with the 
 [dependencies]
 bough-expr = { path = "../bough-expr" }
 bough-lay = { path = "../bough-lay" }
+# Prepared faces, shaped lines as two-word runs, the span kernel (text lane). No dependencies of its own.
+bough-face = { path = "../bough-face" }
 
 [dev-dependencies]
 bough-mem = { path = "../bough-mem" }
@@ -22,5 +24,7 @@ mutant_journal = []
 mutant_moves = []
 # a frame with records in motion damages nothing
 mutant_sweep = []
+# a line of text whose colour reads the block is never found changed (tests/text.rs must fail)
+mutant_line = []
 # reflection takes a list record's ring slot for its row (tests/reflect.rs must fail)
 mutant_reflect = []
