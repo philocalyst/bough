@@ -26,14 +26,11 @@
 //! turn while it moves.
 use crate::expr::U;
 use crate::sink::{Cx, Leaf, Mk, Row};
-use crate::store::{Arch, HitFn, Site, hit_fn};
+use crate::store::{Arch, HitAllFn, HitFn, Site, hit_all_fn, hit_fn};
 use core::any::TypeId;
 use core::marker::PhantomData;
 
-pub const U_FOCUS: usize = 56;
-pub const U_PRESS: usize = 57;
-pub const U_ENV: usize = 58;
-pub const U_PRESS_AT: usize = 59;
+pub use crate::expr::{U_ENV, U_FOCUS, U_PRESS, U_PRESS_AT};
 /// No place.
 pub const NONE: u32 = u32::MAX;
 /// The record bits of a place (the raster's order word).
@@ -247,6 +244,8 @@ pub struct Ons {
     pub caps: u32,
     pub caps_align: u32,
     pub hit: HitFn,
+    /// Every record of the column under a point (the chain under the pointer).
+    pub hit_all: HitAllFn,
     /// Run the handler that hears `e` for the record at `rec` with captures at `caps`; whether one consumed it.
     pub call: unsafe fn(v: *mut (), caps: *const u8, rec: *const u8, e: &Event) -> bool,
     /// The handlers' type, written out by the compiler (reflection's).
@@ -270,6 +269,7 @@ impl<V: 'static, T: Target<V>> OnsOf<V, T> {
         caps: size_of::<T::Caps>() as u32,
         caps_align: align_of::<T::Caps>() as u32,
         hit: hit_fn::<T::Rec>(),
+        hit_all: hit_all_fn::<T::Rec>(),
         call: call::<V, T>,
         ty: core::any::type_name::<T>,
     };
@@ -373,4 +373,17 @@ impl Dispatch {
 #[inline(always)]
 pub fn env_bit(u: &U, bit: u32) -> bool {
     u.w[U_ENV] & bit != 0
+}
+
+/// Two handler faces are the same handlers when they hear the same kinds with the same captures: the same
+/// source handler is a different instantiation in each sink's `view` (see `sink::list_sync`).
+impl PartialEq for Ons {
+    fn eq(&self, o: &Ons) -> bool {
+        self.kinds == o.kinds && self.caps == o.caps
+    }
+}
+impl core::fmt::Debug for Ons {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Ons {{ kinds: {:#x}, caps: {} }}", self.kinds, self.caps)
+    }
 }

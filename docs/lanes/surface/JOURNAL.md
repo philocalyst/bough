@@ -211,3 +211,224 @@ Answers in the new core (F: free, data that exists or a reader derives; N: a new
 A "last turn" record is not needed: a turn's facts persist until the next turn (block, tiles, sweeps, journals,
 the lists' last plans, the pick and focus words), or are derived by a reader holding its previous block, or
 are return values. History is the reader's ring, kept only while it is attached.
+
+## 4. Events, the dataflow run backwards (2026-11-12; `d2dbf6a248` .. `1cf7e5c349`)
+
+Agreed seam first (S1-S3, raster `106fd97a8f` section 8, expr `8af3f228d0` section 9): a pick names a *place*,
+`column << 20 | record` with columns numbered in paint order across the world; pickable is a column property
+from its handler kinds (raster's `Hit<P, I>` and author-chosen ids go away); records with no pointer handler
+are transparent; a pick-only `Area` paint for handler elements with no ink; core words 56..59 (`Focus`,
+`Press`, `Env`, `PressAt`); reduced motion is `Time` run 2^30 ahead of the clock for one-shot transitions plus
+the `Env` bit as an operand of loop leaves (raster's correction); `Code::Id` / `Cx::id` for a record's own place
+(raster's patch to bough-expr, pending).
+
+What an author writes (unchanged from the façade, on any record; the element layer will attach the same calls
+to an element's first record):
+
+```rust
+s.list(&List { .., edits: &self.items.journal }, |r| (
+    Fill(((theme, un::<Sel>()), un::<Hot>(), rec(r as u32)).map(row_fill))
+        .on_click(move |s: &mut Inbox| s.select(r))          // captures its row
+        .on_hover(move |s: &mut Inbox, e: &Ev| s.hover(r, e.on))
+        .focusable(),
+    Label(*self.items.get(r), ink),
+));
+Fill(white).on_text(|s: &mut Inbox, t: &str| s.type_text(t)).on_key(|s: &mut Inbox, e: &Ev| s.field_key(e))
+Fill(grey).on_drag(|s: &mut Inbox, e: &Ev| s.split = e.dx)
+```
+
+What the author did not write: ids, hit regions, registration, a dispatch tree, bubbling setup, a focus ring's
+bookkeeping, tab order, a scroll handler (a wheel over a space whose origin reads a word writes that word, within
+its lists' extent), keyboard activation (Enter/Space click the focused record), pointer capture for drags, or
+anything to keep handlers right when a list's ring reuses a slot (captures are written with the row).
+
+How it works: a record with handlers is `On<T, H>` (nested for several); its column, discovered from that type,
+holds one `&'static Ons` (kinds, hit kernel, a single trampoline, the captures' size); captures live in a CPU
+lane beside the column. An event: the pick (raster's word, or the CPU chain on a CPU frame) gives a place, the
+place gives the column, the column's `Ons::call` runs the handler for the event's kind with `&mut V`. Click
+bubbles from the pressed record to the nearest click handler under the pointer; keys go to the focused record,
+then to records with key handlers it lies inside. Focus is kept as (store, site, row) so it survives its row
+leaving exposure: `Focus` holds the place while the row is exposed and `NONE` otherwise, rewritten after every
+pass. Every entry point returns a `Dispatch` (the "which handler ran" fact for any reader, free when dropped).
+
+Found on the way, fixed on this branch for expr to review: a closure written inside `view<S>` is a different
+type in each sink's instantiation of `view`, so a list row holding a closure (any handler, or a `.map` with a
+closure) failed "a list's row type changed" at the first turn (mount uses `Write`, turns use `Patch`). A list's
+rows are now checked by their call site (the sink methods are `#[track_caller]`), leaf count and size.
+
+Tests (`tests/events.rs`, 11): hover through the pick, labels transparent; click, press-and-release elsewhere,
+`Press`/`PressAt`; captures follow the ring past its capacity and across an insert; keys and text to the focused
+field, Backspace, a key typed into the field not reaching the window; Tab order (window, rows in row order, the
+field); focus survives scrolling away and back; drag capture; reduced-motion clock; the wheel; Enter/Space
+activation; 300 random events with retained == full redraw == immediate paint after each.
+
+Cost (`sheet_x`, 10,000 rows, `dist`, M3 Pro, load 14, against `feb3214293`): hover 7,083 -> 7,809 instructions,
+pointer between headers 8,294 -> 9,246, pointer on the same record 665 -> 717, exposed edit 1,605 -> 1,627, scroll
+three rows 5,387 -> 5,373; idle, theme and select unchanged. About 2 µs per hover against the 50 µs target of
+Amendment 5. `__text` +5.9 KB.
+
+## 5. Accessibility as a projection (2026-11-12; `crates/bough-ax`, `a8e6dcc8c5`)
+
+Predictions written before the tests ran: (A1) an app that does not use it pays nothing (it is a crate of its
+own, generic over the view; nothing in the core calls it); (A2) the tree kept by applying deltas equals a fresh
+projection after every step of a random script, and two mutants fail that; (A3) a theme, a hover and the frames
+of a motion project nothing; (A4) the 100,000-row sheet publishes under 2,000 nodes and reports 100,000 rows;
+any row on demand with nothing materialised; (A5) an edit changes at most three nodes. All held (tests below);
+A1 holds by construction (not linked), the core additions it needed are reflection's (section 2) and two world
+methods (`activate`, `scroll_into_view`).
+
+What is decided here, as the brief asked:
+* **100,000 rows not materialised**: a list node says its row count; it publishes the exposed window and one page
+  on each side (a screen reader's next and previous rows are there before it asks); any other row is described
+  on demand from the view's row function (`Ax::rows`), with nothing materialised and nothing scrolled; the view
+  scrolls only on an explicit action (`World::scroll_into_view`, the scroll word written, the next settle exposes
+  the row). Focus may sit on a row that scrolled away: the core keeps it as (store, site, row).
+* **In motion**: the projection evaluates everything under the settled block (the clock run 2^30 ahead, what
+  reduced motion shows), so it reports where things will rest, and frames cost it nothing: it only runs after
+  turns, and its "nothing changed" test ignores `Time` and the pointer words. Reduced motion itself is the core's
+  (`Env` bit: `Time` runs ahead; loops read the bit, raster's leaf).
+* **No annotation**: roles from handlers (click: button named by the text inside it; text: input whose value is
+  the text inside it; drag: splitter; focusable: group), lists of items or grids (rows of several texts) with
+  column headers found by alignment, selection from an operand that compares a block word with the record's own
+  constant (`x_eq(U(w), Rec)` in its code) or from a selection outline at rest on the record, focus from the
+  core's `Focus`, polite live regions for texts that read application words, announcements for rows appended.
+* **Deltas by comparison**, from the same change detection as the pixels: if the words the tree read, every
+  list's (window, count, relation version) and the focus are unchanged, nothing is done; otherwise the published
+  set is projected again and compared node by node.
+
+Not done: platform adapters (macOS AX, AT-SPI); text selection and editing semantics (the text lane's seam: the
+model has a value, not a selection); selection read from an opaque Rust closure (it needs the typed `eq` form,
+which the façade's `sig!(..).eq(..)` is); a node's bounds for a record in a list that moves (detached rows are
+described without their paint offset).
+
+## 6. The event path's cost (2026-11-12; `examples/events_x.rs`, `dadb85a941`)
+
+`bench/results/r8/surface/events_x-mac.tsv`; M3 Pro, `dist`, load 28. A step is the entry point and the settle
+after it; dispatch is the entry point alone; instructions are the same at 100, 10,000 and 1,000,000 rows.
+
+| step | dispatch | with settle | cycles warm | cycles after a 64 MiB sweep |
+|---|---:|---:|---:|---:|
+| pointer onto another row (leave, enter) | 1,772 | 2,614 | 483 | 21,148 |
+| pointer within the same row | 948 | 994 | 195 to 424 | 12,063 |
+| click on a row (selection word) | 3,992 | 4,884 | 908 | 26,982 |
+| key, nothing focused | 96 | 301 | 62 | 7,587 |
+| text into the focused field (a relation of one row) | 1,014 | 1,756 | 348 | 19,171 |
+
+Warm, every step is under 0.3 µs; cold (every line it touches from memory) under 10 µs on this loaded host.
+The click was 5,647 instructions before one walk under the pointer was made to serve press, focus, pick and
+hover (four walks became two). The cold column is an upper bound; the line count itself wants Intel's LLC
+events (mothership), not run.
+
+## 7. The event path allocates nothing; where hover's added instructions were (2026-11-12; `83518dac4f`)
+
+The e2e lane measured hover at 0.08 ms input-to-commit and suspected per-event `Vec`s. Counted with a counting
+global allocator in `events_x`: at `dadb85a941` a pointer onto another row made 4 allocations and a click 4
+(the chain's buffer not given back, the hovered set collected and cloned, the pointer subset collected). Now: a
+pool of scratch buffers reserved when the world is made, the hovered set swapped rather than rebuilt,
+focusables sorted in place: **0 allocations per event** for every step at every size.
+
+The lead's question, hover on `sheet_x` 6,909 before events -> 7,594 at `947fff87e4` (+685): measured by
+removing each part in turn, about 430 was the pointer path visiting every column of every store and mapping
+each hit to a place by a path walk and a search of the column table, and about 430 the allocations; the handler
+lane costs nothing for a handler that captures nothing (the sheet's: no lane, a dangling aligned pointer). Now
+the world lists the columns that have handlers when it builds its column table, the pointer path visits only
+those, and a place is the table index: **a column with no handler costs the pointer path nothing.** Hover
+7,594 -> 7,166 (handler columns only) -> 6,739 (no allocation) -> 6,826 with the review's fixes below (pointer
+words, slot identity), against 6,909 before events.
+
+| step (`events_x`, dist, Mac, 0 allocations) | dispatch | with settle |
+|---|---:|---:|
+| pointer onto another row | 1,270 | 2,113 |
+| pointer within the same row | 954 | 1,000 |
+| click a row | 3,397 | 4,288 |
+| key, nothing focused | 120 | 324 |
+| text into the focused field | 233 | 1,023 |
+
+(`bench/results/r8/surface/events_x-mac-review.tsv`, `6da394e194`, load 19 to 34; the same at 100, 10,000 and
+1,000,000 rows. The click grew from 2,663 at `83518dac4f` by the press's identity check, below.) Cold line
+counts on mothership (Intel LLC events, the threads lane's `hot.sh`): **not run**; parked (open, small).
+
+## 8. The independent review (Amendment 7): what was closed, what stands
+
+Review: `bough/runtime/lanes/independent-review/recent-20261112/REPORT.md`. The surface lane's area is Batch 10
+(S01-S05) and Batch 2's C08, C09; C01 (events part), C03, C05 and C06 are in the event code this lane wrote and
+were closed too. Probes as tests: `crates/bough-x/tests/review.rs` (the review's own scenes from
+`repro/core_regressions.rs` that fall in this area, plus two for S01) and two tests in
+`crates/bough-ax/tests/ax.rs` (S02, S03). All pass at `6da394e194`.
+
+Closed:
+* **C01 Critical, events part.** `World::mount` records the view's `TypeId`; every handler call asserts it
+  before any pointer is cast (admission, once per call). `world_rejects_different_view_type` panics there.
+  The rest of C01 (public mutable `World.root`, `Store::paint<B>` with any backend) is the expr lane's.
+* **C03 High.** The chain and the pick test a record's rect moved by its paint offset (`hit_all`).
+* **C05 High.** `Rel::insert`/`remove` journal `Insert`/`Remove`; a list pass keeps its inserts and removes;
+  the focused row follows its item and is dropped when its item is removed; a press remembers what its place
+  showed, and a release over a place that now shows another row does not click.
+* **C06 Medium.** `World::pointer` moves `PtrX`/`PtrY` in the same operation.
+* **C09 Medium.** Section 7.
+* **S01 Critical.** A `Reflect` keeps the store tree it was learned from; `current()` checks the tree, every
+  count and every learned column's record `TypeId` (expr's `RawCol.arch`); `items`/`each` refuse anything else.
+  A record whose type is another instantiation (a closure inside `view`) is refused at learning, never read as
+  another type; its readers come back when the element layer makes closures once, outside `view`.
+* **S02 High, in part.** A comparison of a core word (pick, focus, press, environment) with a record's constant
+  is no longer a selection.
+* **S03 High.** Every pass counts records stored again, rects moved and lists moved; `World::revision()`
+  accumulates it; the accessibility update compares it, so a fixed plain-state text re-described reaches the
+  tree.
+* **S04 Performance.** The accessibility update's "nothing moved" test is five compares (revision, store shape,
+  focus, block words read) with no walk and no allocation; a projection walks the stores once and finds places
+  from one table.
+
+Stands, with what would close it:
+* **S02, the rest.** Inference stays a default: a comparison of an *application* word is still read as a
+  selection (a theme index compared with a record would be one), every text that reads application state is a
+  polite live region (a ticker would chatter), click-only cannot tell a button from a tab, link or checkbox, and
+  column headers are found by alignment. Closing it needs typed semantic components beside the inferred ones
+  (role, label, selected, expanded, disabled, live policy, labelled-by) in the element layer's descriptor, which
+  is a feature, so it is not started in the wind-down.
+* **S05 High.** Accessibility node ids and the platform side are positional and partial: a node id is (store,
+  row, position), so an insert before a node an assistive technology holds retargets it. The core's focus now
+  follows items (C05), but node ids need item identity: a key (or key and generation) per relation row, which
+  `Rel` does not have. No native adapter exists (NSAccessibility first, by the lead's provisional answer).
+* **C08 Medium.** Bubbling is by geometry (records under the point; key handlers containing the focused
+  record), because rows are flat and carry no lexical nesting. The element layer's parent position per site
+  (promised by expr) closes it: bubble along parents, keep geometry for the pick only. Tab is taken before any
+  handler, so an editor cannot receive it; that needs a key handler that can decline (a `Flow` return), and
+  key-up, repeat, function keys and cancellation are not in the API.
+* **Hover on a reused slot.** A hovered place that now shows another row is dropped from the hovered set without
+  its leave (its captures were overwritten with the new row's). Delivering the leave in the pass that releases
+  the slot would close it.
+
+Notes the lead asked for: what an author loses with a closure instead of a typed comparison
+(`.map(|s| if s == key { HI } else { LO })` against `sig!(x).eq(key).select(HI, LO)`): the accessibility
+projection cannot read a selected state from it; the raster cannot shade it (it is Turn stage, evaluated on the
+CPU into a record word); reflection refuses the record until the element layer creates closures outside `view`.
+
+## 9. The text editing seam (with the text lane's `TEXT-SEAM.md` part C), as agreed so far
+
+Not built; parked with this note. Everything is pulled by the accessibility projection at update time, nothing
+pushed: the projection already compares the words it read, so a caret or selection that lives in block words
+(the text lane's `CaretX`, and selection as two more words) makes a projection when it moves and an unchanged
+one costs nothing. What the projection needs from text: a line or text paint whose `Arch::val` gives the
+string (today `Val::Text` holds 12 bytes inline: it needs a handle variant into the text lane's memo), the
+field's selection named by a typed component on the field (not guessed from expressions), the composition
+range likewise, and the two geometry queries (`bounds_for_range`, `character_index_for_point`) called on demand
+from the line records. Assistive-technology edits (set value, set selection, insert at a range) go through
+`World::text` and a selection event kind that does not exist yet.
+
+## 10. Where the lane ends (2026-11-12)
+
+On `r8/surface` at the final commit (on top of r8/expr `a2a2687662`): reflection in the core (`reflect.rs`);
+events (`event.rs`, the event half of `world.rs`); the accessibility projection (`crates/bough-ax`); the probes
+and gates listed above; `events_x` (the event path's cost). Taken by expr into r8/expr at `054b83c929`:
+reflection and events up to `d2dbf6a248`; the rest is on this branch.
+
+What I would do next: the macOS NSAccessibility adapter on the portable model, with lazy children (the reason
+it comes before AccessKit); item keys in relations, so node ids, focus and presses name items; typed semantic
+components with the element layer; parent positions for bubbling; cold line counts on mothership; the text
+seam above.
+
+What I would not do again: plan an inspector UI before reflection existed in the core (section 1 was
+superseded within hours); trust a Rust type as the identity of rows described by a generic `view` (closures
+made it false); use a process-wide counter as a per-world condition (it made clicks fail under parallel tests
+and accessibility re-project for other worlds' edits); let an event path allocate "for now".

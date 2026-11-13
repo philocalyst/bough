@@ -99,6 +99,9 @@ impl View for Inbox {
     fn block(&self) -> &U {
         &self.u
     }
+    fn block_mut(&mut self) -> Option<&mut U> {
+        Some(&mut self.u)
+    }
     fn view<S: Sink<Self>>(&self, s: &mut S) {
         let theme = un::<Theme>();
         s.row(|| {
@@ -355,4 +358,71 @@ fn pixels_after_events_match_every_oracle() {
         v.view(&mut Immediate::new(&mut now, &w.shown));
         assert!(full.px == now.px, "step {step}: stores != immediate");
     }
+}
+
+#[test]
+fn the_wheel_scrolls_the_space_under_it() {
+    let (mut v, mut w) = mounted(1_000);
+    let (x, y) = row_pt(&v, 1);
+    let d = w.wheel(&mut v, x, y, 0.0, 3.0);
+    assert!(d.consumed);
+    assert_eq!(v.u.get::<Scroll>(), 3 * ROW_H, "three lines, a row each");
+    w.settle(&v);
+    // the end of the list: clamped to the extent
+    w.wheel(&mut v, x, y, 0.0, 1.0e6);
+    assert_eq!(v.u.get::<Scroll>(), 1_000 * ROW_H - (H - TOP));
+    w.wheel(&mut v, x, y, 0.0, -1.0e6);
+    assert_eq!(v.u.get::<Scroll>(), 0);
+    // outside the body: nothing scrolls
+    let d = w.wheel(&mut v, 50, 50, 0.0, 3.0);
+    assert!(!d.consumed);
+    assert_eq!(v.u.get::<Scroll>(), 0);
+}
+
+#[test]
+fn enter_activates_the_focused_record() {
+    let (mut v, mut w) = mounted(10);
+    w.key_down(&mut v, Key::Tab, Mods::default()); // the window
+    w.key_down(&mut v, Key::Tab, Mods::default()); // row 0
+    w.key_down(&mut v, Key::Tab, Mods::default()); // row 1
+    let d = w.key_down(&mut v, Key::Enter, Mods::default());
+    assert_eq!((d.kind, d.consumed), (kind::CLICK, true));
+    assert_eq!(v.log.last().unwrap(), "select 1");
+    let d = w.key_down(&mut v, Key::Char(' '), Mods::default());
+    assert_eq!(d.kind, kind::CLICK);
+}
+
+/// Two records of one column that overlap (one archetype and one handler type at two positions of a row): the
+/// chain under the pointer holds both, so hover enters both and a click reaches the upper one.
+struct Nest {
+    u: U,
+    log: Vec<String>,
+}
+impl View for Nest {
+    fn block(&self) -> &U {
+        &self.u
+    }
+    fn view<S: Sink<Self>>(&self, s: &mut S) {
+        s.row(|| {
+            (
+                [Rect::new(0, 0, 400, 200), Rect::new(100, 50, 100, 50)],
+                std::array::from_fn::<_, 2, _>(|i| Fill(Kc::<0xffcccccc>).on_hover(move |s: &mut Nest, e: &Ev| s.log.push(format!("hover {i} {}", e.on))).on_click(move |s: &mut Nest| s.log.push(format!("click {i}")))),
+            )
+        });
+    }
+}
+#[test]
+fn overlapping_records_of_one_column() {
+    let mut v = Nest { u: U::default(), log: Vec::new() };
+    let mut w = World::<Soft>::new(W, H, 1);
+    w.mount(&v);
+    assert_eq!(w.root.cols.len(), 1, "one column for both");
+    w.pointer(&mut v, 120, 60);
+    assert_eq!(v.log, ["hover 1 true", "hover 0 true"], "both entered, the upper first");
+    v.log.clear();
+    w.click(&mut v, 120, 60);
+    assert_eq!(v.log, ["click 1"]);
+    v.log.clear();
+    w.pointer(&mut v, 20, 20);
+    assert_eq!(v.log, ["hover 1 false"], "left the inner, still on the outer");
 }

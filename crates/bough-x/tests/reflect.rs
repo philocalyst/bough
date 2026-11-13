@@ -180,3 +180,17 @@ fn thin_inspector() {
         assert_eq!(&it.ops().map(|o| o.val).collect::<Vec<_>>(), vals, "a record that does not read the theme kept its values");
     }
 }
+
+#[test]
+fn a_moving_record_says_where_its_paint_puts_it() {
+    let (mut sheet, mut world) = mounted(100);
+    sheet.select(3 * COLS as u32 + 2, world.now());
+    world.settle(&sheet);
+    world.tick(1_000); // the glide is over
+    let r = Reflect::learn(&world.root, &sheet);
+    let u = world.shown;
+    let o = r.items(&world.root, &u).into_iter().find(|i| i.kind() == "outline").unwrap();
+    let s = o.snap();
+    assert_eq!(s.off, (2 * CELL_W, 3 * CELL_H), "the offset of cell (3, C) from cell (0, A)");
+    assert_eq!(o.screen, s.rect.shift((0, BODY.y0)).shift(s.off));
+}

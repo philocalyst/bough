@@ -338,6 +338,12 @@ pub type Hov = &'static crate::event::Ons;
 pub const fn hit_fn<A: Arch>() -> HitFn {
     hit_col::<A>
 }
+/// Every record of a column under a point, in paint order (pushed as record indices).
+pub type HitAllFn = unsafe fn(&RawCol, &StoreView, &U, i32, i32, &mut Vec<u32>);
+#[inline(always)]
+pub const fn hit_all_fn<A: Arch>() -> HitAllFn {
+    hit_all_col::<A>
+}
 
 /// A column as the path from a block write to its pages sees it: one line, in a table of all the columns of a
 /// world in paint order. Everything a delta kernel needs is here or one load from here (the space), so the
@@ -609,6 +615,13 @@ pub struct Store {
     pub rows: Vec<(TypeId, u32)>,
     /// A list's rows: where they are described, how many records a row has, a row's size (`sink::list_sync`).
     pub src: Option<RowSrc>,
+    /// A list's row count as of its last pass (its extent is `geo.1 + n * geo.2`).
+    pub n: u32,
+    /// A list's inserts and removes replayed by its last pass (from version `moved_from`), oldest first, and
+    /// whether that is all of them.
+    pub moved: Vec<crate::sink::Edit>,
+    pub moved_from: u32,
+    pub moved_ok: bool,
     /// A list's layout: the rects of one row relative to the row, and where and how tall rows are.
     pub tmpl: Vec<Rect>,
     /// Where the slice `tmpl` was copied from was: an identity check before a content compare.
@@ -623,17 +636,19 @@ pub struct Store {
     /// where a row is before its own layout is asked), and the width, x and y it was laid out for.
     pub row0: Vec<Rect>,
     pub lay: (i32, i32, i32),
-    /// A list's one followed row (the focused one): its index, kept through the relation's inserts and removes
-    /// by the list pass. `u32::MAX`: none; `u32::MAX - 1`: it was removed or lost.
-    pub track: u32,
 }
 
 static COL_ID: AtomicU32 = AtomicU32::new(1);
+/// How many columns the process has created: a table of columns built at `n` is current while this is `n`.
+#[inline(always)]
+pub fn columns_made() -> u32 {
+    COL_ID.load(Ordering::Relaxed)
+}
 
 impl Store {
     pub fn new(cap: u32, space: Space) -> Store {
         assert!(cap == 1 || (cap >= 64 && cap.is_power_of_two()));
-        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), src: None, tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false, row0: Vec::new(), lay: (0, 0, 0), track: u32::MAX }
+        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), src: None, n: 0, moved: Vec::new(), moved_from: 0, moved_ok: true, tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false, row0: Vec::new(), lay: (0, 0, 0) }
     }
     #[inline(always)]
     pub fn view(&self) -> StoreView<'_> {
@@ -1088,6 +1103,31 @@ unsafe fn hit_col<A: Arch>(col: &RawCol, sv: &StoreView, u: &U, x: i32, y: i32) 
         }
     }
     best
+}
+
+/// Every live record of the column whose rect (moved by its paint, if it moves) holds (x, y), in index order,
+/// which is the column's paint order. Records of one column may overlap (sites of one archetype nested in a
+/// row): all of them are found, so a click bubbles through them as through any others.
+unsafe fn hit_all_col<A: Arch>(col: &RawCol, sv: &StoreView, u: &U, x: i32, y: i32, out: &mut Vec<u32>) {
+    if x < sv.space.clip.x0 || x >= sv.space.clip.x1 || y < sv.space.clip.y0 || y >= sv.space.clip.y1 {
+        return;
+    }
+    // SAFETY: the caller instantiated this for the column's archetype.
+    let pages = unsafe { col.all::<A>() };
+    let org = sv.space.origin(u);
+    let (x, y) = (x - org.0, y - org.1);
+    for (pi, pg) in pages.iter().enumerate() {
+        let mut l = sv.live.page(pi);
+        while l != 0 {
+            let i = l.trailing_zeros() as usize;
+            l &= l - 1;
+            let (dx, dy) = if A::MOVES { pg.rec[i].offset(u) } else { (0, 0) };
+            let (px, py) = (x - dx, y - dy);
+            if (px >= pg.x0[i]) & (px < pg.x1[i]) & (py >= pg.y0[i]) & (py < pg.y1[i]) {
+                out.push(pi as u32 * 64 + i as u32);
+            }
+        }
+    }
 }
 
 unsafe fn paint_col<A: Arch, B: Backend>(col: &RawCol, sv: &StoreView, u: &U, b: *mut ()) {

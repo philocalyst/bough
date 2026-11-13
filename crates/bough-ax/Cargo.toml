@@ -1,0 +1,16 @@
+[package]
+name = "bough-ax"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Round 8: accessibility as one more projection of the stores and the view. Pull only (nothing exists until an assistive technology asks), deltas by comparison, rows nobody materialised described on demand, settled geometry in motion. A portable model first; platform adapters later"
+
+[dependencies]
+bough-x = { path = "../bough-x" }
+
+[features]
+# Mutants the gate (tests/ax.rs, deltas_equal_a_fresh_projection) must fail with:
+# the "nothing changed" test forgets the content's words (an edit is missed)
+mutant_fast = []
+# an update forgets the nodes that went away
+mutant_removed = []
