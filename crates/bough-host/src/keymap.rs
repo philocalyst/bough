@@ -181,10 +181,8 @@ fn sym(name: &str) -> Option<Sym> {
         return u32::from_str_radix(h, 16).ok().and_then(char::from_u32).map(Sym::Char);
     }
     if let Some(h) = name.strip_prefix("0x") {
-        let v = u32::from_str_radix(h, 16).ok()?;
-        // Unicode keysyms are 0x01000000 + code point; Latin-1 keysyms are their code points
-        let cp = if v >= 0x0100_0000 { v - 0x0100_0000 } else if (0x20..0x100).contains(&v) { v } else { return None };
-        return char::from_u32(cp).map(Sym::Char);
+        // a keymap may be serialised with keysyms as numbers (fakeland's is)
+        return keysym(u32::from_str_radix(h, 16).ok()?);
     }
     Some(match name {
         "BackSpace" => Sym::Backspace,
@@ -263,6 +261,30 @@ fn sym(name: &str) -> Option<Sym> {
     })
 }
 
+/// A keysym by number.
+fn keysym(v: u32) -> Option<Sym> {
+    Some(match v {
+        0xff08 => Sym::Backspace,
+        0xff09 | 0xfe20 => Sym::Tab,
+        0xff0d | 0xff8d => Sym::Enter,
+        0xff1b => Sym::Escape,
+        0xffff => Sym::Delete,
+        0xff50 => Sym::Home,
+        0xff51 => Sym::Left,
+        0xff52 => Sym::Up,
+        0xff53 => Sym::Right,
+        0xff54 => Sym::Down,
+        0xff55 => Sym::PageUp,
+        0xff56 => Sym::PageDown,
+        0xff57 => Sym::End,
+        0xffbe..=0xffe0 => Sym::F((v - 0xffbe + 1) as u8),
+        // Latin-1 keysyms are their code points; Unicode keysyms are 0x01000000 + the code point
+        0x20..=0x7e | 0xa0..=0xff => Sym::Char(char::from_u32(v)?),
+        0x0100_0000..=0x0110_ffff => Sym::Char(char::from_u32(v - 0x0100_0000)?),
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +302,10 @@ xkb_keycodes "(unnamed)" {
 	<LFSH>               = 50;
 	<AB10>               = 61;
 	<KP7>                = 79;
+	<FK03> = 69;
+	<TAB> = 23;
+	<AB01> = 52;
+	<DELE> = 119;
 	alias <LatQ>         = <AD01>;
 	indicator 1 = "Caps Lock";
 };
@@ -312,6 +338,13 @@ xkb_symbols "(unnamed)" {
 	key <LFSH>               {	[         Shift_L ] };
 	key <AB10>               {	[           slash,        question ] };
 	key <KP7>                {	[         KP_Home,            KP_7 ] };
+	key <FK03> {
+		type= "CTRL+ALT",
+		symbols[1]= [ 0xffc0, 0xffc0, 0xffc0, 0xffc0, 0x1008fe03 ]
+	};
+	key <TAB> {	[ 0xff09, 0xfe20 ] };
+	key <AB01> {	[ 0x7a, 0x5a ] };
+	key <DELE> {	[ 0xffff ] };
 	modifier_map Shift { <LFSH> };
 };
 };
@@ -334,5 +367,11 @@ xkb_symbols "(unnamed)" {
         assert_eq!(k.sym(50, false, false), None, "a modifier key types nothing");
         assert_eq!(k.sym(79, false, false), None, "the keypad's levels are not read");
         assert_eq!(k.sym(999, false, false), None);
+        // keysyms written as numbers, and a group index written `[1]`
+        assert_eq!(k.sym(69, false, false), Some(Sym::F(3)));
+        assert_eq!(k.sym(23, false, false), Some(Sym::Tab));
+        assert_eq!(k.sym(52, true, false), Some(Sym::Char('Z')));
+        assert_eq!(k.sym(52, false, true), Some(Sym::Char('Z')));
+        assert_eq!(k.sym(119, false, false), Some(Sym::Delete));
     }
 }

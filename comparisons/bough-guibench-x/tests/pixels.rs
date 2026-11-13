@@ -331,3 +331,36 @@ fn filter_equals_the_definition() {
         assert_eq!(s.shown.items(), &want[..], "query {q:?}");
     }
 }
+
+/// Keys reach the handlers the harness's probes rely on: function keys the table, text and Backspace the field.
+#[test]
+fn keys_do_what_the_probes_expect() {
+    let mut s = Scene::new(table::Table::new(1000, None));
+    s.resize(1280, 800, 1);
+    s.input(&key(Sym::F(3), false));
+    assert_eq!(s.v.rows.len(), 999, "F3 removes a row");
+    s.input(&key(Sym::F(4), false));
+    assert_eq!(s.v.rows.len(), 1000, "F4 inserts one");
+    s.input(&key(Sym::F(8), false));
+    assert_eq!(s.v.rows.len(), 0, "F8 clears");
+    let mut c = Scene::new(table::Coarse::new(1000, None));
+    c.resize(1280, 800, 1);
+    c.input(&key(Sym::F(6), false));
+    assert_eq!(c.v.0.rows.len(), 2000, "F6 appends, coarse");
+    c.input(&Event::Button { x: 640.0, y: 40.0 + 4.0 * 32.0 + 16.0, button: 0, pressed: true });
+    c.input(&Event::Button { x: 640.0, y: 40.0 + 4.0 * 32.0 + 16.0, button: 0, pressed: false });
+    assert_eq!(c.v.0.selected(), Some(4), "a click selects row 4");
+    let mut f = Scene::new(search::Search::new(1000, true));
+    f.resize(1280, 800, 1);
+    f.input(&key(Sym::Char('z'), false));
+    assert_eq!((f.v.query.get().as_str(), f.v.shown.len()), ("z", 0), "no label holds a z");
+    f.input(&key(Sym::Backspace, false));
+    assert_eq!((f.v.query.get().as_str(), f.v.shown.len()), ("", 1000));
+    for ch in "red".chars() {
+        f.input(&key(Sym::Char(ch), false));
+    }
+    assert!(f.v.shown.len() > 0 && f.v.shown.len() < 1000);
+    f.input(&key(Sym::Char('a'), true));
+    f.input(&key(Sym::Backspace, false));
+    assert_eq!((f.v.query.get().as_str(), f.v.shown.len()), ("", 1000), "ctrl+a then Backspace clears the field");
+}
