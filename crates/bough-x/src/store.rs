@@ -282,6 +282,8 @@ pub trait Backend: 'static {
     /// A line of shaped text ([`crate::text::Line`]). A backend with no text draws nothing.
     #[inline(always)]
     fn line<A: crate::text::LineArch>(&mut self, _col: ColRef<'_, A>, _u: &U) {}
+    /// A column of records that draw themselves (`draw.rs`): the open end of the set.
+    fn draws<A: crate::draw::Draws>(&mut self, col: ColRef<'_, A>, u: &U);
 }
 
 /// A typed view of a column for a pass.

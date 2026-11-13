@@ -1,0 +1,23 @@
+[package]
+name = "bough-guibench-x"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "gui-bench's app for bough on the round-8 core: bough-x (state to damage), bough-span (CPU spans into wl_shm), bough-glyph (prepared text), bough-host (the Wayland wire and the presentation policy)"
+
+[dependencies]
+bough-x = { path = "../../crates/bough-x" }
+bough-expr = { path = "../../crates/bough-expr" }
+bough-span = { path = "../../crates/bough-span" }
+bough-glyph = { path = "../../crates/bough-glyph" }
+bough-host = { path = "../../crates/bough-host" }
+
+[features]
+mutant_straddle = ["bough-span/mutant_straddle"]
+mutant_age = ["bough-host/mutant_age"]
+mutant_superseded = ["bough-host/mutant_superseded"]
+
+[[bin]]
+name = "bough-bench"
+path = "src/main.rs"

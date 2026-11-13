@@ -486,6 +486,9 @@ impl<V: View> App<V> {
             *e = None;
         }
         if let Some(t) = self.target.as_mut() {
+            if let Some(k) = self.kernel.as_mut() {
+                k.forget_targets();
+            }
             t.resize(w as u32, h as u32);
         }
         #[cfg(target_os = "macos")]

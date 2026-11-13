@@ -287,3 +287,44 @@ fn vulkan_rounding_mutant_is_caught() {
     eprintln!("vulkan rounding mutant: caught in {caught} of 4 scenes");
     assert!(caught >= 1, "a Vulkan kernel with a different rounding constant passed the gate");
 }
+
+/// `wrap` (the window's pages as the output buffer): the kernel's words land in the caller's memory, equal to the
+/// definition's; and a target may outlive the executor that made it (an owner drops them in any order).
+#[cfg(target_os = "linux")]
+#[test]
+fn vulkan_writes_wrapped_memory() {
+    let Some(mut gpu) = bough_kernel::vulkan::Gpu::new(bough_kernel::KERNEL_SPIRV) else { return };
+    let atlas_px = scenes::atlas();
+    let img_px = scenes::images();
+    let atlas = Atlas::new(&atlas_px, scenes::ATLAS_W).with_images(&img_px, scenes::IMG_W);
+    let words = STRIDE * FH as usize;
+    let bytes = (words * 4).next_multiple_of(4096);
+    let layout = std::alloc::Layout::from_size_align(bytes, 4096).unwrap();
+    // SAFETY: a non-zero layout; freed below after the target is gone.
+    let mem = unsafe { std::alloc::alloc_zeroed(layout) };
+    assert!(!mem.is_null());
+    // SAFETY: page aligned, `bytes` long, alive until after the target drops.
+    let Some(target) = (unsafe { gpu.wrap(mem, bytes) }) else {
+        eprintln!("vulkan: no host-pointer import on {}; wrap untested", gpu.info.name);
+        unsafe { std::alloc::dealloc(mem, layout) };
+        return;
+    };
+    let (mut bin, mut prog) = (Binner::default(), Prog::default());
+    for seed in 0..3 {
+        let scene = scenes::adversarial(seed, FW, FH, 110);
+        let mut spec = vec![0u32; words];
+        cpu::naive(&scene, FW, FH, &atlas, 0, &mut spec, STRIDE);
+        bin.bin(&scene, FW, FH, STRIDE as u32, &atlas, 0, &Damage::All, true, &mut prog);
+        gpu.upload(&scene, &atlas, &prog);
+        gpu.render_to(prog.tiles(), &target);
+        // SAFETY: the GPU finished (render_to waits); `words` u32s of the allocation.
+        let out = unsafe { std::slice::from_raw_parts(mem as *const u32, words) };
+        if let Some((x, y, a, b)) = first_diff(out, &spec) {
+            panic!("seed {seed}: wrapped pixel ({x},{y}) gpu {a:08x} spec {b:08x}");
+        }
+    }
+    drop(gpu);
+    drop(target);
+    // SAFETY: allocated above with this layout; nothing references it now.
+    unsafe { std::alloc::dealloc(mem, layout) };
+}

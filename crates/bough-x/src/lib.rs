@@ -14,6 +14,7 @@
 #![feature(trusted_random_access, auto_traits, negative_impls)]
 #![allow(internal_features)]
 pub use bough_expr as expr;
+pub mod draw;
 pub mod el;
 pub mod event;
 pub mod kinds;

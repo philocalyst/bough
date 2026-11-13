@@ -351,6 +351,13 @@ impl KernelBackend {
         tiles as u32
     }
 
+    /// The surfaces' memory is about to be released (a resize): drop the GPU's imports of it first (an import
+    /// must not outlive the pages it names, and a new allocation may reuse an address).
+    pub fn forget_targets(&mut self) {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        self.targets.clear();
+    }
+
     /// The scroll copy on the CPU: every pixel p of `rect` (x0, y0, x1, y1) of the target takes the source
     /// surface's pixel at p - (dx, dy). The kernel is translation invariant, so copied pixels equal
     /// re-rastered ones.
