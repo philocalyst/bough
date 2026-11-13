@@ -273,3 +273,24 @@ aimed at the right stage. What the first-commit path here accepts and what it do
 * Whether it is worth building: decide after M1 and M2 (section 5). If `fallocate` or huge pages bring the
   first touch under 0.5 ms the image saves that much of about 2 ms and adds a cache to keep right; if the
   kernel cost stays near 2.6 ms it is the largest thing left in start-up.
+
+## 8. Wind-down (Amendment 7): the review's Batch 8, and what the search cell measures
+
+Independent review `bough/runtime/lanes/independent-review/recent-20261112/REPORT.md`, findings H01 to H08 and
+B10. State of each at `11a6ee519e` and after:
+
+| finding | state | what was done, or what would close it |
+|---|---|---|
+| H01 fractional scale inconsistent | **stands** | `run.rs` sizes buffers and scales pointer coordinates by `scale120 / 120` but calls `App::resize` with the ceiling, so at 125 % layout and glyphs are 2x in a 1.25x buffer. Integer scales (1, 2: what the harness's scale switch uses) are consistent. Closing it: `App::resize(w, h, scale120)`, `Geo` in 120ths, a face image per size actually used (or the real rasteriser), rounding rules for rects. Not done: it needs the layout seam's fractional rules, and no cell exercises it. Until then the host should refuse a fractional preferred scale and stay at the integer above it with a viewport; **not built** |
+| H02 resize leaks `wl_shm` pools | **closed** | a resize that has to start a fresh memfd now sends `wl_shm_pool.destroy` for the old pool (its held buffers stay valid and are destroyed on release); the old mapping and descriptor are dropped at once. Still open and stated: a fresh memfd per resize step while the old front buffer is held (cost: the new buffer's page preparation each step) |
+| H03 keyboard is a hand-built subset | **stands** | by design for this round (nothing `dlopen`ed, static-linkable); listed open in the tally with the alternative: the round-7 host's `xkbcommon-dl` path (`crates/bough-wayland`), or a pure-Rust xkb implementation (kbvm). Missing: groups, AltGr, compose, key repeat; focus loss does not clear a held press |
+| H04 the span raster changed alpha semantics | **closed for what it draws** | colours are 0xAARRGGBB, source-over on an opaque surface: alpha 255 is spans, 0 draws nothing, between is blended per pixel; text and turned boxes scale coverage by the colour's alpha. The app's colours are explicitly opaque (`rgb()`). Not built: a translucent *surface* (ARGB buffers), premultiplied operands |
+| H05 text duplicated (`bough-glyph` beside `bough-face`) | see section 9 |
+| H06 `Line` implicitly `Send`/`Sync` | **closed** | `Line` and `LineRef` carry `PhantomData<*const ()>`; two `compile_fail` doctests hold it |
+| H07 / B10 filtering moved into the app | **closed** | `Search::refilter` is now the spec's scan: every keystroke runs `spec::matches` (which lower-cases both sides, allocating) over every label and rebuilds the result; no prefix stack, no precomputed lower case. The earlier refinement stack is deleted, not kept behind a switch. The cell is now comparable work; it is expected to be slower than section 3's I5 for search and is reported as it is |
+| H08 author API and runner unfinished; resize remounts the world | **half** | the runner: done for all eight scenarios (section 10). The author API: stands until the element layer (the `view` bodies here are core fixtures). Resize: stands; `Scene::resize` makes a new `World`, which loses focus and press identity across a resize (the search field is re-focused by a synthetic press at its centre, which is a workaround, not a fix). Closing it needs `World::resize` in the core (tiles and spaces re-derived, stores kept) |
+
+Also from B10, stated so nobody reads more into the numbers than is there: the app's text is one prepared
+Latin-1 face (anything else is not drawn: the lazy shaper path does not exist); rows are laid out by arithmetic
+in the view, not by a layout engine; the binary-size ratio (1.07 MB against 55.5 MB) compares different
+profiles and feature surfaces and is not a framework size result (B12).
