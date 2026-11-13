@@ -103,6 +103,17 @@ one core, 93 ms on six, and the GPU-resident path is 17 to 19 ms on Metal, again
 Dashboard: three views (unthrottled, fixed 60 Hz, variable refresh), with per-cell validity and extrapolated
 values marked as such. Its source and data are `bench-r8/` in the lead's worktree.
 
+**Final re-run (2026-11-13, from `cc65ee215f`)**: the whole matrix again on `ilo-prod`, once with the 60 Hz latch
+(`GB_TIMING=fixed`) and once unthrottled: 658 cells each, runner exit 0, host load 0.61 to 22.31 (mean 5.7) and 0.10 to
+23.41 (mean 6.0). Binaries: `bough` (the façade, 55,883,088 bytes) and `bough-x` (the new core's app, 1,109,864 bytes).
+`bough` has three cells with errors in the fixed run and two in the unthrottled: search at 60 Hz with 10,000 rows
+("filter: no matching window", "typing: timed out"), rows at 144 Hz with 10,000 ("scroll: no matching window", fixed
+run only) and the coarse table at 60 Hz with 10,000 ("op-clear: no matching window", "churn: the wait timed out"), so the façade still fails on the largest sizes. `bough-x` had no cell errors in either run. Host-noise invalid
+measurements: 16 (`bough`) and 12 (`bough-x`) in the fixed run. floem fails the layout check in 54 of 56 cells,
+vizia in 8, gpui-kit in 3. The heavy scenes were not re-run (the only build on the host was round 7's). The runs are
+published as a static copy of the zortax explorer (the `bench-r8/dashboard/explorer/` snapshots); its controls are
+inactive.
+
 ## 3. What must be true before this is called finished
 
 These are the review's five gates. They come before any new optimisation.

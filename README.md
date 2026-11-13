@@ -1,17 +1,17 @@
-# bough
+# lorlei (formerly bough)
+
+The project is now called lorlei; crates, paths and most documents still say bough. `AGENTS.md` is the entry point for
+contributors: the state, the contribution policy and the whole roadmap.
 
 A from-scratch Rust GUI framework built toward the GPUI-rework design (`designs/reactivity/final`), in the repository
 that preserves the clean-room GPUI rework it continues. **Humans and AI-assisted contributors are invited to take a
 lane** (`docs/LANES.md`). The aim is a framework that keeps bough's measured efficiency while reaching every platform
 and the design's whole surface.
 
-**Status (2026-11-11):**
-
-* bough runs **only on macOS** (Metal, AppKit).
-* It has **no IME, accessibility, clipboard, menus or multi-window**.
-* Its public surface still differs from the design in places.
-* The `api` and `floor` branches were merged into `main` on 2026-11-11; **the merged tree's test suite has not been
-  run** (lane `verification` starts there).
+**Status (2026-11-13):** the façade runs on macOS (Metal, AppKit) and Linux (Wayland, CPU executor); a second,
+typed-dataflow core (`bough-x` and its sibling crates) holds the order-of-magnitude numbers and is not yet what the
+façade runs on. What stands, what was refuted and every open avenue are in `docs/r8/final/REPORT.md`; the roadmap is
+in `AGENTS.md`. The whole-workspace suite on the integration branch passed (209 targets, 401 passed, 0 failed).
 
 Where it is measured, it is efficient. Each of these numbers holds on its own workload, machine and baseline; none is
 a general ranking:
