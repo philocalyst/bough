@@ -75,16 +75,58 @@ pub struct Face {
 }
 
 impl Face {
-    /// Read the header of an image. `const`: an application's face is a `static`, and opening it costs
-    /// nothing at run time.
-    pub const fn new(b: &'static [u8]) -> Face {
-        assert!(b.len() >= LIGS && rd32(b, 0) == MAGIC, "not a face image");
+    /// Admit an image, or say what is wrong with it. Every table is checked here, once, so that nothing read
+    /// later can be out of range: the section sizes against the image's length, every token's row and column
+    /// class against the step table, every slot's coverage (all its rows) against the atlas, every ligature
+    /// entry. `const`: a `static` face is checked when the program is compiled.
+    pub const fn check(b: &'static [u8]) -> Result<Face, &'static str> {
+        if b.len() < LIGS || rd32(b, 0) != MAGIC {
+            return Err("not a face image (or another version of the format)");
+        }
         let (rows, cols, nlig) = (rd16(b, 32) as usize, rd16(b, 34) as usize, rd32(b, 36) as usize);
+        let (cov_len, stride) = (rd32(b, 48) as usize, rd32(b, 52) as usize);
+        if rows == 0 || rows > 256 || cols == 0 || cols > 256 || nlig > 64 {
+            return Err("face image: class or ligature counts out of range");
+        }
         let steps = LIGS + nlig * 8;
         let cov = steps + rows * cols * 2;
-        assert!(cov + rd32(b, 48) as usize == b.len(), "truncated face image");
+        if cov > b.len() || b.len() - cov != cov_len {
+            return Err("face image: truncated, or longer than its tables say");
+        }
         let scale = (rd32(b, 8) as u64) | (rd32(b, 12) as u64) << 32;
-        Face { b, scale, cols, nlig, steps, cov, stride: rd32(b, 52) as usize }
+        if scale == 0 || scale >> 40 != 0 || rd32(b, 16) == 0 || stride == 0 {
+            return Err("face image: zero or absurd scale, units per em or stride");
+        }
+        let mut t = 0;
+        while t < 256 {
+            if b[ROWS + t] as usize >= rows || b[COLS + t] as usize >= cols {
+                return Err("face image: a token's class is outside the step table");
+            }
+            let at = SLOTS + t * 8;
+            let (off, w, h) = (rd32(b, at) as usize, b[at + 6] as usize, b[at + 7] as usize);
+            // every row a slot can be asked for (an empty box of some height included)
+            if h != 0 && (w > stride || off + (h - 1) * stride + w > cov_len) {
+                return Err("face image: a glyph's coverage is outside the atlas");
+            }
+            t += 1;
+        }
+        let mut k = 0;
+        while k < nlig {
+            let at = LIGS + k * 8;
+            if b[at] < 0x20 || b[at] >= 0x7f || b[at + 1] == 0 || b[at + 1] > 4 {
+                return Err("face image: a malformed ligature");
+            }
+            k += 1;
+        }
+        Ok(Face { b, scale, cols, nlig, steps, cov, stride })
+    }
+    /// [`Face::check`] for an image the program trusts (its own `static`): a malformed one is a panic, at
+    /// compile time when the face is a `static`.
+    pub const fn new(b: &'static [u8]) -> Face {
+        match Face::check(b) {
+            Ok(f) => f,
+            Err(e) => panic!("{}", e),
+        }
     }
     /// The size in pixels per em.
     pub const fn size(&self) -> f32 {
@@ -207,6 +249,52 @@ impl Face {
             pen += st as i32;
             if m == 0 {
                 return Some(pen);
+            }
+            (t, n) = (u, m);
+        }
+    }
+    /// Shape `s` so that something is always drawn: what the face covers exactly as [`Face::shape`] does, a
+    /// code point outside it as `?`, and a pair that needs the full shaper with the plain advance of its
+    /// first glyph (no kerning). Returns the advance and whether the result is exact. This is what an
+    /// application shows for text the face refuses until the full shaper's line replaces it: the text stays
+    /// visible and the caret stays on it, at positions that may shift when the exact line lands.
+    #[inline]
+    pub fn shape_lossy(&self, s: &[u8], mut f: impl FnMut(u8, i32, u32)) -> (i32, bool) {
+        let (mut pen, mut i, mut exact) = (0i32, 0usize, true);
+        // the token at `i`, or `?` for one code point the face lacks
+        let tok = |i: usize, exact: &mut bool| match self.token(&s[i..]) {
+            Some(t) => t,
+            None => {
+                *exact = false;
+                let n = match s[i] {
+                    0xf0.. => 4,
+                    0xe0.. => 3,
+                    0xc0.. => 2,
+                    _ => 1,
+                };
+                (b'?', if n < s.len() - i { n } else { s.len() - i })
+            }
+        };
+        if s.is_empty() {
+            return (0, true);
+        }
+        let (mut t, mut n) = tok(0, &mut exact);
+        loop {
+            let at = i;
+            i += n;
+            let (u, m) = if i < s.len() { tok(i, &mut exact) } else { (TOK_PAD, 0) };
+            let mut st = self.step(t, u);
+            if st == REFUSE {
+                exact = false;
+                st = self.step(t, TOK_PAD);
+                if st == REFUSE {
+                    st = 0;
+                }
+            }
+            f(t, pen, at as u32);
+            pen += st as i32;
+            if m == 0 {
+                return (pen, exact);
             }
             (t, n) = (u, m);
         }

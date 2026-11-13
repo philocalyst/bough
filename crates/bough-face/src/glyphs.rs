@@ -37,12 +37,45 @@ pub const fn key(face: u32, s: &[u8]) -> u64 {
     if h == 0 { 1 } else { h }
 }
 
-/// A shaped line: `n` glyphs from `g0` in the lanes, shaped in face `face`. Two words, zero is the empty run.
+/// `a == b` for a key: `a` is an entry's bytes (zero-padded to a word), `b` the text asked for. Whole words, the
+/// last one overlapping: no call.
+///
+/// # Safety
+/// `a` points at `b.len()` readable bytes.
+#[inline(always)]
+unsafe fn same_key(a: *const u8, b: &[u8]) -> bool {
+    let len = b.len();
+    // SAFETY: every load is of 8 bytes inside `[0, len)` when `len >= 8`, and of single bytes inside it
+    // otherwise; `a` is readable for `len` bytes by the caller's contract and `b` is a slice.
+    unsafe {
+        if len >= 8 {
+            let ld = |p: *const u8, i: usize| (p.add(i) as *const u64).read_unaligned();
+            let (mut i, mut d) = (0, 0u64);
+            while i + 8 <= len {
+                d |= ld(a, i) ^ ld(b.as_ptr(), i);
+                i += 8;
+            }
+            d |= ld(a, len - 8) ^ ld(b.as_ptr(), len - 8);
+            d == 0
+        } else {
+            let (mut i, mut d) = (0, 0u8);
+            while i < len {
+                d |= *a.add(i) ^ *b.as_ptr().add(i);
+                i += 1;
+            }
+            d == 0
+        }
+    }
+}
+
+/// A shaped line: `n` glyphs from `g0` in the lanes, shaped in face `face`, made in generation `gen` of the
+/// memo. Two words; zero is the empty run. A run from before a [`Glyphs::clear`] names lanes that no longer
+/// hold it: its generation says so, and [`Glyphs::of`] gives it no glyphs.
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Run {
     pub g0: u32,
-    /// Glyphs in the low 16 bits, the face in the high 16.
+    /// Glyphs in the low 16 bits, the face in the next 8, the generation in the top 8.
     pub n_face: u32,
 }
 impl Run {
@@ -56,7 +89,11 @@ impl Run {
     }
     #[inline(always)]
     pub const fn face(&self) -> usize {
-        (self.n_face >> 16) as usize
+        (self.n_face >> 16 & 0xff) as usize
+    }
+    #[inline(always)]
+    pub const fn generation(&self) -> u8 {
+        (self.n_face >> 24) as u8
     }
 }
 
@@ -79,6 +116,10 @@ pub struct Glyphs {
     /// Texts shaped (misses) and found (hits).
     pub shaped: u64,
     pub found: u64,
+    /// Times the memo was cleared.
+    pub cleared: u64,
+    /// Bumped by [`Glyphs::clear`]: runs carry it.
+    generation: u8,
 }
 
 impl Default for Glyphs {
@@ -89,30 +130,53 @@ impl Default for Glyphs {
 
 impl Glyphs {
     pub fn new() -> Glyphs {
-        Glyphs { table: vec![EMPTY; 64], used: 0, ents: vec![0; 8], slot: Vec::new(), x: Vec::new(), shaped: 0, found: 0 }
+        Glyphs { table: vec![EMPTY; 64], used: 0, ents: vec![0; 8], slot: Vec::new(), x: Vec::new(), shaped: 0, found: 0, cleared: 0, generation: 0 }
     }
     /// The lanes: every run indexes these.
     #[inline(always)]
     pub fn lanes(&self) -> (&[u16], &[i32]) {
         (&self.slot, &self.x)
     }
-    /// A run's glyph slots and pens.
+    /// A run's glyph slots and pens. A run of another generation (made before the last [`Glyphs::clear`])
+    /// has none: it draws nothing rather than someone else's glyphs.
     #[inline(always)]
     pub fn of(&self, r: Run) -> (&[u16], &[i32]) {
         let (a, b) = (r.g0 as usize, r.g0 as usize + r.len());
+        if r.generation() != self.generation || b > self.slot.len() {
+            return (&[], &[]);
+        }
         (&self.slot[a..b], &self.x[a..b])
     }
-    /// Resident bytes.
+    /// Bytes held, capacity included: the table, the entries, the lanes.
     pub fn bytes(&self) -> usize {
-        self.table.len() * 64 + self.ents.len() * 8 + self.slot.len() * 2 + self.x.len() * 4
+        self.table.capacity() * 64 + self.ents.capacity() * 8 + self.slot.capacity() * 2 + self.x.capacity() * 4
     }
-    /// Forget every line, keeping the memory. Runs handed out before are dead: the caller re-describes.
+    /// The generation runs are being made in.
+    pub fn generation(&self) -> u8 {
+        self.generation
+    }
+    pub fn len(&self) -> usize {
+        self.used
+    }
+    pub fn is_empty(&self) -> bool {
+        self.used == 0
+    }
+    /// Forget every line and give the memory back. Runs handed out before are dead (their generation is no
+    /// longer the memo's): every holder describes its text again, which is what the caller of
+    /// [`Glyphs::over`] does next.
     pub fn clear(&mut self) {
-        self.table.fill(EMPTY);
+        self.table.clear();
+        self.table.resize(64, EMPTY);
+        self.table.shrink_to(64);
         self.used = 0;
         self.ents.truncate(8);
+        self.ents.shrink_to(1 << 10);
         self.slot.clear();
+        self.slot.shrink_to(1 << 12);
         self.x.clear();
+        self.x.shrink_to(1 << 12);
+        self.generation = self.generation.wrapping_add(1);
+        self.cleared += 1;
     }
 
     #[inline(always)]
@@ -121,7 +185,8 @@ impl Glyphs {
         let mask = self.table.len() - 1;
         let mut i = h as usize & mask;
         loop {
-            let b = &self.table[i];
+            // SAFETY: `i` is masked to the table's length, a power of two.
+            let b = unsafe { self.table.get_unchecked(i) };
             let mut m = 0u32;
             for k in 0..8 {
                 m |= ((b.tag[k] == tag) as u32) << k;
@@ -129,10 +194,11 @@ impl Glyphs {
             while m != 0 {
                 let off = b.off[m.trailing_zeros() as usize] as usize;
                 m &= m - 1;
-                if self.ents[off] == h && self.ents[off + 1] == head {
-                    let w = &self.ents[off + HDR..off + HDR + text.len().div_ceil(8)];
-                    // SAFETY: `w` holds at least `text.len()` initialised bytes; `u8` has alignment 1.
-                    if unsafe { core::slice::from_raw_parts(w.as_ptr() as *const u8, text.len()) } == text {
+                // SAFETY: an offset in the table is the start of an entry inside `ents` (`enter` and `grow` put
+                // it there), so its header words are in bounds; its key bytes follow the header and are as
+                // long as `head` says, which is compared before they are read.
+                unsafe {
+                    if *self.ents.get_unchecked(off) == h && *self.ents.get_unchecked(off + 1) == head && same_key(self.ents.as_ptr().add(off + HDR) as *const u8, text) {
                         return off;
                     }
                 }
@@ -154,29 +220,54 @@ impl Glyphs {
     /// [`Glyphs::line`] with the key known ([`key`] of a literal is a constant).
     #[inline]
     pub fn line_keyed(&mut self, h: u64, id: u16, face: &Face, text: &str) -> Option<(Run, i32)> {
-        let head = id as u64 | (text.len() as u64) << 32;
-        let off = self.find(h, head, text.as_bytes());
-        if off != 0 {
-            self.found += 1;
-            let (g, w) = (self.ents[off + 2], self.ents[off + 3]);
-            return Some((Run { g0: g as u32, n_face: (g >> 32) as u32 | (id as u32) << 16 }, w as u32 as i32));
-        }
-        self.miss(h, head, id, face, text.as_bytes())
+        self.line_with(h, id, text.as_bytes(), |slot, x| {
+            face.shape(text.as_bytes(), |t, pen, _| {
+                slot.push(t as u16);
+                x.push(pen);
+            })
+        })
     }
-    #[inline(never)]
-    fn miss(&mut self, h: u64, head: u64, id: u16, face: &Face, text: &[u8]) -> Option<(Run, i32)> {
+    /// The line of (`id`, `text`) if it has been shaped: a hit and nothing else.
+    #[inline(always)]
+    pub fn get(&self, h: u64, id: u16, text: &[u8]) -> Option<(Run, i32)> {
+        let off = self.find(h, id as u64 | (text.len() as u64) << 32, text);
+        if off == 0 {
+            return None;
+        }
+        // SAFETY: `find` returns the start of an entry: its four header words are in bounds.
+        let (g, w) = unsafe { (*self.ents.get_unchecked(off + 2), *self.ents.get_unchecked(off + 3)) };
+        Some((Run { g0: g as u32, n_face: (g >> 32) as u32 | (id as u32 & 0xff) << 16 | (self.generation as u32) << 24 }, w as u32 as i32))
+    }
+    /// The line of (`id`, `text`), shaped on a miss by `shape`: any shaper. It appends the line's glyph slots
+    /// and pens to the lanes it is given and returns the advance, or `None` to refuse (what it appended is
+    /// discarded). This is the one memo: the prepared face, the table shaper and the full shaper differ only
+    /// in the closure.
+    #[inline]
+    pub fn line_with(&mut self, h: u64, id: u16, text: &[u8], shape: impl FnOnce(&mut Vec<u16>, &mut Vec<i32>) -> Option<i32>) -> Option<(Run, i32)> {
+        if let Some(hit) = self.get(h, id, text) {
+            self.found += 1;
+            return Some(hit);
+        }
         let g0 = self.slot.len();
-        let (slot, x) = (&mut self.slot, &mut self.x);
-        let Some(width) = face.shape(text, |t, pen, _| {
-            slot.push(t as u16);
-            x.push(pen);
-        }) else {
+        let Some(width) = shape(&mut self.slot, &mut self.x) else {
             self.slot.truncate(g0);
             self.x.truncate(g0);
             return None;
         };
+        assert!(self.slot.len() == self.x.len(), "a shaper appends one pen per glyph slot");
+        Some(self.enter(h, id, text, g0, width))
+    }
+    /// Whether what the memo holds has outgrown `budget` bytes: time to [`Glyphs::clear`] and describe what
+    /// is exposed again. Counts what [`Glyphs::bytes`] counts.
+    #[inline(always)]
+    pub fn over(&self, budget: usize) -> bool {
+        self.bytes() > budget
+    }
+    #[inline(never)]
+    fn enter(&mut self, h: u64, id: u16, text: &[u8], g0: usize, width: i32) -> (Run, i32) {
+        let head = id as u64 | (text.len() as u64) << 32;
         let n = self.slot.len() - g0;
-        assert!(n < 1 << 16 && g0 < u32::MAX as usize, "a line of more than 65,535 glyphs is not a line");
+        assert!(n < 1 << 16 && g0 < u32::MAX as usize && id < 256, "a line of more than 65,535 glyphs, or a face beyond 255");
         let words = HDR + text.len().div_ceil(8);
         // a short entry does not straddle a line
         let at = self.ents.len();
@@ -194,7 +285,7 @@ impl Glyphs {
         Self::put(&mut self.table, h, off as u32);
         self.used += 1;
         self.shaped += 1;
-        Some((Run { g0: g0 as u32, n_face: n as u32 | (id as u32) << 16 }, width))
+        (Run { g0: g0 as u32, n_face: n as u32 | (id as u32 & 0xff) << 16 | (self.generation as u32) << 24 }, width)
     }
     fn put(table: &mut [Bucket], h: u64, off: u32) {
         let mask = table.len() - 1;

@@ -77,10 +77,10 @@ impl Rows {
         let head = [Rect::new(0, 0, W, HEADER), Rect::new(PAD, 0, 80, HEADER), Rect::new(PAD + 80, 0, px("rows \u{b7} sorted"), HEADER)];
         Rows { u, items: Rel::new(items), glyphs: Rc::new(RefCell::new(Glyphs::new())), shape, head }
     }
-    /// A line of text in the one face. Text the face does not cover draws nothing here (it is the full
-    /// shaper's, off the interaction path).
+    /// A line of text in the one face. Text the face does not cover is drawn as its stand-in (uncovered code
+    /// points as `?`) until the full shaper's line exists: it never disappears.
     fn line(&self, s: &str) -> bough_x::text::Run {
-        self.glyphs.borrow_mut().line(0, &FACES[0], s).map_or(Default::default(), |l| l.0)
+        bough_x::text::line_or_stand_in(&mut self.glyphs.borrow_mut(), 0, &FACES[0], s).0
     }
     pub fn hover(&mut self, row: u32) {
         self.u.set::<Hover>(row);

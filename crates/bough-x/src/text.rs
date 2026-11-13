@@ -161,3 +161,40 @@ impl TextCx<'_> {
         bough_face::num::Num::new(v, d as u32, pad as u32).spans(face, &cell, (r.x0, r.y0 + face.baseline(r.y1 - r.y0)), false, [clip.x0, clip.y0, clip.x1, clip.y1], f);
     }
 }
+
+/// Keep the glyph memo bounded: when it holds more than `budget` bytes, forget every line and describe what
+/// is exposed again. Call it after a settle. The exposed records are the only holders of runs, so after the
+/// re-description every run on screen is of the new generation and everything else is gone. The cost is one
+/// re-description and one repaint of every text record's rect (their run words changed, though their pixels
+/// did not). Returns whether it collected.
+pub fn collect<V: crate::sink::View, B: Backend>(world: &mut crate::world::World<B>, v: &V, glyphs: &core::cell::RefCell<Glyphs>, budget: usize) -> bool {
+    if !glyphs.borrow().over(budget) {
+        return false;
+    }
+    glyphs.borrow_mut().clear();
+    world.redescribe(v);
+    true
+}
+
+/// A line of `text` in face `id`, always something: the face's exact line when it covers the text, otherwise
+/// its stand-in ([`Face::shape_lossy`]: uncovered code points as `?`, unkerned where a pair needs the full
+/// shaper), with `false`. What an application shows while the full shaper's line is not there.
+pub fn line_or_stand_in(glyphs: &mut Glyphs, id: u16, face: &Face, text: &str) -> (Run, i32, bool) {
+    if let Some((r, w)) = glyphs.line(id, face, text) {
+        return (r, w, true);
+    }
+    // a different key from the exact line's, so the exact one can replace it when it lands
+    let h = bough_face::key(id as u32 | 1 << 31, text.as_bytes());
+    let (r, w) = glyphs
+        .line_with(h, id, text.as_bytes(), |slot, x| {
+            Some(
+                face.shape_lossy(text.as_bytes(), |t, pen, _| {
+                    slot.push(t as u16);
+                    x.push(pen);
+                })
+                .0,
+            )
+        })
+        .expect("a stand-in is never refused");
+    (r, w, false)
+}

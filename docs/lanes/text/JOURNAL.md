@@ -434,3 +434,76 @@ shaper behind the memo off the interaction path, elements when the expr lane pub
 | P2 | the worker's cost for a first uncovered line (20 to 40 characters: Cyrillic, Greek, Arabic), fonts already loaded in the worker | at most 400,000 instructions and 0.3 ms on ilo-prod for shaping (from section 5's 303 per byte plus fixed costs), plus 27,000 per new glyph rasterised | above 3 ms |
 | P3 | the first uncovered line of a process pays the font machinery once | at most 5 ms on the worker (font context, the face's tables); stated, not hidden | above 50 ms |
 | R1 | if the raster refuses line records on the GPU: a line expanded to one glyph record each at mount | boxes and texels of the expansion equal what `Face::spans` covers, glyph for glyph (a test); cost about 30 instructions per glyph (G1) | any pixel differing between the expansion and the line record on the oracle |
+
+## 11. Third pass: results, the independent review's findings, and what is parked
+
+The round was closed (Amendment 7) while this pass was in flight. What landed, against section 10's
+predictions; Mac M3 Pro, `dist`, load 8 to 38 (instructions are the column to trust), working tree of the
+commit that adds this section.
+
+| id | outcome |
+|---|---|
+| R1 | **Holds.** The raster lane took the fallback for its executors (a line expanded to one `Glyph` record per glyph at mount) and will take the line record on the GPU later. `Face::expand` gives the boxes and texels; `tests/face.rs` holds the expansion to the line's spans at three cuts. For that binding the face's coverage became one byte image at a common stride: **stride 256** (the image is now 31,248 bytes; format magic `BFC2`). The sink-side adapter itself is not built: `bough-x`'s sink gives every row of a list one shared shape, and an expanded line is a list of records each with its own rect; where `Glyph` records are emitted (the raster's scene) is where `expand` is called. |
+| C1 | **Holds.** `bough_x::text::collect` (clear when over a budget, re-describe what is exposed). Over 20,000 keys of ever-new lines under a 24 KiB budget the memo stays under twice the budget and frames checked along the way equal the full redraw (`the_glyph_memo_is_collected_and_frames_stay_exact`). Runs now carry the memo's generation: a run from before a clear draws nothing instead of another line's glyphs. `clear` gives the memory back; `bytes` and `over` count capacity and the table. |
+| C2 | **Cost holds, frequency in between.** One collection on the rows scene: 41,091 instructions, 389 tiles damaged (every text record's rect: the run words change though the pixels do not). Frequency: a never-seen 30-character line costs about 250 bytes, so a 256 KiB budget lasts about 1,000 such keystrokes (predicted 2,000 or more; kill under 500); typing that revisits lines hardly grows the memo at all (3 KiB in 4,000 keys). |
+| C3 | **Folded; the hit got dearer.** One memo, `bough_face::Glyphs`, with the shaper as a closure (`line_with`); `bough_text::stage::memo` and its string image are deleted (the bench keeps break tables beside it). Hit at 16 bytes: 148 hashed, 107 keyed, against 129 and 90 before: 1.15x and 1.19x (predicted within 1.10x; kill above 1.3x). The extra is the richer return (a `Run` with its face and generation, the advance). Miss: 12.7 per byte against 12.1. |
+| P1, P2, P3 | **Not built: parked as a design** (below). |
+
+### The independent review (`bough/runtime/lanes/independent-review/recent-20261112/REPORT.md`, batch 4)
+
+| finding | state |
+|---|---|
+| T01 Critical: document edits could store invalid UTF-8 | **Closed.** `Doc::splice_at` and `Doc::split` refuse, with ordinary asserts, an offset inside a character at either end, and a newline in a splice. The review's two probes and four more are `stage::doc::tests::edits_inside_a_character_are_refused`. The property test's corpus was ASCII, as the review said. |
+| T02 Critical: safe glyph helpers used `get_unchecked` on caller-supplied ids | **Closed.** `line::each_shaped` and `line::place` index the strike's slots checked (an unknown id has no ink); test `unknown_glyph_ids_have_no_ink`. `Glyphs::find`'s unchecked reads are of offsets the memo itself stored; `brk`'s unchecked loops assert their lengths first, as the review noted. |
+| T03: padding repeats the leading digit above ten positions | **Closed.** Positions beyond a `u32`'s ten digits are zeros; decimals are capped at nine and digits drawn at 32. The review's probe is `num::tests::padding_beyond_ten_digits_is_zeros`. |
+| T04 High: glyph identity had no generation or collection | **Closed in its first form**: generations on runs, a collector, memory returned, honest `bytes`. **What stands**: the collector is stop-the-world for text (clear, re-describe, repaint text rects); it is not exposure-aware or pinned, and publishing new lanes with the records that reference them is atomic only because both happen on one thread in one turn. An in-place compaction that rewrites the run words of line columns (a typed walk) would avoid the repaint and is not built. |
+| T05 High: the fast path is a restricted language | **Partly closed.** What an application sees is now exact and stated: `Glyphs::line` refuses text the prepared face does not cover (a code point beyond Latin-1, a control, a pair that needs contextual shaping); `bough_x::text::line_or_stand_in` then draws the face's stand-in (`Face::shape_lossy`: each uncovered code point as `?`, an unkerned advance where a pair is refused) and says the line is not exact. The fixtures use it, so typed text no longer disappears (`refused_text_is_still_drawn`); the caret follows the stand-in's advances. **What stands**: there is no full shaper on the new core, so other scripts are question marks, not text; cluster-aware caret and selection, bidi, composition, fallback fonts and rich spans are not integrated; the memo's key is (face index, text) and does not carry features, language or direction. |
+| T06: streaming and document cliffs | **Stands, as described.** `Flow::set` compares the whole old text (0.52 instructions per byte); `Flow::append` re-shapes from the last space, so one ever-growing unbroken token is O(its length) per append; a `Doc` block bounds lines, not bytes, so one huge line moves all its following bytes per edit, and a block split rebuilds the prefix lanes. What would close it: an append-aware source type instead of the compare; a restart point at the last *shaping-safe* glyph rather than the last space; blocks bounded in bytes with a huge line as its own chunked block. |
+| T07: prepared assets need admission limits | **Closed.** `Face::check` (a `const fn`, so a `static` face is checked at compile time) validates the section sizes, every token's row and column class, every row of every slot's coverage against the atlas, every ligature entry, the scale and the stride; `Face::new` is that check or a panic. `tests/admission.rs` corrupts the committed image 3,000 ways: each is refused or, if admitted, cannot make shaping, spans, expansion or any slot's rows read out of range. The first run of that test found a hole in the check itself (a slot with height and no width), now closed. Size limits are refusals at bake time (`NoImage::TooLarge`: a glyph box over 255 pixels or a bearing beyond 127), and a line is at most 65,535 glyphs and a face index at most 255 (asserted). |
+
+### Parked: the full shaper behind the memo (design, with section 10's predictions P1 to P3 unmeasured)
+
+* A worker thread owns the vendored parley's font and layout contexts and the fonts' bytes. A job is
+  (key, face family and size, the text's bytes copied); nothing of the application is borrowed.
+* Its result is glyph ids and pens in 26.6 pixels (parley positions are pixels at the size, so such a face's
+  scale is 1/64) and the coverage of glyphs not yet rasterised, into a *grown* face: the same slot and atlas
+  layout as a prepared face, with a slot table that grows (16-bit slots) instead of 256 fixed tokens. A run
+  names it by its face index, so `Line` and the kernels do not change.
+* The interaction path: `line_or_stand_in` draws the stand-in and queues the job once per key. When results
+  are taken (at the start of a later turn) they are entered into the memo under the exact key (`line_with`
+  with a closure that copies), and the rows that showed the stand-in are described again. With no way yet to
+  name those rows, that is one `redescribe`; the stand-in's key differs from the exact key so the two
+  coexist until then.
+* What the user sees until it lands: the stand-in (question marks for other scripts, slightly wrong spacing
+  for refused Latin pairs), then the exact line; widths can change, so a content-sized box re-lays out once.
+* Expected cost, from sections 4 and 5: about 303 instructions per byte to shape on the worker with the
+  grafted parley (2,178 upstream), 27,000 per glyph rasterised for the first time, and the font machinery
+  once per process.
+
+### Parked: `text`, `para`, `text_input` as elements
+
+The expr lane's element layer was not published before the round closed. The mapping is direct: `text(src)`
+drives the sink with a `Line` (or `Digits` for a number operand with `.tabular()`), its `Measure` is the
+line's advance (not asked when the box is definite); `para` answers `Measure::block` from `brk::block_bytes`
+and emits one `Line` per line of the answer; `text_input` is the field of `scenes/search.rs` (a `String` in a
+one-row relation, the caret a word of the block) with selection as two more words. Prediction for when it is
+built: the façade's programs in TEXT-API P6, P8 and P12 run unchanged in source, and a `text` element costs
+what its `Line` costs in `text_x` (about 740 instructions per row of three records at mount).
+
+### For the e2e lane: the editor path it asked for
+
+What exists: `scenes/search.rs`'s field: edits as plain `String` mutations that push `Update(0)` on a one-row
+relation (so one row is described again and one line shaped), the caret as the block word `CaretX` computed
+from the advance of the text before it (a caret move shapes nothing and describes nothing), keys through
+`World::text` and `World::key_down`. Selection is not built: it is two more block words (the pixel x of each
+end) and a fill whose rect reads them, which needs a paint whose geometry is a Frame-stage operand; the
+oracle kinds have none except `Outline`'s offset.
+
+### What I would do next, and what I would not do again
+
+Next: the full shaper behind the memo (above); elements on the expr layer; in-place compaction of the memo
+through a typed walk of line columns; the search index. Not again: caching a derived structure before
+measuring what it costs to build (the break table); a gate whose only reader of a mechanism is masked by
+another (the first text mutant, which the row's fill hid); a property test over an ASCII corpus for code
+that handles UTF-8; `get_unchecked` in a safe function on the strength of where its inputs usually come
+from; a pass built and measured with no predictions written first (section 7.2).

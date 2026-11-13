@@ -189,3 +189,61 @@ fn reentry_and_caret_moves_shape_nothing() {
     }
     assert_eq!((v.glyphs.borrow().shaped, v.glyphs.borrow().found), (shaped, found), "a caret move asks the memo nothing");
 }
+
+/// A long session of typing and label edits with the glyph memo kept under a budget (the independent review's
+/// T04): what the memo holds stays bounded, and every frame, the ones right after a collection included, is
+/// the full redraw.
+#[test]
+fn the_glyph_memo_is_collected_and_frames_stay_exact() {
+    const BUDGET: usize = 24 << 10;
+    let mut v = Search::new(2_000);
+    v.filter = false;
+    let mut world = World::<Soft>::new(search::W, search::H, search::NWORDS);
+    world.mount(&v);
+    let mut retained = soft_s(&v);
+    world.paint(&mut retained);
+    world.tiles.clear();
+    world.click(&mut v, search::FIELD.x0 + 20, search::FIELD.y0 + 10);
+    world.settle(&v);
+    let mut r = Rng(0xc011ec7);
+    let (mut worst, mut collections) = (0usize, 0u32);
+    for step in 0..20_000 {
+        // an ever-changing line: every key makes a line never seen before
+        if v.query.get(0).len() < 30 {
+            world.text(&mut v, ["a", "b", "c", "d", "e", "f", "g", "h"][r.below(8)]);
+        } else {
+            for _ in 0..1 + r.below(29) {
+                world.key_down(&mut v, Key::Backspace, Mods::default());
+            }
+        }
+        world.settle(&v);
+        if bough_x::text::collect(&mut world, &v, &v.glyphs, BUDGET) {
+            collections += 1;
+        }
+        worst = worst.max(v.glyphs.borrow().bytes());
+        if step % 97 == 0 {
+            retained.repair(&world.tiles, |s| world.paint(s));
+            world.tiles.clear();
+            let mut full = soft_s(&v);
+            world.paint(&mut full);
+            assert!(retained.px == full.px, "step {step}: retained != full redraw ({} pixels)", diff(&retained.px, &full.px));
+        }
+    }
+    assert!(collections >= 5, "{collections} collections in 20,000 keys under a {BUDGET}-byte budget");
+    assert!(worst < 2 * BUDGET, "the memo reached {worst} bytes under a {BUDGET}-byte budget");
+}
+
+/// Text the prepared face refuses stays on screen as its stand-in (the independent review's T05): it is not
+/// turned into an empty run.
+#[test]
+fn refused_text_is_still_drawn() {
+    let v = Search::new(10);
+    let face = &search::FACES[0];
+    for text in ["\u{4e2d}\u{6587}", "caf\u{e9} \u{1f600}", "\u{43f}\u{440}\u{438}\u{432}\u{435}\u{442}"] {
+        assert!(face.advance(text.as_bytes()).is_none(), "{text:?} is outside the face");
+        let (run, w, exact) = bough_x::text::line_or_stand_in(&mut v.glyphs.borrow_mut(), 0, face, text);
+        assert!(!exact && w > 0 && run.len() == text.chars().count(), "{text:?}: {run:?}");
+    }
+    let (_, _, exact) = bough_x::text::line_or_stand_in(&mut v.glyphs.borrow_mut(), 0, face, "covered");
+    assert!(exact);
+}

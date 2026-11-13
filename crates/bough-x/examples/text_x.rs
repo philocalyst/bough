@@ -137,6 +137,10 @@ fn main() {
             if k % 2 == 0 { v.remove(5) } else { v.insert(5, 900_000 + k as u32) }
             w.settle(v);
         });
+        m.phase("rows", "collect the glyph memo (clear, re-describe what is exposed)", reps, &mut world, &mut v, |w, v, _| {
+            v.glyphs.borrow_mut().clear();
+            w.redescribe(v);
+        });
         println!("# rows end: {} lines shaped, {} found again, {} bytes of glyph state", v.glyphs.borrow().shaped, v.glyphs.borrow().found, v.glyphs.borrow().bytes());
     }
 
@@ -187,6 +191,21 @@ fn main() {
                     w.settle(v);
                 });
                 println!("# search re-entry: {} lines shaped during the phase", v.glyphs.borrow().shaped - before);
+            }
+            if !filter {
+                // how often a budget is reached by typing alone: keys per 256 KiB of memo
+                let (b0, k) = (v.glyphs.borrow().bytes(), 4_000);
+                for i in 0..k {
+                    if i % 40 < 20 {
+                        world.text(&mut v, ["s", "e", "a", "o"][i % 4]);
+                    } else {
+                        world.key_down(&mut v, Key::Backspace, Mods::default());
+                    }
+                    world.settle(&v);
+                }
+                world.tiles.clear();
+                let grown = v.glyphs.borrow().bytes() - b0;
+                println!("# typing: {k} keys grew the memo by {grown} bytes: a 256 KiB budget is reached every {} keys", (256usize << 10) * k / grown.max(1));
             }
             println!("# {tag} end: {} lines shaped, {} found again, {} bytes of glyph state", v.glyphs.borrow().shaped, v.glyphs.borrow().found, v.glyphs.borrow().bytes());
         }
