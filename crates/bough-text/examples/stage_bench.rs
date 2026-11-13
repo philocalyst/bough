@@ -17,13 +17,15 @@ use bough_text::stage::digits::{self, cell_of};
 use bough_text::stage::doc::Doc;
 use bough_text::stage::flow::{Flow, Set};
 use bough_text::stage::line::{self, GlyphW, Strike};
-use bough_text::stage::memo::{self, Image, Memo};
+#[path = "common/memo.rs"]
+mod memo;
+use memo::Memo;
 use bough_text::{GlyphRun, Shaper, SimpleScript};
 use std::hint::black_box;
 
 #[path = "common/stage.rs"]
 mod common;
-use common::{chat_messages, ide_lines, Meter, NUMS, STRS, VOCAB};
+use common::{chat_messages, ide_lines, Meter, VOCAB};
 
 fn font() -> (Vec<u8>, String) {
     let cands = [std::env::var("BOUGH_FONT").ok(), Some("/System/Library/Fonts/Supplemental/Arial.ttf".into()), Some("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".into()), Some("/usr/share/fonts/TTF/DejaVuSans.ttf".into())];
@@ -62,7 +64,6 @@ fn main() {
     t3(&m, &sh);
     t4(&m, &sh, &msgs, units(2560.0));
     t5(&m, &sh, &code);
-    t6(&m, &sh, &code);
     g1(&m, &sh, &bytes, &code, upem);
     scenes(&m, &sh, &bytes, &msgs, &code, units(2560.0), upem);
     drop(memo);
@@ -80,8 +81,7 @@ fn t1(m: &Meter, sh: &Shaper, msgs: &[String], code: &[(String, Vec<u8>)]) {
         memo.get(0, sh, s).expect("covered");
     }
     m.fact("t1.memo.entries", "count", memo.len() as f64, "distinct texts of 3,000 code lines + 2,000 messages");
-    let (t, e, g, b) = memo.bytes();
-    m.fact("t1.memo.bytes", "bytes", (t + e + g + b) as f64, &format!("table {t}, entries {e}, glyph lanes {g}, break lanes {b}"));
+    m.fact("t1.memo.bytes", "bytes", memo.g.bytes() as f64, "table, entries and the two glyph lanes");
 
     let mut run = GlyphRun::default();
     for len in [8usize, 16, 32, 64, 256] {
@@ -93,10 +93,10 @@ fn t1(m: &Meter, sh: &Shaper, msgs: &[String], code: &[(String, Vec<u8>)]) {
         // gate: a hit's glyphs are the shaper's
         for s in &pool {
             let off = memo.get(0, sh, s).unwrap();
-            let e = memo.view().ent(off);
+            let e = memo.ent(off);
             assert!(sh.shape_into(s, 1.0, &mut run));
-            assert_eq!(&memo.gid[e.g0 as usize..(e.g0 + e.gn) as usize], &run.gid[..]);
-            assert_eq!(&memo.x[e.g0 as usize..(e.g0 + e.gn) as usize], &run.x[..]);
+            assert_eq!(&memo.gid()[e.g0 as usize..(e.g0 + e.gn) as usize], &run.gid[..]);
+            assert_eq!(&memo.x()[e.g0 as usize..(e.g0 + e.gn) as usize], &run.x[..]);
             assert_eq!(e.width, run.width);
         }
         let shape = m.cell(&format!("t1.shape.{len}"), "instr/text", 200, 64.0, "re-shaping into a reused run (the baseline a hit must beat)", || {
@@ -104,16 +104,15 @@ fn t1(m: &Meter, sh: &Shaper, msgs: &[String], code: &[(String, Vec<u8>)]) {
                 black_box(sh.shape_into(black_box(s), 1.0, &mut run));
             }
         });
-        let v = memo.view();
         let hit = m.cell(&format!("t1.hit.{len}"), "instr/text", 200, 64.0, "key hashed at the call", || {
             for s in &pool {
-                black_box(v.find(memo::key(0, s.as_bytes()), 0, black_box(s.as_bytes())));
+                black_box(memo.g.get(bough_face::key(0, s.as_bytes()), 0, black_box(s.as_bytes())));
             }
         });
-        let keys: Vec<u64> = pool.iter().map(|s| memo::key(0, s.as_bytes())).collect();
+        let keys: Vec<u64> = pool.iter().map(|s| bough_face::key(0, s.as_bytes())).collect();
         m.cell(&format!("t1.hit_keyed.{len}"), "instr/text", 200, 64.0, "key known (a constant string)", || {
             for (s, k) in pool.iter().zip(&keys) {
-                black_box(v.find(*k, 0, black_box(s.as_bytes())));
+                black_box(memo.g.get(*k, 0, black_box(s.as_bytes())));
             }
         });
         m.fact(&format!("t1.hit_over_shape.{len}"), "ratio", hit / shape, "kill at 16 bytes: above 1");
@@ -144,7 +143,7 @@ fn t1(m: &Meter, sh: &Shaper, msgs: &[String], code: &[(String, Vec<u8>)]) {
         warm.clear();
         for s in msgs {
             let off = warm.get(0, sh, s).unwrap();
-            black_box(warm.breaks(off));
+            black_box(warm.breaks(off, s));
         }
     });
 }
@@ -155,13 +154,13 @@ fn t2(m: &Meter, sh: &Shaper, msgs: &[String], units: &dyn Fn(f64) -> i32, upem:
     let mutant = std::env::var("STAGE_MUTANT").ok();
     let mut memo = Memo::new(4096);
     let offs: Vec<u32> = msgs.iter().map(|s| memo.get(0, sh, s).unwrap()).collect();
-    let ents: Vec<memo::Ent> = offs.iter().map(|&o| memo.breaks(o)).collect();
+    let ents: Vec<memo::Ent> = offs.iter().zip(msgs).map(|(&o, s)| memo.breaks(o, s)).collect();
     let tab = |e: &memo::Ent| -> &[Brk] { &memo.brk[e.b0 as usize..(e.b0 + e.bn) as usize] };
     let chars: usize = msgs.iter().map(|s| s.len()).sum();
     m.fact("t2c.break_bytes_per_char.table", "bytes", (memo.brk.len() * 8 + memo.first.len() * 4) as f64 / chars as f64, "[end, next] and the segment's first glyph; prediction at most 2");
     m.fact("t2c.break_bytes_per_char.bytes", "bytes", 0.0, "block_bytes reads the pens and the text: nothing is stored for breaking");
     // the same paragraphs as (text, pens, width): what block_bytes reads
-    let xs = |e: &memo::Ent| -> &[i32] { &memo.x[e.g0 as usize..(e.g0 + e.gn) as usize] };
+    let xs = |e: &memo::Ent| -> &[i32] { &memo.x()[e.g0 as usize..(e.g0 + e.gn) as usize] };
     let txt: Vec<&[u8]> = msgs.iter().map(|s| s.as_bytes()).collect();
 
     // gate: the break table by bitmask edges is the walk's, on every message and on awkward texts
@@ -516,93 +515,6 @@ fn t5(m: &Meter, sh: &Shaper, code: &[(String, Vec<u8>)]) {
     }
 }
 
-// ---- T6: the memo as an image ------------------------------------------------------------------------------
-
-const K_MAIN: u64 = memo::key(0, b"main.rs");
-const K_CARGO: u64 = memo::key(0, b"Cargo.toml");
-const K_TITLE: u64 = memo::key(0, b"Release notes");
-const K_LONG: u64 = memo::key(0, b"Deploys now run in the region you picked.");
-
-fn t6(m: &Meter, sh: &Shaper, code: &[(String, Vec<u8>)]) {
-    // the constant strings of a program: here tab names, vocabulary, tokens, titles (about 100) among the
-    // 3,000 code lines, shaped by a build step
-    let consts: Vec<&str> = ["main.rs", "lib.rs", "view.rs", "paint.rs", "state.rs", "theme.rs", "Cargo.toml", "list.rs", "input.rs", "scene.rs", "layout.rs", "README.md", "Release notes", "Deploys now run in the region you picked."]
-        .into_iter()
-        .chain(VOCAB)
-        .chain(NUMS)
-        .chain(STRS)
-        .collect();
-    let mut built = Memo::new(64);
-    for s in &consts {
-        built.get(0, sh, s).unwrap();
-    }
-    for (l, _) in code {
-        built.get(0, sh, l).unwrap();
-    }
-    built.build_all_breaks();
-    let words = built.to_image();
-    m.fact("t6.image.bytes", "bytes", (words.len() * 8) as f64, &format!("{} entries", built.len()));
-    // stand-in for rodata: the image on a 64-byte boundary, alive for the program
-    let lay = std::alloc::Layout::from_size_align(words.len() * 8, 64).unwrap();
-    // SAFETY: a fresh allocation of the image's size and alignment, filled before it is read, never freed.
-    let img: &'static [u64] = unsafe {
-        let p = std::alloc::alloc(lay) as *mut u64;
-        assert!(!p.is_null());
-        core::ptr::copy_nonoverlapping(words.as_ptr(), p, words.len());
-        core::slice::from_raw_parts(p, words.len())
-    };
-    m.cell("t6.image.open", "instr", 1_000, 1.0, "header check; nothing parsed or copied", || {
-        black_box(Image::new(black_box(img)).is_some());
-    });
-    let im = Image::new(img).expect("image");
-    // gate: every text of the build is found in the image with the build's glyphs
-    for s in consts.iter().copied().chain(code.iter().map(|c| c.0.as_str())) {
-        let (a, b) = (built.view().find(memo::key(0, s.as_bytes()), 0, s.as_bytes()), im.view().find(memo::key(0, s.as_bytes()), 0, s.as_bytes()));
-        assert!(a != 0 && a == b);
-        let e = im.view().ent(b);
-        assert_eq!(&im.lanes().gid[e.g0 as usize..(e.g0 + e.gn) as usize], &built.gid[e.g0 as usize..(e.g0 + e.gn) as usize]);
-        assert_eq!(im.view().text(b), s.as_bytes());
-    }
-    let v = im.view();
-    let keys: Vec<u64> = consts.iter().map(|s| memo::key(0, s.as_bytes())).collect();
-    let n = consts.len() as f64;
-    let mut acc = 0u64;
-    m.cell("t6.mount.const_label", "instr/label", 500, n, "lookup in the image with the key known, entry read: all a constant label's mount needs of text; prediction at most 40", || {
-        for (s, k) in consts.iter().zip(&keys) {
-            let off = v.find(*k, 0, black_box(s.as_bytes()));
-            acc += v.ent(off).gn as u64;
-        }
-    });
-    m.cell("t6.mount.hashed_label", "instr/label", 500, n, "the same with the key hashed at mount", || {
-        for s in &consts {
-            let off = v.find(memo::key(0, black_box(s.as_bytes())), 0, s.as_bytes());
-            acc += v.ent(off).gn as u64;
-        }
-    });
-    // does the key of a literal fold? Four literals with `const` keys against the same four hashed in line.
-    m.cell("t6.literal.const_key", "instr/label", 2_000, 4.0, "", || {
-        acc += v.find(K_MAIN, 0, b"main.rs") as u64 + v.find(K_CARGO, 0, b"Cargo.toml") as u64 + v.find(K_TITLE, 0, b"Release notes") as u64 + v.find(K_LONG, 0, b"Deploys now run in the region you picked.") as u64;
-        black_box(acc);
-    });
-    m.cell("t6.literal.inline_key", "instr/label", 2_000, 4.0, "equal to the row above if the compiler folds key() of a literal", || {
-        acc += lit(v, "main.rs") as u64 + lit(v, "Cargo.toml") as u64 + lit(v, "Release notes") as u64 + lit(v, "Deploys now run in the region you picked.") as u64;
-        black_box(acc);
-    });
-    let mut run = GlyphRun::default();
-    m.cell("t6.shape.const_label", "instr/label", 500, n, "shaping the same labels at mount instead", || {
-        for s in &consts {
-            black_box(sh.shape_into(black_box(s), 1.0, &mut run));
-        }
-    });
-    black_box(acc);
-}
-
-/// What `text("..")` would do at mount for a literal: the key is computed here, inlined into the caller.
-#[inline(always)]
-fn lit(v: memo::View<'_>, s: &'static str) -> u32 {
-    v.find(memo::key(0, s.as_bytes()), 0, s.as_bytes())
-}
-
 // ---- G1: the two glyph forms -------------------------------------------------------------------------------
 
 /// A strike with a slot for every glyph the shaper produces for `texts` (ligatures included) and for ASCII.
@@ -626,7 +538,7 @@ fn g1(m: &Meter, sh: &Shaper, font: &[u8], code: &[(String, Vec<u8>)], upem: u16
     let (cache, st) = strike_for(sh, font, 24.0, upem, code.iter().map(|c| c.0.as_str()));
     let mut memo = Memo::new(64);
     let offs: Vec<u32> = code.iter().map(|(l, _)| memo.get(0, sh, l).unwrap()).collect();
-    let ents: Vec<memo::Ent> = offs.iter().map(|&o| memo.view().ent(o)).collect();
+    let ents: Vec<memo::Ent> = offs.iter().map(|&o| memo.ent(o)).collect();
     let glyphs: usize = ents.iter().map(|e| e.gn as usize).sum();
     let range = |e: &memo::Ent| (e.g0 as usize, (e.g0 + e.gn) as usize);
 
@@ -636,7 +548,7 @@ fn g1(m: &Meter, sh: &Shaper, font: &[u8], code: &[(String, Vec<u8>)], upem: u16
     for e in &ents {
         let (a, b) = range(e);
         let p0 = placed.len();
-        line::place(&st, &memo.gid[a..b], &memo.x[a..b], 0, 0, &mut placed);
+        line::place(&st, &memo.gid()[a..b], &memo.x()[a..b], 0, 0, &mut placed);
         spans.push((p0, placed.len()));
     }
     let inked = placed.len();
@@ -652,14 +564,14 @@ fn g1(m: &Meter, sh: &Shaper, font: &[u8], code: &[(String, Vec<u8>)], upem: u16
         let (a, b) = range(e);
         let (mut va, mut vb) = (Vec::new(), Vec::new());
         line::each_placed(&placed[p0..p1], (10, 30), |x, y, w, h, t| va.push((x, y, w, h, t)));
-        line::each_shaped(&st, &memo.gid[a..b], &memo.x[a..b], 0, (10, 30), |x, y, w, h, t| vb.push((x, y, w, h, t)));
+        line::each_shaped(&st, &memo.gid()[a..b], &memo.x()[a..b], 0, (10, 30), |x, y, w, h, t| vb.push((x, y, w, h, t)));
         assert_eq!(va, vb);
         ta.fill(0);
         tb.fill(0);
         for &(x, y, w, h, t) in &va {
             line::cover(&mut ta, tw, atlas, aw, x, y, w, h, t);
         }
-        line::each_shaped(&st, &memo.gid[a..b], &memo.x[a..b], 0, (10, 30), |x, y, w, h, t| line::cover(&mut tb, tw, atlas, aw, x, y, w, h, t));
+        line::each_shaped(&st, &memo.gid()[a..b], &memo.x()[a..b], 0, (10, 30), |x, y, w, h, t| line::cover(&mut tb, tw, atlas, aw, x, y, w, h, t));
         assert_eq!(ta, tb);
         assert!(ta.iter().any(|&c| c != 0) || e.gn == 0);
     }
@@ -670,7 +582,7 @@ fn g1(m: &Meter, sh: &Shaper, font: &[u8], code: &[(String, Vec<u8>)], upem: u16
         out.clear();
         for e in &ents {
             let (a, b) = range(e);
-            line::place(&st, &memo.gid[a..b], &memo.x[a..b], 0, 0, &mut out);
+            line::place(&st, &memo.gid()[a..b], &memo.x()[a..b], 0, 0, &mut out);
         }
         black_box(out.len());
     });
@@ -683,7 +595,7 @@ fn g1(m: &Meter, sh: &Shaper, font: &[u8], code: &[(String, Vec<u8>)], upem: u16
     let b_setup = m.cell("g1.setup.shaped", "instr/glyph", 20, g, "the same from the memo's lanes and the strike's slots (a multiply and a table load)", || {
         for e in &ents {
             let (a, b) = range(e);
-            line::each_shaped(&st, &memo.gid[a..b], &memo.x[a..b], 0, (10, 30), |x, y, w, h, t| acc = acc.wrapping_add((x + y) as u64 + (w + h + t) as u64));
+            line::each_shaped(&st, &memo.gid()[a..b], &memo.x()[a..b], 0, (10, 30), |x, y, w, h, t| acc = acc.wrapping_add((x + y) as u64 + (w + h + t) as u64));
         }
     });
     m.fact("g1.setup.placed_over_shaped", "ratio", a_setup / b_setup, "prediction: at most 0.85; under 0.95 keeps the placed form");
@@ -695,7 +607,7 @@ fn g1(m: &Meter, sh: &Shaper, font: &[u8], code: &[(String, Vec<u8>)], upem: u16
     m.cell("g1.paint.shaped", "instr/glyph", 5, g, "", || {
         for e in &ents {
             let (a, b) = range(e);
-            line::each_shaped(&st, &memo.gid[a..b], &memo.x[a..b], 0, (10, 30), |x, y, w, h, t| line::cover(&mut tb, tw, atlas, aw, x, y, w, h, t));
+            line::each_shaped(&st, &memo.gid()[a..b], &memo.x()[a..b], 0, (10, 30), |x, y, w, h, t| line::cover(&mut tb, tw, atlas, aw, x, y, w, h, t));
         }
     });
     black_box(acc);
@@ -722,8 +634,8 @@ fn scenes(m: &Meter, sh: &Shaper, font: &[u8], msgs: &[String], code: &[(String,
     // The lines of one message at `w`, as records.
     fn lines_of(memo: &mut Memo, sh: &Shaper, s: &str, w: i32, out: &mut Vec<(u32, u32, i32)>) {
         let off = memo.get(0, sh, s).unwrap();
-        let e = memo.view().ent(off);
-        let x = &memo.x[e.g0 as usize..(e.g0 + e.gn) as usize];
+        let e = memo.ent(off);
+        let x = &memo.x()[e.g0 as usize..(e.g0 + e.gn) as usize];
         let at = out.len();
         brk::block_from(s.as_bytes(), x, e.width, w, 0, 0, |g| out.push((e.g0 + g, 0, x[g as usize])));
         for k in at..out.len() {
@@ -761,7 +673,7 @@ fn scenes(m: &Meter, sh: &Shaper, font: &[u8], msgs: &[String], code: &[(String,
                 let at = lines_out.len();
                 lines_of(memo, sh, s, w, &mut lines_out);
                 for &(a, z, x0) in &lines_out[at..] {
-                    line::place(&st, &memo.gid[a as usize..z as usize], &memo.x[a as usize..z as usize], x0, 0, &mut placed);
+                    line::place(&st, &memo.gid()[a as usize..z as usize], &memo.x()[a as usize..z as usize], x0, 0, &mut placed);
                 }
             }
             black_box(placed.len());
@@ -771,8 +683,8 @@ fn scenes(m: &Meter, sh: &Shaper, font: &[u8], msgs: &[String], code: &[(String,
             let memo = memo!(4096);
             for s in rest {
                 let off = memo.get(0, sh, s).unwrap();
-                let e = memo.view().ent(off);
-                sum += brk::block_bytes(s.as_bytes(), &memo.x[e.g0 as usize..(e.g0 + e.gn) as usize], e.width, w).lines as u64;
+                let e = memo.ent(off);
+                sum += brk::block_bytes(s.as_bytes(), &memo.x()[e.g0 as usize..(e.g0 + e.gn) as usize], e.width, w).lines as u64;
             }
         });
         // S2: the ide's exposed text: 60 code lines (one line record each, a style lane beside the glyphs),
@@ -783,13 +695,13 @@ fn scenes(m: &Meter, sh: &Shaper, font: &[u8], msgs: &[String], code: &[(String,
             recs.clear();
             for (l, classes) in &code[..60] {
                 let off = memo.get(0, sh, l).unwrap();
-                let e = memo.view().ent(off);
+                let e = memo.ent(off);
                 styles.extend_from_slice(classes);
                 recs.push((e.g0, e.gn));
             }
             for l in tree.iter().chain(&term) {
                 let off = memo.get(0, sh, l).unwrap();
-                let e = memo.view().ent(off);
+                let e = memo.ent(off);
                 recs.push((e.g0, e.gn));
             }
             black_box((recs.len(), styles.len()));

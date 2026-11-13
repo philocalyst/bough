@@ -38,6 +38,9 @@ impl Num {
     pub fn new(v: i32, d: u32, pad: u32) -> Num {
         let m = v.unsigned_abs();
         let n = ndigits(m);
+        // at most nine decimals (a tenth would need 10^10) and at most 32 digits drawn
+        let d = if d < 9 { d } else { 9 };
+        let pad = if pad < 32 { pad } else { 32 };
         let least = if pad > d + 1 { pad } else { d + 1 };
         Num { m, d, drawn: if n > least { n } else { least }, point: (d > 0) as u32, neg: (v < 0) as u32 }
     }
@@ -56,7 +59,8 @@ impl Num {
         } else if (k == self.d) & (self.point != 0) {
             b'.'
         } else {
-            b'0' + ((self.m / POW10[if q < 9 { q as usize } else { 9 }]) % 10) as u8
+            // a u32 has ten digits: positions beyond them are padding
+            b'0' + if q < 10 { (self.m / POW10[q as usize]) % 10 } else { 0 } as u8
         }
     }
     /// The width in font units.
@@ -84,5 +88,26 @@ impl Num {
             face.glyph_spans(self.glyph(k) as u16, left + face.px(self.pen(c, k)), org.1, clip, &mut f);
             k += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    extern crate alloc;
+    use alloc::string::String;
+    fn text(v: i32, d: u32, pad: u32) -> String {
+        let n = Num::new(v, d, pad);
+        (0..n.count()).rev().map(|k| n.glyph(k) as char).collect()
+    }
+    /// The independent review's T03: padding beyond ten positions is zeros, not the leading digit again.
+    #[test]
+    fn padding_beyond_ten_digits_is_zeros() {
+        assert_eq!(text(i32::MAX, 0, 12), "002147483647");
+        assert_eq!(text(i32::MIN, 0, 12), "-002147483648");
+        assert_eq!(text(7, 0, 40), "00000000000000000000000000000007");
+        assert_eq!(text(123, 2, 0), "1.23");
+        assert_eq!(text(-5, 3, 0), "-0.005");
+        assert_eq!(text(1, 20, 0), "0.000000001", "decimals are capped at nine");
     }
 }

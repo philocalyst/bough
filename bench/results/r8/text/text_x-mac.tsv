@@ -1,43 +1,24 @@
-# host: M3 Pro; dist; commit 69f1c0da75; load average: 27.76, 20.01, 16.74
+# host: M3 Pro; dist; working tree after commit 69f1c0da75 (collection, generations, stand-in); load average: 38.27, 31.17, 21.78
 # rows=3000 reps=64 cold=false window=1280x800 device px, DejaVu Sans 14 px from the prepared face
 scene	phase	steps	instr_p50	instr_p95	cycles_p50	tiles_p50
-rows	mount	16	83870	117226	22525	0
-# rows mount: 14 lines shaped, 37 found again, 6356 bytes of glyph state
-rows	idle	64	42	42	11	0
-rows	hover	64	2720	2720	524	120
-rows	tint (text colour alone, every line)	64	1700	1700	348	341
-rows	scroll 3 rows	64	3924	3934	765	960
-rows	scroll a page (24 rows enter)	64	17703	17703	2865	960
-rows	label edit (toggle a suffix on an exposed row)	64	1378	3183	317	28
-rows	value edit (an exposed row's number)	64	1021	1025	206	12
-rows	remove a row then insert one	64	31365	31375	6351	766
-# rows end: 26 lines shaped, 6169 found again, 8618 bytes of glyph state
-typing	type a character (event, handler, settle)	64	3422	3422	540	26
-typing	caret move	64	2345	2445	420	1
-# typing end: 32 lines shaped, 62 found again, 9120 bytes of glyph state
-search	type a character (event, handler, settle)	64	833286	843563	192553	26
-search	caret move	64	2345	2445	427	1
-search	narrow by a key, widen by a backspace (24 rows re-enter)	64	198878	208983	37344	976
+rows	mount	16	86026	112933	32849	0
+# rows mount: 14 lines shaped, 37 found again, 6656 bytes of glyph state
+rows	idle	64	41	41	153	0
+rows	hover	64	2714	2714	1151	120
+rows	tint (text colour alone, every line)	64	1698	1698	655	341
+rows	scroll 3 rows	64	3904	3914	1359	960
+rows	scroll a page (24 rows enter)	64	17620	17620	5643	960
+rows	label edit (toggle a suffix on an exposed row)	64	1361	3288	650	28
+rows	value edit (an exposed row's number)	64	1007	1011	459	12
+rows	remove a row then insert one	64	31293	37306	11756	766
+rows	collect the glyph memo (clear, re-describe what is exposed)	64	41091	41091	11713	389
+# rows end: 922 lines shaped, 8409 found again, 9216 bytes of glyph state
+typing	type a character (event, handler, settle)	64	3513	3554	1158	26
+typing	caret move	64	2466	2595	873	1
+# typing: 4000 keys grew the memo by 3072 bytes: a 256 KiB budget is reached every 341333 keys
+# typing end: 51 lines shaped, 4043 found again, 14336 bytes of glyph state
+search	type a character (event, handler, settle)	64	833376	843202	192646	26
+search	caret move	64	2464	2593	858	1
+search	narrow by a key, widen by a backspace (24 rows re-enter)	64	198834	208969	32898	976
 # search re-entry: 1 lines shaped during the phase
-# search end: 33 lines shaped, 942 found again, 9182 bytes of glyph state
-# rows=100000 reps=64 cold=false window=1280x800 device px, DejaVu Sans 14 px from the prepared face
-scene	phase	steps	instr_p50	instr_p95	cycles_p50	tiles_p50
-rows	mount	16	88382	143242	30104	0
-# rows mount: 14 lines shaped, 37 found again, 6356 bytes of glyph state
-rows	idle	64	42	42	11	0
-rows	hover	64	2720	2720	575	120
-rows	tint (text colour alone, every line)	64	1700	1700	342	341
-rows	scroll 3 rows	64	3924	3934	777	960
-rows	scroll a page (24 rows enter)	64	17703	17703	2904	960
-rows	label edit (toggle a suffix on an exposed row)	64	1378	3183	316	28
-rows	value edit (an exposed row's number)	64	1021	1025	215	12
-rows	remove a row then insert one	64	613363	627854	187046	766
-# rows end: 26 lines shaped, 6169 found again, 8618 bytes of glyph state
-typing	type a character (event, handler, settle)	64	3422	3422	1181	26
-typing	caret move	64	2345	2445	866	1
-# typing end: 32 lines shaped, 62 found again, 9120 bytes of glyph state
-search	type a character (event, handler, settle)	64	27645666	27822131	6580884	26
-search	caret move	64	2343	2443	430	1
-search	narrow by a key, widen by a backspace (24 rows re-enter)	64	6463337	6611455	1181049	976
-# search re-entry: 1 lines shaped during the phase
-# search end: 33 lines shaped, 942 found again, 9182 bytes of glyph state
+# search end: 33 lines shaped, 942 found again, 11264 bytes of glyph state

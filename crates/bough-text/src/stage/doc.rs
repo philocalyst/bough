@@ -112,7 +112,8 @@ impl Doc {
     pub fn line_at(&self, a: At) -> &str {
         let blk = &self.blocks[a.b as usize];
         let (s, e) = (blk.off[a.k as usize] as usize, blk.off[a.k as usize + 1] as usize);
-        // SAFETY: lines are stored whole and were `str`s; edits splice at char boundaries (asserted there).
+        // SAFETY: lines are stored whole and were `str`s; `splice_at` and `split` refuse (always, not only in
+        // debug builds) an offset inside a character, and `join` concatenates whole lines.
         unsafe { core::str::from_utf8_unchecked(&blk.bytes[s..e]) }
     }
 
@@ -122,13 +123,17 @@ impl Doc {
         self.splice_at(a, col, del, ins)
     }
     pub fn splice_at(&mut self, a: At, col: usize, del: usize, ins: &str) {
-        debug_assert!(!ins.contains('\n'));
+        assert!(!ins.contains('\n'), "a newline is a split, not a splice");
         let blk = &mut self.blocks[a.b as usize];
         let k = a.k as usize;
         let (s, e) = (blk.off[k] as usize, blk.off[k + 1] as usize);
-        assert!(col + del <= e - s);
+        assert!(col + del <= e - s, "splice beyond the line");
+        // Both ends on character boundaries, checked always: `line_at` hands these bytes out as a `str`
+        // without looking again. The line is valid UTF-8 now (the invariant), so a byte starts a character
+        // exactly when it is not a continuation byte.
+        let starts = |i: usize| i == e - s || (blk.bytes[s + i] as i8) >= -0x40;
+        assert!(starts(col) && starts(col + del), "splice inside a character");
         let at = s + col;
-        debug_assert!(core::str::from_utf8(&blk.bytes[s..at]).is_ok(), "splice inside a character");
         blk.bytes.splice(at..at + del, ins.bytes());
         let d = (ins.len() as u32).wrapping_sub(del as u32);
         for o in &mut blk.off[k + 1..] {
@@ -155,7 +160,9 @@ impl Doc {
         let a = self.at(n);
         let blk = &mut self.blocks[a.b as usize];
         let k = a.k as usize;
-        assert!(col <= (blk.off[k + 1] - blk.off[k]) as usize);
+        let len = (blk.off[k + 1] - blk.off[k]) as usize;
+        assert!(col <= len, "split beyond the line");
+        assert!(col == len || (blk.bytes[blk.off[k] as usize + col] as i8) >= -0x40, "split inside a character");
         let cut = blk.off[k] + col as u32;
         blk.off.insert(k + 1, cut);
         self.bump(a.b as usize, 1);
@@ -211,6 +218,27 @@ impl Doc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The independent review's probes (T01): an edit inside a UTF-8 scalar is refused, not stored.
+    #[test]
+    fn edits_inside_a_character_are_refused() {
+        let refused = |f: &dyn Fn(&mut Doc)| {
+            let mut d = Doc::from_lines(["\u{e9}a", "\u{4e2d}\u{6587}"].into_iter());
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut d))).is_err()
+        };
+        assert!(refused(&|d| d.split(0, 1)));
+        assert!(refused(&|d| d.splice(0, 0, 1, "")));
+        assert!(refused(&|d| d.splice(0, 1, 1, "x")));
+        assert!(refused(&|d| d.splice(1, 3, 2, "")));
+        assert!(refused(&|d| d.splice(0, 0, 0, "a\nb")));
+        assert!(refused(&|d| d.split(1, 4)));
+        // and on boundaries they are accepted, with the text still what it should be
+        let mut d = Doc::from_lines(["\u{e9}a", "\u{4e2d}\u{6587}"].into_iter());
+        d.splice(0, 0, 2, "\u{fc}");
+        d.split(1, 3);
+        d.splice(2, 3, 0, "!");
+        assert_eq!((d.line(0), d.line(1), d.line(2)), ("\u{fc}a", "\u{4e2d}", "\u{6587}!"));
+    }
 
     /// Random edits against a `Vec<String>`.
     #[test]

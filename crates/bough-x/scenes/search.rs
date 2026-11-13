@@ -72,12 +72,13 @@ impl Search {
         Search { u, query: Rel::new(vec![String::new()]), caret: 0, hits: Rel::new((0..n as u32).collect()), all, glyphs: Rc::new(RefCell::new(Glyphs::new())), filter: true }
     }
     fn line(&self, s: &str) -> bough_x::text::Run {
-        self.glyphs.borrow_mut().line(0, &FACES[0], s).map_or(Default::default(), |l| l.0)
+        bough_x::text::line_or_stand_in(&mut self.glyphs.borrow_mut(), 0, &FACES[0], s).0
     }
     /// The caret's pixel position: the advance of the text before it.
     fn place_caret(&mut self) {
         let f = &FACES[0];
-        let x = f.advance(self.query.get(0)[..self.caret].as_bytes()).map_or(0, |a| f.px(a));
+        // the same shaping the field's line gets: the stand-in when the face refuses the text
+        let x = f.px(f.shape_lossy(self.query.get(0)[..self.caret].as_bytes(), |_, _, _| {}).0);
         self.u.set::<CaretX>(x);
     }
     fn refilter(&mut self) {

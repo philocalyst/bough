@@ -22,4 +22,4 @@ mod glyphs;
 pub mod num;
 
 pub use face::{Cell, Face, Slot, MAGIC, TOK_PAD};
-pub use glyphs::{Glyphs, Run};
+pub use glyphs::{key, Glyphs, Run};

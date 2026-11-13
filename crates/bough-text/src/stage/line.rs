@@ -66,7 +66,7 @@ impl Strike {
 /// Place glyphs `g0..g0 + n` of the shaped lanes, relative to the pen `x0` (the line's start), into `out`.
 pub fn place(st: &Strike, gid: &[u16], x: &[i32], x0: i32, style: u8, out: &mut Vec<GlyphW>) {
     for (&g, &px) in gid.iter().zip(x) {
-        let s = st.slots[g as usize];
+        let s = st.slots.get(g as usize).copied().unwrap_or_default();
         if s.w == 0 {
             continue;
         }
@@ -86,9 +86,9 @@ pub fn each_placed(gl: &[GlyphW], org: (i32, i32), mut f: impl FnMut(i32, i32, u
 #[inline(always)]
 pub fn each_shaped(st: &Strike, gid: &[u16], x: &[i32], x0: i32, org: (i32, i32), mut f: impl FnMut(i32, i32, u32, u32, u32)) {
     for (&g, &px) in gid.iter().zip(x) {
-        // SAFETY: a glyph id in the memo came from this face's shaper, and the strike has a slot for every
-        // glyph id the shaper can produce (`Strike::build` is given them all).
-        let s = unsafe { *st.slots.get_unchecked(g as usize) };
+        // Checked: this is a safe function over a caller's glyph ids and a caller's strike. A glyph the
+        // strike has no slot for has no ink.
+        let s = st.slots.get(g as usize).copied().unwrap_or_default();
         if s.w != 0 {
             f(org.0 + st.px(px - x0) + s.left as i32, org.1 + s.top as i32, s.w as u32, s.h as u32, s.texel);
         }
@@ -113,5 +113,20 @@ pub fn cover(target: &mut [u8], tw: i32, atlas: &[u8], aw: u32, x: i32, y: i32, 
             let d = &mut target[(ty * tw + tx) as usize];
             *d = (*d).max(atlas[src + c as usize]);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// The independent review's T02: glyph ids a strike has no slot for are not an out-of-bounds read.
+    #[test]
+    fn unknown_glyph_ids_have_no_ink() {
+        let st = Strike { scale: 1 << 32, slots: Vec::new() };
+        let mut n = 0;
+        each_shaped(&st, &[0, 7, u16::MAX], &[0, 10, 20], 0, (0, 0), |_, _, _, _, _| n += 1);
+        let mut out = Vec::new();
+        place(&st, &[0, 7, u16::MAX], &[0, 10, 20], 0, 0, &mut out);
+        assert_eq!((n, out.len()), (0, 0));
     }
 }

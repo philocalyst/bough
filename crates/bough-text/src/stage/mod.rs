@@ -2,9 +2,8 @@
 //!
 //! The smallest real form of each mechanism, measured by `examples/stage_bench.rs`:
 //!
-//! * [`memo`]: shaping memoised by (font, text). A hit is two dependent cache lines: a 64-byte bucket of the
-//!   table, then the entry, whose header and (short) key bytes share a line. Everything is offsets, so the
-//!   memo is also an image: built before the program starts, mapped, and read in place ([`memo::Image`]).
+//! * the memo is `bough_face::Glyphs`: shaped lines as ranges of two shared lanes, keyed by (face, text), with
+//!   the shaper as a parameter (the prepared face, the table shaper, the full shaper).
 //! * [`brk`]: the break table of a shaped text (two prefix sums per break opportunity) and `block(w)`: the
 //!   line count at a width with the half-open interval of widths over which it holds, by one binary search
 //!   per line. This is what the layout lane's `Measure::block` is answered from, with no glyphs.
@@ -19,4 +18,3 @@ pub mod digits;
 pub mod doc;
 pub mod flow;
 pub mod line;
-pub mod memo;

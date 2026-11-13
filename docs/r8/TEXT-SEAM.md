@@ -332,3 +332,23 @@ raster on `scenes/rows.rs` and `scenes/search.rs` over the scripts of `tests/tex
 **5. Not in this contract yet**: quarter-pixel pen variants (the pen is rounded to a whole pixel, as the
 façade does), faces that are not prepared (the full shaper's glyphs need a slot table that grows, with the
 same record), decorations, selection, per-glyph style indices, text larger than a 255-pixel glyph box.
+
+## Revision 3 (2026-11-12): the raster lane's answer, and what changed in the contract
+
+The raster lane took the fallback for its executors now and the line record on the GPU later, with no
+objection in principle. Consequences in what is built:
+
+* A face's coverage is one byte image at a common stride (**256**), a slot's offset the index of its first
+  texel, so the raster's atlas binding (texel index, row stride) reads a face image's coverage section
+  without a copy (`Face::atlas`, `Face::stride`). Section 1 of revision 2 is amended accordingly: row `r` of
+  a glyph starts `r * stride` texels after its first.
+* `Face::expand(slot, x, x0, origin, cut, f)` yields, per glyph with ink, its box in whole pixels cut to the
+  line record's rect and the texel under the box's top-left pixel: the operands of one `Glyph<B, Rec, C>`
+  record. It inks exactly what the line record inks (gated).
+* A run's second word is now glyph count (16 bits), face (8) and the memo's generation (8).
+* Costs the raster lane asked to be counted with the fallback: five lane words plus the record's words per
+  glyph in the column; a window-pass visit per glyph when a word its colour reads changes (about 9
+  instructions per glyph on its CPU path); one tile-list entry per glyph per tile. Against the line record:
+  two words per line, one visit per line, one entry per line per tile once its bin pass cuts by pens.
+* Open with the e2e lane: its own span raster can implement `Backend::line` and draw line records directly,
+  which is the cheaper path for the benchmarked binary.
