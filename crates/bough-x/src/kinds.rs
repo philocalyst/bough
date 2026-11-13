@@ -1,7 +1,9 @@
 //! Paint kinds: the closed set of things a record can be, each generic over the expressions of its operands.
 //! A kind applied to expression types is an archetype ([`Arch`]).
 use crate::expr::{Code, Color, Cx, Expr, Frame, Map, StageId, U, U_TIME, Words, later};
-use crate::store::{Arch, Backend, ColRef, Rect};
+use crate::reflect::Val;
+use crate::store::{Arch, Backend, ColRef, Op, Rect};
+use core::mem::offset_of;
 
 pub trait FillArch: Arch {
     fn color(&self, u: &U) -> Color;
@@ -27,10 +29,12 @@ pub struct Fill<E>(pub E);
 // SAFETY: transparent over `E: Words`.
 unsafe impl<E: Words> Words for Fill<E> {}
 impl<E: Expr<Out = Color>> Arch for Fill<E> {
+    const OPS: &'static [Op] = &[Op { name: "color", code: E::CODE, ty: core::any::type_name::<E>, stage: E::STAGE, reads: E::READS, word: 0, words: (size_of::<E>() / 4) as u16 }];
     const READS: u64 = E::READS;
     const NAME: &'static str = "fill";
     const STAGE: StageId = E::STAGE;
     const TIMED: bool = E::READS >> U_TIME & 1 != 0;
+    const ENDLESS: bool = !E::RESTS;
     #[inline(always)]
     fn until(&self, u: &U) -> u32 {
         self.0.until(&Cx::of(u))
@@ -42,6 +46,10 @@ impl<E: Expr<Out = Color>> Arch for Fill<E> {
     #[inline(always)]
     fn paint<B: Backend>(b: &mut B, col: ColRef<'_, Self>, u: &U) {
         b.fill(col, u)
+    }
+    #[inline]
+    fn val(&self, op: usize, u: &U) -> Val {
+        if op == 0 { Val::Color(self.0.eval(&Cx::of(u)).0) } else { Val::None }
     }
 }
 impl<E: Expr<Out = Color>> FillArch for Fill<E> {
@@ -60,10 +68,15 @@ pub struct Num<const D: u8, V, C>(pub V, pub C);
 // SAFETY: `repr(C)` over `Words` operands: whole words at alignment 4, so no padding.
 unsafe impl<const D: u8, V: Words, C: Words> Words for Num<D, V, C> {}
 impl<const D: u8, V: Expr<Out = i32>, C: Expr<Out = Color>> Arch for Num<D, V, C> {
+    const OPS: &'static [Op] = &[
+        Op { name: "value", code: V::CODE, ty: core::any::type_name::<V>, stage: V::STAGE, reads: V::READS, word: 0, words: (size_of::<V>() / 4) as u16 },
+        Op { name: "color", code: C::CODE, ty: core::any::type_name::<C>, stage: C::STAGE, reads: C::READS, word: (offset_of!(Self, 1) / 4) as u16, words: (size_of::<C>() / 4) as u16 },
+    ];
     const READS: u64 = V::READS | C::READS;
     const NAME: &'static str = "num";
     const STAGE: StageId = later(&[V::STAGE, C::STAGE]);
     const TIMED: bool = (V::READS | C::READS) >> U_TIME & 1 != 0;
+    const ENDLESS: bool = !(V::RESTS & C::RESTS);
     #[inline(always)]
     fn until(&self, u: &U) -> u32 {
         self.0.until(&Cx::of(u)).max(self.1.until(&Cx::of(u)))
@@ -75,6 +88,14 @@ impl<const D: u8, V: Expr<Out = i32>, C: Expr<Out = Color>> Arch for Num<D, V, C
     #[inline(always)]
     fn paint<B: Backend>(b: &mut B, col: ColRef<'_, Self>, u: &U) {
         b.num(col, u)
+    }
+    #[inline]
+    fn val(&self, op: usize, u: &U) -> Val {
+        match op {
+            0 => Val::Num(self.0.eval(&Cx::of(u)), D),
+            1 => Val::Color(self.1.eval(&Cx::of(u)).0),
+            _ => Val::None,
+        }
     }
 }
 impl<const D: u8, V: Expr<Out = i32>, C: Expr<Out = Color>> NumArch for Num<D, V, C> {
@@ -124,10 +145,15 @@ pub struct Label<C>(pub Txt, pub C);
 // SAFETY: `repr(C)` over `Words` operands.
 unsafe impl<C: Words> Words for Label<C> {}
 impl<C: Expr<Out = Color>> Arch for Label<C> {
+    const OPS: &'static [Op] = &[
+        Op { name: "text", code: &Code::Rec, ty: core::any::type_name::<Txt>, stage: StageId::Mount, reads: 0, word: 0, words: 3 },
+        Op { name: "color", code: C::CODE, ty: core::any::type_name::<C>, stage: C::STAGE, reads: C::READS, word: (offset_of!(Self, 1) / 4) as u16, words: (size_of::<C>() / 4) as u16 },
+    ];
     const READS: u64 = C::READS;
     const NAME: &'static str = "label";
     const STAGE: StageId = C::STAGE;
     const TIMED: bool = C::READS >> U_TIME & 1 != 0;
+    const ENDLESS: bool = !C::RESTS;
     #[inline(always)]
     fn until(&self, u: &U) -> u32 {
         self.1.until(&Cx::of(u))
@@ -139,6 +165,14 @@ impl<C: Expr<Out = Color>> Arch for Label<C> {
     #[inline(always)]
     fn paint<B: Backend>(b: &mut B, col: ColRef<'_, Self>, u: &U) {
         b.label(col, u)
+    }
+    #[inline]
+    fn val(&self, op: usize, u: &U) -> Val {
+        match op {
+            0 => Val::Text(self.0),
+            1 => Val::Color(self.1.eval(&Cx::of(u)).0),
+            _ => Val::None,
+        }
     }
 }
 impl<C: Expr<Out = Color>> LabelArch for Label<C> {
@@ -185,6 +219,7 @@ impl<const DUR: u32, F: Expr<Out = (i32, i32)>, T: Expr<Out = (i32, i32)>, S: Ex
     type Out = (i32, i32);
     type Stage = Frame;
     const READS: u64 = F::READS | T::READS | S::READS | 1 << U_TIME;
+    const RESTS: bool = F::RESTS & T::RESTS & S::RESTS;
     const CODE: &'static Code = &Code::Call("x_glide", &[F::CODE, T::CODE, S::CODE, &Code::U(U_TIME), &Code::Lit(DUR)]);
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> (i32, i32) {
@@ -211,6 +246,7 @@ impl<const DUR: u32, F: Expr<Out = Color>, T: Expr<Out = Color>, S: Expr<Out = u
     type Out = Color;
     type Stage = Frame;
     const READS: u64 = F::READS | T::READS | S::READS | 1 << U_TIME;
+    const RESTS: bool = F::RESTS & T::RESTS & S::RESTS;
     const CODE: &'static Code = &Code::Call("x_tween", &[F::CODE, T::CODE, S::CODE, &Code::U(U_TIME), &Code::Lit(DUR)]);
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> Color {
@@ -242,9 +278,14 @@ pub struct Outline<const W: i32, C, T>(pub C, pub T);
 // SAFETY: `repr(C)` over `Words` operands.
 unsafe impl<const W: i32, C: Words, T: Words> Words for Outline<W, C, T> {}
 impl<const W: i32, C: Expr<Out = Color>, T: Motion> Arch for Outline<W, C, T> {
+    const OPS: &'static [Op] = &[
+        Op { name: "color", code: C::CODE, ty: core::any::type_name::<C>, stage: C::STAGE, reads: C::READS, word: 0, words: (size_of::<C>() / 4) as u16 },
+        Op { name: "offset", code: T::CODE, ty: core::any::type_name::<T>, stage: T::STAGE, reads: T::READS, word: (offset_of!(Self, 1) / 4) as u16, words: (size_of::<T>() / 4) as u16 },
+    ];
     const READS: u64 = C::READS | T::READS;
     const MOVES: bool = T::READS != 0;
     const TIMED: bool = (T::READS | C::READS) >> U_TIME & 1 != 0;
+    const ENDLESS: bool = !(T::RESTS & C::RESTS);
     #[inline(always)]
     fn until(&self, u: &U) -> u32 {
         self.1.until(&Cx::of(u)).max(self.0.until(&Cx::of(u)))
@@ -269,6 +310,17 @@ impl<const W: i32, C: Expr<Out = Color>, T: Motion> Arch for Outline<W, C, T> {
     #[inline(always)]
     fn paint<B: Backend>(b: &mut B, col: ColRef<'_, Self>, u: &U) {
         b.outline(col, u)
+    }
+    #[inline]
+    fn val(&self, op: usize, u: &U) -> Val {
+        match op {
+            0 => Val::Color(self.0.eval(&Cx::of(u)).0),
+            1 => {
+                let (x, y) = self.1.eval(&Cx::of(u));
+                Val::Pair(x, y)
+            }
+            _ => Val::None,
+        }
     }
 }
 impl<const W: i32, C: Expr<Out = Color>, T: Motion> OutlineArch for Outline<W, C, T> {

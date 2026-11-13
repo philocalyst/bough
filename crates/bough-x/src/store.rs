@@ -190,8 +190,27 @@ impl<A> Page<A> {
     }
 }
 
+/// One operand of an archetype, as data: its name, its expression's code, its stage, the block words it reads,
+/// and where its words are in the record. Read only by the tools that look at records from outside the kernels
+/// (inspector, accessibility, tests); a constant nobody names is not emitted.
+#[derive(Debug)]
+pub struct Op {
+    pub name: &'static str,
+    pub code: &'static crate::expr::Code,
+    /// The operand's expression type, written out by the compiler (`Map<fill, (Un<Theme>, Rec<u32>)>`, with
+    /// paths): the names of the lenses and functions it was built from.
+    pub ty: fn() -> &'static str,
+    pub stage: StageId,
+    pub reads: u64,
+    /// First record word of the operand, and how many.
+    pub word: u16,
+    pub words: u16,
+}
+
 /// An archetype: a paint kind applied to expression types. The value is one record's constants.
 pub trait Arch: Words {
+    /// The operands, in record order (empty for an archetype that does not describe itself).
+    const OPS: &'static [Op] = &[];
     /// The words of the block whose change can change what a record of this archetype shows.
     const READS: u64;
     /// The record's place on screen depends on the block (a Frame-stage transform).
@@ -201,6 +220,8 @@ pub trait Arch: Words {
     const STAGE: StageId;
     /// The record's paint reads `Time`: it can change with no turn.
     const TIMED: bool = false;
+    /// No record of this archetype ever rests (it reads `Time` through something that gives no bound).
+    const ENDLESS: bool = false;
     /// The value of `Time` from which this record shows the same thing whatever the time, under the other
     /// words of `u` (0: it is at rest now; `u32::MAX`: never).
     #[inline(always)]
@@ -220,6 +241,12 @@ pub trait Arch: Words {
     }
     /// Hand the column to the backend method for this paint kind.
     fn paint<B: Backend>(b: &mut B, col: ColRef<'_, Self>, u: &U);
+    /// The value of operand `op` (an index into [`Arch::OPS`]) under block `u`. Read by reflection only, so it
+    /// is instantiated only in a program that reflects.
+    #[inline]
+    fn val(&self, _op: usize, _u: &U) -> crate::reflect::Val {
+        crate::reflect::Val::None
+    }
 }
 
 /// What a raster implements: one generic method per paint kind, monomorphised per archetype.
@@ -277,17 +304,47 @@ pub struct StoreView<'a> {
     pub live: Live<'a>,
 }
 
-pub type DeltaFn = unsafe fn(&RawCol, &StoreView, &U, &U, &mut Tiles);
+pub type DeltaFn = unsafe fn(&ColEnt, &U, &U, &mut Tiles);
 pub type ActiveFn = unsafe fn(&RawCol, &StoreView, &U) -> (u32, Rect);
-pub type HoverFn = unsafe fn(*mut (), *const u8, bool);
 pub type HitFn = unsafe fn(&RawCol, &StoreView, &U, i32, i32) -> u32;
-/// A column that hears the pointer: its handler and the hit kernel of its archetype (instantiated only for
-/// archetypes that have a handler).
-pub type Hov = (HoverFn, HitFn);
+/// A column whose records have handlers: their handler face (kinds, hit kernel, trampoline, captures), constant
+/// per record-and-handler type (`event.rs`). The hit kernel is instantiated only for archetypes with a handler.
+pub type Hov = &'static crate::event::Ons;
 #[inline(always)]
-pub fn hit_fn<A: Arch>() -> HitFn {
+pub const fn hit_fn<A: Arch>() -> HitFn {
     hit_col::<A>
 }
+
+/// A column as the path from a block write to its pages sees it: one line, in a table of all the columns of a
+/// world in paint order. Everything a delta kernel needs is here or one load from here (the space), so the
+/// store tree is not on that path. The pointers are into the store tree and hold until its shape next changes
+/// ([`SHAPE`]): the world rebuilds the table then.
+#[repr(C, align(64))]
+#[derive(Clone, Copy)]
+pub struct ColEnt {
+    pub reads: u64,
+    /// The words that move the column's space: if one changed, the space is damaged as a whole instead.
+    pub skip: u64,
+    pub delta: DeltaFn,
+    pub pages: *const u8,
+    pub live: *const u64,
+    pub space: *const Space,
+    pub npages: u32,
+    pub nrec: u32,
+    pub cap: u32,
+    pub timed: u32,
+}
+impl ColEnt {
+    /// SAFETY: the entry is current (built since the store tree last changed shape).
+    #[inline(always)]
+    unsafe fn live(&self) -> Live<'_> {
+        // SAFETY: `live` is the store's `row_live`, which holds `max(cap / 64, 1)` words.
+        Live { cap: self.cap, rows: unsafe { core::slice::from_raw_parts(self.live, (self.cap as usize / 64).max(1)) }, nrec: self.nrec }
+    }
+}
+
+/// Bumped whenever a store gains a column or a child: what the world's column table is checked against.
+pub static SHAPE: AtomicU32 = AtomicU32::new(0);
 
 /// The cold face of an archetype: what a store needs to run passes over a column it cannot name the type of.
 pub struct Desc {
@@ -347,12 +404,34 @@ pub struct RawCol {
     pub desc: &'static Desc,
     /// How many child stores were described before this column's first site: its place in paint order.
     pub seg: u32,
+    /// The records' handlers, if they have any.
     pub hover: Option<Hov>,
+    /// The handlers' captures, one per record, when they capture anything (a CPU lane: the GPU never reads it).
+    caps: *mut u8,
 }
 impl RawCol {
     fn grow(&mut self, npages: u32) {
         if npages <= self.npages {
             return;
+        }
+        if let Some(o) = self.hover
+            && o.caps != 0
+        {
+            let (old, new) = (o.caps as usize * self.npages as usize * 64, o.caps as usize * npages as usize * 64);
+            let lay = Layout::from_size_align(new, o.caps_align as usize).unwrap();
+            // SAFETY: `new` is non-zero (`caps != 0`, `npages > 0`).
+            let p = unsafe { alloc_zeroed(lay) };
+            if p.is_null() {
+                handle_alloc_error(lay);
+            }
+            if old != 0 {
+                // SAFETY: the old lane holds `old` bytes of this alignment; the new one is larger and distinct.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(self.caps, p, old);
+                    dealloc(self.caps, Layout::from_size_align_unchecked(old, o.caps_align as usize));
+                }
+            }
+            self.caps = p;
         }
         let one = self.desc.page;
         let new = Layout::from_size_align(one.size() * npages as usize, one.align()).unwrap();
@@ -381,6 +460,25 @@ impl RawCol {
     unsafe fn all<A>(&self) -> &[Page<A>] {
         unsafe { core::slice::from_raw_parts(self.pages as *const Page<A>, self.npages as usize) }
     }
+    /// Page `pg` as bytes: four rect lanes of 64 `i32` each, then the records (`desc.rec_off`, `desc.rec_size`).
+    #[inline]
+    pub fn raw_page(&self, pg: u32) -> *const u8 {
+        assert!(pg < self.npages);
+        // SAFETY: in bounds of the page array by the assert.
+        unsafe { self.pages.add(pg as usize * self.desc.page.size()) }
+    }
+    /// The captures of record `rec`'s handlers (a dangling, aligned pointer when they capture nothing).
+    pub fn caps_ptr(&self, rec: u32) -> *const u8 {
+        match self.hover {
+            Some(o) if o.caps != 0 => {
+                assert!(rec < self.npages * 64);
+                // SAFETY: the lane holds `npages * 64` captures of `o.caps` bytes.
+                unsafe { self.caps.add(rec as usize * o.caps as usize) }
+            }
+            Some(o) => o.caps_align as usize as *const u8,
+            None => core::ptr::dangling(),
+        }
+    }
     /// The constants of record `rec`, untyped (for a handler that knows the type).
     pub fn rec_ptr(&self, rec: u32) -> *const u8 {
         assert!(rec < self.npages * 64);
@@ -394,6 +492,12 @@ impl Drop for RawCol {
             let one = self.desc.page;
             // SAFETY: allocated in `grow` with exactly this layout.
             unsafe { dealloc(self.pages, Layout::from_size_align_unchecked(one.size() * self.npages as usize, one.align())) }
+            if let Some(o) = self.hover
+                && o.caps != 0
+            {
+                // SAFETY: allocated in `grow` with this size and alignment.
+                unsafe { dealloc(self.caps, Layout::from_size_align_unchecked(o.caps as usize * self.npages as usize * 64, o.caps_align as usize)) }
+            }
         }
     }
 }
@@ -406,6 +510,8 @@ pub struct Site {
     pub col: u32,
     /// The first record of this site: record = base + row slot.
     pub base: u32,
+    /// The captures of this site's slot 0, when its handlers capture anything (`event.rs`).
+    pub cap: *mut u8,
 }
 impl Site {
     /// Store a record's rect. The four rect lanes are the first kilobyte of every page, whatever its archetype.
@@ -454,6 +560,9 @@ pub enum Pass {
     Sub(u32),
 }
 
+/// Where a list's rows are described and their shape: (call site, leaves, bytes).
+pub type RowSrc = (&'static core::panic::Location<'static>, u32, u32);
+
 pub struct Store {
     pub cols: Vec<RawCol>,
     pub sites: Vec<Site>,
@@ -472,6 +581,8 @@ pub struct Store {
     pub seen: u32,
     /// The rows of the shape: the type of each row value described here and its first site.
     pub rows: Vec<(TypeId, u32)>,
+    /// A list's rows: where they are described, how many records a row has, a row's size (`sink::list_sync`).
+    pub src: Option<RowSrc>,
     /// A list's layout: the rects of one row relative to the row, and where and how tall rows are.
     pub tmpl: Vec<Rect>,
     /// Where the slice `tmpl` was copied from was: an identity check before a content compare.
@@ -489,7 +600,7 @@ static COL_ID: AtomicU32 = AtomicU32::new(1);
 impl Store {
     pub fn new(cap: u32, space: Space) -> Store {
         assert!(cap == 1 || (cap >= 64 && cap.is_power_of_two()));
-        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false }
+        Store { cols: Vec::new(), sites: Vec::new(), subs: Vec::new(), order: Vec::new(), cap, row_live: vec![0; (cap as usize / 64).max(1)], space, disc: Vec::new(), lo: 0, hi: 0, seen: 0, rows: Vec::new(), src: None, tmpl: Vec::new(), tmpl_at: 0, geo: (0, 0, 0), plan: Vec::new(), reads: 0, timed: false }
     }
     #[inline(always)]
     pub fn view(&self) -> StoreView<'_> {
@@ -513,19 +624,20 @@ impl Store {
             }
         }
         let j = pick.unwrap_or_else(|| {
-            self.cols.push(RawCol { pages: core::ptr::null_mut(), npages: 0, nrec: 0, k: 0, reads: d.reads, delta: d.delta, id: COL_ID.fetch_add(1, Ordering::Relaxed), key, arch, desc: d, seg, hover });
+            self.cols.push(RawCol { pages: core::ptr::null_mut(), npages: 0, nrec: 0, k: 0, reads: d.reads, delta: d.delta, id: COL_ID.fetch_add(1, Ordering::Relaxed), key, arch, desc: d, seg, hover, caps: core::ptr::null_mut() });
             self.order.push(Pass::Col(self.cols.len() as u32 - 1));
             self.cols.len() - 1
         });
         self.reads |= d.reads;
         self.timed |= d.timed;
+        SHAPE.fetch_add(1, Ordering::Relaxed);
         let c = &mut self.cols[j];
         let base = c.k * self.cap;
         c.k += 1;
         c.nrec = c.k * self.cap;
         c.grow(c.nrec.div_ceil(64));
         self.disc.push((j as u32, rect));
-        self.sites.push(Site { page: core::ptr::null_mut(), page_size: 0, col: j as u32, base });
+        self.sites.push(Site { page: core::ptr::null_mut(), page_size: 0, col: j as u32, base, cap: core::ptr::null_mut() });
         self.fix_sites();
     }
     /// Point every site at its column's pages. Run whenever a column's pages may have moved.
@@ -535,12 +647,44 @@ impl Store {
             // SAFETY: `base / 64` is a page of the column (`discover` grew it to hold the site).
             s.page = unsafe { c.pages.add((s.base >> 6) as usize * c.desc.page.size()) };
             s.page_size = c.desc.page.size() as u32;
+            if let Some(o) = c.hover
+                && o.caps != 0
+            {
+                // SAFETY: the lane holds a capture for every record of the column, `base` among them.
+                s.cap = unsafe { c.caps.add(s.base as usize * o.caps as usize) };
+            }
         }
     }
 
-    /// The damage of a change of the block from `old` to `new` (`ch` = the changed words), for this store and
-    /// the stores under it. One indirect call per column that reads a changed word. A column whose records
-    /// read `Time` also says, once, until when and where they will be in motion.
+    /// Column `c` as a table entry.
+    pub fn ent(&self, c: &RawCol) -> ColEnt {
+        ColEnt { reads: c.reads, skip: self.space.reads(), delta: c.delta, pages: c.pages, live: self.row_live.as_ptr(), space: &self.space, npages: c.npages, nrec: c.nrec, cap: self.cap, timed: c.desc.timed as u32 }
+    }
+    /// Append this store's columns and those of the stores under it, in paint order; `cold` gets, per entry,
+    /// the store and column it came from (for the rare things the entry does not carry).
+    pub fn table(&self, out: &mut Vec<ColEnt>, cold: &mut Vec<(*const Store, u32)>) {
+        for p in &self.order {
+            match *p {
+                Pass::Col(j) => {
+                    out.push(self.ent(&self.cols[j as usize]));
+                    cold.push((self, j));
+                }
+                Pass::Sub(q) => self.subs[q as usize].table(out, cold),
+            }
+        }
+    }
+    /// The stores, this one and those under it, whose space moves with a block word.
+    pub fn moving_spaces(&self, out: &mut Vec<(u64, *const Store)>) {
+        if self.space.reads() != 0 {
+            out.push((self.space.reads(), self));
+        }
+        for s in &self.subs {
+            s.moving_spaces(out);
+        }
+    }
+
+    /// The same damage as the world's table walk, by walking the tree: the reference the table is held to
+    /// (`tests/table.rs`), and what a caller without a world uses.
     pub fn delta(&self, old: &U, new: &U, ch: u64, tiles: &mut Tiles) {
         if self.space.reads() & ch != 0 {
             // the space moved: everything it shows is somewhere else
@@ -549,16 +693,13 @@ impl Store {
                 self.resweep(new, tiles);
             }
         } else if self.reads & ch != 0 {
-            let live = Live { cap: self.cap, rows: &self.row_live, nrec: 0 };
             for c in &self.cols {
                 if c.reads & ch != 0 {
-                    let sv = StoreView { space: &self.space, live: Live { nrec: c.nrec, ..live } };
-                    // SAFETY: `delta` and `active` were instantiated for the archetype `c` was created with.
-                    unsafe {
-                        (c.delta)(c, &sv, old, new, tiles);
-                        if c.desc.timed {
-                            tiles.set_sweep(c.id, self.space, (c.desc.active)(c, &sv, new));
-                        }
+                    // SAFETY: `delta` was instantiated for the archetype `c` was created with; the entry is
+                    // built here, from the store as it is.
+                    unsafe { (c.delta)(&self.ent(c), old, new, tiles) };
+                    if c.desc.timed {
+                        self.resweep_col(c, new, tiles);
                     }
                 }
             }
@@ -567,6 +708,13 @@ impl Store {
             s.delta(old, new, ch, tiles);
         }
     }
+    /// Say again whether column `c` is in motion, until when and where.
+    #[inline(never)]
+    pub fn resweep_col(&self, c: &RawCol, u: &U, tiles: &mut Tiles) {
+        let sv = StoreView { space: &self.space, live: Live { cap: self.cap, rows: &self.row_live, nrec: c.nrec } };
+        // SAFETY: `active` was instantiated for the archetype `c` was created with.
+        tiles.set_sweep(c.id, self.space, unsafe { (c.desc.active)(c, &sv, u) });
+    }
 
     /// Records of this store were written: say again which of its timed columns are in motion. Cold unless
     /// the store has such a column.
@@ -574,9 +722,7 @@ impl Store {
     pub fn resweep(&self, u: &U, tiles: &mut Tiles) {
         for c in &self.cols {
             if c.desc.timed {
-                let sv = StoreView { space: &self.space, live: Live { cap: self.cap, rows: &self.row_live, nrec: c.nrec } };
-                // SAFETY: `active` was instantiated for the archetype `c` was created with.
-                tiles.set_sweep(c.id, self.space, unsafe { (c.desc.active)(c, &sv, u) });
+                self.resweep_col(c, u, tiles);
             }
         }
     }
@@ -603,27 +749,42 @@ impl Store {
     }
 
     /// The topmost record with a hover handler under a point: (path of child indices, column, record).
-    pub fn hit(&self, u: &U, x: i32, y: i32, path: &mut Path, best: &mut Option<(Path, u32, u32)>) {
+    /// The records under (x, y) whose handlers hear one of `kinds`, bottom first: per column, the topmost of
+    /// its records there, columns in paint order. (Two records of one column that overlap each other: only the
+    /// upper is found.) The last entry is what the raster's pick names.
+    pub fn chain(&self, u: &U, x: i32, y: i32, kinds: u32, path: &mut Path, out: &mut Vec<(Path, u32, u32)>) {
         for p in &self.order {
             match *p {
                 Pass::Col(j) => {
                     let c = &self.cols[j as usize];
-                    let Some((_, hit)) = c.hover else { continue };
+                    let Some(o) = c.hover else { continue };
+                    if o.kinds & kinds == 0 {
+                        continue;
+                    }
                     let sv = StoreView { space: &self.space, live: Live { cap: self.cap, rows: &self.row_live, nrec: c.nrec } };
                     // SAFETY: `hit` was instantiated for the archetype `c` was created with.
-                    let r = unsafe { hit(c, &sv, u, x, y) };
+                    let r = unsafe { (o.hit)(c, &sv, u, x, y) };
                     if r != u32::MAX {
-                        *best = Some((*path, j, r));
+                        out.push((*path, j, r));
                     }
                 }
                 Pass::Sub(q) => {
                     assert!((path.n as usize) < path.at.len(), "stores nest at most six deep");
                     path.at[path.n as usize] = q as u16;
                     path.n += 1;
-                    self.subs[q as usize].hit(u, x, y, path, best);
+                    self.subs[q as usize].chain(u, x, y, kinds, path, out);
                     path.n -= 1;
                 }
             }
+        }
+    }
+
+    /// The topmost record with a pointer handler under a point: (path of child indices, column, record).
+    pub fn hit(&self, u: &U, x: i32, y: i32, path: &mut Path, best: &mut Option<(Path, u32, u32)>) {
+        let mut v = Vec::new();
+        self.chain(u, x, y, crate::event::kind::POINTER, path, &mut v);
+        if let Some(&b) = v.last() {
+            *best = Some(b);
         }
     }
 
@@ -691,13 +852,14 @@ pub fn changed_sparse<A: Arch>(pg: &Page<A>, mut live: u64, old: &U, new: &U) ->
     m
 }
 
-unsafe fn delta_col<A: Arch>(col: &RawCol, sv: &StoreView, old: &U, new: &U, tiles: &mut Tiles) {
-    // SAFETY: the caller instantiated this for the column's archetype.
-    let pages = unsafe { col.all::<A>() };
-    let org = sv.space.origin(new);
-    let clip = sv.space.clip;
+unsafe fn delta_col<A: Arch>(e: &ColEnt, old: &U, new: &U, tiles: &mut Tiles) {
+    // SAFETY: the caller instantiated this for the column's archetype and the entry is current: `pages` holds
+    // `npages` pages of `A`, `space` is the column's store's.
+    let (pages, space, lv) = unsafe { (core::slice::from_raw_parts(e.pages as *const Page<A>, e.npages as usize), &*e.space, e.live()) };
+    let org = space.origin(new);
+    let clip = space.clip;
     for (pi, pg) in pages.iter().enumerate() {
-        let live = sv.live.page(pi);
+        let live = lv.page(pi);
         if live == 0 {
             continue;
         }
@@ -716,6 +878,11 @@ unsafe fn delta_col<A: Arch>(col: &RawCol, sv: &StoreView, old: &U, new: &U, til
 unsafe fn active_col<A: Arch>(col: &RawCol, sv: &StoreView, u: &U) -> (u32, Rect) {
     // SAFETY: the caller instantiated this for the column's archetype.
     let pages = unsafe { col.all::<A>() };
+    if A::ENDLESS {
+        // every record is in motion for ever: the column is, wherever its space shows it, if it has a record
+        let any = (0..pages.len()).any(|pi| sv.live.page(pi) != 0);
+        return if any { (u32::MAX, Rect::EVERYWHERE) } else { (0, Rect::default()) };
+    }
     let now = u.w[U_TIME];
     let (mut until, mut sweep) = (0u32, Rect { x0: i32::MAX, y0: i32::MAX, x1: i32::MIN, y1: i32::MIN });
     for (pi, pg) in pages.iter().enumerate() {
