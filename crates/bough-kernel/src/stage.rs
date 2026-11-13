@@ -363,7 +363,13 @@ impl Scene {
     /// program is valid for the whole transition; slot i + 1 holds `b`.
     pub fn push_anim(&mut self, a: Cmd, b: Cmd, t0: u32, dur: u32, ease: u32) -> u32 {
         assert_eq!(a.par.x, b.par.x, "a transition keeps its kind");
-        let mut a = a;
+        // `k::at` interpolates the box, the radius, the border or blur width and the colours, and keeps
+        // `a`'s derived fields (the inverse blur width and corner curve of a shadow, a gradient's
+        // direction, a transformed space). Where those differ between the two states the interpolation
+        // would not arrive at `b`: such a transition is admitted as its target state, unanimated.
+        let reaches = a.rad.z == b.rad.z && a.rad.w == b.rad.w && a.par.z == b.par.z && a.par.w == b.par.w && a.xi == b.xi && a.xk == b.xk && a.xs == b.xs;
+        // (one tick long, so its progress is only ever 0 or ONE, where a mix of two equal states is exact)
+        let (mut a, dur) = if reaches { (a, dur) } else { (b, 1) };
         a.win = Vec4 { x: a.win.x.min(b.win.x), y: a.win.y.min(b.win.y), z: a.win.z.max(b.win.z), w: a.win.w.max(b.win.w) };
         // A pixel in both cores is in the core of every interpolated box (edges move linearly and the radii
         // interpolate between two values the margin already covers).

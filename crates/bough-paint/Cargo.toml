@@ -1,0 +1,42 @@
+[package]
+name = "bough-paint"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Round 8 raster lane: paints as types, one monomorphised CPU kernel and one generated GPU function per archetype, the plan fixed at compile time"
+
+[dependencies]
+bough-kernel = { path = "../bough-kernel" }
+bough-expr = { path = "../bough-expr" }
+wgsl-rs = { git = "https://github.com/schell/wgsl-rs", rev = "b2de16a1b81e67d76bc265c296184f882864badb", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3" }
+objc2-metal = { version = "0.3" }
+
+[build-dependencies]
+bough-kernel = { path = "../bough-kernel" }
+wgsl-rs = { git = "https://github.com/schell/wgsl-rs", rev = "b2de16a1b81e67d76bc265c296184f882864badb", default-features = false }
+naga = { version = "29.0.4", features = ["wgsl-in", "msl-out"] }
+
+[dev-dependencies]
+bough-mem = { path = "../bough-mem" }
+naga = { version = "29.0.4", features = ["wgsl-in", "msl-out"] }
+# the `#[wgsl]` macro's generated `__validate_wgsl` tests (naga validation of each module); tests only
+wgsl-rs = { git = "https://github.com/schell/wgsl-rs", rev = "b2de16a1b81e67d76bc265c296184f882864badb", default-features = false, features = ["validation"] }
+
+[features]
+# Mutants for the exactness gate (tests/exact.rs must fail with each):
+# the tile rasteriser's core is one pixel too wide
+mutant_core = []
+# the bin cut treats an opaque paint's whole window as its cover
+mutant_cut = []
+# the flat-row classifier treats a rounded box's corner rows as flat
+mutant_flat = []
+# the static cut inside a composed paint hides one column too many
+mutant_hide = []
+# the pixel-grain occlusion mask of the tile rasteriser is one column too wide
+mutant_mask = []
+# every entry of a CPU-filled corner table is one too large
+mutant_tab = []

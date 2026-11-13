@@ -56,16 +56,12 @@ pub mod fx {
     }
 }
 
+/// The kernel's arithmetic: every pure function a pixel's value is made of (no buffers, no entry point), so a
+/// second consumer (the per-archetype kernels of `bough-paint`) imports the same definitions.
 #[wgsl_rs::wgsl]
-pub mod kernel {
+pub mod km {
     use super::fx::*;
     use wgsl_rs::std::*;
-
-    storage!(group(0), binding(0), CMDS: RuntimeArray<u32>);
-    storage!(group(0), binding(1), PROG: RuntimeArray<u32>);
-    storage!(group(0), binding(2), ATLAS: RuntimeArray<u32>);
-    storage!(group(0), binding(3), read_write, OUT: RuntimeArray<u32>);
-    storage!(group(0), binding(4), IMAGES: RuntimeArray<u32>);
 
     /// 1.0 in Q15.
     pub const ONE: u32 = 32768u32;
@@ -567,10 +563,15 @@ pub mod kernel {
 
     /// Progress (Q15) of a transition started at `t0` lasting `dur` ticks (>= 1), eased (0 linear, 1 smooth).
     pub fn progress(now: u32, t0: u32, dur: u32, ease: u32) -> u32 {
-        if now <= t0 {
+        // the clock is a wrapping word: "started" is at most 2^31 ticks after `t0` modulo 2^32
+        let mut el = now - min(t0, now);
+        if now < t0 {
+            el = (0xFFFFFFFFu32 - t0) + now + 1u32;
+        }
+        if el == 0u32 || el >= 0x80000000u32 {
             return 0u32;
         }
-        let e = min(now - t0, dur);
+        let e = min(el, dur);
         if e == dur {
             return ONE;
         }
@@ -682,15 +683,29 @@ pub mod kernel {
         }
         Cmd { win: c.win, core: c.core, b: c.b, par: c.par, rad: c.rad, pm: pm, pm2: pm2, xi: c.xi, xk: c.xk, xs: c.xs }
     }
+    /// The transition whose two states are `a` and `b` (heads `ha`, `hb`) as it is at `now`.
+    pub fn timed(a: Cmd, b: Cmd, ha: Vec4u, hb: Vec4u, now: u32) -> Cmd {
+        at(a, b, progress(now, ha.w(), hb.w() >> 2u32, hb.w() & 3u32))
+    }
+}
+
+/// The generic kernel: commands as words, tile programs, the GPU entry point. Its arithmetic is `km`.
+#[wgsl_rs::wgsl]
+pub mod kernel {
+    use super::km::*;
+    use wgsl_rs::std::*;
+
+    storage!(group(0), binding(0), CMDS: RuntimeArray<u32>);
+    storage!(group(0), binding(1), PROG: RuntimeArray<u32>);
+    storage!(group(0), binding(2), ATLAS: RuntimeArray<u32>);
+    storage!(group(0), binding(3), read_write, OUT: RuntimeArray<u32>);
+    storage!(group(0), binding(4), IMAGES: RuntimeArray<u32>);
+
     /// Table entry `i` (two words: a premultiplied Q15 colour, or a scalar in its first component), clamped
     /// to the table (PROG words 9 and 10: its offset and last entry).
     pub fn table(i: u32) -> Vec4u {
         let at = get!(PROG)[9u32] + 2u32 * min(i, get!(PROG)[10u32]);
         unpack_u16x4(get!(PROG)[at], get!(PROG)[at + 1u32])
-    }
-    /// The transition whose two states are `a` and `b` (heads `ha`, `hb`) as it is at `now`.
-    pub fn timed(a: Cmd, b: Cmd, ha: Vec4u, hb: Vec4u, now: u32) -> Cmd {
-        at(a, b, progress(now, ha.w(), hb.w() >> 2u32, hb.w() & 3u32))
     }
     pub fn word4(w: u32) -> Vec4u {
         vec4u(get!(CMDS)[w], get!(CMDS)[w + 1u32], get!(CMDS)[w + 2u32], get!(CMDS)[w + 3u32])

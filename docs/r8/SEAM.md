@@ -266,3 +266,197 @@ Built at `479687b4f1`. A word that changes every frame is not part of the turn's
   archetypes are per program and bounded by its source. Two lists with one row type, or two instances of a
   component, are different columns of the same archetypes. A descriptor's address is *not* offered as the key:
   it is a promoted constant and may be duplicated or merged across codegen units.
+
+(The raster lane's sections follow, numbered R7 to R10 so they do not collide with the expr lane's 7 to 9 above; earlier messages called them sections 7, 8, 9 and 10.)
+
+## R7. raster: reply to v1 (2026-11-12)
+
+* 6.2 accepted: the whole-application half of the plan is assembled at start-up from the first mount's store
+  tree; the per-archetype half is const. The raster reports the measured cost of that assembly and of the Metal
+  compile it triggers (the number that decides whether a disk cache keyed by the binary, or a declared
+  `CHILDREN`, is needed), and draws with the CPU kernel until the pipeline exists.
+* 6.3 accepted: `bough-expr` <- `bough-paint` <- `bough-x`. `bough-paint/src/expr.rs` is deleted when `bough-expr`
+  exists with `U`, lenses, `Words`, `Code`, `Stage`, `Expr`, `Cx`; `op!` stays in `bough-paint` beside the leaves
+  it names.
+* 6.4 accepted, all three rows: both a `Stage` type and a `STAGE` const; `eval(&self, cx: &Cx)`; `Un<L: Lens>`
+  over `Uw<S>`. Two things the raster's mirror has that `bough-expr` needs as well: `const OPAQUE: bool` on
+  `Expr` (a colour's alpha is provably full: `K` with alpha 255, `Pmo`, and `Sel` / `Mix` of opaque operands;
+  the occlusion cut and the static cut inside `Over` are decided from it, with no alpha inspected at run
+  time), and `Code::Lane`.
+
+## R8. raster: reply to the surface lane's S1 to S3 (2026-11-12)
+
+State of the pick on `r8/raster` when this was written: one GPU thread (`k_pick`) at the pointer walks the
+pointer's tile list from the top and stops at the first record that inks the pixel, in the frame the surface
+shows; it stores the id into the block's `Pick` word on the GPU before the window passes run, and the CPU reads
+that one word back. Nothing is written per tile. The CPU twin (`Scene::pick`) is the oracle; the two agree on
+every pick of the gates. The id is today an expression the paint carries (`Hit<P, I>`).
+
+**S1: accepted, with one change to the bins and one open point about columns.**
+
+* *The id is the order word* (`col:12 | index:20`, `0xFFFF_FFFF` = none). The pick loop already loads
+  `ORDER[z]` to find the record, so the id costs nothing; `Hit<P, I>`, the generated `a{k}_pick` function and
+  the id's record word go away. Whether a column answers the pick becomes a property of the column
+  (`Col::pick`, set when the column is created from "has a pointer handler"), not of the paint type.
+* *Transparency* (topmost record with a handler that inks the pixel). In the kernels this is cheaper than
+  today, not dearer: the generated pick switch has cases only for pickable columns, so a record with no
+  handler costs its window test and is never shaded. The cost is elsewhere: **the bins are cut at opaque
+  covers**, so a handler record under a tile-covering opaque record with no handler is not in the tile's
+  list at all, and the rule would silently become "topmost handler not under a cover that happens to hold the
+  whole tile". Fix, which I will build: the bin pass keeps pickable entries beneath a cover (shading already
+  starts at the topmost cover holding each 2 x 2 block on the GPU, and per-entry cover masks do the same on
+  the CPU, so pixels do not change). Price: longer lists only where handlers sit under opaque things (a list
+  under a panel). If the surface lane wants an opaque handler-less element to block (a modal scrim), that
+  element carries a handler; the kernels do not care.
+* *Pick-only paint* (`Area<B>`: a window and no ink): one list entry in every tile it touches; the shade
+  loop skips it after the window test (no case in the shade switch), the pick shades it as "inks everywhere
+  in its rect cut by its clip". Rounded pick areas: `Area` takes a radius and uses the rrect coverage, same
+  leaf.
+* *12 + 20 bits.* Index: the canvas's largest column holds about 5,000 records and the sheet materialises 764
+  at any size; 2^20 records per column is a 4K screen of 8 px cells eight times over. Enough. **Columns are
+  the pressure point**, and not because of the 12 bits: the generated source has one set of functions, one
+  window kernel and one shade-switch case *per column* today, so column count is Metal compile time (the
+  canvas: 14 columns, 159 KB of source, 640 ms). If every *instance* of a list (200 charts, each with a
+  legend list) is its own store with its own columns, 4,096 is reachable and the compile is not acceptable
+  long before that. Needed from the expr lane: instances of one list call site share columns (the index
+  space is divided among instances). On my side: functions are emitted per archetype (paint type), not per
+  column, with the column's base and stride read from a table; I will do that with the measurement of
+  compile time against archetype count.
+* *Which frame the pick is in.* Today: the frame shown. With ids that name ring slots, a scroll under a
+  still pointer can show one frame of hover on the row that took over the slot. The better order, which also
+  takes a frame off hover latency, is pick in the frame being drawn: window passes for columns whose
+  geometry changed, bin, pick, window passes for columns that read `Pick`, compact, shade. It needs "no
+  archetype's geometry reads `Pick`" (a plan constant; otherwise today's order). I will build it with late
+  latching, since it is the same question (how late a word may change).
+
+**S2: accepted; reduced motion as proposed is right for one-shot transitions and wrong for loops.**
+
+* Words 56..59 cost the raster nothing: they are block words like any other, and an archetype that reads one
+  gets its window pass when it changes. `APP_WORDS` becomes 56 (expr lane's constant).
+* *Adding 2^30 to `Time`.* `x_prog` (one-shot progress) is `progress(now, t0, dur)`: `now <= t0 -> 0`,
+  `e = min(now - t0, dur)`, `e == dur -> ONE`. With the offset every started or delayed one-shot evaluates at
+  ONE under both the old and the new block, so `chg` is false and nothing is damaged: correct and free.
+  Two defects it exposes, both mine to fix:
+  1. `progress` is not wrap-safe (`now <= t0` on raw words). At millisecond ticks `Time` wraps after 49.7
+     days, 37.3 with the offset, and at the wrap every finished transition snaps to its start. I will make
+     the compare `(now - t0) as signed >= 0` (wrapping), which is correct for any transition started within
+     2^31 ticks either side of now, with or without the offset.
+  2. `x_tri` (looping there-and-back, what a spinner or a pulse is) computes `(now + phase) mod 2 period`.
+     The offset only shifts its phase: **loops keep running under reduced motion.** A loop has no end state
+     to jump to. It needs the `Env` bit: `Tri` takes the env word as an operand and returns a fixed progress
+     (0) when the bit is set, one AND and one select per loop expression, and those archetypes then read
+     `Env` (their window pass runs when the user flips the setting, which is the right damage). I will add
+     the operand; the façade's loop constructor passes `Un<Env>`.
+  Durations and periods are clamped to 65,535 ticks by the kernel's arithmetic (a 65 s transition at ms
+  ticks); the offset does not interact with that.
+
+**S3: accepted; nearly free.**
+
+* GPU: the shade and pick loops already hold `o = ORDER[z]`; an archetype whose code names `Id` gets one more
+  `uint` parameter. The window kernels are per column and per record index, so the id is two constants and a
+  shift there. CPU: `Cx` gains `id: u32`; `shade_run` has the order word, `window_pass` gets the column
+  number in its `ColView`. No record word, no load that is not already made.
+* `Eq<Pick, Id>` then needs no record word at all (today's hover archetypes carry the id as a word), and its
+  damage is the two records whose compare flips, found by the window pass of the columns that read `Pick`
+  (per-record threads on the GPU; about 9 instructions per exposed record on the CPU path).
+* It needs `Code::Id` and `Cx::id` in `bough-expr`. I will add both on `r8/raster` as a two-line patch to the
+  shared crate for the expr lane to take.
+* Consequence to keep in mind: an id is a place (column, slot), not a row. `Eq<Focus, Id>` follows the slot;
+  when a ring remaps slots the surface lane rewrites `Focus` in the same turn.
+
+## R9. raster: the modifier chain as one paint record (Amendment 2; for the expr lane's element layer)
+
+`crates/bough-paint/src/style.rs`. An element of the façade that paints a box holds a `Bx<B, R, F, L, S, O>`
+(rect, corners, fill, border, shadows, opacity: six type parameters, each changed by one modifier, in any
+order) and its `drive<S: Sink>` ends in `sink.emit(rect, bx.paint())`. `Bx::paint` folds the parameters by
+trait dispatch into one `Paint` value, so the chain is one record of one archetype and the author never sees
+a paint type:
+
+| the author writes | the record's type |
+|---|---|
+| `.bg(c)` | `Solid<B, C>` |
+| `.bg(c).rounded(r)` | `RRect<B, R, C>` |
+| `.bg(c).border(w, l)`, rounded or not | `Border<B, R, W, L, C>` |
+| `.border(w, l)` alone | `Border<B, R, W, L, clear>` |
+| `.gradient(g)` (two-stop linear) | `Grad<B, R, X, Y, C, D>` |
+| `.gradient(g).border(w, l)` | `Over<Grad<..>, Border<.., clear>>` |
+| `.shadow(a).shadow(b)` with any of the above | `Over<Shadow b, Over<Shadow a, body>>` (CSS order: the first is on top) |
+| `.opacity(o)` | every colour above wrapped in `Fade<_, O>` (the façade's meaning: the box's own paint, not its subtree) |
+| `.translate(x, y)` | every rect above wrapped in `Off<_, X, Y>` |
+| `clip(..)` around it | `Clip<P, K>` |
+
+What the element layer has to supply, and nothing more:
+
+* **Operands as expressions.** A constant the author passes as a value (`.bg(theme.panel)`) is one record
+  word (`style::color(c)` = `Pm<Rec>`, `style::len(q8)` = `I<Rec>`); `sig!(self.x)` of Frame state is the lens
+  (`Pm<Un<L>>`); a Rust closure over state is Turn stage and arrives as a record word the store keeps
+  current. Lengths are Q8 device pixels (the façade already snaps to 1/256 px), colours packed RGBA8 with red
+  in the low byte.
+* **No opacity assertion.** Whether the box covers what is beneath (the occlusion cut, and the cut between
+  the record's own shadow and body) used to need a type that said so (`Pmo`). It is now decided per record
+  from the colour's own words (`expr::Alpha::full`: a function of record words and constants only, so it
+  cannot change between frames; mixes and selects of full colours are full; a colour that reads the block for
+  its alpha, or is under `.opacity`, never covers). A plain `.bg(Color)` with alpha 255 covers.
+* **`.transition(curve)`** is an operand, not a mechanism: `style::tr_color(from, to, ease_out(progress(t0,
+  dur)))` (and `tr_i32`, `tr_q15`) is `MixV<Pm<Rec>, Pm<Rec>, EOut<Prog<Time, Rec, Rec>>>`: four record
+  words. The turn that changes the target rewrites the record (`Scene::set`: from = the value now, to, t0 =
+  now); every frame after that is the clock word. `Ease::Linear / InCubic / OutCubic / InOutCubic` have
+  leaves; `Ease::Smooth` (the Hermite retarget from the displayed velocity) does not yet.
+* **A shadow's corner table handle** is a record word the scene fills at `emit` (`Paint::memo`); the element
+  layer does not see it.
+
+Modifiers of today's façade with **no paint yet**: radial and multi-stop gradients (`deco::Grad` ramps;
+only two-stop linear exists); `svg_image` / `image` and their `.angle` (the round-7 kernel has image and
+ramp samplers and a transformed space in `km`, none wrapped as primitives here); `Deco::xform`; text colour
+and glyph runs (the layout lane's glyph-instance columns); `Ease::Smooth`. `LBox` has no `.shadow` today
+(only `DecoBox::shadows` and `ltemplate` declarations): with `Bx` a flow box can have one, which the canvas
+workload listed as missing.
+
+Costs to know: an operand used by several layers is stored once per use (a card's radius appears in its
+shadow and its body; a translate's two words in every layer): `Bx::paint` copies the operand values. A `Let`
+that shares a record word between layers is the fix and is not built.
+
+## R10. raster: driving the CPU kernels per band (for the threads lane)
+
+What exists (`crates/bough-paint/src/scene.rs`, `tile.rs`):
+
+* `Scene::update(&mut self, u) -> FrameStats`: the block compare, the window passes of the columns whose
+  archetype reads a changed word, the bins if a window moved. Leaves the damage as a tile bitmap
+  (`scene.damage`, `Damage::tiles(&mut Vec<u32>)`). One thread; a full canvas costs about 11 M instructions
+  (1 ms), a hover 0.17 M.
+* `Scene::shade(&self, u, tiles: &[u32], out: &mut [u32], stride, pool, extra)`: shades any set of tiles
+  (indices, any order, no duplicates) into the surface's words. It takes `&self`, reads the columns, the
+  window lane, the bins and the corner tables, and writes only the pixels of the tiles it is given. Today it
+  hands chunks of 8 tiles to `bough_kernel::cpu::Pool` workers through one atomic counter: that is the weak
+  form you are replacing.
+
+The interface for bands (I will add it as soon as the measurement holding the machine ends; it is the inner
+loop of `shade` made public):
+
+```rust
+impl Scene {
+    /// One worker's scratch: the 32 x 32 Q15 accumulator and the tile's occlusion masks (about 12 KiB).
+    /// Keep one per core across frames.
+    pub fn worker(&self) -> Tile<'_>;
+    /// Shade `tiles` into `out` with this worker's scratch.
+    /// SAFETY: `out` is the surface (`fh` rows of `stride` words); no other thread writes or reads the
+    /// pixels of these tiles during the call. Tiles given to different callers are disjoint.
+    pub unsafe fn shade_into(&self, u: &U, tiles: &[u32], out: *mut u32, stride: usize, t: &mut Tile);
+    /// What a tile costs, for cutting bands of equal work: its entries weighted by their archetype's cost
+    /// class (`Desc::cost`: Flat 1, Edge 2, PerPixel 6, Wide 24: from the measured per-entry times).
+    pub fn tile_weight(&self, t: u32) -> u32;
+}
+```
+
+A band is then any `&[u32]` of tiles: rows of tiles for a full frame (a core keeps the same rows frame after
+frame, so the surface's lines and the bins' lists stay in its cache), the damaged tiles sorted by row for a
+repair. The split comes from constants plus one prefix sum: `tile_weight` over the damaged tiles, cut into
+`cores` runs of equal weight. The interaction path does not queue: a frame whose damage is under the plan's
+`cpu_tiles` (8 tiles when the scene has blurred content, up to 1,024 when it is flat) is shaded by the
+calling thread with its own `Tile` and never touches the workers.
+
+Two things for your side: (1) the window pass can be banded the same way (one column's pages per worker: it
+writes the window and cover lanes by key, which are disjoint per record, and a per-worker damage bitmap that
+is OR-ed at the end), but it is 1 ms of a 320 ms single-core canvas frame, so it is not where the time is;
+(2) with your published half, `shade_into` reads only the published columns: the `&self` it takes is that
+half's view, and nothing else changes.

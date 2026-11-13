@@ -1,0 +1,49 @@
+ 15:08:40 up 2 days 3:53,  49 users,  load average: 33.85, 33.66, 26.49
+# corner tables: 158 keys, 2495624 entries (4891 KiB), filled on the GPU in 4.69 ms of GPU time, 9.01 ms wall
+canvas.full	A1 archetype cpu 1 core	4000	280383	372386	-	4477036.1	928863.9	0.0	pick + window pass + bins + shade
+canvas.full	A  window pass + bins	4000	1163	1425	-	12451.7	4336.6	0.0	the per-record part of A1 / AP
+canvas.full	AP archetype cpu 5+1	4000	52676	71358	-	526303.5	107912.2	0.0	shade only
+canvas.full	AG archetype gpu resident	4000	22116	29500	29220	142.8	322.3	0.0	block write + encode + wait
+canvas.full	AD driver, the plan's choice	4000	49112	56735	-	444776.0	99719.9	0.0	16 frames on one core, 0 on the GPU
+canvas.hover	A1 archetype cpu 1 core	527	89596	107643	-	1315941.0	281718.8	0.0	pick + window pass + bins + shade
+canvas.hover	A  window pass + bins	527	19	23	-	205.9	76.7	0.0	the per-record part of A1 / AP
+canvas.hover	AP archetype cpu 5+1	527	18902	24561	-	227869.9	46698.4	0.0	shade only
+canvas.hover	AG archetype gpu resident	527	6298	7338	6891	79.7	237.9	0.0	block write + encode + wait
+canvas.hover	AD driver, the plan's choice	527	6443	7220	-	78.3	228.8	0.0	0 frames on one core, 16 on the GPU
+canvas.hover1	A1 archetype cpu 1 core	30	40	43	-	395.1	143.9	0.0	pick + window pass + bins + shade
+canvas.hover1	A  window pass + bins	30	7	8	-	150.5	27.2	0.0	the per-record part of A1 / AP
+canvas.hover1	AP archetype cpu 5+1	30	38	67	-	271.3	129.6	0.0	shade only
+canvas.hover1	AG archetype gpu resident	30	254	498	60	84.3	206.8	0.0	block write + encode + wait
+canvas.hover1	AD driver, the plan's choice	30	203	248	-	88.5	139.6	0.0	0 frames on one core, 16 on the GPU
+canvas.theme	A1 archetype cpu 1 core	3628	246032	341840	-	4033595.4	868380.4	0.0	pick + window pass + bins + shade
+canvas.theme	A  window pass + bins	3628	88	97	-	1236.9	325.5	0.0	the per-record part of A1 / AP
+canvas.theme	AP archetype cpu 5+1	3628	46898	70967	-	388652.1	84821.3	0.0	shade only
+canvas.theme	AG archetype gpu resident	3628	17085	19849	19349	82.0	286.7	0.0	block write + encode + wait
+canvas.theme	AD driver, the plan's choice	3628	17775	19912	-	81.4	319.9	0.0	0 frames on one core, 16 on the GPU
+canvas.pan	A1 archetype cpu 1 core	2168	215001	529182	-	4072792.4	914700.9	0.0	pick + window pass + bins + shade
+canvas.pan	A  window pass + bins	2168	1468	1935	-	13435.0	5209.0	0.0	the per-record part of A1 / AP
+canvas.pan	AP archetype cpu 5+1	2168	52808	70611	-	232851.2	44486.3	0.0	shade only
+canvas.pan	AG archetype gpu resident	2168	16890	25773	25172	97.2	294.2	0.0	block write + encode + wait
+canvas.pan	AD driver, the plan's choice	2168	16251	20430	-	98.9	310.1	0.0	0 frames on one core, 16 on the GPU
+canvas.drag	A1 archetype cpu 1 core	11	1778	1953	-	29985.6	6550.4	0.0	pick + window pass + bins + shade
+canvas.drag	A  window pass + bins	11	566	615	-	6044.1	2009.8	0.0	the per-record part of A1 / AP
+canvas.drag	AP archetype cpu 5+1	11	1030	1244	-	23947.0	4052.6	0.0	shade only
+canvas.drag	AG archetype gpu resident	11	3368	4024	3783	67.9	193.0	0.0	block write + encode + wait
+canvas.drag	AD driver, the plan's choice	11	3372	3824	-	68.9	162.3	0.0	0 frames on one core, 16 on the GPU
+canvas.time	A1 archetype cpu 1 core	438	46872	51136	-	981239.5	170528.9	0.0	pick + window pass + bins + shade
+canvas.time	A  window pass + bins	438	611	655	-	6072.7	2192.2	0.0	the per-record part of A1 / AP
+canvas.time	AP archetype cpu 5+1	438	12032	16027	-	295263.3	50220.0	0.0	shade only
+canvas.time	AG archetype gpu resident	438	7279	8022	7717	70.4	261.2	0.0	block write + encode + wait
+canvas.time	AD driver, the plan's choice	438	6413	8072	-	72.8	189.3	0.0	0 frames on one core, 16 on the GPU
+# cross-check failures: 0; load at end: ?
+canvas.full	AG passes, each in its own command buffer (us of GPU time): pick 0 window 2102 bin 2728 compact 215 shade 19007
+canvas.hover	AG passes, each in its own command buffer (us of GPU time): pick 10 window 41 bin 0 compact 23 shade 5930
+canvas.hover1	AG passes, each in its own command buffer (us of GPU time): pick 7 window 25 bin 0 compact 13 shade 18
+canvas.theme	AG passes, each in its own command buffer (us of GPU time): pick 0 window 1295 bin 0 compact 149 shade 16185
+canvas.pan	AG passes, each in its own command buffer (us of GPU time): pick 0 window 1386 bin 3800 compact 112 shade 16991
+canvas.drag	AG passes, each in its own command buffer (us of GPU time): pick 1 window 43 bin 6820 compact 25 shade 1153
+canvas.time	AG passes, each in its own command buffer (us of GPU time): pick 1 window 139 bin 8890 compact 86 shade 11018
+# cross-check failures: 0; load at end: ?
+ 15:25:49 up 2 days 4:10,  49 users,  load average: 96.27, 47.94, 32.29
+
+[exited with code 0]
