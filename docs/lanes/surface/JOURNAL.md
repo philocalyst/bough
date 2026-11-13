@@ -318,3 +318,117 @@ Warm, every step is under 0.3 µs; cold (every line it touches from memory) unde
 The click was 5,647 instructions before one walk under the pointer was made to serve press, focus, pick and
 hover (four walks became two). The cold column is an upper bound; the line count itself wants Intel's LLC
 events (mothership), not run.
+
+## 7. The event path allocates nothing; where hover's added instructions were (2026-11-12; `83518dac4f`)
+
+The e2e lane measured hover at 0.08 ms input-to-commit and suspected per-event `Vec`s. Counted with a counting
+global allocator in `events_x`: at `dadb85a941` a pointer onto another row made 4 allocations and a click 4
+(the chain's buffer not given back, the hovered set collected and cloned, the pointer subset collected). Now: a
+pool of scratch buffers reserved when the world is made, the hovered set swapped rather than rebuilt,
+focusables sorted in place: **0 allocations per event** for every step at every size.
+
+The lead's question, hover on `sheet_x` 6,909 before events -> 7,594 at `947fff87e4` (+685): measured by
+removing each part in turn, about 430 was the pointer path visiting every column of every store and mapping
+each hit to a place by a path walk and a search of the column table, and about 430 the allocations; the handler
+lane costs nothing for a handler that captures nothing (the sheet's: no lane, a dangling aligned pointer). Now
+the world lists the columns that have handlers when it builds its column table, the pointer path visits only
+those, and a place is the table index: **a column with no handler costs the pointer path nothing.** Hover
+7,594 -> 7,166 (handler columns only) -> 6,739 (no allocation) -> 6,826 with the review's fixes below (pointer
+words, slot identity), against 6,909 before events.
+
+| step (`events_x`, dist, Mac, 0 allocations) | dispatch | with settle |
+|---|---:|---:|
+| pointer onto another row | 1,270 | 2,113 |
+| pointer within the same row | 954 | 1,000 |
+| click a row | 3,397 | 4,288 |
+| key, nothing focused | 120 | 324 |
+| text into the focused field | 233 | 1,023 |
+
+(`bench/results/r8/surface/events_x-mac-review.tsv`, `6da394e194`, load 19 to 34; the same at 100, 10,000 and
+1,000,000 rows. The click grew from 2,663 at `83518dac4f` by the press's identity check, below.) Cold line
+counts on mothership (Intel LLC events, the threads lane's `hot.sh`): **not run**; parked (open, small).
+
+## 8. The independent review (Amendment 7): what was closed, what stands
+
+Review: `bough/runtime/lanes/independent-review/recent-20261112/REPORT.md`. The surface lane's area is Batch 10
+(S01-S05) and Batch 2's C08, C09; C01 (events part), C03, C05 and C06 are in the event code this lane wrote and
+were closed too. Probes as tests: `crates/bough-x/tests/review.rs` (the review's own scenes from
+`repro/core_regressions.rs` that fall in this area, plus two for S01) and two tests in
+`crates/bough-ax/tests/ax.rs` (S02, S03). All pass at `6da394e194`.
+
+Closed:
+* **C01 Critical, events part.** `World::mount` records the view's `TypeId`; every handler call asserts it
+  before any pointer is cast (admission, once per call). `world_rejects_different_view_type` panics there.
+  The rest of C01 (public mutable `World.root`, `Store::paint<B>` with any backend) is the expr lane's.
+* **C03 High.** The chain and the pick test a record's rect moved by its paint offset (`hit_all`).
+* **C05 High.** `Rel::insert`/`remove` journal `Insert`/`Remove`; a list pass keeps its inserts and removes;
+  the focused row follows its item and is dropped when its item is removed; a press remembers what its place
+  showed, and a release over a place that now shows another row does not click.
+* **C06 Medium.** `World::pointer` moves `PtrX`/`PtrY` in the same operation.
+* **C09 Medium.** Section 7.
+* **S01 Critical.** A `Reflect` keeps the store tree it was learned from; `current()` checks the tree, every
+  count and every learned column's record `TypeId` (expr's `RawCol.arch`); `items`/`each` refuse anything else.
+  A record whose type is another instantiation (a closure inside `view`) is refused at learning, never read as
+  another type; its readers come back when the element layer makes closures once, outside `view`.
+* **S02 High, in part.** A comparison of a core word (pick, focus, press, environment) with a record's constant
+  is no longer a selection.
+* **S03 High.** Every pass counts records stored again, rects moved and lists moved; `World::revision()`
+  accumulates it; the accessibility update compares it, so a fixed plain-state text re-described reaches the
+  tree.
+* **S04 Performance.** The accessibility update's "nothing moved" test is five compares (revision, store shape,
+  focus, block words read) with no walk and no allocation; a projection walks the stores once and finds places
+  from one table.
+
+Stands, with what would close it:
+* **S02, the rest.** Inference stays a default: a comparison of an *application* word is still read as a
+  selection (a theme index compared with a record would be one), every text that reads application state is a
+  polite live region (a ticker would chatter), click-only cannot tell a button from a tab, link or checkbox, and
+  column headers are found by alignment. Closing it needs typed semantic components beside the inferred ones
+  (role, label, selected, expanded, disabled, live policy, labelled-by) in the element layer's descriptor, which
+  is a feature, so it is not started in the wind-down.
+* **S05 High.** Accessibility node ids and the platform side are positional and partial: a node id is (store,
+  row, position), so an insert before a node an assistive technology holds retargets it. The core's focus now
+  follows items (C05), but node ids need item identity: a key (or key and generation) per relation row, which
+  `Rel` does not have. No native adapter exists (NSAccessibility first, by the lead's provisional answer).
+* **C08 Medium.** Bubbling is by geometry (records under the point; key handlers containing the focused
+  record), because rows are flat and carry no lexical nesting. The element layer's parent position per site
+  (promised by expr) closes it: bubble along parents, keep geometry for the pick only. Tab is taken before any
+  handler, so an editor cannot receive it; that needs a key handler that can decline (a `Flow` return), and
+  key-up, repeat, function keys and cancellation are not in the API.
+* **Hover on a reused slot.** A hovered place that now shows another row is dropped from the hovered set without
+  its leave (its captures were overwritten with the new row's). Delivering the leave in the pass that releases
+  the slot would close it.
+
+Notes the lead asked for: what an author loses with a closure instead of a typed comparison
+(`.map(|s| if s == key { HI } else { LO })` against `sig!(x).eq(key).select(HI, LO)`): the accessibility
+projection cannot read a selected state from it; the raster cannot shade it (it is Turn stage, evaluated on the
+CPU into a record word); reflection refuses the record until the element layer creates closures outside `view`.
+
+## 9. The text editing seam (with the text lane's `TEXT-SEAM.md` part C), as agreed so far
+
+Not built; parked with this note. Everything is pulled by the accessibility projection at update time, nothing
+pushed: the projection already compares the words it read, so a caret or selection that lives in block words
+(the text lane's `CaretX`, and selection as two more words) makes a projection when it moves and an unchanged
+one costs nothing. What the projection needs from text: a line or text paint whose `Arch::val` gives the
+string (today `Val::Text` holds 12 bytes inline: it needs a handle variant into the text lane's memo), the
+field's selection named by a typed component on the field (not guessed from expressions), the composition
+range likewise, and the two geometry queries (`bounds_for_range`, `character_index_for_point`) called on demand
+from the line records. Assistive-technology edits (set value, set selection, insert at a range) go through
+`World::text` and a selection event kind that does not exist yet.
+
+## 10. Where the lane ends (2026-11-12)
+
+On `r8/surface` at the final commit (on top of r8/expr `a2a2687662`): reflection in the core (`reflect.rs`);
+events (`event.rs`, the event half of `world.rs`); the accessibility projection (`crates/bough-ax`); the probes
+and gates listed above; `events_x` (the event path's cost). Taken by expr into r8/expr at `054b83c929`:
+reflection and events up to `d2dbf6a248`; the rest is on this branch.
+
+What I would do next: the macOS NSAccessibility adapter on the portable model, with lazy children (the reason
+it comes before AccessKit); item keys in relations, so node ids, focus and presses name items; typed semantic
+components with the element layer; parent positions for bubbling; cold line counts on mothership; the text
+seam above.
+
+What I would not do again: plan an inspector UI before reflection existed in the core (section 1 was
+superseded within hours); trust a Rust type as the identity of rows described by a generic `view` (closures
+made it false); use a process-wide counter as a per-world condition (it made clicks fail under parallel tests
+and accessibility re-project for other worlds' edits); let an event path allocate "for now".
