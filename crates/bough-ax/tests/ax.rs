@@ -67,9 +67,9 @@ fn any_row_is_described_on_demand() {
     let mut ax = Ax::new();
     ax.update(&w, &s);
     let grid = ax.tree().one(|n| n.role == Role::Grid).id;
-    let before = w.root.stats();
+    let before = w.root().stats();
     let nodes = ax.rows(&w, &s, grid, 77_777..77_778);
-    assert_eq!(w.root.stats(), before, "nothing materialised");
+    assert_eq!(w.root().stats(), before, "nothing materialised");
     let row = nodes.iter().find(|n| n.role == Role::Row).unwrap();
     assert_eq!(row.row_index, Some(77_777));
     let cells: Vec<&Node> = nodes.iter().filter(|n| n.role == Role::Cell).collect();

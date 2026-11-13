@@ -147,12 +147,12 @@ fn reflection_is_tied_to_its_store_tree() {
     let a = A { u: U::default(), n: 0 };
     let mut wa = World::<Soft>::new(100, 100, 0);
     wa.mount(&a);
-    let r = Reflect::learn(&wa.root, &a);
+    let r = Reflect::learn(wa.root(), &a);
     let mut v = rows();
     let mut wb = World::<Soft>::new(100, 100, 2);
     wb.mount(&v);
     v.clicked = 0;
-    let _ = r.items(&wb.root, &wb.shown);
+    let _ = r.items(wb.root(), &wb.shown);
 }
 
 /// S01: a record whose type holds a closure is a different type in the reflecting sink's instantiation of
@@ -162,7 +162,7 @@ fn records_of_another_instantiation_are_refused() {
     let v = Moving { u: U::default(), clicks: 0 };
     let mut w = World::<Soft>::new(100, 100, 2);
     w.mount(&v);
-    let r = Reflect::learn(&w.root, &v);
+    let r = Reflect::learn(&w.root(), &v);
     assert_eq!(r.refused(), 1, "the outline's offset is a closure");
-    assert!(r.items(&w.root, &w.shown).is_empty());
+    assert!(r.items(&w.root(), &w.shown).is_empty());
 }

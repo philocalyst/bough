@@ -121,7 +121,7 @@ fn nothing_unexposed_exists() {
     let sheet = Sheet::new(10_000);
     let mut world = World::<Soft>::new(W, H, NWORDS);
     world.mount(&sheet);
-    let (records, _, bytes) = world.root.stats();
+    let (records, _, bytes) = world.root().stats();
     // 34 exposed rows of 22 records and under 40 fixed records
     assert!(records < 34 * 22 + 40, "{records} records for a window of 34 rows");
     assert!(bytes < 256 * 1024, "{bytes} bytes of columns");

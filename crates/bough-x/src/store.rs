@@ -744,7 +744,7 @@ impl Store {
 
     /// The same damage as the world's table walk, by walking the tree: the reference the table is held to
     /// (`tests/table.rs`), and what a caller without a world uses.
-    pub fn delta(&self, old: &U, new: &U, ch: u64, tiles: &mut Tiles) {
+    pub(crate) fn delta(&self, old: &U, new: &U, ch: u64, tiles: &mut Tiles) {
         if self.space.reads() & ch != 0 {
             // the space moved: everything it shows is somewhere else
             tiles.mark(self.space.clip);
@@ -823,8 +823,9 @@ impl Store {
         self.subs.iter().fold(self.reads, |m, s| m | s.reads_all())
     }
 
-    /// Paint everything, in the order the view described it.
-    pub fn paint<B: Backend>(&self, u: &U, b: &mut B) {
+    /// Paint everything, in the order the view described it. Crate-private (review C01): its columns were
+    /// described for one backend type, which only the world that owns the tree knows.
+    pub(crate) fn paint<B: Backend>(&self, u: &U, b: &mut B) {
         for p in &self.order {
             match *p {
                 Pass::Col(j) => {

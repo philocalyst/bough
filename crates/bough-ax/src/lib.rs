@@ -279,8 +279,8 @@ impl Ax {
         let shape = SHAPE.load(Ordering::Relaxed);
         let mut fresh_schema = false;
         if shape != self.shape {
-            if !self.refl.as_ref().is_some_and(|r| r.current(&w.root)) {
-                self.refl = Some(Reflect::learn(&w.root, v));
+            if !self.refl.as_ref().is_some_and(|r| r.current(&w.root())) {
+                self.refl = Some(Reflect::learn(&w.root(), v));
                 fresh_schema = true;
             }
             self.shape = shape;
@@ -337,13 +337,13 @@ impl Ax {
     /// Rows `rows` of a list node, described on demand: rows nobody materialised, with nothing written and
     /// nothing scrolled (what a screen reader's table navigation asks for).
     pub fn rows<V: View, B: Backend>(&mut self, w: &World<B>, v: &V, list: NodeId, rows: core::ops::Range<u32>) -> Vec<Node> {
-        if !self.refl.as_ref().is_some_and(|r| r.current(&w.root)) {
-            self.refl = Some(Reflect::learn(&w.root, v));
+        if !self.refl.as_ref().is_some_and(|r| r.current(&w.root())) {
+            self.refl = Some(Reflect::learn(&w.root(), v));
         }
         let mut p = Project::new(w, v, self.refl.as_ref().unwrap());
         let path = list.path();
         let Some(info) = p.r.root.at(&path) else { return Vec::new() };
-        let (SKind::List(_), Some(st)) = (&info.kind, w.root.at(&path)) else { return Vec::new() };
+        let (SKind::List(_), Some(st)) = (&info.kind, w.root().at(&path)) else { return Vec::new() };
         let grid = p.list_is_grid(&path, st.n);
         let ids = p.list_rows(&path, rows, grid, None);
         let mut out: Vec<Node> = Vec::new();
@@ -415,15 +415,15 @@ impl<'a, V: View, B: Backend> Project<'a, V, B> {
     fn run(&mut self) {
         let root = Path::default();
         let id = NodeId::of(&root, 0, 0, Tag::Window);
-        let mut win = Node::new(id, Role::Window, self.w.root.space.clip);
+        let mut win = Node::new(id, Role::Window, self.w.root().space.clip);
         // one walk of the stores: selection indicators anywhere, at rest, and the records of fixed shapes
         let u = self.u;
-        for it in self.r.items(&self.w.root, &u) {
+        for it in self.r.items(&self.w.root(), &u) {
             if it.kind() == "outline" {
                 self.rings.push(it.screen);
                 self.reads |= it.info.reads;
             }
-            let fixed = self.w.root.at(&it.ent.path).is_some_and(|s| s.cap == 1);
+            let fixed = self.w.root().at(&it.ent.path).is_some_and(|s| s.cap == 1);
             if fixed {
                 self.fixed.entry(p2(&it.ent.path)).or_default().push(it.snap());
             }
@@ -445,8 +445,8 @@ impl<'a, V: View, B: Backend> Project<'a, V, B> {
                 }
             }
         }
-        table(&self.w.root, &mut Path::default(), &mut 0, &mut self.places);
-        win.children = self.store(&self.r.root, &self.w.root, root);
+        table(&self.w.root(), &mut Path::default(), &mut 0, &mut self.places);
+        win.children = self.store(&self.r.root, &self.w.root(), root);
         self.tree.nodes.insert(id, win);
         self.tree.root = Some(id);
         self.headers();
@@ -520,7 +520,7 @@ impl<'a, V: View, B: Backend> Project<'a, V, B> {
         let mut snaps = Reflect::rows(self.v, &u, path, rows.clone());
         // rows come out in row order already; one pass splits them
         snaps.sort_by_key(|s| (s.ent.row, s.ent.pos));
-        let org = self.w.root.at(path).map_or((0, 0), |s| s.space.origin(&u));
+        let org = self.w.root().at(path).map_or((0, 0), |s| s.space.origin(&u));
         let mut out = Vec::new();
         let mut at = 0;
         for r in rows {
@@ -683,7 +683,7 @@ impl<'a, V: View, B: Backend> Project<'a, V, B> {
 
     /// The place of a record, if it is materialised.
     fn place(&self, path: &Path, row: u32, s: &Snap) -> Option<u32> {
-        let st = self.w.root.at(path)?;
+        let st = self.w.root().at(path)?;
         let site = st.sites.get(s.ent.pos as usize)?;
         let slot = if st.cap == 1 { 0 } else if row >= st.lo && row < st.hi { row % st.cap } else { return None };
         let c = *self.places.get(&(p2(path), site.col))?;

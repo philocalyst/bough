@@ -239,7 +239,7 @@ fn main() {
                 w.settle(a);
             }
         });
-        let (rec, _, bytes) = w.root.stats();
+        let (rec, _, bytes) = w.root().stats();
         println!("# rows={n}: {rec} records, {bytes} bytes of columns");
     }
 }

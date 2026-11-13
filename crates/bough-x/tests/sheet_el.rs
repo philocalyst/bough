@@ -115,7 +115,7 @@ fn facade_sheet_short() {
 #[test]
 fn nothing_unexposed_exists() {
     let app = App::<Sheet, Soft>::new(*Sheet::with_rows(10_000), W, H, SCALE);
-    let (records, _, bytes) = app.world.root.stats();
+    let (records, _, bytes) = app.world.root().stats();
     // 35 exposed rows of 22 records and under 60 fixed records
     assert!(records < 36 * 22 + 60, "{records} records for a window of 35 rows");
     assert!(bytes < 320 * 1024, "{bytes} bytes of columns");

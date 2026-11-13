@@ -150,8 +150,8 @@ fn row_pt(v: &Inbox, r: i32) -> (i32, i32) {
     (500, TOP + r * ROW_H - v.u.get::<Scroll>() + ROW_H / 2)
 }
 fn place_of_row(w: &mut World<Soft>, v: &Inbox, r: u32) -> u32 {
-    let refl = Reflect::learn(&w.root, v);
-    let it = refl.items(&w.root, &w.shown).into_iter().find(|i| i.ent.path.n == 2 && i.ent.row == r && i.kind() == "fill").expect("row exposed");
+    let refl = Reflect::learn(&w.root(), v);
+    let it = refl.items(&w.root(), &w.shown).into_iter().find(|i| i.ent.path.n == 2 && i.ent.row == r && i.kind() == "fill").expect("row exposed");
     let (path, col, rec) = (it.ent.path, it.col, it.rec);
     w.place(&path, col, rec)
 }
@@ -241,8 +241,8 @@ fn keys_and_text_go_to_the_focused_record() {
     assert_eq!(v.u.get::<Theme>(), 1, "typing 't' into the field did not toggle the theme");
     // the field's row was re-described: reflection reads the new text off the stores
     w.settle(&v);
-    let refl = Reflect::learn(&w.root, &v);
-    let field = refl.items(&w.root, &w.shown).into_iter().find(|i| i.kind() == "label" && i.ent.path.n == 1).unwrap();
+    let refl = Reflect::learn(&w.root(), &v);
+    let field = refl.items(&w.root(), &w.shown).into_iter().find(|i| i.kind() == "label" && i.ent.path.n == 1).unwrap();
     assert_eq!(field.text().unwrap(), "hi");
     // pressing the background focuses the window (its key handler makes it a tab stop); the field lost focus
     let before = w.shown.w[U_FOCUS];
@@ -416,7 +416,7 @@ fn overlapping_records_of_one_column() {
     let mut v = Nest { u: U::default(), log: Vec::new() };
     let mut w = World::<Soft>::new(W, H, 1);
     w.mount(&v);
-    assert_eq!(w.root.cols.len(), 1, "one column for both");
+    assert_eq!(w.root().cols.len(), 1, "one column for both");
     w.pointer(&mut v, 120, 60);
     assert_eq!(v.log, ["hover 1 true", "hover 0 true"], "both entered, the upper first");
     v.log.clear();

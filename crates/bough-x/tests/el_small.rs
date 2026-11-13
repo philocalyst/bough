@@ -63,7 +63,7 @@ fn script(once: bool) {
     let mut retained = Soft::new(W, H);
     let tag = if once { "once" } else { "redescribe" };
     check(tag, 0, &mut app, &mut retained);
-    let (records, _, _) = app.world.root.stats();
+    let (records, _, _) = app.world.root().stats();
     assert!(records < 80, "{records} records exist for 5,000 rows: exposure is not what is paid for");
     let mut x = 0x2545_f491_4f6c_dd1du64;
     let mut rnd = |m: u64| {

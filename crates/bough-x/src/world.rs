@@ -30,8 +30,10 @@ struct Focused {
 }
 
 pub struct World<B> {
-    /// Boxed: the column table points into the tree, and the world itself may be moved.
-    pub root: Box<Store>,
+    /// Boxed: the column table points into the tree, and the world itself may be moved. Private (review C01):
+    /// its columns' descriptors were made for `B` and for the view mounted; outside code reads it through
+    /// [`World::root`] and changes it only through the world's own passes.
+    root: Box<Store>,
     /// The block as of the last settle: what the pixels on screen were shaded with.
     pub shown: U,
     pub tiles: Tiles,
@@ -56,7 +58,7 @@ pub struct World<B> {
     shape: u32,
     /// The fields of the root view the block's words are gathered from, when the view keeps its Frame state
     /// as its own fields (learned from the columns' lenses; empty for a view that declares a block).
-    pub slots: Vec<Slot>,
+    pub(crate) slots: Vec<Slot>,
     /// The clock (`tick`'s argument). The raster's `Time` runs ahead of it under reduced motion.
     clock: u32,
     /// The pointer, and the places under it whose handlers hear hover, bottom first.
@@ -104,6 +106,20 @@ impl<B: Backend> World<B> {
     pub fn changed_words<V: View>(&self, v: &V) -> u64 {
         let mut scratch = U::default();
         self.shown.diff(v.gathered(&self.slots, &mut scratch), self.nwords) & !HOT
+    }
+    /// The store tree, to read (statistics, reflection, accessibility).
+    #[inline(always)]
+    pub fn root(&self) -> &Store {
+        &self.root
+    }
+    /// The damage the block going from `old` to `new` (`ch`: the changed words) gives, by a walk of the store
+    /// tree, into `into` (or the world's own damage): the reference the world's delta (through its column
+    /// table) is compared with. Records in transition take over from `old` as in a turn.
+    pub fn tree_delta(&mut self, old: &U, new: &U, ch: u64, into: Option<&mut Tiles>) {
+        match into {
+            Some(t) => self.root.delta(old, new, ch, t),
+            None => self.root.delta(old, new, ch, &mut self.tiles),
+        }
     }
     /// Device pixels per point. Set before the first mount; a change afterwards is a re-description.
     pub fn set_scale(&mut self, scale: f32) {

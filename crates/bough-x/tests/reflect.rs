@@ -31,10 +31,10 @@ fn mounted(rows: usize) -> (Sheet, World<Soft>) {
 #[test]
 fn the_walk_is_the_stores() {
     let (sheet, world) = mounted(10_000);
-    let r = Reflect::learn(&world.root, &sheet);
-    assert!(r.current(&world.root));
-    let items = r.items(&world.root, &world.shown);
-    let (records, _, _) = world.root.stats();
+    let r = Reflect::learn(&world.root(), &sheet);
+    assert!(r.current(&world.root()));
+    let items = r.items(&world.root(), &world.shown);
+    let (records, _, _) = world.root().stats();
     assert_eq!(items.len(), records, "one item per live record");
     for it in &items {
         assert!(!it.info.ops.is_empty(), "{} describes its operands", it.kind());
@@ -49,10 +49,10 @@ fn the_walk_is_the_stores() {
 #[test]
 fn pick_a_cell_and_read_it() {
     let (sheet, world) = mounted(10_000);
-    let r = Reflect::learn(&world.root, &sheet);
+    let r = Reflect::learn(&world.root(), &sheet);
     let (row, col) = (3u32, 2usize);
     let (x, y) = (GUTTER + col as i32 * CELL_W + 50, BODY.y0 + row as i32 * CELL_H + 10);
-    let stack = r.stack(&world.root, &world.shown, x, y);
+    let stack = r.stack(&world.root(), &world.shown, x, y);
     let kinds: Vec<_> = stack.iter().map(|i| i.kind()).collect();
     assert_eq!(&kinds[..2], ["num", "fill"], "the number over its cell's fill; then whatever is below ({kinds:?})");
     let top = &stack[0];
@@ -77,8 +77,8 @@ fn pick_a_cell_and_read_it() {
 #[test]
 fn locations_are_the_views_lines() {
     let (sheet, world) = mounted(100);
-    let r = Reflect::learn(&world.root, &sheet);
-    let items = r.items(&world.root, &world.shown);
+    let r = Reflect::learn(&world.root(), &sheet);
+    let items = r.items(&world.root(), &world.shown);
     let label = |t: &str| items.iter().find(|i| i.kind() == "label" && i.text().as_deref() == Some(t)).unwrap();
     assert_eq!(label("C").location().line(), line_of("s.row(", 0), "a header label: the first row of the view");
     assert_eq!(label("Σ").location().line(), line_of("s.row(", 2), "the footer");
@@ -91,12 +91,12 @@ fn locations_are_the_views_lines() {
 #[test]
 fn rows_nobody_materialised_are_described_on_demand() {
     let (sheet, world) = mounted(10_000);
-    let r = Reflect::learn(&world.root, &sheet);
+    let r = Reflect::learn(&world.root(), &sheet);
     let (path, list, _) = r.lists()[0].clone();
     assert_eq!(list.n, 10_000);
-    let before = world.root.stats();
+    let before = world.root().stats();
     let snaps = Reflect::rows(&sheet, &world.shown, &path, 5_000..5_002);
-    assert_eq!(world.root.stats(), before, "nothing was materialised");
+    assert_eq!(world.root().stats(), before, "nothing was materialised");
     assert_eq!(snaps.len(), 2 * (2 + 2 * COLS));
     for s in &snaps {
         assert_eq!(s.ent.path, path);
@@ -108,7 +108,7 @@ fn rows_nobody_materialised_are_described_on_demand() {
         assert_eq!(s.rect, list.shape[c].shift((list.x, list.y + s.ent.row as i32 * list.row_h)));
     }
     // a row that is materialised describes the same way from the stores and from the view
-    let stored: Vec<_> = r.items(&world.root, &world.shown).into_iter().filter(|i| i.ent.path == path && i.ent.row == 7).map(|i| i.snap()).collect();
+    let stored: Vec<_> = r.items(&world.root(), &world.shown).into_iter().filter(|i| i.ent.path == path && i.ent.row == 7).map(|i| i.snap()).collect();
     let mut fresh = Reflect::rows(&sheet, &world.shown, &path, 7..8);
     let mut stored = stored;
     stored.sort_by_key(|s| s.ent.pos);
@@ -119,22 +119,22 @@ fn rows_nobody_materialised_are_described_on_demand() {
 #[test]
 fn an_entity_survives_scrolling() {
     let (mut sheet, mut world) = mounted(10_000);
-    let r = Reflect::learn(&world.root, &sheet);
+    let r = Reflect::learn(&world.root(), &sheet);
     let e = Ent { path: r.lists()[0].0, row: 3, pos: 5 };
-    let v0 = r.find(&world.root, &world.shown, e).unwrap().get("value").unwrap().val;
-    let s0 = r.find(&world.root, &world.shown, e).unwrap().screen;
+    let v0 = r.find(&world.root(), &world.shown, e).unwrap().get("value").unwrap().val;
+    let s0 = r.find(&world.root(), &world.shown, e).unwrap().screen;
     sheet.scroll_by(CELL_H);
     world.settle(&sheet);
-    let it = r.find(&world.root, &world.shown, e).unwrap();
+    let it = r.find(&world.root(), &world.shown, e).unwrap();
     assert_eq!(it.get("value").unwrap().val, v0);
     assert_eq!(it.screen, s0.shift((0, -CELL_H)));
     // past the ring's capacity, a row's slot is not its index: row 75 lives at slot 11
     sheet.scroll_by(69 * CELL_H);
     world.settle(&sheet);
     let e75 = Ent { row: 75, ..e };
-    let it = r.find(&world.root, &world.shown, e75).expect("row 75 is exposed");
+    let it = r.find(&world.root(), &world.shown, e75).expect("row 75 is exposed");
     assert_eq!(it.get("value").unwrap().val, Val::Num(cents(value(75, 1)), 2));
-    assert!(r.find(&world.root, &world.shown, e).is_none(), "scrolled out: not materialised");
+    assert!(r.find(&world.root(), &world.shown, e).is_none(), "scrolled out: not materialised");
     let s = Reflect::rows(&sheet, &world.shown, &e.path, 3..4);
     assert_eq!(s.iter().find(|s| s.ent == e).unwrap().get("value"), Some(v0));
 }
@@ -145,23 +145,23 @@ fn an_entity_survives_scrolling() {
 fn thin_inspector() {
     let (mut sheet, mut world) = mounted(10_000);
     world.tiles.clear();
-    let r = Reflect::learn(&world.root, &sheet);
+    let r = Reflect::learn(&world.root(), &sheet);
     // pick: the header of column D, its label on top
     let (x, y) = (GUTTER + 3 * CELL_W + 20, TOOLBAR + 10);
-    let stack = r.stack(&world.root, &world.shown, x, y);
+    let stack = r.stack(&world.root(), &world.shown, x, y);
     let head = stack.iter().find(|i| i.kind() == "fill").unwrap();
     assert!(head.info.hears, "the header fill has a pointer handler");
     assert_eq!(head.location().line(), line_of("s.row(", 0));
     // theme: who reads the word, now
     let old = world.shown;
-    let deps: Vec<_> = r.items(&world.root, &world.shown).into_iter().filter(|i| i.info.reads & (1 << Theme::SLOT) != 0).map(|i| (i.ent, i.screen.and(i.clip), i.get("color").map(|o| o.val))).collect();
+    let deps: Vec<_> = r.items(&world.root(), &world.shown).into_iter().filter(|i| i.info.reads & (1 << Theme::SLOT) != 0).map(|i| (i.ent, i.screen.and(i.clip), i.get("color").map(|o| o.val))).collect();
     assert!(deps.len() > 500);
-    let quiet: Vec<_> = r.items(&world.root, &world.shown).into_iter().filter(|i| i.info.reads & (1 << Theme::SLOT) == 0).map(|i| (i.ent, i.ops().map(|o| o.val).collect::<Vec<_>>())).collect();
+    let quiet: Vec<_> = r.items(&world.root(), &world.shown).into_iter().filter(|i| i.info.reads & (1 << Theme::SLOT) == 0).map(|i| (i.ent, i.ops().map(|o| o.val).collect::<Vec<_>>())).collect();
     // write the word, as an inspector would: a plain store into the block
     sheet.u.set::<Theme>(1);
     world.settle(&sheet);
     let new = world.shown;
-    let items = r.items(&world.root, &world.shown);
+    let items = r.items(&world.root(), &world.shown);
     let mut changed = 0;
     for (e, rect, c0) in &deps {
         let it = items.iter().find(|i| i.ent == *e).unwrap();
@@ -187,9 +187,9 @@ fn a_moving_record_says_where_its_paint_puts_it() {
     sheet.select(3 * COLS as u32 + 2, world.now());
     world.settle(&sheet);
     world.tick(1_000); // the glide is over
-    let r = Reflect::learn(&world.root, &sheet);
+    let r = Reflect::learn(&world.root(), &sheet);
     let u = world.shown;
-    let o = r.items(&world.root, &u).into_iter().find(|i| i.kind() == "outline").unwrap();
+    let o = r.items(&world.root(), &u).into_iter().find(|i| i.kind() == "outline").unwrap();
     let s = o.snap();
     assert_eq!(s.off, (2 * CELL_W, 3 * CELL_H), "the offset of cell (3, C) from cell (0, A)");
     assert_eq!(o.screen, s.rect.shift((0, BODY.y0)).shift(s.off));
