@@ -104,9 +104,11 @@ impl StatePage {
     }
 }
 
-/// State pages by page id: chunks of 64, created on first use and never moved or returned.
+/// State pages by page id: chunks of 64, created on first use and never moved or returned. Crate-private, and
+/// every access checks that the page's chunk exists (review O01: `StatePool::default().get(0)` was a safe call
+/// that dereferenced a chunk that did not exist).
 #[derive(Default)]
-pub struct StatePool {
+pub(crate) struct StatePool {
     /// Chunk `c` holds the state pages of page ids `64c .. 64c + 64`; null until one of them has state.
     chunks: Vec<*mut [StatePage; 64]>,
 }
@@ -123,19 +125,26 @@ impl Drop for StatePool {
 }
 
 impl StatePool {
-    /// The state page of page `id`. Precondition (the page's `state` byte is set, or `has(id)`): its
-    /// chunk exists.
+    /// The state page of page `id`, whose chunk exists (the page's `state` byte is set, or `has(id)`): a page
+    /// without state is a caller's error, refused here.
     #[inline(always)]
     pub fn get(&self, id: u32) -> &StatePage {
-        debug_assert!(self.has(id));
-        // SAFETY: the precondition: `ensure(id)` ran, so the chunk index is in range and the chunk is live.
-        unsafe { &(**self.chunks.get_unchecked(id as usize >> 6))[id as usize & 63] }
+        let c = self.chunk(id);
+        // SAFETY: `chunk` returned a non-null chunk made by `grow` (Box::into_raw), live until the pool drops.
+        unsafe { &(*c)[id as usize & 63] }
     }
     #[inline(always)]
     pub fn get_mut(&mut self, id: u32) -> &mut StatePage {
-        debug_assert!(self.has(id));
+        let c = self.chunk(id);
         // SAFETY: as in `get`; &mut self is exclusive.
-        unsafe { &mut (**self.chunks.get_unchecked(id as usize >> 6))[id as usize & 63] }
+        unsafe { &mut (*c)[id as usize & 63] }
+    }
+    /// The chunk of page `id`; panics if it was never made.
+    #[inline(always)]
+    fn chunk(&self, id: u32) -> *mut [StatePage; 64] {
+        let c = self.chunks.get(id as usize >> 6).copied().unwrap_or(core::ptr::null_mut());
+        assert!(!c.is_null(), "state of page {id}, which has none");
+        c
     }
     #[inline]
     pub fn ensure(&mut self, id: u32) -> &mut StatePage {
@@ -158,5 +167,24 @@ impl StatePool {
     }
     pub fn heap_bytes(&self) -> usize {
         self.chunks.iter().filter(|c| !c.is_null()).count() * core::mem::size_of::<[StatePage; 64]>() + self.chunks.capacity() * 8
+    }
+}
+
+#[cfg(test)]
+mod review {
+    use super::StatePool;
+    /// Review O01: the state of a page that has none was an unchecked dereference behind a safe call; it is
+    /// refused, with or without a neighbouring chunk.
+    #[test]
+    #[should_panic(expected = "which has none")]
+    fn state_of_a_page_without_state_is_refused() {
+        let _ = StatePool::default().get(0);
+    }
+    #[test]
+    #[should_panic(expected = "which has none")]
+    fn state_past_the_made_chunks_is_refused() {
+        let mut p = StatePool::default();
+        p.ensure(3);
+        let _ = p.get_mut(64 * 5);
     }
 }
