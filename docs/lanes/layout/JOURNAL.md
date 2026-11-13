@@ -76,3 +76,207 @@ against the cephal oracle, with compile time and code size per distinct row type
 * Validity is tracked as the function runs: every definite size carries whether it is independent of the
   available size, equal to it plus a constant, or some other function of it. A decision on a size of the second
   kind narrows the interval exactly; any use of the third kind in an emitted rect makes the interval a point.
+
+## 4. What was built, in order, and what each form measured
+
+Crate `crates/bough-lay` (depends on `bough-expr`; `vendor/cephal` and `bough-mem` as dev-dependencies).
+All numbers: M3 Pro, `dist`, `crates/bough-lay/examples/rows.rs`, instructions and cycles per row, median of 15
+batches, load average 17 to 35 (instructions do not depend on it). No cache or branch-miss counters: nothing of
+this lane ran on ilo-prod or mothership (section 8).
+
+### 4.1 The flex arithmetic, against the solver (kept)
+
+`src/flex.rs`: single-line flexbox written generically over a container's children (`Kids`, `Pass`), in
+cephal's operation order. `src/val.rs`: every size carries how it depends on the available size (independent,
+equal to it plus a constant, some other function), a decision on a dependent size narrows the answer's
+validity interval, an emitted rect that depends on it makes the interval a point. `tests/oracle.rs` gives the
+same style tree to `vendor/cephal` and demands equal integer rects.
+
+**L3 holds, L4 holds.** 4,000 random trees x 8 widths, with and without wrapping leaves: equal rects and
+heights; 384,000 widths sampled inside returned intervals lay out identically; 41 % of answers hold over more
+than one pixel. The scenes' rows: the sheet row at 6 widths, 400 IDE lines x 3 widths, 400 chat rows x 4
+widths. Mutants `mutant_gap` (the flex line forgets a gap) and `mutant_valid` (decisions do not narrow the
+interval): see section 7.
+
+What matching the solver took, each found as a failing seed: distributed justification falls back to the start
+when there is no free space; a minimum applies to a container's content size but not to a childless box's;
+content minimums apply when grow factors sum below one (a target can come out under its basis); a row of
+unknown width in definite space shrinks to fit, with its min-content width as the floor; a column of unknown
+width gives its stretched items its fit-content width; an item reports at least its padding across its own
+cross axis and the solver advances by that; the space handed to an item is for its border box (margins come
+off once, in the parent); float association in offsets.
+
+Excluded from the generator, by design and stated (review L04): a percentage of an indefinite size. The case
+that showed why: a percentage child of a content-sized row that shrinks to fit, measured for height by a
+column parent. The solver lays the row out at its fit-content width first; a single measure cannot. Also not
+generated: baseline alignment, wrap, aspect ratios, percentage padding, a real text measure (the leaves are
+stand-ins with the agreed `Measure` contract).
+
+### 4.2 Monomorphised `place` per row type (refuted)
+
+The form the brief asked for: `Lay` implemented for the builder's types, `place` inlined down the tree.
+
+| cell | instructions | cycles | prediction / kill | verdict |
+|---|---:|---:|---|---|
+| sheet row, 22 rects | 25,486 | 5,771 | at most 150 / above 400 | **killed** |
+| ide line, 10 rects | 4,801 | 974 | | |
+| chat row | 56,086 | 19,495 | at most 600 / above 5,000 | **killed** |
+| chat row, size only | 23,610 | 7,664 | | |
+| copy of a kept slice of 22 rects (what the expr lane does) | 203 | 50 | | |
+
+The compiler did not fold a general algorithm into constants: items of a line were a stack array with a
+run-time count walked by slice loops, so each of the row's 13 containers cost about 2,000 instructions,
+cephal's own figure per flex run. Typing removed the tree and the caches, not the work.
+
+Compile time: with `size` inlined the chat row type did not finish compiling in 12 minutes (a size question
+nests four ways per level: basis, content minimum, cross size, fit-content width). With a container's `size`
+as a never-inlined function it built, at this cost per row type (`bench/r8/lay_compile.sh`, user seconds and
+`__text` over an example with no row):
+
+| row type | user s | `__text` |
+|---|---:|---:|
+| sheet | +13.4 | +498 KB |
+| ide | +4.1 | +199 KB |
+| chat | +203.8 | +2,748 KB |
+
+**L5 killed** (kill: above 0.15 s or 10 KB per type).
+
+### 4.3 The same with the items as a tuple in the type (refuted)
+
+One attempt, boxed by the lead at 1,000 instructions for the sheet row: `Kids::St` is a tuple shaped like the
+children, every pass a tuple recursion, the freeze loop copies to a slice on its cold path only. Sheet row
+28,611 instructions (7,959 cycles), ide line 6,021, chat row 58,794. Worse than 4.2. **Killed.** Not pursued:
+the disassembly was not read, so *why* the tuple form does not fold is not established; the suspicion is the
+arrays of children built by `from_fn` and the dependence bookkeeping in every size.
+
+### 4.4 Layout as data, one layout function, a memo (kept; what is on the branch)
+
+`src/shape.rs`. The type does only what it measured as good at: the builder calls become a flat array of
+24-word elements (`Nd`) in depth-first order, by code that is a few stores per element (`Shape::emit`). The
+flex arithmetic of 4.1 is instantiated **once**, for a cursor into that array (`At`), so it is one body for
+every row type of a program. A row's shape is the hash of its words; `Memo` keeps the rects of the last shape
+a list laid out with their validity interval; a row of the same shape at a width inside it is a copy.
+
+| cell | instructions | cycles |
+|---|---:|---:|
+| sheet row: shape, memo hit, copy | 2,850 | 2,839 |
+| of which the shape (hash of 23 elements) | 2,677 | 2,806 |
+| sheet row: copy of a kept slice | 200 | 45 |
+| sheet row: memo miss (words + layout) | 52,730 | 12,393 |
+| ide line: shape + layout, every line its own | 12,657 | 4,419 |
+| ide line: the shape alone | 1,100 | 1,277 |
+| chat row: words + layout | 91,359 | 28,719 |
+| chat row: size only | 38,554 | 11,740 |
+| sheet row through cephal, tree built each time | 346,420 | 94,749 |
+| sheet row through cephal, kept tree, a new width | 21,600 | 4,090 |
+| chat row through cephal, tree built each time | 298,739 | 81,709 |
+| chat row through cephal, kept tree, a new width | 87,079 | 29,287 |
+
+Compile cost per row type: sheet +0.21 s and +4.7 KB, ide +0.54 s and +3.5 KB, chat +0.44 s and +17.1 KB
+(against 13 to 204 s and 0.2 to 2.7 MB in 4.2). L5 is still missed by its own line (0.15 s, 10 KB) for the
+chat row; it is three orders better than the form it replaces.
+
+What these numbers say, plainly:
+
+* **The hit path is not what was hoped.** The prediction was that the hash is a compile-time constant where
+  the author's values are literals, so a hit costs a compare. It is not folded: 2,677 instructions per row to
+  hash 23 elements. A memo hit is therefore 14x the copy it guards. For a list whose row type is `Hk::Fixed`
+  the usable form today is the expr lane's: lay the first row out, keep the slice, copy it for the others,
+  with the shape checked once per list pass and not per row. That check is not sound if the author varies a
+  value per row; making it sound without the per-row hash is open (section 9).
+* **The miss path is the general solver's speed, not better.** One body over a flat array costs 52,730 for
+  the sheet row, 2.4x cephal with a kept tree (21,600), and 91,359 for a chat row, the same as cephal with a
+  kept tree (87,079). It is 3.3 to 6.6x cheaper than cephal building its tree each time, and it keeps nothing
+  per row (no tree, no node caches), which is what "nothing unexposed exists" needs. It is not a win over a
+  retained solver in instructions.
+* **The earlier chat figure for cephal with a kept tree (1,645) was a measuring error** (the widths repeated
+  across batches, so the tree was unchanged after the first); 87,079 is at a width no row had seen.
+* **For chat rows the validity interval is a point at every width**: 0.0 % of 102,400 (row, one-pixel step)
+  pairs were a range check, because the bubble is 74 % of a column that follows the list's width, so a rect
+  changes at every pixel. The interval still tells the text leaf its line structure holds. The review's L05 is
+  right that an equality interval is the wrong derivative here: the arrangement (which items froze, where
+  lines break) holds over a range while the rects move affinely inside it. Not built.
+
+### 4.5 Extents (kept, with a standing finding)
+
+`src/extent.rs`. `Uniform` (rows of one height; `new` refuses a height that is not positive) and `Heights`
+(a blocked prefix sum, 64 rows per block: exact for measured rows, the rounded mean for the others, per-row and
+per-block validity intervals, insert and remove). After the review's **L03**: logical coordinates are `i64`
+(`top`, `row_at`, `total`), `window(y, h)` hands the list a viewport-local 32-bit frame, heights are
+validated. `tests/extent.rs`: a hundred million rows of 44 pixels; 40 cases x 300 random sets, inserts and
+removes against a plain model; the interval scan reports exactly the rows outside their interval. Writing that
+model test found two defects in the first `Heights` (insert and remove left stale summaries; the estimate did
+not return to its initial value when the last measured row was removed).
+
+**L02 stands.** `Heights` stores a height and two interval bounds for every logical row, measured or not (12
+bytes per row), an insert or remove at the front moves all three lanes, and a change of the mean recomputes
+every block top. It is proportional to rows, not to exposure. What would close it is the review's proposal,
+which I agree with: uniform spans as count x height, measured rows as sparse exceptions in a Fenwick or
+blocked summary, so storage follows what was measured. Not built. L9 and L10 (instruction counts of `row_at`,
+insert, and the scroll conversion) were not measured.
+
+## 5. Predictions against results
+
+| # | prediction | result |
+|---|---|---|
+| L1 | sheet row `place` at most 150, kill above 400 | **killed**: 25,486 monomorphised, 28,611 with tuple state; 2,850 for a memo hit in the kept form |
+| L2 | chat row `place` at most 600, kill above 5,000 | **killed**: 56,086 monomorphised; 91,359 in the kept form |
+| L2b | the same trees through cephal | reported in 4.4 |
+| L3 | typed == cephal on scene rows and random trees; a mutant fails | holds (section 7 for the mutants) |
+| L4 | every width inside an interval lays out the same; a mutant fails | holds |
+| L5 | at most 0.05 s and 3 KB per row type, kill above 0.15 s or 10 KB | **killed** for the monomorphised form (4 to 204 s); missed for the kept form (0.21 to 0.54 s, 3.5 to 17 KB) |
+| L6 | sheet scroll-a-page within 1.1x of 30,062 | **not measured**: nothing of this lane is wired into `bough-x` |
+| L7 | sheet mount and resize step | **not measured**, same reason |
+| L8 | ide and chat resize steps | **not measured** end to end; per row, a chat row costs 91,359 per width, so 15 exposed rows are about 1.4 M per step against the façade's 181 M for 2,000 |
+| L9, L10 | extents' instruction counts | **not measured** |
+
+## 6. What is not done
+
+* **Nothing is integrated.** `bough-x`'s lists still take a slice and a row height; the e2e binary still places
+  boxes by arithmetic. The deliverable "the sheet, ide and chat scenes' layout on the new core" is not met:
+  what exists is the three scenes' *row shapes*, laid out and checked against the solver, in a crate beside
+  the core.
+* No measurement on ilo-prod or mothership: no L1/L2 or branch-miss numbers exist for anything here.
+* The holds / moved / changed classification of a resize step is a design in `docs/r8/LAYOUT-SEAM.md`, not
+  code.
+* `guess(w)` for unmeasured rows, pending measurements, the (row, offset) scroll anchor: agreed with the text
+  lane and the lead, not built. `Extent::anchor` and `window` are the only parts that exist.
+* Fixed (window-level) rows, scroll ports and nested lists are not expressed in `bough-lay` at all.
+
+## 7. Gates and how to run them
+
+    cargo test --release -p bough-lay                          # extent model tests; oracle, 10,000 trees by default
+    LAY_TREES=2000 cargo test --release -p bough-lay --test oracle
+    cargo test --release -p bough-lay --test oracle --features mutant_gap     # must fail
+    cargo test --release -p bough-lay --test oracle --features mutant_valid   # must fail
+    cargo run --profile dist -p bough-lay --example rows       # section 4.4's table
+    bench/r8/lay_compile.sh dist                               # compile cost per row type
+
+Both mutants fail, each in both tests (run at `LAY_TREES=1000` on the kept form): `mutant_gap` at seed 1 of
+the random trees and at chat row 0; `mutant_valid` at seed 17 (a width inside an unbounded interval lays out
+differently) and in the sheet row's memo (a kept answer reused at a width it does not hold for).
+
+## 8. Hosts
+
+Everything ran on the Mac. ilo-prod was probed once (to find a checkout to clone from) and nothing was built
+or left there; no directory under `/root/work/r8/layout` exists; the rex blocks the helper opened were closed
+by it. mothership was not used.
+
+## 9. Next, and what not to do again
+
+Would do next, in order:
+1. Wire `Memo` and `Extent` into `bough-x`'s list (`place` into the lanes on a miss, the kept slice on a hit,
+   the interval as the resize check) and measure L6 to L8 there and in the e2e binary. Expected: the sheet
+   unchanged within noise for a `Hk::Fixed` row type checked once per pass; a chat resize step about 1.4 M.
+2. Make the shape check free where it can be: hash only the words that vary (a `const` hash of the literal
+   part, when the row is built in a `const` context or by a build step), or have the element type carry a
+   `const` shape for parts built from `const` recipes. Measure before believing it folds.
+3. The review's L05: keep the arrangement (frozen set, line breaks) with its breakpoints and re-evaluate rects
+   by affine terms, so a chat row inside one arrangement costs arithmetic and not 91,359.
+4. The review's L02: sparse exceptions over uniform spans.
+5. Read the disassembly of the tuple form before concluding anything about typed layout beyond "these two
+   forms did not fold".
+
+Would not do again: predict that a compiler will constant-fold an algorithm with loops, optional values and
+float decisions because its inputs are literals, and build a crate on that before reading one function's
+assembly. The 203-instruction copy was measurable on the first afternoon.

@@ -505,3 +505,68 @@ impl Memo {
         self.h
     }
 }
+
+/// Why an element has the size it has on one axis, read from its layout words. For reflection (the inspector,
+/// tests): never called on the path that lays out, and not instantiated unless something asks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Why {
+    /// A length the author wrote, in points.
+    Fixed(f32),
+    /// A fraction of the parent's inner size.
+    Fraction(f32),
+    /// Takes a share of the parent's free space on its main axis, with this factor.
+    Grows(f32),
+    /// Stretched to the parent's line across its cross axis.
+    Stretched,
+    /// As large as its content.
+    Content,
+    /// An optional child that is not there.
+    Absent,
+}
+/// One element of a row, for reflection: its properties and why it is as wide and as tall as it is.
+#[derive(Clone, Copy, Debug)]
+pub struct Reflected {
+    pub spec: Spec,
+    pub depth: u16,
+    pub painted: bool,
+    pub why: [Why; 2],
+}
+/// Every element of `t`, depth first, with the reason for its size on each axis.
+pub fn reflect<T: Shape>(t: &T) -> Vec<Reflected> {
+    let f = Flat::of(t);
+    let mut out = Vec::with_capacity(f.n);
+    // (parent's direction, parent's default alignment, depth, elements left under it)
+    let mut stack: Vec<(bool, Option<Align>, u16, u16)> = Vec::new();
+    for i in 0..f.n {
+        // SAFETY: an element the sink wrote.
+        let (sp, m) = (unsafe { f.spec[i].assume_init() }, f.meta[i]);
+        let (pcol, pitems, depth) = match stack.last() {
+            Some(&(c, a, d, _)) => (c, a, d),
+            None => (true, None, 0),
+        };
+        let stretch = sp.self_align.or(pitems).unwrap_or(Align::Stretch) == Align::Stretch;
+        let why = |axis: usize| {
+            if m.kind == K_GONE as u8 {
+                return Why::Absent;
+            }
+            match if axis == 0 { sp.w } else { sp.h } {
+                Dim::Pt(v) => Why::Fixed(v),
+                Dim::Pct(v) => Why::Fraction(v),
+                Dim::Auto if (pcol as usize == axis) && sp.grow > 0.0 => Why::Grows(sp.grow),
+                Dim::Auto if (pcol as usize != axis) && stretch => Why::Stretched,
+                Dim::Auto => Why::Content,
+            }
+        };
+        out.push(Reflected { spec: sp, depth, painted: m.painted, why: [why(0), why(1)] });
+        if let Some(top) = stack.last_mut() {
+            top.3 -= 1;
+        }
+        if m.kind == K_BOX as u8 && m.count > 0 {
+            stack.push((sp.column, sp.items, depth + 1, m.count));
+        }
+        while matches!(stack.last(), Some(&(_, _, _, 0))) {
+            stack.pop();
+        }
+    }
+    out
+}

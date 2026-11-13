@@ -348,3 +348,14 @@ fn scene_rows_match_the_solver() {
         assert_eq!(hk(&c), Hk::Wraps);
     }
 }
+
+#[test]
+fn reflection_reads_why_from_the_words() {
+    use bough_lay::shape::{Why, reflect};
+    let r = reflect(&rows::sheet_row(3));
+    assert_eq!(r.len(), 1 + 2 + 1 + 20);
+    assert_eq!(r[0].why, [Why::Stretched, Why::Content], "the row: as wide as the list, as tall as its cells");
+    assert_eq!(r[1].why, [Why::Fixed(56.0), Why::Fixed(22.0)], "the gutter: two literals");
+    assert_eq!(r[2].why, [Why::Stretched, Why::Grows(1.0)], "the number: its box's content box");
+    assert!(r[1].painted && r[1].depth == 1 && r[2].depth == 2);
+}
