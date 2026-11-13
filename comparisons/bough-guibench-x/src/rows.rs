@@ -2,7 +2,7 @@
 //!
 //! The two scenarios are one view. A list is a window on a relation: only exposed rows exist, at any count, so
 //! there is no virtual-list variant to write (ROUND7 Amendment 2).
-use crate::{Geo, NONE, spec};
+use crate::{Geo, NONE, rgb, spec};
 use bough_span::kinds::{LEFT, RIGHT, Str, Text};
 use bough_x::prelude::*;
 
@@ -18,7 +18,7 @@ pub struct Rows {
 }
 
 fn row_fill((hot, i): (u32, u32)) -> Color {
-    Color(if hot == i { spec::ROW_HOVER } else { spec::row_background(i as usize) })
+    Color(rgb(if hot == i { spec::ROW_HOVER } else { spec::row_background(i as usize) }))
 }
 /// `Row 00042`, without a heap string.
 pub fn row_label(i: usize) -> Str<3> {
@@ -69,15 +69,15 @@ impl View for Rows {
     }
     fn view<S: Sink<Self>>(&self, s: &mut S) {
         let g = self.geo;
-        s.row(|| ([Rect::new(0, 0, g.w, g.h)], Fill(Kc::<{ spec::BACKGROUND }>)));
+        s.row(|| ([Rect::new(0, 0, g.w, g.h)], Fill(Kc::<{ rgb(spec::BACKGROUND) }>)));
         s.scope(Space { clip: g.body(0), base: (0, 0), scroll: Scroll::SLOT as u8 }, |s| {
             s.list(&List { n: self.count as u32, row_h: g.row_h(), x: 0, y: 0, shape: &self.shape, edits: &FIXED }, |r| {
                 let i = r as u32;
                 (
                     Fill((un::<Hot>(), rec(i)).map(row_fill)).on_hover(move |v: &mut Rows, e: &Ev| v.hover(i, e.on)),
-                    Fill(Kc::<{ spec::ROW_BORDER }>),
-                    Text::<LEFT, _, _>(rec(row_label(r)), Kc::<{ spec::LABEL_COLOR }>),
-                    Text::<RIGHT, _, _>(rec(Str::<1>::num(spec::value(r as u64))), Kc::<{ spec::VALUE_COLOR }>),
+                    Fill(Kc::<{ rgb(spec::ROW_BORDER) }>),
+                    Text::<LEFT, _, _>(rec(row_label(r)), Kc::<{ rgb(spec::LABEL_COLOR) }>),
+                    Text::<RIGHT, _, _>(rec(Str::<1>::num(spec::value(r as u64))), Kc::<{ rgb(spec::VALUE_COLOR) }>),
                 )
             });
         });

@@ -10,6 +10,10 @@
 //!
 //! Text comes from a prepared glyph image (`bough-glyph`): placing a string is arithmetic over its bytes.
 //!
+//! Colours are 0xAARRGGBB, not premultiplied, composited source-over onto an opaque surface: alpha 255 is a
+//! span of stores, alpha 0 draws nothing, anything between is blended per pixel (for text and turned boxes the
+//! alpha scales the coverage). The surface itself is opaque (XRGB).
+//!
 //! What it is not: the exact twin of a GPU function. `bough-paint`'s tile kernels are that (Q15 accumulators,
 //! word-exact against the generated WGSL) and stay the executor for paints that need them (shadows, gradients,
 //! anything the GPU may also shade in the same frame). The gates here are the ones that matter on a CPU-only
@@ -234,8 +238,17 @@ impl<'a> Spans<'a> {
         unsafe { core::slice::from_raw_parts_mut(self.px.add(y as usize * self.stride + x0 as usize), (x1 - x0) as usize) }
     }
 
+    /// A box of colour `c` (0xAARRGGBB, not premultiplied): written as spans when opaque, blended when not,
+    /// nothing when its alpha is zero.
     #[inline]
     fn fill(&mut self, r: Rect, c: u32) {
+        let a = c >> 24;
+        if a != 255 {
+            if a != 0 {
+                self.fill_over(r, c);
+            }
+            return;
+        }
         let this = self as *mut Self;
         self.cells(r, |q| {
             // SAFETY: `cells` only reads the mask and the surface's size; the fill writes pixels. `q` is inside
@@ -249,12 +262,31 @@ impl<'a> Spans<'a> {
         });
     }
 
-    /// One glyph's coverage at (gx, gy) blended in colour `c`, cut to `cut`.
+    #[inline(never)]
+    fn fill_over(&mut self, r: Rect, c: u32) {
+        let this = self as *mut Self;
+        let (a, cr, cg, cb) = (c >> 24, (c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff);
+        self.cells(r, |q| {
+            // SAFETY: as `fill`.
+            let s = unsafe { &mut *this };
+            s.st.fills += 1;
+            for y in q.y0..q.y1 {
+                for d in unsafe { s.row(y, q.x0, q.x1) } {
+                    *d = blend(*d, cr, cg, cb, a);
+                }
+            }
+        });
+    }
+
+    /// One glyph's coverage at (gx, gy) blended in colour `c` (its alpha scales the coverage), cut to `cut`.
     #[inline]
     fn blit(&mut self, gx: i32, gy: i32, gw: i32, gh: i32, cov: &[u8], cut: Rect, c: u32) {
         let this = self as *mut Self;
         let whole = Rect { x0: gx, y0: gy, x1: gx + gw, y1: gy + gh }.and(cut);
-        let (cr, cg, cb) = ((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff);
+        let (ca, cr, cg, cb) = (c >> 24, (c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff);
+        if ca == 0 {
+            return;
+        }
         let body = |q: Rect| {
             // SAFETY: as `fill`.
             let s = unsafe { &mut *this };
@@ -263,7 +295,7 @@ impl<'a> Spans<'a> {
                 let dst = unsafe { s.row(y, q.x0, q.x1) };
                 for (d, &a) in dst.iter_mut().zip(src) {
                     if a != 0 {
-                        *d = blend(*d, cr, cg, cb, a as u32);
+                        *d = blend(*d, cr, cg, cb, mul255(a as u32, ca));
                     }
                 }
             }
@@ -297,6 +329,12 @@ impl<'a> Spans<'a> {
     }
 }
 
+/// `a b / 255`, rounded (exact for 255: `mul255(a, 255) == a`).
+#[inline(always)]
+fn mul255(a: u32, b: u32) -> u32 {
+    let t = a * b + 128;
+    (t + (t >> 8)) >> 8
+}
 /// `d` under colour (r, g, b) at coverage `a` (0..=255), per channel, rounded: `(s a + d (255 - a)) / 255`.
 #[inline(always)]
 fn blend(d: u32, r: u32, g: u32, b: u32, a: u32) -> u32 {
@@ -311,7 +349,7 @@ fn blend(d: u32, r: u32, g: u32, b: u32, a: u32) -> u32 {
 impl Prims for Spans<'_> {
     #[inline]
     fn solid(&mut self, r: Rect, c: u32) {
-        self.fill(r, c | 0xff00_0000)
+        self.fill(r, c)
     }
     #[inline]
     fn text(&mut self, r: Rect, cut: Rect, s: &[u8], align: Align, c: u32) {
@@ -347,7 +385,10 @@ impl Prims for Spans<'_> {
         let a = turn as f32 * (core::f32::consts::TAU / 65536.0);
         let (sn, cs) = a.sin_cos();
         let rad = radius as f32;
-        let (cr, cg, cb) = ((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff);
+        let (ca, cr, cg, cb) = (c >> 24, (c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff);
+        if ca == 0 {
+            return;
+        }
         let this = self as *mut Self;
         self.cells(bb, |q| {
             // SAFETY: as `fill`.
@@ -363,7 +404,7 @@ impl Prims for Spans<'_> {
                     let dist = (qx.max(0.0) * qx.max(0.0) + qy.max(0.0) * qy.max(0.0)).sqrt() + qx.max(qy).min(0.0) - rad;
                     let cov = (0.5 - dist).clamp(0.0, 1.0);
                     if cov > 0.0 {
-                        *d = blend(*d, cr, cg, cb, (cov * 255.0 + 0.5) as u32);
+                        *d = blend(*d, cr, cg, cb, mul255((cov * 255.0 + 0.5) as u32, ca));
                     }
                 }
             }
@@ -376,7 +417,7 @@ impl Backend for Spans<'static> {
         let (org, clip) = (col.space.origin(u), col.space.clip);
         col.each(|r, a| {
             self.st.records += 1;
-            self.fill(r.shift(org).and(clip), a.color(u).0 | 0xff00_0000)
+            self.fill(r.shift(org).and(clip), a.color(u).0)
         });
     }
     fn num<A: NumArch>(&mut self, col: ColRef<'_, A>, u: &U) {
@@ -401,7 +442,7 @@ impl Backend for Spans<'static> {
         col.each(|r, a| {
             self.st.records += 1;
             let r = r.shift(org).shift(a.offset(u));
-            let (w, c) = (A::WIDTH, a.color(u).0 | 0xff00_0000);
+            let (w, c) = (A::WIDTH, a.color(u).0);
             for e in [Rect { y1: r.y0 + w, ..r }, Rect { y0: r.y1 - w, ..r }, Rect { x1: r.x0 + w, ..r }, Rect { x0: r.x1 - w, ..r }] {
                 self.fill(e.and(clip), c);
             }

@@ -665,6 +665,12 @@ impl Conn {
         self.out_fds.push(fd);
         id
     }
+    /// `wl_shm_pool.destroy`: the buffers made from it stay valid until they are destroyed; the compositor frees
+    /// the pool's memory when the last of them is.
+    pub fn destroy_pool(&mut self, pool: u32) {
+        self.req(pool, 1, |_| {});
+        self.kinds[pool as usize] = Kind::Dead;
+    }
     /// `wl_shm_pool.resize(size)`.
     pub fn resize_pool(&mut self, pool: u32, size: i32) {
         self.req(pool, 2, |b| put32(b, size as u32));

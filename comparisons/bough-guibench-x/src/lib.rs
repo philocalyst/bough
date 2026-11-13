@@ -60,3 +60,8 @@ impl Geo {
 }
 
 pub const NONE: u32 = u32::MAX;
+
+/// A colour of the spec (0xRRGGBB) as an opaque colour word (0xAARRGGBB).
+pub const fn rgb(c: u32) -> u32 {
+    0xff00_0000 | c
+}

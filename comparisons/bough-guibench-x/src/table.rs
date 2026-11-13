@@ -6,7 +6,7 @@
 //! compared with the columns (re-describing mode). Either way only exposed rows exist.
 use crate::cli::Ticker;
 use crate::spec::{self, Ids, Op, Row};
-use crate::{Geo, NONE};
+use crate::{Geo, NONE, rgb};
 use bough_span::kinds::{LEFT, RIGHT, Str, Text};
 use bough_x::prelude::*;
 use bough_x::sink::Edit;
@@ -34,7 +34,7 @@ pub struct Table {
 }
 
 fn row_fill((sel, id): (u32, u32)) -> Color {
-    Color(if sel == id { spec::SELECTED } else { spec::ROW_EVEN })
+    Color(rgb(if sel == id { spec::SELECTED } else { spec::ROW_EVEN }))
 }
 /// `1000 rows`, or `1000 rows · tick 7` when a ticker runs.
 pub fn status((len, tick, ticking): (u32, u32, u32)) -> Str<8> {
@@ -176,10 +176,10 @@ impl View for Table {
                 [Rect::new(0, 0, g.w, g.h), h[0], h[1], h[2]],
                 (
                     // the window: the function keys are heard here
-                    Fill(Kc::<{ spec::BACKGROUND }>).on_key(|v: &mut Table, e: &Ev| v.key(e)),
-                    Fill(Kc::<{ spec::HEADER_BG }>),
-                    Fill(Kc::<{ spec::HEADER_BORDER }>),
-                    Text::<LEFT, _, _>((un::<Len>(), un::<Tick>(), un::<Ticking>()).map(status), Kc::<{ spec::LABEL_COLOR }>),
+                    Fill(Kc::<{ rgb(spec::BACKGROUND) }>).on_key(|v: &mut Table, e: &Ev| v.key(e)),
+                    Fill(Kc::<{ rgb(spec::HEADER_BG) }>),
+                    Fill(Kc::<{ rgb(spec::HEADER_BORDER) }>),
+                    Text::<LEFT, _, _>((un::<Len>(), un::<Tick>(), un::<Ticking>()).map(status), Kc::<{ rgb(spec::LABEL_COLOR) }>),
                 ),
             )
         });
@@ -189,9 +189,9 @@ impl View for Table {
                 let id = row.id as u32;
                 (
                     Fill((un::<Sel>(), rec(id)).map(row_fill)).on_click(move |v: &mut Table| v.select(id)),
-                    Fill(Kc::<{ spec::ROW_BORDER }>),
-                    Text::<LEFT, _, _>(rec(Str::<8>::new(&row.label)), Kc::<{ spec::LABEL_COLOR }>),
-                    Text::<RIGHT, _, _>(rec(Str::<1>::num(row.value)), Kc::<{ spec::VALUE_COLOR }>),
+                    Fill(Kc::<{ rgb(spec::ROW_BORDER) }>),
+                    Text::<LEFT, _, _>(rec(Str::<8>::new(&row.label)), Kc::<{ rgb(spec::LABEL_COLOR) }>),
+                    Text::<RIGHT, _, _>(rec(Str::<1>::num(row.value)), Kc::<{ rgb(spec::VALUE_COLOR) }>),
                 )
             });
         });
@@ -236,10 +236,10 @@ impl View for Coarse {
             (
                 [Rect::new(0, 0, g.w, g.h), h[0], h[1], h[2]],
                 (
-                    Fill(Kc::<{ spec::BACKGROUND }>).on_key(|v: &mut Coarse, e: &Ev| v.0.key(e)),
-                    Fill(Kc::<{ spec::HEADER_BG }>),
-                    Fill(Kc::<{ spec::HEADER_BORDER }>),
-                    Text::<LEFT, _, _>((un::<Len>(), un::<Tick>(), un::<Ticking>()).map(status), Kc::<{ spec::LABEL_COLOR }>),
+                    Fill(Kc::<{ rgb(spec::BACKGROUND) }>).on_key(|v: &mut Coarse, e: &Ev| v.0.key(e)),
+                    Fill(Kc::<{ rgb(spec::HEADER_BG) }>),
+                    Fill(Kc::<{ rgb(spec::HEADER_BORDER) }>),
+                    Text::<LEFT, _, _>((un::<Len>(), un::<Tick>(), un::<Ticking>()).map(status), Kc::<{ rgb(spec::LABEL_COLOR) }>),
                 ),
             )
         });
@@ -249,9 +249,9 @@ impl View for Coarse {
                 let id = row.id as u32;
                 (
                     Fill((un::<Sel>(), rec(id)).map(row_fill)).on_click(move |v: &mut Coarse| v.0.select(id)),
-                    Fill(Kc::<{ spec::ROW_BORDER }>),
-                    Text::<LEFT, _, _>(rec(Str::<8>::new(&row.label)), Kc::<{ spec::LABEL_COLOR }>),
-                    Text::<RIGHT, _, _>(rec(Str::<1>::num(row.value)), Kc::<{ spec::VALUE_COLOR }>),
+                    Fill(Kc::<{ rgb(spec::ROW_BORDER) }>),
+                    Text::<LEFT, _, _>(rec(Str::<8>::new(&row.label)), Kc::<{ rgb(spec::LABEL_COLOR) }>),
+                    Text::<RIGHT, _, _>(rec(Str::<1>::num(row.value)), Kc::<{ rgb(spec::VALUE_COLOR) }>),
                 )
             });
         });

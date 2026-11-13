@@ -273,7 +273,12 @@ pub fn run<A: App>(win: Window<'_>, make: impl FnOnce() -> A) -> Result<Trace, E
                 // simplest sound choice: a fresh memfd for the new generation
                 let fresh = Shm::with(bufs.slot, prep)?;
                 let stale = core::mem::replace(&mut bufs.shm, fresh);
-                // the old pool keeps its own reference to the old memfd; our mapping of it can go
+                // The old pool object is destroyed now: its buffers that the compositor still holds stay valid
+                // and are destroyed as they are released, and the compositor frees the pool's memory with the
+                // last of them. Our own mapping and descriptor go at once.
+                if bufs.pool != 0 {
+                    c.destroy_pool(bufs.pool);
+                }
                 drop(stale);
                 bufs.pool = 0;
             }

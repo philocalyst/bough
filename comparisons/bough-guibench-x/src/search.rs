@@ -2,13 +2,12 @@
 //! those whose label holds the field's text.
 //!
 //! The field's text is a [`Line`] of plain state; the field is a relation of one row, so a keystroke
-//! re-describes that row and nothing else. The filter is plain Rust over the model for now: a query that grows
-//! is refined from the previous result (the result of a longer query is inside the result of its prefix), and
-//! one that shrinks pops back to a result already computed, so a keystroke costs the rows of the result it
-//! narrows, not the list. The same operator belongs in the core as a relation (ROUND8 Amendment 1, item 7);
-//! when the expr lane has it, `refilter` is its call.
+//! re-describes that row and nothing else. The filter is the spec's: every keystroke scans every label with
+//! `spec::matches` (which lower-cases both sides each time), exactly as the other frameworks' apps do. Nothing
+//! is precomputed and no result is kept between keystrokes: an incremental filter is the core's to provide as a
+//! relation operator (ROUND8 Amendment 1, item 7), and until it does this cell measures the plain scan.
 use crate::spec::{self, Row};
-use crate::Geo;
+use crate::{Geo, rgb};
 use bough_glyph::Image;
 use bough_span::kinds::{Bar, LEFT, RIGHT, Str, Text, TextOf};
 use bough_span::line::Line;
@@ -28,12 +27,8 @@ const FIELD_PAD: i32 = 6;
 pub struct Search {
     pub u: U,
     pub rows: Vec<Row>,
-    /// Lower-cased labels, made once: the filter compares bytes.
-    lower: Vec<Box<[u8]>>,
     /// The rows shown, as indices into `rows`.
     pub shown: Rel<u32>,
-    /// Results of the prefixes of the query that are still valid: (prefix length in bytes, the result).
-    stack: Vec<(usize, Vec<u32>)>,
     pub query: Line,
     /// The field's one row.
     field: Rel<()>,
@@ -53,20 +48,14 @@ fn status(len: u32) -> Str<8> {
 fn image(k: i32) -> &'static Image {
     if k >= 2 { &bough_glyph::DEJAVU_SANS_28 } else { &bough_glyph::DEJAVU_SANS_14 }
 }
-fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    needle.is_empty() || hay.windows(needle.len()).any(|w| w == needle)
-}
 
 impl Search {
     pub fn new(count: usize, filter: bool) -> Search {
         let geo = Geo::new(spec::WINDOW.0 as i32, spec::WINDOW.1 as i32, 1);
         let rows = spec::Ids::default().rows(count);
-        let lower = rows.iter().map(|r| r.label.to_ascii_lowercase().into_bytes().into_boxed_slice()).collect();
         let mut s = Search {
             u: U::default(),
-            lower,
             shown: Rel::new((0..count as u32).collect()),
-            stack: Vec::new(),
             rows,
             query: Line::new(""),
             field: Rel::new(vec![()]),
@@ -113,23 +102,7 @@ impl Search {
         if !self.filter {
             return;
         }
-        let q = self.query.with(|s| s.to_ascii_lowercase().into_bytes());
-        // The stack holds the results of prefixes of the query, shortest first. Text only grows or shrinks at
-        // its end here (a replacement clears the stack), so an entry longer than the query is a prefix no more.
-        while self.stack.last().is_some_and(|(n, _)| *n > q.len()) {
-            self.stack.pop();
-        }
-        let result: Vec<u32> = match self.stack.last() {
-            _ if q.is_empty() => (0..self.rows.len() as u32).collect(),
-            // the query shrank back to a prefix whose result is known
-            Some((n, r)) if *n == q.len() => r.clone(),
-            // the query grew: its result is inside its longest known prefix's
-            Some((_, r)) => r.iter().copied().filter(|&i| contains(&self.lower[i as usize], &q)).collect(),
-            None => (0..self.rows.len() as u32).filter(|&i| contains(&self.lower[i as usize], &q)).collect(),
-        };
-        if !q.is_empty() && self.stack.last().is_none_or(|(n, _)| *n != q.len()) {
-            self.stack.push((q.len(), result.clone()));
-        }
+        let result: Vec<u32> = self.query.with(|q| self.rows.iter().enumerate().filter(|(_, r)| spec::matches(&r.label, q)).map(|(i, _)| i as u32).collect());
         if result != *self.shown.items() {
             *self.shown.items_mut() = result;
             self.shown.journal.push(Edit::Shift(0));
@@ -140,7 +113,6 @@ impl Search {
         if self.selected {
             self.selected = false;
             self.query.edit(String::clear);
-            self.stack.clear();
         }
         self.query.edit(|s| s.push_str(t));
         self.refilter();
@@ -151,7 +123,6 @@ impl Search {
                 if self.selected {
                     self.selected = false;
                     self.query.edit(String::clear);
-                    self.stack.clear();
                 } else {
                     self.query.edit(|s| {
                         s.pop();
@@ -188,10 +159,10 @@ impl View for Search {
             (
                 [Rect::new(0, 0, g.w, g.h), h[0], h[1], h[2]],
                 (
-                    Fill(Kc::<{ spec::BACKGROUND }>),
-                    Fill(Kc::<{ spec::HEADER_BG }>),
-                    Fill(Kc::<{ spec::HEADER_BORDER }>),
-                    Text::<LEFT, _, _>(un::<Len>().map(status), Kc::<{ spec::LABEL_COLOR }>),
+                    Fill(Kc::<{ rgb(spec::BACKGROUND) }>),
+                    Fill(Kc::<{ rgb(spec::HEADER_BG) }>),
+                    Fill(Kc::<{ rgb(spec::HEADER_BORDER) }>),
+                    Text::<LEFT, _, _>(un::<Len>().map(status), Kc::<{ rgb(spec::LABEL_COLOR) }>),
                 ),
             )
         });
@@ -202,10 +173,10 @@ impl View for Search {
             let adv = self.query.with(|q| img.snap(img.advance(q.as_bytes())));
             let width = self.field_shape[3].x1 - self.field_shape[3].x0;
             (
-                Fill(Kc::<{ spec::HEADER_BORDER }>).on_text(|v: &mut Search, t: &str| v.type_text(t)).on_key(|v: &mut Search, e: &Ev| v.key(e)),
-                Fill(Kc::<FIELD_BG>),
+                Fill(Kc::<{ rgb(spec::HEADER_BORDER) }>).on_text(|v: &mut Search, t: &str| v.type_text(t)).on_key(|v: &mut Search, e: &Ev| v.key(e)),
+                Fill(Kc::<{ rgb(FIELD_BG) }>),
                 Bar(0, if self.selected { adv.min(width) } else { 0 }, Kc::<SELECTION>),
-                TextOf::<LEFT, _>(self.query.handle(), Kc::<{ spec::LABEL_COLOR }>),
+                TextOf::<LEFT, _>(self.query.handle(), Kc::<{ rgb(spec::LABEL_COLOR) }>),
                 Bar(if self.selected { 0 } else { adv.min(width - g.k) }, if self.selected { 0 } else { g.k }, Kc::<CARET>),
             )
         });
@@ -213,10 +184,10 @@ impl View for Search {
             s.list(&List { n: self.shown.len() as u32, row_h: g.row_h(), x: 0, y: 0, shape: &self.shape, edits: &self.shown.journal }, |r| {
                 let row = &self.rows[*self.shown.get(r) as usize];
                 (
-                    Fill(Kc::<{ spec::ROW_EVEN }>),
-                    Fill(Kc::<{ spec::ROW_BORDER }>),
-                    Text::<LEFT, _, _>(rec(Str::<8>::new(&row.label)), Kc::<{ spec::LABEL_COLOR }>),
-                    Text::<RIGHT, _, _>(rec(Str::<1>::num(row.value)), Kc::<{ spec::VALUE_COLOR }>),
+                    Fill(Kc::<{ rgb(spec::ROW_EVEN) }>),
+                    Fill(Kc::<{ rgb(spec::ROW_BORDER) }>),
+                    Text::<LEFT, _, _>(rec(Str::<8>::new(&row.label)), Kc::<{ rgb(spec::LABEL_COLOR) }>),
+                    Text::<RIGHT, _, _>(rec(Str::<1>::num(row.value)), Kc::<{ rgb(spec::VALUE_COLOR) }>),
                 )
             });
         });

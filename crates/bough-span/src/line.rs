@@ -20,6 +20,8 @@ thread_local! {
 /// A line of text owned by application state.
 pub struct Line {
     slot: u32,
+    /// The text lives in this thread's pool: the line is neither `Send` nor `Sync`.
+    _here: core::marker::PhantomData<*const ()>,
 }
 
 /// What a record holds of a [`Line`].
@@ -28,6 +30,8 @@ pub struct Line {
 pub struct LineRef {
     slot: u32,
     ver: u32,
+    /// A handle is resolved in the pool of the thread that made it: neither `Send` nor `Sync`.
+    _here: core::marker::PhantomData<*const ()>,
 }
 // SAFETY: two words; every bit pattern is a (possibly stale) handle.
 unsafe impl Words for LineRef {}
@@ -49,7 +53,7 @@ impl Line {
                     slots.len() as u32 - 1
                 }
             };
-            Line { slot }
+            Line { slot, _here: core::marker::PhantomData }
         })
     }
     /// Edit the text. The version moves whether or not the closure changed anything.
@@ -74,7 +78,7 @@ impl Line {
     }
     /// The handle a record holds, as of now.
     pub fn handle(&self) -> LineRef {
-        POOL.with_borrow(|(slots, _)| LineRef { slot: self.slot, ver: slots[self.slot as usize].ver })
+        POOL.with_borrow(|(slots, _)| LineRef { slot: self.slot, ver: slots[self.slot as usize].ver, _here: core::marker::PhantomData })
     }
 }
 impl Drop for Line {
@@ -100,6 +104,17 @@ impl LineRef {
         })
     }
 }
+
+/// ```compile_fail
+/// fn send<T: Send>() {}
+/// send::<bough_span::line::Line>();
+/// ```
+/// ```compile_fail
+/// fn sync<T: Sync>() {}
+/// sync::<bough_span::line::LineRef>();
+/// ```
+#[cfg(doctest)]
+struct NotSendNotSync;
 
 #[cfg(test)]
 mod tests {

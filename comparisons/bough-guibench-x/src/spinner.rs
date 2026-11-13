@@ -1,7 +1,7 @@
 //! `spinner`: a header with a turning square above static rows. The turn is an expression over `Time`: no turn
 //! of the state runs while it spins, and it is drawn once per frame callback, so it follows the output's refresh.
 use crate::spec::{self, Row};
-use crate::Geo;
+use crate::{Geo, rgb};
 use bough_span::kinds::{LEFT, RIGHT, Spin, Str, Text, Turns};
 use bough_x::prelude::*;
 
@@ -49,27 +49,27 @@ impl View for Spinner {
             (
                 [Rect::new(0, 0, g.w, g.h), h[0], h[1], h[2]],
                 (
-                    Fill(Kc::<{ spec::BACKGROUND }>),
-                    Fill(Kc::<{ spec::HEADER_BG }>),
-                    Fill(Kc::<{ spec::HEADER_BORDER }>),
-                    Text::<LEFT, _, _>(un::<Len>().map(status), Kc::<{ spec::LABEL_COLOR }>),
+                    Fill(Kc::<{ rgb(spec::BACKGROUND) }>),
+                    Fill(Kc::<{ rgb(spec::HEADER_BG) }>),
+                    Fill(Kc::<{ rgb(spec::HEADER_BORDER) }>),
+                    Text::<LEFT, _, _>(un::<Len>().map(status), Kc::<{ rgb(spec::LABEL_COLOR) }>),
                 ),
             )
         });
         // the square is a row of its own: its column is the only one a frame of the animation damages
         if g.k == 1 {
-            s.row(|| ([self.square()], Spin::<{ spec::SPINNER_RADIUS as i32 }, _, _>(Kc::<{ spec::SPINNER_COLOR }>, Turns::<{ spec::SPINNER_PERIOD_MS as u32 }>)));
+            s.row(|| ([self.square()], Spin::<{ spec::SPINNER_RADIUS as i32 }, _, _>(Kc::<{ rgb(spec::SPINNER_COLOR) }>, Turns::<{ spec::SPINNER_PERIOD_MS as u32 }>)));
         } else {
-            s.row(|| ([self.square()], Spin::<{ 2 * spec::SPINNER_RADIUS as i32 }, _, _>(Kc::<{ spec::SPINNER_COLOR }>, Turns::<{ spec::SPINNER_PERIOD_MS as u32 }>)));
+            s.row(|| ([self.square()], Spin::<{ 2 * spec::SPINNER_RADIUS as i32 }, _, _>(Kc::<{ rgb(spec::SPINNER_COLOR) }>, Turns::<{ spec::SPINNER_PERIOD_MS as u32 }>)));
         }
         s.scope(Space { clip: g.body(top), base: (0, top), scroll: Scroll::SLOT as u8 }, |s| {
             s.list(&List { n: self.rows.len() as u32, row_h: g.row_h(), x: 0, y: 0, shape: &self.shape, edits: &FIXED }, |r| {
                 let row = &self.rows[r];
                 (
-                    Fill(Kc::<{ spec::ROW_EVEN }>),
-                    Fill(Kc::<{ spec::ROW_BORDER }>),
-                    Text::<LEFT, _, _>(rec(Str::<8>::new(&row.label)), Kc::<{ spec::LABEL_COLOR }>),
-                    Text::<RIGHT, _, _>(rec(Str::<1>::num(row.value)), Kc::<{ spec::VALUE_COLOR }>),
+                    Fill(Kc::<{ rgb(spec::ROW_EVEN) }>),
+                    Fill(Kc::<{ rgb(spec::ROW_BORDER) }>),
+                    Text::<LEFT, _, _>(rec(Str::<8>::new(&row.label)), Kc::<{ rgb(spec::LABEL_COLOR) }>),
+                    Text::<RIGHT, _, _>(rec(Str::<1>::num(row.value)), Kc::<{ rgb(spec::VALUE_COLOR) }>),
                 )
             });
         });
