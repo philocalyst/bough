@@ -124,14 +124,38 @@ const CELLS: &[Cell] = &[
 ];
 
 /// Walk `buf` a line at a time, writing: afterwards the caches smaller than it hold it and not the scene.
+/// Stores only, no load: a sampler of load misses (`lines.sh`) then sees the cell's misses and not the walk's.
 #[inline(never)]
-fn evict(buf: &mut [u8]) {
+fn evict(buf: &mut [u8], k: u8) {
     let mut i = 0;
     while i < buf.len() {
-        buf[i] = buf[i].wrapping_add(1);
+        buf[i] = k;
         i += 64;
     }
     black_box(&mut *buf);
+}
+
+/// perf's control and acknowledgement FIFOs, when `PERF_CTL` and `PERF_ACK` name them.
+struct PerfCtl(Option<(std::fs::File, std::fs::File)>);
+fn perf_ctl() -> PerfCtl {
+    let open = || {
+        let c = std::fs::OpenOptions::new().write(true).open(std::env::var("PERF_CTL").ok()?).ok()?;
+        let a = std::fs::File::open(std::env::var("PERF_ACK").ok()?).ok()?;
+        Some((c, a))
+    };
+    PerfCtl(open())
+}
+impl PerfCtl {
+    fn say(&self, what: &str) {
+        use std::io::{Read, Write};
+        if let Some((c, a)) = &self.0 {
+            let (mut c, mut a) = (c, a);
+            if c.write_all(format!("{what}\n").as_bytes()).is_ok() {
+                let mut ack = [0u8; 8];
+                let _ = a.read(&mut ack);
+            }
+        }
+    }
 }
 
 fn main() {
@@ -183,11 +207,15 @@ fn main() {
             f(&mut bed, k);
             bed.world.tiles.clear();
         }
+        // a sampler started disabled (`perf record --control fifo:CTL,ACK -D -1`) is switched on for the
+        // measured repetitions only, so set-up and warm-up are not in its samples
+        let ctl = perf_ctl();
+        ctl.say("enable");
         let mut got: Vec<([u64; pmu::MAX], u32)> = Vec::with_capacity(reps);
         let mut wall: Vec<u64> = Vec::with_capacity(reps);
         for k in 0..reps {
             if evict_kb != 0 {
-                evict(&mut buf);
+                evict(&mut buf, k as u8);
             }
             let t0 = std::time::Instant::now();
             let a = pmu::sample();
@@ -203,6 +231,7 @@ fn main() {
             }
             got.push((v, tiles));
         }
+        ctl.say("disable");
         let mut line = format!("sheet\t{name}\t{evict_kb}\t{reps}");
         let col = |i: usize| {
             let mut x: Vec<u64> = got.iter().map(|g| g.0[i]).collect();
@@ -219,6 +248,20 @@ fn main() {
         t.sort();
         wall.sort();
         println!("{line}\t{}\t{}\t{}", t[t.len() / 2], wall[wall.len() / 2], wall[wall.len() - 1]);
+    }
+    if std::env::var("REGIONS").is_ok() {
+        // where everything is, for `lines.sh`: REGION name start bytes page rec_off
+        let here = 0u8;
+        let mut r = bed.world.regions();
+        r.push(("model.struct".into(), &bed.sheet as *const _ as usize, size_of::<Sheet>(), 0, 0));
+        r.push(("model.block".into(), &bed.sheet.u as *const _ as usize, 256, 0, 0));
+        r.push(("model.rows".into(), bed.sheet.rows.items().as_ptr() as usize, bed.sheet.rows.len() * size_of::<[f32; COLS]>(), 0, 0));
+        r.push(("harness.evict".into(), buf.as_ptr() as usize, buf.len(), 0, 0));
+        r.push(("harness.samples".into(), 0, 0, 0, 0));
+        r.push(("stack".into(), (&here as *const u8 as usize).saturating_sub(1 << 20), 2 << 20, 0, 0));
+        for (name, at, len, page, off) in r {
+            eprintln!("REGION\t{name}\t{at:#x}\t{len}\t{page}\t{off}");
+        }
     }
     std::fs::remove_file(&bed.image).ok();
 }

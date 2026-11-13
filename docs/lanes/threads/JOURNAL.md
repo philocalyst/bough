@@ -269,3 +269,21 @@ the hand-over note at the end of this journal.
   log `job2.log`) was still building inferno through nix when this was written; nothing else is running.
   The first run's stuck script was stopped by PID. mothership: nothing running; `target` and `target-base`
   under `/home/miles/work/r8/threads` are about 100 MB together.
+
+## 10. Second batch (2026-11-12, after the lead's decisions and amendment 6)
+
+Decisions taken as given: no computable column bases; expr's `ColEnt` table is the turn's entry and the arena,
+publishing and the image go under it (done: section 11); then the cold interaction path, allocation, the
+parallel frame, the cross-check.
+
+### Predictions, written before the runs
+
+| id | hypothesis | prediction | kill |
+|---|---|---|---|
+| L1 | where a cold hover's data lines are (about 210 loaded with L1 cold, mothership), by sampling every L1-missing load's address (`lines.sh`) | record pages at least half (ten pages differentiated: about 40 lines of records, 32 of rects for the two that change, the header page); the store tree 10 to 15 % (the hit test still walks it); table, block, tiles and world under 15 % together; the model under 3 % | pages under a third: the footprint is bookkeeping, and the plan of section 12 is aimed at the wrong thing |
+| L2 | code is a large share of what comes from memory | of about 470 last-level misses per cold hover, 150 to 250 are instruction fetches (lines of code from L3 or memory) | under 60: code does not matter and only data layout does |
+| L3 | differentiating only the pages that can change removes most of the cold cost | with a per-page summary of the record constants an `Eq`-like expression compares (a 64-bit Bloom-style mask per page per word read), a hover touches 2 pages instead of 10: data lines down by at least 30 %, cold cycles by at least 20 % | under 10 % in cold cycles |
+| L4 | a prefetch at input arrival pays | issuing prefetches for the lines of the last turn of the same kind (the block, the readers of the hot words, their pages' record lanes) when the event is read, before hit testing and the handler, cuts a cold hover's cycles by at least 25 % | under 10 %, or any warm cell dearer by more than 2 % |
+| A1 | where start-up's faults and allocations are | mount makes under 40 heap allocations and under 25 page faults (4 KiB pages) for 764 records; the arena's own part is 2 system calls and under 12 faults; every turn after the first makes 0 allocations | a turn that allocates; or mount over 100 allocations |
+| A2 | what a global allocator choice can buy | under 2 % of mount's instructions and nothing on any turn (turns do not allocate): a faster `malloc` has nothing to be fast on. Removing the remaining allocations (store-tree vectors, the table, tiles) into the arena is worth at most the faults they cause, under 10 % of mount | a bump global allocator making mount more than 10 % cheaper |
+| P1 | the frame on cores, on the raster lane's kernels (canvas: 316 ms on one core, 93 ms on six, 3.4x) | the gap to linear is memory (shared tiles and scene read by all, bands not kept by a core); bands of equal weight owned by a core across frames reach at least 4.8x on six and cut L2 misses per frame by at least 20 % against a rotating assignment | no gain over raster's own six-thread number within 5 %: the gap is not placement |

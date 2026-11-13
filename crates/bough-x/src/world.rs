@@ -62,6 +62,13 @@ pub struct World<B> {
     /// The pointer, and the places under it whose handlers hear hover, bottom first.
     ptr: Option<(i32, i32)>,
     hov: Vec<u32>,
+    /// The columns whose records have handlers, in paint order: (table index, the kinds they hear, the hit
+    /// kernel), and the kinds per table index. A pointer event tests these and walks no store.
+    hits: Vec<(u32, u32, store::HitFn)>,
+    kinds_of: Vec<u32>,
+    /// Scratch for a pointer event's chain and hover set, kept so that an event allocates nothing.
+    scratch: Vec<u32>,
+    hov_next: Vec<u32>,
     held: Option<Held>,
     focus: Option<Focused>,
     /// The world's columns in paint order: a place's column number indexes this. Rebuilt when columns appear.
@@ -82,7 +89,7 @@ impl<B: Backend> World<B> {
         for w in [U_PICK, U_FOCUS, U_PRESS] {
             shown.w[w] = NONE;
         }
-        World { _arena: arena, ar, root: Box::new(root), shown, tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, reads: 0, col_reads: Vec::new(), by_word: [0; 65], readers: Vec::new(), cols: Vec::new(), cold: Vec::new(), spaces: Vec::new(), shape: u32::MAX, clock: 0, ptr: None, hov: Vec::new(), held: None, focus: None, ctab: Vec::new(), ctab_at: (0, 0), _b: PhantomData }
+        World { _arena: arena, ar, root: Box::new(root), shown, tiles: Tiles::new(w, h), nwords, lists: 0, epoch: 0, reads: 0, col_reads: Vec::new(), by_word: [0; 65], readers: Vec::new(), cols: Vec::new(), cold: Vec::new(), spaces: Vec::new(), shape: u32::MAX, clock: 0, ptr: None, hov: Vec::new(), hits: Vec::new(), kinds_of: Vec::new(), scratch: Vec::new(), hov_next: Vec::new(), held: None, focus: None, ctab: Vec::new(), ctab_at: (0, 0), _b: PhantomData }
     }
 
     /// The application's block with the words it does not own (the surface's and the raster's) as the world
@@ -136,6 +143,19 @@ impl<B: Backend> World<B> {
         self.by_word[64] = self.readers.len() as u16;
         // what a column reads, and what moves a space
         self.reads = self.spaces.iter().fold(self.root.reads_all(), |m, s| m | s.0);
+        // a place's column number is its index in this table, which is `ctab`'s order: keep them in step
+        self.ctab_at = (u32::MAX, 0);
+        self.columns();
+        self.hits.clear();
+        self.kinds_of.clear();
+        for (k, &(st, j)) in self.cold.iter().enumerate() {
+            // SAFETY: just built: `st` is a store of this tree and `j` one of its columns.
+            let o = unsafe { (&(*st).cols)[j as usize].hover };
+            self.kinds_of.push(o.map_or(0, |o| o.kinds));
+            if let Some(o) = o {
+                self.hits.push((k as u32, o.kinds, o.hit));
+            }
+        }
         self.replan(true);
     }
     /// The plan: the table's offset form in the working half, for a frame, a reader or an image. `write`:
@@ -309,9 +329,16 @@ impl<B: Backend> World<B> {
     }
     /// The store, column and record a place names.
     pub fn at_place(&self, place: u32) -> Option<(&Store, u32, u32)> {
+        let rec = place & ((1 << PLACE_REC_BITS) - 1);
+        if self.shape == SHAPE.load(Ordering::Relaxed) {
+            // the table is current: a place's column number indexes it, and no store is walked
+            let (st, col) = *self.cold.get((place >> PLACE_REC_BITS) as usize)?;
+            // SAFETY: the table is current, so `st` is a store of this world's tree, borrowed with it.
+            let st = unsafe { &*st };
+            return (rec < st.cols.get(col as usize)?.nrec).then_some((st, col, rec));
+        }
         let (path, col) = *self.ctab.get((place >> PLACE_REC_BITS) as usize)?;
         let st = self.root.at(&path)?;
-        let rec = place & ((1 << PLACE_REC_BITS) - 1);
         (rec < st.cols.get(col as usize)?.nrec).then_some((st, col, rec))
     }
     /// The column table, rebuilt when the stores grew (cold: a walk of the store tree).
@@ -341,10 +368,30 @@ impl<B: Backend> World<B> {
     }
 
     /// The places under (x, y) whose handlers hear one of `kinds`, bottom first (the last is the pick).
+    ///
+    /// Over the table: one hit kernel per column that has a handler of those kinds. No store is walked and,
+    /// once the scratch has grown, nothing is allocated (give the vector back with `unchain`).
     fn chain(&mut self, x: i32, y: i32, kinds: u32) -> Vec<u32> {
-        let mut v = Vec::new();
-        self.root.chain(&self.shown, x, y, kinds, &mut Path::default(), &mut v);
-        v.into_iter().map(|(p, c, r)| self.place(&p, c, r)).collect()
+        if self.shape != SHAPE.load(Ordering::Relaxed) {
+            self.retable();
+        }
+        let mut v = core::mem::take(&mut self.scratch);
+        v.clear();
+        for &(k, ks, hit) in &self.hits {
+            if ks & kinds == 0 {
+                continue;
+            }
+            // SAFETY: the table is current; `hit` was instantiated for the entry's archetype.
+            let r = unsafe { hit(&self.cols[k as usize], &self.shown, x, y) };
+            if r != u32::MAX {
+                v.push(k << PLACE_REC_BITS | r);
+            }
+        }
+        v
+    }
+    #[inline(always)]
+    fn unchain(&mut self, v: Vec<u32>) {
+        self.scratch = v;
     }
 
     /// Run the handler of `place` that hears `e`, if it has one.
@@ -405,7 +452,9 @@ impl<B: Backend> World<B> {
     pub fn repick<V: View>(&mut self, v: &mut V) -> Dispatch {
         let Some((x, y)) = self.ptr else { return Dispatch::NOTHING };
         let all = self.chain(x, y, kind::POINTER);
-        self.picked(v, all.last().copied().unwrap_or(NONE), &all)
+        let d = self.picked(v, all.last().copied().unwrap_or(NONE), &all);
+        self.unchain(all);
+        d
     }
     /// A pick that arrived from the raster with a frame: `place` is the `Pick` word.
     pub fn accept_pick<V: View>(&mut self, v: &mut V, place: u32) -> Dispatch {
@@ -417,8 +466,11 @@ impl<B: Backend> World<B> {
     }
     fn picked<V: View>(&mut self, v: &mut V, pick: u32, all: &[u32]) -> Dispatch {
         self.core_word(U_PICK, pick);
-        let hov: Vec<u32> = all.iter().copied().filter(|&p| self.kinds(p) & kind::HOVER != 0).collect();
+        let mut hov = core::mem::take(&mut self.hov_next);
+        hov.clear();
+        hov.extend(all.iter().copied().filter(|&p| self.kinds(p) & kind::HOVER != 0));
         if hov == self.hov {
+            self.hov_next = hov;
             return Dispatch { kind: kind::HOVER, place: pick, consumed: false };
         }
         let old = core::mem::replace(&mut self.hov, hov);
@@ -427,15 +479,19 @@ impl<B: Backend> World<B> {
         for &p in old.iter().rev().filter(|p| !self.hov.contains(p)) {
             self.call(v, p, &Event { kind: kind::HOVER, ev: Ev { on: false, ..Ev::at(x, y) }, text: "" });
         }
-        let new = self.hov.clone();
-        for &p in new.iter().rev().filter(|p| !old.contains(p)) {
-            if self.call(v, p, &Event { kind: kind::HOVER, ev: Ev::at(x, y), text: "" }) && out.place == NONE {
+        for i in (0..self.hov.len()).rev() {
+            let p = self.hov[i];
+            if !old.contains(&p) && self.call(v, p, &Event { kind: kind::HOVER, ev: Ev::at(x, y), text: "" }) && out.place == NONE {
                 out = Dispatch { kind: kind::HOVER, place: p, consumed: true };
             }
         }
+        self.hov_next = old;
         out
     }
     fn kinds(&self, place: u32) -> u32 {
+        if self.shape == SHAPE.load(Ordering::Relaxed) {
+            return self.kinds_of.get((place >> PLACE_REC_BITS) as usize).copied().unwrap_or(0);
+        }
         self.at_place(place).and_then(|(st, c, _)| st.cols[c as usize].hover).map_or(0, |o| o.kinds)
     }
 
@@ -699,6 +755,44 @@ impl<B: Backend> World<B> {
         resweep(&self.root, u, &mut self.tiles);
         self.refocus();
         Ok(())
+    }
+
+    /// Where the scene's memory is, for a measurement that attributes sampled addresses to what they are
+    /// (`bench/r8/perf/lines.sh`): (name, start, bytes, page size, where records start in a page). The last two
+    /// are 0 except for a column's pages, where an address is a rect lane or a record by its offset in a page.
+    pub fn regions(&self) -> Vec<(String, usize, usize, usize, usize)> {
+        let mut out = Vec::new();
+        let mut put = |name: String, p: usize, len: usize| out.push((name, p, len, 0, 0));
+        put("world".into(), self as *const _ as usize, size_of::<Self>());
+        put("block.shown".into(), &self.shown as *const _ as usize, 256);
+        put("tiles.bits".into(), self.tiles.bits.as_ptr() as usize, self.tiles.bits.len() * 8);
+        put("table.entries".into(), self.cols.as_ptr() as usize, self.cols.len() * 64);
+        put("table.reads".into(), self.col_reads.as_ptr() as usize, self.col_reads.len() * 8);
+        put("table.readers".into(), self.readers.as_ptr() as usize, self.readers.len() * 2);
+        put("table.cold".into(), self.cold.as_ptr() as usize, self.cold.len() * 16);
+        put("table.spaces".into(), self.spaces.as_ptr() as usize, self.spaces.len() * 16);
+        let w = self.ar.work();
+        put("arena.shared".into(), w.base() as usize - (256 << 10), 256 << 10);
+        put("half.plan".into(), w.entry(0) as usize, crate::arena::MAX_COLS * 64);
+        put("half.spaces".into(), w.space(0) as usize, crate::arena::MAX_SPACES * 32);
+        put("half.live".into(), w.live(0) as usize, crate::arena::MAX_LIVE * 8);
+        fn tree(st: &Store, path: &str, out: &mut Vec<(String, usize, usize, usize, usize)>) {
+            out.push((format!("tree.store{path}"), st as *const _ as usize, size_of::<Store>(), 0, 0));
+            out.push((format!("tree.cols{path}"), st.cols.as_ptr() as usize, st.cols.len() * size_of::<store::RawCol>(), 0, 0));
+            out.push((format!("tree.sites{path}"), st.sites.as_ptr() as usize, st.sites.len() * size_of::<store::Site>(), 0, 0));
+            out.push((format!("tree.scratch{path}"), st.plan.as_ptr() as usize, st.plan.capacity() * 4, 0, 0));
+            out.push((format!("tree.subs{path}"), st.subs.as_ptr() as usize, st.subs.len() * size_of::<Store>(), 0, 0));
+            for (j, c) in st.cols.iter().enumerate() {
+                if c.npages != 0 {
+                    out.push((format!("pages{path}.{j}.{}", c.desc.name), c.raw_page(0) as usize, c.npages as usize * c.desc.page.size(), c.desc.page.size(), c.desc.rec_off));
+                }
+            }
+            for (q, s) in st.subs.iter().enumerate() {
+                tree(s, &format!("{path}/{q}"), out);
+            }
+        }
+        tree(&self.root, "", &mut out);
+        out
     }
 
     /// Records, pages and bytes of columns.

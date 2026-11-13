@@ -307,7 +307,8 @@ pub struct StoreView<'a> {
 
 pub type DeltaFn = unsafe fn(&ColEnt, &U, &U, &mut Tiles);
 pub type ActiveFn = unsafe fn(&RawCol, &StoreView, &U) -> (u32, Rect);
-pub type HitFn = unsafe fn(&RawCol, &StoreView, &U, i32, i32) -> u32;
+/// The hit kernel of a column: the topmost live record under a point, from the column's table entry alone.
+pub type HitFn = unsafe fn(&ColEnt, &U, i32, i32) -> u32;
 /// A column whose records have handlers: their handler face (kinds, hit kernel, trampoline, captures), constant
 /// per record-and-handler type (`event.rs`). The hit kernel is instantiated only for archetypes with a handler.
 pub type Hov = &'static crate::event::Ons;
@@ -884,9 +885,9 @@ impl Store {
                     if o.kinds & kinds == 0 {
                         continue;
                     }
-                    let sv = StoreView { space: &self.space, live: Live { cap: self.cap, rows: &self.row_live, nrec: c.nrec } };
-                    // SAFETY: `hit` was instantiated for the archetype `c` was created with.
-                    let r = unsafe { (o.hit)(c, &sv, u, x, y) };
+                    // SAFETY: `hit` was instantiated for the archetype `c` was created with; the entry is built
+                    // here, from the store as it is.
+                    let r = unsafe { (o.hit)(&self.ent(c), u, x, y) };
                     if r != u32::MAX {
                         out.push((*path, j, r));
                     }
@@ -1070,17 +1071,18 @@ fn mark_rects(l: &[[i32; 64]; 4], mut m: u64, org: (i32, i32), clip: Rect, tiles
     }
 }
 
-unsafe fn hit_col<A: Arch>(col: &RawCol, sv: &StoreView, u: &U, x: i32, y: i32) -> u32 {
-    // SAFETY: the caller instantiated this for the column's archetype.
-    let pages = unsafe { col.all::<A>() };
-    if x < sv.space.clip.x0 || x >= sv.space.clip.x1 || y < sv.space.clip.y0 || y >= sv.space.clip.y1 {
+unsafe fn hit_col<A: Arch>(e: &ColEnt, u: &U, x: i32, y: i32) -> u32 {
+    // SAFETY: the caller instantiated this for the column's archetype and the entry is current: `pages` holds
+    // `npages` pages of `A`, `space` is the column's store's.
+    let (pages, space, lv) = unsafe { (core::slice::from_raw_parts(e.pages as *const Page<A>, e.npages as usize), &*e.space, e.live()) };
+    if x < space.clip.x0 || x >= space.clip.x1 || y < space.clip.y0 || y >= space.clip.y1 {
         return u32::MAX;
     }
-    let org = sv.space.origin(u);
+    let org = space.origin(u);
     let (x, y) = (x - org.0, y - org.1);
     let mut best = u32::MAX;
     for (pi, pg) in pages.iter().enumerate() {
-        let live = sv.live.page(pi);
+        let live = lv.page(pi);
         if live == 0 {
             continue;
         }
