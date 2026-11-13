@@ -256,6 +256,9 @@ Both mutants fail, each in both tests (run at `LAY_TREES=1000` on the kept form)
 the random trees and at chat row 0; `mutant_valid` at seed 17 (a width inside an unbounded interval lays out
 differently) and in the sheet row's memo (a kept answer reused at a width it does not hold for).
 
+`cargo check --workspace --all-targets` on the tree of commit `0e599e95d6` (r8/layout, on top of `r8/expr` as
+merged at `a37da490a2`): finished with no error (Mac, dev profile, 3 m 46 s).
+
 ## 8. Hosts
 
 Everything ran on the Mac. ilo-prod was probed once (to find a checkout to clone from) and nothing was built
