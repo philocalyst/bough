@@ -13,7 +13,7 @@ fn main() {
     let mut run = || -> Result<(), bough_host::wl::Error> {
         let mut c = Conn::connect()?;
         c.flush()?;
-        let mut shm = Shm::new((w * h * 4) as usize)?;
+        let mut shm = Shm::with((w * h * 4) as usize, bough_host::wl::Prep::from_env())?;
         let mut evs = Vec::new();
         while !c.ready() {
             c.read(true)?;

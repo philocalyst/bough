@@ -11,7 +11,7 @@
 //! the compositor is answering the toplevel's first commit, and the first buffer is committed in the same write
 //! as the configure acknowledgement.
 use crate::pace::Ring;
-use crate::wl::{Conn, Error, Shm, Wl};
+use crate::wl::{Conn, Error, Prep, Shm, Wl};
 use crate::{App, TilesRef};
 use std::time::{Duration, Instant};
 
@@ -124,7 +124,7 @@ fn ns(t0: Instant) -> u64 {
 }
 
 /// Open the window and run `app` until the window closes. Never returns normally.
-pub fn run<A: App>(win: Window<'_>, app: &mut A) -> Result<Trace, Error> {
+pub fn run<A: App>(win: Window<'_>, make: impl FnOnce() -> A) -> Result<Trace, Error> {
     let t0 = Instant::now();
     let mut tr = Trace::default();
     let stats = std::env::var_os("BOUGH_HOST_STATS").is_some();
@@ -133,13 +133,16 @@ pub fn run<A: App>(win: Window<'_>, app: &mut A) -> Result<Trace, Error> {
     tr.connected = ns(t0);
     c.flush()?;
     tr.write1 = ns(t0);
-    // while the compositor lists its globals: the scene, at the size asked for, and the memory of one buffer
+    // while the compositor lists its globals: the application's state, the scene at the size asked for, and
+    // the memory of one buffer
+    let prep = Prep::from_env();
+    let app = &mut make();
     let (mut scale120, mut logical) = (120u32, (win.w, win.h));
     let (mut bw, mut bh) = (win.w, win.h);
     app.resize(bw, bh, 1);
     let mut ring = Ring::new(bw, bh, 1, MAX_BUFS);
     let slot = Buffers::bytes(bw, bh);
-    let mut bufs = Buffers { shm: Shm::new(slot)?, pool: 0, slot, ids: Vec::new(), generation: 0, old: Vec::new(), w: bw, h: bh };
+    let mut bufs = Buffers { shm: Shm::with(slot, prep)?, pool: 0, slot, ids: Vec::new(), generation: 0, old: Vec::new(), w: bw, h: bh };
     tr.mounted = ns(t0);
     let mut evs: Vec<Wl> = Vec::with_capacity(64);
     while !c.ready() {
@@ -207,6 +210,14 @@ pub fn run<A: App>(win: Window<'_>, app: &mut A) -> Result<Trace, Error> {
     if stats {
         eprintln!("bough-host start: {tr:?}");
     }
+    // The next frame goes into a second buffer (the compositor holds the first): make its pages exist now,
+    // while nothing is waiting, so the first input pays for a repair and not for a thousand page faults.
+    if prep != Prep::Touch {
+        bufs.shm.grow(2 * bufs.slot)?;
+        bufs.shm.prepare(bufs.slot, bufs.slot, prep);
+        c.resize_pool(bufs.pool, bufs.shm.len as i32);
+        c.flush()?;
+    }
 
     let deadline = win.seconds.map(|s| t0 + Duration::from_secs_f64(s));
     let period = app.period();
@@ -260,7 +271,7 @@ pub fn run<A: App>(win: Window<'_>, app: &mut A) -> Result<Trace, Error> {
             // new generation's slot 0 may overlap one, so it starts after them when any is held
             if !bufs.old.is_empty() {
                 // simplest sound choice: a fresh memfd for the new generation
-                let fresh = Shm::new(bufs.slot)?;
+                let fresh = Shm::with(bufs.slot, prep)?;
                 let stale = core::mem::replace(&mut bufs.shm, fresh);
                 // the old pool keeps its own reference to the old memfd; our mapping of it can go
                 drop(stale);

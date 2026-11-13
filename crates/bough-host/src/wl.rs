@@ -781,8 +781,31 @@ pub struct Shm {
     pub map: *mut u8,
     pub len: usize,
 }
+/// How a buffer's pages come to exist (`BOUGH_SHM`, a measurement switch; the default is `populate`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Prep {
+    /// Nothing ahead of time: every page is a fault at first write (allocate, zero, map).
+    Touch,
+    /// `fallocate`: the pages are allocated and zeroed in one call; each is still a (minor) fault to map.
+    Allocate,
+    /// `fallocate`, then `MADV_POPULATE_WRITE`: allocated and mapped in two calls, no fault at all.
+    Populate,
+}
+impl Prep {
+    pub fn from_env() -> Prep {
+        match std::env::var("BOUGH_SHM").as_deref() {
+            Ok("touch") => Prep::Touch,
+            Ok("fallocate") => Prep::Allocate,
+            _ => Prep::Populate,
+        }
+    }
+}
+
 impl Shm {
     pub fn new(len: usize) -> Result<Shm, Error> {
+        Shm::with(len, Prep::Populate)
+    }
+    pub fn with(len: usize, prep: Prep) -> Result<Shm, Error> {
         // SAFETY: memfd, ftruncate and mmap on a descriptor this function owns.
         unsafe {
             let fd = libc::memfd_create(c"bough".as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING);
@@ -796,7 +819,24 @@ impl Shm {
             if map == libc::MAP_FAILED {
                 return Err(os("mmap"));
             }
-            Ok(Shm { fd, map: map as *mut u8, len })
+            let mut s = Shm { fd, map: map as *mut u8, len };
+            s.prepare(0, len, prep);
+            Ok(s)
+        }
+    }
+    /// Make the pages of `[at, at + len)` exist ahead of their first write. Failure is not an error: the pages
+    /// then come to exist by faults, as they would have.
+    pub fn prepare(&mut self, at: usize, len: usize, prep: Prep) {
+        if prep == Prep::Touch || len == 0 {
+            return;
+        }
+        // SAFETY: a range inside our own memfd and our own mapping of it.
+        unsafe {
+            libc::fallocate(self.fd, 0, at as libc::off_t, len as libc::off_t);
+            if prep == Prep::Populate {
+                const MADV_POPULATE_WRITE: libc::c_int = 23;
+                libc::madvise(self.map.add(at) as *mut libc::c_void, len, MADV_POPULATE_WRITE);
+            }
         }
     }
     /// Grow to `len` bytes. The mapping may move: pointers into it are invalid afterwards.

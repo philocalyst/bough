@@ -6,11 +6,12 @@ fn main() {
     use bough_guibench_x::{rows, search, spec, spinner, table};
     use bough_host::run::{Window, run};
 
-    fn go<V: Model>(v: V, title: &str) -> ! {
+    // The model is made by the loop, after the connection's first write: the compositor lists its globals
+    // while the application builds its state.
+    fn go<V: Model>(v: impl FnOnce() -> V, title: &str) -> ! {
         let seconds = std::env::var("GUIBENCH_SECONDS").ok().and_then(|s| s.parse().ok());
-        let mut scene = Scene::new(v);
         let win = Window { title, app_id: "gui-bench.bough", w: spec::WINDOW.0 as i32, h: spec::WINDOW.1 as i32, seconds };
-        match run(win, &mut scene) {
+        match run(win, || Scene::new(v())) {
             Ok(_) => std::process::exit(0),
             Err(e) => {
                 eprintln!("bough-bench: {e}");
@@ -32,16 +33,16 @@ fn main() {
         }
     };
     match s {
-        Scenario::Rows { count } | Scenario::Virtual { count } => go(rows::Rows::new(count), s.title()),
+        Scenario::Rows { count } | Scenario::Virtual { count } => go(|| rows::Rows::new(count), s.title()),
         Scenario::Table { count, variant, ticker } => {
             if variant == Variant::Coarse {
-                go(table::Coarse(table::Table::new(count, ticker)), s.title())
+                go(|| table::Coarse::new(count, ticker), s.title())
             } else {
-                go(table::Table::new(count, ticker), s.title())
+                go(|| table::Table::new(count, ticker), s.title())
             }
         }
-        Scenario::Search { count, filter } => go(search::Search::new(count, filter), s.title()),
-        Scenario::Spinner { count } => go(spinner::Spinner::new(count), s.title()),
+        Scenario::Search { count, filter } => go(|| search::Search::new(count, filter), s.title()),
+        Scenario::Spinner { count } => go(|| spinner::Spinner::new(count), s.title()),
     }
 }
 #[cfg(not(target_os = "linux"))]
