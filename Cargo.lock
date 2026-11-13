@@ -216,6 +216,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bough-lay"
+version = "0.0.0"
+dependencies = [
+ "bough-expr",
+ "bough-mem",
+ "cephal",
+]
+
+[[package]]
 name = "bough-mem"
 version = "0.0.0"
 
@@ -345,18 +354,6 @@ dependencies = [
  "bough-core",
  "bough-metal",
  "bough-text",
- "zgx-workload",
-]
-
-[[package]]
-name = "bough-workloads"
-version = "0.0.0"
-dependencies = [
- "bough",
- "bough-mem",
- "bough-metal",
- "libc",
- "png",
  "zgx-workload",
 ]
 

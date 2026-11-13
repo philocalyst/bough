@@ -18,8 +18,16 @@ pub const U_PTR_Y: usize = 60;
 pub const U_PTR_X: usize = 61;
 pub const U_PICK: usize = 62;
 pub const U_TIME: usize = 63;
-/// The words an application may write.
-pub const APP_WORDS: usize = 60;
+/// Words the surface lane owns (focus, press, environment, where the press began): written by the platform and
+/// the world, compared in a turn like the application's.
+pub const U_FOCUS: usize = 56;
+pub const U_PRESS: usize = 57;
+pub const U_ENV: usize = 58;
+pub const U_PRESS_AT: usize = 59;
+/// The words below this are the application's (growing up from 0) and the core's (growing down from here).
+pub const APP_WORDS: usize = 56;
+/// The words a turn compares: everything but the hot ones.
+pub const TURN_WORDS: usize = 60;
 
 /// The uniform block. The application writes it as plain data; nothing observes a write.
 #[repr(C, align(64))]
@@ -177,6 +185,75 @@ macro_rules! lens {
     };
 }
 
+/// Device pixels, half open.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Rect {
+    pub x0: i32,
+    pub y0: i32,
+    pub x1: i32,
+    pub y1: i32,
+}
+impl Rect {
+    /// A box no record leaves: what an unbounded motion sweeps (cut to the space's clip by whoever marks it).
+    pub const EVERYWHERE: Rect = Rect { x0: -(1 << 28), y0: -(1 << 28), x1: 1 << 28, y1: 1 << 28 };
+    #[inline(always)]
+    pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Rect {
+        Rect { x0: x, y0: y, x1: x + w, y1: y + h }
+    }
+    #[inline(always)]
+    pub fn shift(self, d: (i32, i32)) -> Rect {
+        Rect { x0: self.x0 + d.0, y0: self.y0 + d.1, x1: self.x1 + d.0, y1: self.y1 + d.1 }
+    }
+    #[inline(always)]
+    pub fn and(self, o: Rect) -> Rect {
+        Rect { x0: self.x0.max(o.x0), y0: self.y0.max(o.y0), x1: self.x1.min(o.x1), y1: self.y1.min(o.y1) }
+    }
+    #[inline(always)]
+    pub fn or(self, o: Rect) -> Rect {
+        Rect { x0: self.x0.min(o.x0), y0: self.y0.min(o.y0), x1: self.x1.max(o.x1), y1: self.y1.max(o.y1) }
+    }
+    #[inline(always)]
+    pub fn empty(self) -> bool {
+        self.x0 >= self.x1 || self.y0 >= self.y1
+    }
+    #[inline(always)]
+    pub fn hits(self, o: Rect) -> bool {
+        self.x0 < o.x1 && o.x0 < self.x1 && self.y0 < o.y1 && o.y0 < self.y1
+    }
+    #[inline(always)]
+    pub fn area(self) -> i64 {
+        (self.x1 - self.x0) as i64 * (self.y1 - self.y0) as i64
+    }
+}
+
+/// The words the raster owns, by name. An expression may read them; the application never writes them.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Time;
+impl Lens for Time {
+    type T = u32;
+    const SLOT: usize = U_TIME;
+}
+#[derive(Clone, Copy, PartialEq)]
+pub struct PtrX;
+impl Lens for PtrX {
+    type T = i32;
+    const SLOT: usize = U_PTR_X;
+}
+#[derive(Clone, Copy, PartialEq)]
+pub struct PtrY;
+impl Lens for PtrY {
+    type T = i32;
+    const SLOT: usize = U_PTR_Y;
+}
+#[derive(Clone, Copy, PartialEq)]
+pub struct Pick;
+impl Lens for Pick {
+    type T = u32;
+    const SLOT: usize = U_PICK;
+}
+/// The hot words: they change every frame or every pointer event, so they are never part of a turn's compare.
+pub const HOT: u64 = 0xf << 60;
 // ---- record words ------------------------------------------------------------------------------------------
 
 /// A value whose bytes are whole 32-bit words with no padding and no invalid bit pattern: a record can be read
@@ -364,7 +441,20 @@ pub trait Expr: Words {
     /// If the value is a colour, its alpha is provably full.
     const OPAQUE: bool = false;
     const CODE: &'static Code;
+    /// Whether [`Expr::until`] can be anything but "never": false for an expression that reads `Time` and gives
+    /// no bound, so a column of them is known to be in motion without asking a single record.
+    const RESTS: bool = Self::READS >> U_TIME & 1 == 0;
     fn eval(&self, cx: &Cx) -> Self::Out;
+
+    /// The bound of this expression in `Time`: the value of `Time` from which on the expression no longer
+    /// changes with time alone, under the other words of this block. 0: it is at rest now. `u32::MAX`: never.
+    /// An expression that reads `Time` and says nothing is never at rest; a combinator forwards to its
+    /// operands. This is what lets a frame cost nothing: time is never differentiated, its readers say when
+    /// they stop.
+    #[inline(always)]
+    fn until(&self, _cx: &Cx) -> u32 {
+        if Self::READS >> U_TIME & 1 != 0 { u32::MAX } else { 0 }
+    }
 
     /// Apply a Rust function that captures nothing. What varies per record belongs in a `Rec` operand. The
     /// result is CPU stage: it is re-evaluated for exposed records when a word it reads changes.
@@ -536,6 +626,7 @@ where
     type Out = O;
     type Stage = <A::Stage as Stage>::OnCpu;
     const READS: u64 = A::READS;
+    const RESTS: bool = A::RESTS;
     const CODE: &'static Code = &Code::Cpu(&[A::CODE]);
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> O {
@@ -544,6 +635,10 @@ where
         // which was handed a value of `F`: the type is inhabited and copying that value is what this is.
         let f: F = unsafe { core::mem::zeroed() };
         f(self.0.eval(cx))
+    }
+    #[inline(always)]
+    fn until(&self, cx: &Cx) -> u32 {
+        self.0.until(cx)
     }
 }
 
@@ -555,10 +650,15 @@ where
     type Out = (A::Out, B::Out);
     type Stage = <(A::Stage, B::Stage) as JoinAll>::Out;
     const READS: u64 = A::READS | B::READS;
+    const RESTS: bool = A::RESTS & B::RESTS;
     const CODE: &'static Code = &Code::Cpu(&[A::CODE, B::CODE]);
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> Self::Out {
         (self.0.eval(cx), self.1.eval(cx))
+    }
+    #[inline(always)]
+    fn until(&self, cx: &Cx) -> u32 {
+        self.0.until(cx).max(self.1.until(cx))
     }
 }
 impl<A: Expr, B: Expr, C: Expr> Expr for (A, B, C)
@@ -568,10 +668,15 @@ where
     type Out = (A::Out, B::Out, C::Out);
     type Stage = <(A::Stage, B::Stage, C::Stage) as JoinAll>::Out;
     const READS: u64 = A::READS | B::READS | C::READS;
+    const RESTS: bool = A::RESTS & B::RESTS & C::RESTS;
     const CODE: &'static Code = &Code::Cpu(&[A::CODE, B::CODE, C::CODE]);
     #[inline(always)]
     fn eval(&self, cx: &Cx) -> Self::Out {
         (self.0.eval(cx), self.1.eval(cx), self.2.eval(cx))
+    }
+    #[inline(always)]
+    fn until(&self, cx: &Cx) -> u32 {
+        self.0.until(cx).max(self.1.until(cx)).max(self.2.until(cx))
     }
 }
 
