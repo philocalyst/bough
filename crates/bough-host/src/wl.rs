@@ -531,6 +531,9 @@ impl Conn {
             (Kind::Keyboard, 3) => {
                 let (code, pressed) = (self.a(at, 2), self.a(at, 3) == 1);
                 self.load_keymap();
+                if std::env::var_os("BOUGH_HOST_KEYS").is_some() {
+                    eprintln!("bough-host key: code {code} pressed {pressed} mods {:?} keymap {:?} sym {:?}", self.mods, self.keymap.as_ref().map(|k| k.len()), self.keymap.as_ref().and_then(|k| k.sym(code + 8, self.mods.shift, self.lock)));
+                }
                 if let Some(km) = &self.keymap
                     && let Some(sym) = km.sym(code + 8, self.mods.shift, self.lock)
                 {
@@ -581,6 +584,9 @@ impl Conn {
             let p = libc::mmap(core::ptr::null_mut(), size as usize, libc::PROT_READ, libc::MAP_PRIVATE, fd, 0);
             if p != libc::MAP_FAILED {
                 let text = core::slice::from_raw_parts(p as *const u8, size as usize);
+                if let Some(path) = std::env::var_os("BOUGH_HOST_KEYMAP_DUMP") {
+                    let _ = std::fs::write(path, text);
+                }
                 self.keymap = Some(Keymap::parse(text));
                 libc::munmap(p, size as usize);
             }
