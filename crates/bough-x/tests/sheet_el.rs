@@ -1,7 +1,8 @@
 //! The façade's sheet on this core, held to the same oracles as the core's fixture: after every step of a
 //! random script, in mount-once mode and in the façade's default (described again after every turn),
-//!   retained (damaged tiles repaired) == full redraw from the stores == immediate-mode paint by the view
-//!   == (every 16th step) a fresh mount at the same instant.
+//!   retained (damaged tiles repaired) == full redraw from the stores
+//!   == immediate-mode paint by the view (whenever no transition is in flight)
+//!   == (every 16th step, when no transition is in flight) a fresh mount at the same instant.
 #[path = "../scenes/sheet_el.rs"]
 mod sheet_el;
 use bough_x::el::App;
@@ -31,9 +32,14 @@ fn check(tag: &str, step: usize, app: &mut App<Sheet, Soft>, retained: &mut Soft
     world.paint(&mut full);
     let diff = |a: &[u32], b: &[u32]| a.iter().zip(b).filter(|(x, y)| x != y).count();
     assert!(retained.px == full.px, "{tag} step {step}: retained != full redraw ({} pixels)", diff(&retained.px, &full.px));
-    let mut now = Soft::new(W, H);
-    bough_x::sink::View::view(&app.v, &mut Immediate::new(&mut now, &world.shown));
-    assert!(full.px == now.px, "{tag} step {step}: stores != immediate ({} pixels)", diff(&full.px, &now.px));
+    // The immediate-mode paint describes the view from its state alone, so a transition in it is at rest: where
+    // a value started from and when are words of the transition's record, written by the turn that moved its
+    // target (`Expr::carry`). It is compared whenever nothing is moving (the fresh mount below, likewise).
+    if world.tiles.sweeps.is_empty() {
+        let mut now = Soft::new(W, H);
+        bough_x::sink::View::view(&app.v, &mut Immediate::new(&mut now, &world.shown));
+        assert!(full.px == now.px, "{tag} step {step}: stores != immediate ({} pixels)", diff(&full.px, &now.px));
+    }
     if fresh {
         // a fresh mount of the same state at the same instant shows the same, except a transition in flight
         // (a fresh mount is at rest): compared only when nothing is moving

@@ -4,8 +4,7 @@
 //! 1. the import line (`bough_x::el::prelude` for `bough::prelude`);
 //! 2. a run of children *inside a row* is an array (`std::array::from_fn(|c| cell(r, c))`) where the façade
 //!    writes `each((0..COLS).map(..))`: the count of a row's records is in its type until rows can hold runs;
-//! 3. the benchmark harness's `Scene` impl is not here (the drivers are `examples/sheet_el_x.rs` and
-//!    `tests/sheet_el.rs`).
+//! 3. the benchmark harness's `Scene` impl is not here (the driver is `tests/sheet_el.rs`).
 //!
 //! State, handlers, `sig!`, the closures (capturing ones included), the builder chains, `each` for the rows,
 //! the scrolled body, the selection's transition: as written there.

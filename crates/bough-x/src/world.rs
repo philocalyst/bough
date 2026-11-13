@@ -123,7 +123,25 @@ impl<B: Backend> World<B> {
     }
 
     /// Describe the view for the first time. Only what is exposed comes to exist.
+    ///
+    /// A view whose Frame state is its own fields (the element layer) is read through the table of slots its
+    /// columns name, which exists only after a first description: that description saw those fields as zero.
+    /// It is then described again, from nothing, with them read (cold, once per mount; a view that declares its
+    /// block is described once). Again rather than settled from zero: a transition must not run from a value
+    /// that was never shown.
     pub fn mount<V: View>(&mut self, v: &V) {
+        for _ in 0..8 {
+            self.mount_pass(v);
+            let mut scratch = U::default();
+            if self.shown.diff(v.gathered(&self.slots, &mut scratch), self.nwords) & !HOT == 0 {
+                return;
+            }
+            *self.root = Store::new(1, self.root.space);
+            self.tiles.sweeps.clear();
+        }
+        panic!("the view's fields named by its columns did not settle in 8 descriptions");
+    }
+    fn mount_pass<V: View>(&mut self, v: &V) {
         self.view = Some(crate::sink::tid::<V>());
         self.shown = self.block(v);
         self.tiles.mark_all();
@@ -136,6 +154,25 @@ impl<B: Backend> World<B> {
         self.root.resweep(&self.shown, &mut self.tiles);
         self.retable();
         self.refocus();
+    }
+
+    /// After a pass that made columns: the slots they name are learned, and a word of the view's own fields
+    /// that no column named before is gathered now and settled like any other change. Bounded: each round
+    /// follows a pass that changed the tree's shape, and a view has finitely many fields to name.
+    #[inline]
+    fn learn<V: View>(&mut self, v: &V) {
+        for _ in 0..8 {
+            if self.shape == SHAPE.load(Ordering::Relaxed) {
+                return;
+            }
+            self.retable();
+            let mut scratch = U::default();
+            let ch = self.shown.diff(v.gathered(&self.slots, &mut scratch), self.nwords) & !HOT;
+            if ch == 0 {
+                return;
+            }
+            self.changed(v, ch, self.epoch);
+        }
     }
 
     /// Bring the column table up to date with the store tree. Cold: the tree changes shape when a column or a
@@ -273,6 +310,7 @@ impl<B: Backend> World<B> {
             return;
         }
         self.changed(v, ch, epoch);
+        self.learn(v);
     }
     #[inline(never)]
     fn changed<V: View>(&mut self, v: &V, ch: u64, epoch: u32) {
@@ -324,6 +362,7 @@ impl<B: Backend> World<B> {
             self.tiles.sweeps.clear();
             self.mount(v);
         }
+        self.learn(v);
         self.refocus();
     }
 
