@@ -32,7 +32,7 @@ impl Node {
 }
 
 /// The measure function of a leaf, for the solver: the same code the typed path runs.
-pub fn measurer<M: Measure>(m: M) -> MeasureFn {
+pub fn measurer<M: Measure + Clone + 'static>(m: M) -> MeasureFn {
     Rc::new(move |kw, kh, av| {
         let u = U::default();
         let mut cx = Cx::new(1.0, &u, [0.0; 2]);
@@ -120,5 +120,23 @@ pub mod standin {
             self.last.set(b);
             b
         }
+    }
+}
+
+impl crate::shape::Wrap for standin::Para {
+    #[inline]
+    fn inline(&self) -> (f32, f32) {
+        Measure::inline(self)
+    }
+    #[inline]
+    fn block(&self, w: f32) -> Block {
+        Measure::block(self, w)
+    }
+    fn key(&self) -> [u32; 2] {
+        // (a stand-in: the text lane's key is a content hash; here the words' storage and count)
+        [Rc::as_ptr(&self.words) as *const f32 as usize as u32, self.words.len() as u32]
+    }
+    fn rc(&self) -> Rc<dyn crate::shape::Wrap> {
+        Rc::new(self.clone())
     }
 }

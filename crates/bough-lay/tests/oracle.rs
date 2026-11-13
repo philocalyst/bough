@@ -61,8 +61,8 @@ impl Lay for Dyn {
     fn size(&self, cx: &mut Cx, known: [Option<V>; 2], parent: [Option<V>; 2], avail: [Av; 2], content: bool) -> [V; 2] {
         match &self.kind {
             DynKind::Box(k) => solve(&self.spec, &DynKids(k), cx, known, parent, avail, content, false).outer,
-            DynKind::Line(m) => text(*m, ()).with_spec(self.spec).size(cx, known, parent, avail, content),
-            DynKind::Para(m) => text(m.clone(), ()).with_spec(self.spec).size(cx, known, parent, avail, content),
+            DynKind::Line(m) => bough_lay::el::leaf_size(&self.spec, m, cx, known, parent, avail, content),
+            DynKind::Para(m) => bough_lay::el::leaf_size(&self.spec, m, cx, known, parent, avail, content),
         }
     }
     fn reported(&self, cx: &mut Cx, size: [V; 2]) -> [V; 2] {
@@ -284,37 +284,65 @@ fn probe() {
 #[path = "../scenes/rows.rs"]
 mod rows;
 
+fn check_shape<T: Shape>(t: &T, s: f32, w: f32, memo: &mut Memo, what: &str) -> Valid {
+    let tree = bough_lay::shape::tree(t);
+    let (want, wh) = oracle_row(&tree, s, w);
+    let mut got = vec![[i32::MIN; 4]; T::LEAVES];
+    let (gh, v) = bough_lay::shape::place(t, s, &U::default(), w, &mut got[..]);
+    assert_eq!(tree.total, T::LEAVES, "{what}: the type's record count");
+    assert!(got == want && gh == wh, "{what}: width {w}\n placed {got:?} h {gh}\n cephal {want:?} h {wh}");
+    // through the memo, at an offset: the same rects, shifted
+    let mut kept = vec![[i32::MIN; 4]; T::LEAVES];
+    let mh = memo.row(t, s, &U::default(), w, (3, 1000), &mut kept[..]);
+    let shifted: Vec<[i32; 4]> = want.iter().map(|r| [r[0] + 3, r[1] + 1000, r[2] + 3, r[3] + 1000]).collect();
+    assert!(kept == shifted && mh == wh, "{what}: the memo's answer at width {w}");
+    v
+}
+
 #[test]
 fn scene_rows_match_the_solver() {
-    // sheet: a row of fixed boxes; uniform by type; holds from its content width up
-    let r = rows::sheet_row(7);
-    for w in [1800.0, 2311.0, 2312.0, 2313.0, 2560.0, 3000.0] {
-        check_row(&r, 2.0, w, "sheet row");
+    fn hk<T: Shape>(_: &T) -> Hk {
+        T::HK
     }
-    let (_, h, v) = typed_row(&r, 2.0, 2560.0, 22);
+    // sheet: a row of fixed boxes; one shape for every row; holds from its content width up
+    let mut memo = Memo::new();
+    for r in [0usize, 7, 99_999] {
+        let row = rows::sheet_row(r);
+        for w in [1800.0, 2311.0, 2312.0, 2313.0, 2560.0, 3000.0] {
+            check_shape(&row, 2.0, w, &mut memo, "sheet row");
+        }
+        assert_eq!(hk(&row), Hk::Fixed);
+        assert_eq!(bough_lay::shape::hash(&row), bough_lay::shape::hash(&rows::sheet_row(3)), "every sheet row is one shape");
+    }
+    let mut out = [[0i32; 4]; 22];
+    let (h, v) = bough_lay::shape::place(&rows::sheet_row(7), 2.0, &U::default(), 2560.0, &mut out[..]);
     assert_eq!(h, 44);
     assert!(v.lo[0] <= 2313.0 && v.hi[0] == f32::INFINITY, "the sheet row holds from its content width up: {v:?}");
-    fn hk<L: Lay>(_: &L) -> Hk {
-        L::HK
+    // 1,000 rows at widths inside the interval: one layout
+    let mut memo = Memo::new();
+    for r in 0..1000 {
+        memo.row(&rows::sheet_row(r), 2.0, &U::default(), 2400.0 + (r % 300) as f32, (0, r as i32 * 44), &mut out[..]);
     }
-    assert_eq!(hk(&r), Hk::Fixed);
+    assert_eq!((memo.misses, memo.hits), (1, 999));
     // ide: lines of 3 to 8 tokens; fixed height by the author's `.h`
     let mut rng = Rng(0x1de);
+    let mut memo = Memo::new();
     for i in 0..400 {
         let n = 2 + rng.below(7);
         let toks: [(f32, f32, f32); rows::MAX_TOK] = std::array::from_fn(|_| (13.2 * (1 + rng.below(9)) as f32, rng.pick(&[0.0, 3.8, 14.0, 28.0]), rng.pick(&[0.0, 3.8])));
         let l = rows::ide_line(n, &toks, 13.2 * rng.below(6) as f32);
         for w in [300.0, 900.0, 1860.0] {
-            check_row(&l, 2.0, w, &format!("ide line {i}"));
+            check_shape(&l, 2.0, w, &mut memo, &format!("ide line {i}"));
         }
         assert_eq!(hk(&l), Hk::Fixed);
     }
     // chat: wrapped text in a bubble that is a fraction of a column that takes the row's free space
+    let mut memo = Memo::new();
     for i in 0..400 {
         let m = rows::msg(i);
         let c = rows::chat_row(&m);
         for w in [700.0, 1100.0, 1960.0, 2400.0] {
-            let v = check_row(&c, 2.0, w, &format!("chat row {i}"));
+            let v = check_shape(&c, 2.0, w, &mut memo, &format!("chat row {i}"));
             assert!(v.lo[0] <= w && w <= v.hi[0]);
         }
         assert_eq!(hk(&c), Hk::Wraps);

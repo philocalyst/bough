@@ -15,10 +15,12 @@
 pub mod el;
 pub mod extent;
 pub mod flex;
+pub mod shape;
 pub mod tree;
 pub mod val;
 
-pub use el::{Chain, Flex, LBox, Leaf, Measure, Paint, Rec1, block, column, div, row, text};
+pub use el::{Block, Chain, Flex, LBox, Leaf, Measure, Paint, Rec1, block, column, div, row, text};
+pub use shape::{Memo, Shape, Wrap};
 pub use extent::{Extent, Heights, Uniform};
 pub use flex::{Align, Dim, Hk, Justify, Kids, Lay, Out, Spec};
 pub use val::{Av, Cx, V, Valid};

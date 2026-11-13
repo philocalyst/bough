@@ -132,6 +132,12 @@ pub trait Lay {
     fn reported(&self, _cx: &mut Cx, size: [V; 2]) -> [V; 2] {
         size
     }
+    /// The element is not there (an optional child that is `None`): it takes no part in layout; `place` gives
+    /// its records empty rects.
+    #[inline(always)]
+    fn absent(&self) -> bool {
+        false
+    }
     /// The element as a style tree: for the general solver (the oracle and the fallback). Cold.
     fn tree(&self) -> crate::tree::Node;
 }
@@ -262,7 +268,7 @@ impl Pass for Gather<'_, '_> {
             }
             o => o,
         };
-        *it = Item { flow: ks.abs.is_none(), size, min: [ks.min[0] * s, ks.min[1] * s], margin, pb, grow: ks.grow, shrink: ks.shrink, align, abs: ks.abs, cav, ..Item::NONE };
+        *it = Item { flow: ks.abs.is_none() && !l.absent(), size, min: [ks.min[0] * s, ks.min[1] * s], margin, pb, grow: ks.grow, shrink: ks.shrink, align, abs: ks.abs, cav, ..Item::NONE };
     }
 }
 
@@ -436,6 +442,10 @@ impl<O: Out + ?Sized> Pass for Place<'_, '_, '_, O> {
     #[inline(always)]
     fn kid<L: Lay>(&mut self, l: &L, it: &mut Item) {
         let k = self.k;
+        if l.absent() {
+            self.k = l.place(self.cx, [V::k(0.0); 2], [V::k(0.0); 2], self.out, k);
+            return;
+        }
         self.k = match it.abs {
             None => {
                 // (the solver advances by the size the item reports, and gives it that size)
@@ -862,4 +872,31 @@ pub fn reported(sp: &Spec, cx: &mut Cx, mut size: [V; 2]) -> [V; 2] {
         size[c] = cx.max(size[c], V::k(pb));
     }
     size
+}
+
+/// One element is one child.
+impl<L: Lay> Kids for L {
+    type St = Item;
+    const LEAVES: usize = L::LEAVES;
+    const WRAPS: bool = L::WRAPS;
+    const VARIES: bool = L::VARIES;
+    #[inline(always)]
+    fn st(&self) -> Item {
+        Item::NONE
+    }
+    #[inline(always)]
+    fn pass<P: Pass>(&self, st: &mut Item, p: &mut P) {
+        p.kid(self, st)
+    }
+    #[inline(always)]
+    fn each<F: FnMut(&Item)>(st: &Item, f: &mut F) {
+        f(st)
+    }
+    #[inline(always)]
+    fn each_mut<F: FnMut(&mut Item)>(st: &mut Item, f: &mut F) {
+        f(st)
+    }
+    fn trees(&self, out: &mut Vec<crate::tree::Node>) {
+        out.push(self.tree())
+    }
 }

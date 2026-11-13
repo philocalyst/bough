@@ -53,8 +53,16 @@ fn cell(name: &str, n: usize, reps: usize, mut f: impl FnMut(usize)) {
 }
 
 #[inline(never)]
+fn sheet_memo(memo: &mut Memo, r: usize, width: f32, u: &U, out: &mut Lanes) -> i32 {
+    memo.row(&rows::sheet_row(r), 2.0, u, width, (0, r as i32 * 44), out)
+}
+#[inline(never)]
+fn sheet_hash(r: usize) -> u64 {
+    bough_lay::shape::hash(&rows::sheet_row(r))
+}
+#[inline(never)]
 fn sheet_place(r: usize, width: f32, u: &U, out: &mut Lanes) -> i32 {
-    place_row(&rows::sheet_row(r), 2.0, u, width, out).0
+    bough_lay::shape::place(&rows::sheet_row(r), 2.0, u, width, out).0
 }
 #[inline(never)]
 fn sheet_copy(shape: &[[i32; 4]; 22], out: &mut Lanes) {
@@ -63,16 +71,20 @@ fn sheet_copy(shape: &[[i32; 4]; 22], out: &mut Lanes) {
     }
 }
 #[inline(never)]
-fn ide_place(n: usize, toks: &[(f32, f32, f32); rows::MAX_TOK], tail: f32, width: f32, u: &U, out: &mut Lanes) -> i32 {
-    place_row(&rows::ide_line(n, toks, tail), 2.0, u, width, out).0
+fn ide_memo(memo: &mut Memo, n: usize, toks: &[(f32, f32, f32); rows::MAX_TOK], tail: f32, width: f32, u: &U, out: &mut Lanes) -> i32 {
+    memo.row(&rows::ide_line(n, toks, tail), 2.0, u, width, (0, 0), out)
+}
+#[inline(never)]
+fn ide_hash(n: usize, toks: &[(f32, f32, f32); rows::MAX_TOK], tail: f32) -> u64 {
+    bough_lay::shape::hash(&rows::ide_line(n, toks, tail))
 }
 #[inline(never)]
 fn chat_place(m: &rows::Msg, width: f32, u: &U, out: &mut Lanes) -> (i32, Valid) {
-    place_row(&rows::chat_row(m), 2.0, u, width, out)
+    bough_lay::shape::place(&rows::chat_row(m), 2.0, u, width, out)
 }
 #[inline(never)]
 fn chat_size(m: &rows::Msg, width: f32, u: &U) -> (i32, Valid) {
-    size_row(&rows::chat_row(m), 2.0, u, width)
+    bough_lay::shape::size(&rows::chat_row(m), 2.0, u, width)
 }
 
 fn main() {
@@ -83,37 +95,47 @@ fn main() {
     let width = black_box(2560.0f32);
     println!("# per row; events: {:?}", pmu::sample_events().iter().map(|e| e.name()).collect::<Vec<_>>());
 
-    cell("sheet row: typed place (22 rects)", 4096, reps, |i| {
-        out.at = i as i32 * 44;
-        black_box(sheet_place(black_box(i), width, &u, &mut out));
+    let mut memo = Memo::new();
+    cell("sheet row: shape, memo hit, copy (22 rects)", 4096, reps, |i| {
+        black_box(sheet_memo(&mut memo, black_box(i), width, &u, &mut out));
+    });
+    cell("sheet row: the shape alone (hash of its words)", 4096, reps, |i| {
+        black_box(sheet_hash(black_box(i)));
     });
     let mut shape = [[0i32; 4]; 22];
-    place_row(&rows::sheet_row(0), 2.0, &u, 2560.0, &mut shape);
+    bough_lay::shape::place(&rows::sheet_row(0), 2.0, &u, 2560.0, &mut shape[..]);
     cell("sheet row: copy of a kept slice (22 rects)", 4096, reps, |i| {
         out.at = i as i32 * 44;
         sheet_copy(black_box(&shape), &mut out);
+    });
+    cell("sheet row: memo miss (words + layout)", 1024, reps, |i| {
+        black_box(sheet_place(black_box(i), width, &u, &mut out));
     });
     let toks: Vec<(usize, [(f32, f32, f32); rows::MAX_TOK], f32)> = {
         let mut r = common::Rng(0x1de);
         (0..256).map(|_| (3 + r.below(6), std::array::from_fn(|_| (13.2 * (1 + r.below(9)) as f32, r.pick(&[0.0, 3.8, 14.0]), r.pick(&[0.0, 3.8]))), 26.4)).collect()
     };
-    cell("ide line: typed place (10 rects, 3-8 tokens)", 4096, reps, |i| {
+    let mut memo = Memo::new();
+    cell("ide line: shape + layout (every line its own)", 4096, reps, |i| {
         let (n, t, tail) = &toks[i & 255];
-        out.at = i as i32 * 36;
-        black_box(ide_place(*n, t, *tail, black_box(1860.0), &u, &mut out));
+        black_box(ide_memo(&mut memo, *n, t, *tail, black_box(1860.0), &u, &mut out));
+    });
+    cell("ide line: the shape alone (hash of its words)", 4096, reps, |i| {
+        let (n, t, tail) = &toks[i & 255];
+        black_box(ide_hash(*n, t, *tail));
     });
     let msgs: Vec<rows::Msg> = (0..256).map(rows::msg).collect();
     let words: usize = msgs.iter().map(|m| m.text.words.len() + m.quote.as_ref().map_or(0, |q| q.1.words.len())).sum();
     println!("# chat: {} messages, {:.1} words each (the stand-in paragraph keeps its last answer: a question inside that interval is a range check, any other walks the words)", msgs.len(), words as f64 / 256.0);
-    cell("chat row: typed place, one width", 2048, reps, |i| {
+    cell("chat row: words + layout, one width", 2048, reps, |i| {
         black_box(chat_place(&msgs[i & 255], black_box(1960.0), &u, &mut out));
     });
     let mut step = 0usize;
-    cell("chat row: typed place, a new width each time", 2048, reps, |i| {
+    cell("chat row: words + layout, a new width each time", 2048, reps, |i| {
         step += 1;
         black_box(chat_place(&msgs[i & 255], black_box(1500.0 + (step % 997) as f32), &u, &mut out));
     });
-    cell("chat row: typed size only", 2048, reps, |i| {
+    cell("chat row: size only", 2048, reps, |i| {
         black_box(chat_size(&msgs[i & 255], black_box(1960.0), &u));
     });
     // how often an answer survives a one-pixel step
@@ -132,11 +154,11 @@ fn main() {
     println!("# chat rows over 400 one-pixel steps: {:.1} % of (row, step) pairs are a range check", 100.0 * held as f64 / total as f64);
 
     // the general solver on the same trees
-    let sheet_tree = rows::sheet_row(3).tree();
+    let sheet_tree = bough_lay::shape::tree(&rows::sheet_row(3));
     cell("sheet row: cephal, cold (tree built each time)", 256, reps, |_| {
         black_box(common::oracle_row(&sheet_tree, 2.0, 2560.0));
     });
-    let chat_trees: Vec<_> = msgs.iter().map(|m| rows::chat_row(m).tree()).collect();
+    let chat_trees: Vec<_> = msgs.iter().map(|m| bough_lay::shape::tree(&rows::chat_row(m))).collect();
     cell("chat row: cephal, cold (tree built each time)", 256, reps, |i| {
         black_box(common::oracle_row(&chat_trees[i & 255], 2.0, 1960.0));
     });

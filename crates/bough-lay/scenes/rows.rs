@@ -19,7 +19,7 @@ pub fn num(line_h: f32) -> Leaf<Line, Rec1<u32>> {
 
 /// sheet.rs `data_row`: a gutter with the row number, then ten cells.
 #[inline(always)]
-pub fn sheet_row(r: usize) -> impl Lay + Copy {
+pub fn sheet_row(r: usize) -> impl Shape {
     row((
         div().w(GUTTER).h(CELL_H).px(6.0).bg(r as u32).child(num(2.0 * CELL_H)),
         row(core::array::from_fn::<_, COLS, _>(|c| div().w(CELL_W).h(CELL_H).px(6.0).bg(c as u32).child(num(2.0 * CELL_H)))),
@@ -33,7 +33,7 @@ const GUTTER_W: f32 = 44.0;
 /// ide.rs `line`: the line number, up to eight token spans with margins for their edge spaces, the typed
 /// tail. `toks[i]` is (width, left margin, right margin) in pixels and points.
 #[inline(always)]
-pub fn ide_line(n: usize, toks: &[(f32, f32, f32); MAX_TOK], tail: f32) -> impl Lay + Copy {
+pub fn ide_line(n: usize, toks: &[(f32, f32, f32); MAX_TOK], tail: f32) -> impl Shape {
     row((
         text(Line(0.0, 2.0 * LINE_H), 0u32).w(GUTTER_W),
         core::array::from_fn::<_, MAX_TOK, _>(|j| (j < n).then(|| text(Line(toks[j].0, 2.0 * LINE_H), 0u32).margin(toks[j].1, 0.0, toks[j].2, 0.0))),
@@ -52,13 +52,13 @@ pub struct Msg {
 }
 
 #[inline(always)]
-fn avatar(size: f32, initials_w: f32, font: f32) -> impl Lay {
+fn avatar(size: f32, initials_w: f32, font: f32) -> impl Shape {
     row((text(Line(initials_w, 2.0 * (font + 4.0)), 0u32),)).center().w(size).h(size).shrink(0.0).bg(0u32)
 }
 
 /// chat.rs `message`: avatar, name and time, a bubble (quote, wrapped text, image, reaction pills).
 #[inline(always)]
-pub fn chat_row(m: &Msg) -> impl Lay + '_ {
+pub fn chat_row(m: &Msg) -> impl Shape + '_ {
     let quote = m.quote.as_ref().map(|(name_w, p)| column((text(Line(*name_w, 28.0), 0u32), text(p.clone(), 0u32))).gap(1.0).px(8.0).py(4.0).bg(0u32));
     let pills = row(m.reacts.map(|r| r.map(|w| row((text(Line(w, 28.0), 0u32),)).px(7.0).py(2.0).bg(0u32)))).gap(4.0);
     let pills = m.reacts[0].is_some().then_some(pills);
