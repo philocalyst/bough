@@ -133,11 +133,19 @@ and 0.
 
 ## What has run, and what has not (2026-11-12)
 
-* The in-process table: Mac, mothership (twice, plus the pre-arena commit for an A/B), ilo-prod. Files in
+* The in-process table (`hot.sh`): Mac, mothership (the tree walk, the first plan, the port, the final tree),
+  ilo-prod. `lines.sh`: mothership. `alloc_x`, `bump_x`, `pixels_x`: Mac and mothership. Files in
   `bench/results/r8/threads/`.
-* `-f` (flamegraphs): started on ilo-prod; see the journal for whether the files exist. `perf record` with
-  dwarf unwinding was checked by hand there (it records; `perf script` prints stacks).
-* `-x` (perf stat slopes): **not run anywhere yet.** The script path is the round-7 `pstat.sh`, which the bench
-  lane cross-checked against the in-process counters within a few percent on ilo-prod.
+* `-f` (flamegraphs): drawn on ilo-prod for seven cells (`/root/work/r8/threads/out/flame`). Usable for cells
+  of tens of microseconds and up. **For a cell of a few microseconds the graph is the harness**: the two
+  counter reads around each repetition are system calls and were 93 % of a hover's samples. A switch that
+  drops the bracket for `-f` runs is the fix; not added.
+* `-x` (perf stat slopes): run on ilo-prod (`pstat-ilo-prod-81da84ea75.tsv`). Branch and L1 misses agree with
+  the in-process counters; instructions are 600 to 1,000 per repetition higher for every cell, because the
+  loop reads and clears the damage outside the in-process bracket and the `floor` cell has none. So: **use
+  the in-process table for a cell's cost**; a slope is only comparable with a floor that leaves the same
+  damage.
 * Not available: kernel-mode counts on mothership (not root), so a cell that is mostly system calls (mount,
   mapping an image) shows its user part in the counters and its whole in `wall_ns`.
+* Confirmed runnable at the final tree: `mini.sh` -> `xfer.sh` -> build -> `hot.sh` and `lines.sh` on
+  mothership, as written above (the last run is `hot-mothership-final.tsv`).

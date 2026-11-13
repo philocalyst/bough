@@ -370,4 +370,41 @@ started; its design and predictions are THREADS-DESIGNS section 5, and it should
   counter reads that bracket each repetition are system calls, and their user-side stubs out-weigh a 3 us
   cell. Flamegraphs of small cells need the bracket off (an environment switch in the harness; not added).
 
-`hot.sh -x` (perf stat slopes, M1's second half): see the hand-over note for whether it finished.
+`hot.sh -x` ran on ilo-prod at `81da84ea75` (`pstat-ilo-prod-81da84ea75.tsv`; `run%` 100 everywhere). Per
+repetition, perf stat slope minus `floor` against the in-process bracket:
+
+| cell | instructions, perf stat | in-process | | branch misses | L1 misses |
+|---|---:|---:|---|---|---|
+| hover | 11,180 to 11,290 | 10,232 | +9.7 % | 2.7 / 3 | 10 / 6 |
+| theme | 36,956 to 37,060 | 36,088 | +2.6 % | 2.9 / 3 | 326 / 317 |
+| edit an exposed cell | 2,731 to 2,837 | 2,158 | +28 % | 2.8 / 1 | 23 / 18 |
+| scroll a page | 45,132 to 45,267 | 44,181 | +2.4 % | 11.5 / 11 | 463 / 390 |
+
+**M1's second half is killed by its letter** (a cell over 10 %), and the cause is the harness, not the
+counters: the loop reads out and clears the damage after each repetition, outside the in-process bracket and
+inside perf's count, and `floor` has no damage to read. The difference is 600 to 1,000 instructions per
+repetition whatever the cell, which is 28 % of an edit and 2 % of a scroll. The in-process numbers are the
+cell; a perf stat slope needs a floor that leaves the same damage. Not fixed.
+
+## 16. Hand-over note (2026-11-12, final)
+
+* **Head of `r8/threads`**: the commit that adds this note, on top of `r8/expr` `054b83c929`. At
+  `57bfea8094` (the same code; later commits are documents and results): `cargo check --workspace
+  --all-targets` passes on the Mac; `cargo test --release -p bough-x -p bough-mem` passes on the Mac and on
+  mothership (bough-mem 7 + 1; bough-x anim 2, events 9, image 5, publish 4, reflect 6, sheet 4, table 1);
+  `mutant_publish` and `mutant_torn` fail their gates; the reader gate ran 2,000,000 publishes with no mixed
+  scene (3.6 retries per read at that publish rate). ilo-prod last ran the tests at `81da84ea75` (before the
+  port).
+* **Section 9's note is superseded.** `054b83c929` is merged; this branch has no second flat table.
+* **Not built**: workers of any kind; product columns and landing; the chat scene and any latency
+  distribution; the pixel section; frame versions; banded kernels. Their designs and predictions are in
+  `docs/r8/THREADS-DESIGNS.md`. Predictions T1, T2, T4, T5, L3, L4 and P1 were never run.
+* **Documents**: `docs/r8/ARENA.md` (what is built, the review's findings), `docs/r8/IMAGE.md`,
+  `docs/r8/THREADS-DESIGNS.md`, `docs/lanes/threads/MEASURE.md` (the recipe), `docs/lanes/threads/TALLY.md`
+  (lines for the lead). Earlier sections of this journal describe the first version (own plan as the entry,
+  `Ar::read`, column numbers): they are history, and sections 11 and 14 say what replaced them.
+* **Remotes**: nothing of this lane is running. ilo-prod: `/root/work/r8/threads` keeps the checkout
+  (`81da84ea75` with `hot.sh` and `hot_merge.py` copied over it), `out/` (tables, seven flamegraphs, the
+  cross-check) and `env.sh`; `target` deleted. mothership: `/home/miles/work/r8/threads` keeps `env.sh`,
+  `out/`, the three benchmark binaries `hot_x.port`, `hot_x.flat` and the mini source; `target` and
+  `target-base` deleted. The Mac's `target/release` and `target/debug` deleted; `target/dist` kept.

@@ -51,6 +51,9 @@ instructions including the kernel's. Profile `dist`. Sheet at 10,000 rows unless
 * **"Nothing in a turn is worth a thread"** as a general claim: measured on one scene with arithmetic layout
   and no shaped text (review P05); stands only for that scene (largest turn 16,000 cycles, a frame 9.4
   million).
+* **perf stat slopes and the in-process counters agree within 5 %** (ilo-prod): instructions differ by 600 to
+  1,000 per repetition (28 % of an edit, 2.4 % of a scroll); branch and L1 misses agree. Cause: the loop's
+  damage read-out is outside the bracket and absent from the floor cell. The in-process table is the cell.
 * **`setsid nohup` from an `rx.sh` script starts a remote job**: it did not; `bg.sh` does.
 * **Flamegraphs of microsecond cells under the counting harness**: 93 % `[unknown]` (the bracket's system
   calls); usable only for cells of tens of microseconds and up.
@@ -74,7 +77,7 @@ instructions including the kernel's. Profile `dist`. Sheet at 10,000 rows unless
   scratch and bulk products**: at most -6 % of mount's instructions; matters when bulk products exist. Medium.
 * **A lifetime-carrying arena handle inside the crate** (what is left of review P01). Small.
 * **Prefetch at input arrival**: re-predicted to at most 10 % of cold cycles; after the layout items. Small.
-* **`hot.sh -x`** (perf stat slopes against the in-process counters) and a bracket-off switch for flamegraphs
-  of small cells. Small.
+* **A floor cell that leaves the same damage** (so perf stat slopes are comparable) and a bracket-off switch
+  for flamegraphs of small cells. Small.
 * **Product columns and their landing as an epoch; the chat scene; the latency distribution**: not started.
   Large.
