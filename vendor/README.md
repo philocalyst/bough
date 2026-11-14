@@ -35,7 +35,11 @@ schell/wgsl-rs `b2de16a1b8`, whose naga is 29; 29.0.4 is that line's latest patc
   built on them (`crates/bough-gpu/src/shaders/compact.rs`, checked by `halprobe`).
 * **wgsl-rs workspace manifest**: `members` trimmed to the five vendored crates (the examples and test crates are
   not vendored).
-* wgpu, wgpu-core, wgpu-hal, wgpu-types, naga, winit: none. What the hal already exposes covers the first increment: `Device::device_from_raw`,
+* **wgpu-hal (Metal): two additive accessors** (15 lines, no existing line changed):
+  `CommandEncoder::raw_compute_encoder` in `src/metal/command.rs` (the open compute pass's Metal encoder, for a pass
+  whose bindings and dispatches the caller issues itself) and `ComputePipeline::raw_pipeline` in `src/metal/mod.rs`.
+  The hal's binding state is not updated by calls made on the raw encoder; use it for whole passes only.
+* wgpu, wgpu-core, wgpu-types, naga, winit, skrifa: none. What the hal already exposes covers the first increment: `Device::device_from_raw`,
 `Queue::queue_from_raw` / `as_raw`, `Device::buffer_from_raw` (the `storageModeShared` region the CPU writes in
 place), `Device::texture_from_raw` (IOSurface-backed surfaces), `ShaderInput::MetalLib` (the build-time metallib),
 `CommandEncoder::raw_command_buffer` (shared-event waits and signals between passes of a pre-armed batch), and
