@@ -11,7 +11,10 @@ and the design's whole surface.
 **Status (2026-11-13):** the façade runs on macOS (Metal, AppKit) and Linux (Wayland, CPU executor); a second,
 typed-dataflow core (`bough-x` and its sibling crates) holds the order-of-magnitude numbers and is not yet what the
 façade runs on. What stands, what was refuted and every open avenue are in `docs/r8/final/REPORT.md`; the roadmap is
-in `AGENTS.md`. The whole-workspace suite on the integration branch passed (209 targets, 401 passed, 0 failed).
+in `AGENTS.md`. It is not yet a complete GUI framework: text editing and IME, accessibility, Windows and X11,
+clipboard, drag and drop, several windows, grid layout, a styling layer and the visual effects (backdrop blur, inset
+shadows, border styles, conic gradients, text decoration) are all open and listed there (areas 5, 13, 15, 20, 21). A
+component library is out of scope by decision. The whole-workspace suite on the integration branch passed (209 targets, 401 passed, 0 failed).
 
 Where it is measured, it is efficient. Each of these numbers holds on its own workload, machine and baseline; none is
 a general ranking:

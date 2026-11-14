@@ -97,7 +97,7 @@ independent replay, a tool, or a documented boundary (something that provably do
   siblings of the build CPUs, so no builds during a timed run.
 - Do not message outside people or other sessions without the owner's direction.
 
-## Roadmap (everything still open)
+## Roadmap (everything still open, as of 2026-11-13)
 
 REPORT section 4 has size estimates, notes and what is already known for each line; section 9 gives the order.
 Sizes: S days, M a week or two, L more. Do the integration items first.
@@ -192,11 +192,61 @@ measurement under control; (5) every "flat" claim tested past its limit with a f
     and X19 are the lanes' own; X13-X15, X17, X20-X28 are first bids by the lead. Run as written, or replace the
     prediction before running.
 
+20. **Visual effects** (new 2026-11-13; none of it is in `REPORT.md`, so sizes are the lead's estimates). What exists
+    in the façade and `bough-paint`: rounded boxes with a solid border, opacity, linear and radial gradients (a
+    256-texel ramp), stacked outer Gaussian box shadows (offset, blur, spread), rotated images and a blend step. All
+    of it is box-shaped and drawn by the fused kernel. Open:
+    - **Blur and backdrop effects** (L): a backdrop blur (frosted glass: blur what is behind a box, clipped to its
+      rounded shape), blur and other filters on an element and its subtree (brightness, contrast, saturate,
+      drop-shadow), and the offscreen layers they need. They break the one-pass fused kernel, so decide how a layer
+      is damaged, tiled and cached first; expect a per-frame cost the idle path must not pay.
+    - **Shadows** (M): inset shadows; shadows that follow a rounded or clipped shape and a transformed box; text
+      shadow and the shadow of a glyph run; drop-shadow of an image's alpha; multiple shadows with spread on every
+      path including `bough-x`; shadow cost under motion (a cached blurred tile, not a re-blur per frame).
+    - **Borders** (M): styles (dashed, dotted, double, groove, ridge, inset, outset), per-side width and colour with
+      mitred joins, per-corner radii and elliptical corners, outlines with offset, border images, and borders that
+      stay crisp at fractional scale.
+    - **Gradients** (M): conic; repeating linear, radial and conic; colour hints and hard stops; interpolation in
+      other colour spaces; gradients as border and text fills; more than the 256-texel ramp allows.
+    - **Text decoration** (S-M): underline, overline and strike-through; styles (solid, double, dotted, dashed,
+      wavy); thickness, offset and colour; skip-ink across descenders; decoration across wrapped lines and inline
+      boxes; text stroke and text shadow. Needs the glyph geometry from area 5.
+    - **Compositing** (M): clip-path shapes, masks, blend modes on elements, isolation groups, backdrop-filter
+      against translucent surfaces (area 15), 2-D and 3-D transforms for whole subtrees, and colour management
+      (wide gamut, HDR) as a decision.
+    - Each item gets a probe, a visual fixture (area 6: independent fixtures) and a compile-time and size line
+      (area 18) before it joins the gates.
+21. **Platform surface and content** (new 2026-11-13). Things a framework is expected to have that no earlier area
+    names; each needs an owner decision on scope before work starts:
+    - **Layout model beyond flex** (L): grid, block flow and floats, or a stated decision that only flex and
+      absolute positioning exist. Today only flex rows are covered, and area 4 lists percentage and content sizing.
+    - **Styling surface** (M-L): decide between typed modifiers only and a stylesheet layer (selectors, cascade,
+      custom properties, media queries, pseudo-states such as hover, focus and disabled). Include design tokens and
+      theming (light and dark, density, reduced motion) either way.
+    - **Clipboard** (M): text, rich text and images; both directions; macOS, Wayland and later Windows and X11.
+    - **Drag and drop** (M): inside a window, between windows, and from and to the system (files, text).
+    - **Windows and chrome** (M): several windows (area 12), custom title bars and window controls, native menus and
+      the application menu, dialogs, file pickers, system tray and notifications, cursors, and full-screen.
+    - **SVG** (M): parse and rasterise vector images and icons at device size (the façade already rasterises vector
+      icons with usvg and resvg; make it a core element with caching and no per-frame rasterisation).
+    - **Image formats and animation** (M): PNG, JPEG, WebP, animated formats, colour-managed decode, and lazy decode
+      off-thread (overlaps area 6: images and YUV).
+    - **Charts and data display** (decision): out of the core by default; keep the primitives (paths, text on a
+      path, gradients, clipping) sufficient for an outside crate to build them.
+    - **Headless and testing surfaces** (S-M): a headless window with no GPU for CI, screenshots by element, and the
+      agent socket of area 14.
+
+**Out of scope by decision (2026-11-13): a component library.** No buttons, selects, dialogs, tables, date pickers,
+tabs, toasts and the like ship in the core. `lorelei` provides primitives (boxes, text, text input, images, lists)
+that a separate crate can build components on. Anyone picking the project up should not
+start one in this repository.
+
 **Decisions that are the owner's** (REPORT section 7): item key and generation in `Rel`; how macOS presentation
 latency may be measured; accessibility order and the screen-reader window policy; the text questions (who owns
 editing state, where fonts come from, how text should look, selectable by default, rope-backed `text()`); the
 inspector's form; how far Bevy's vocabulary enters the API; live-edit pins and pointer transparency; GPU portability
-(vendored wgpu or direct Vulkan and Direct3D); and the rename from bough to lorelei across identifiers.
+(vendored wgpu or direct Vulkan and Direct3D); typed modifiers only or a stylesheet layer, and whether grid exists (area 21);
+how offscreen layers for backdrop blur and filters are damaged and cached (area 20); and the rename from bough to lorelei across identifiers.
 
 **Latest measurements.** The full zortax gui-bench matrix was re-run on 2026-11-13 from `cc65ee215f`: 658 cells in each
 of fixed 60 Hz and unthrottled timing, all frameworks plus `bough` (façade) and `bough-x` (new core). `bough` had
